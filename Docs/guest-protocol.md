@@ -48,6 +48,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - `ok`: false with `error` (a message for a person) when the request is refused; the guest then closes the connection.
 - `version`, `osBuild`: hello only (agent-vm-guest's version, the guest's macOS build).
 - `pid`: exec only, the started process.
+- `status`: a refused exec only, the status a shell would give: 127 when the program is not found, 126 when it cannot be run (unknown account, missing folder).
 
 ## Operations
 

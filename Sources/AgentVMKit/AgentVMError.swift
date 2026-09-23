@@ -37,6 +37,11 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case invalidUserName(String)
     /// This Mac or this binary cannot do what was asked (entitlement, free space).
     case hostNotReady(String)
+    case boxExists(String)
+    case boxNotFound(String)
+    /// The box's supervisor runs; stop the box first.
+    case boxRunning(String)
+    case boxNotRunning(String)
     /// Virtualization refused or failed an operation; `message` is its explanation.
     case virtualMachine(operation: String, message: String)
     /// The guest did not become reachable, or stopped answering.
@@ -82,6 +87,14 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "\(name) is not a usable account name (lower-case letters, digits and \"_\", starting with a letter; not a name macOS reserves)"
         case let .hostNotReady(reason):
             return "cannot build here: \(reason)"
+        case let .boxExists(name):
+            return "box \(name) already exists; delete it first with `agent-vm box delete \(name)`"
+        case let .boxNotFound(name):
+            return "no box \(name); `agent-vm box list` shows the existing ones"
+        case let .boxRunning(name):
+            return "box \(name) is running; stop it first with `agent-vm box stop \(name)`"
+        case let .boxNotRunning(name):
+            return "box \(name) is not running; start it with `agent-vm box start \(name)`"
         case let .virtualMachine(operation, message):
             return "\(operation) failed: \(message)"
         case let .guestUnreachable(reason):

@@ -56,7 +56,7 @@ public final class ExecSession: @unchecked Sendable {
         try channel.send(.request, json: request)
         let response = try channel.receive(.response, as: GuestResponse.self)
         guard response.ok, let pid = response.pid else {
-            throw AgentVMError.guestRefused(response.error ?? "no reason given")
+            throw ExecRefusal(message: response.error ?? "no reason given", status: response.status ?? 126)
         }
         self.pid = pid
     }
@@ -121,5 +121,16 @@ public final class ExecSession: @unchecked Sendable {
             }
             try? sendStdinEnd()
         }
+    }
+}
+
+/// The guest would not start the program; `status` is what a shell would exit with
+/// (127 not found, 126 cannot run).
+public struct ExecRefusal: Error, Equatable, CustomStringConvertible {
+    public var message: String
+    public var status: Int32
+
+    public var description: String {
+        return "the guest refused: \(message)"
     }
 }

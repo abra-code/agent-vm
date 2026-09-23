@@ -44,24 +44,7 @@ public struct ImageStore: Sendable {
     }
 
     /// Holds an image's lock until released or deallocated.
-    public final class Lock: @unchecked Sendable {
-        private var descriptor: Int32
-
-        init(descriptor: Int32) {
-            self.descriptor = descriptor
-        }
-
-        public func release() {
-            if descriptor >= 0 {
-                close(descriptor)
-                descriptor = -1
-            }
-        }
-
-        deinit {
-            release()
-        }
-    }
+    public typealias Lock = FolderLock
 
     /// Claims `name` for a new image and writes its first record. The returned lock must be
     /// held for as long as the image is being built.
@@ -89,20 +72,7 @@ public struct ImageStore: Sendable {
 
     /// Takes the lock of an existing image; nil when another process holds it.
     public func tryLock(_ image: GoldenImage) throws -> Lock? {
-        let path = image.directory.appendingPathComponent(Self.lockName).path
-        let descriptor = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
-        guard descriptor >= 0 else {
-            throw AgentVMError.system(operation: "open lock \(path)", code: errno)
-        }
-        if flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
-            let code = errno
-            close(descriptor)
-            if code == EWOULDBLOCK {
-                return nil
-            }
-            throw AgentVMError.system(operation: "lock \(path)", code: code)
-        }
-        return Lock(descriptor: descriptor)
+        return try FolderLock.tryAcquire(image.directory.appendingPathComponent(Self.lockName).path)
     }
 
     public func image(named name: String) throws -> GoldenImage {

@@ -21,7 +21,7 @@ struct AgentVMCommand: AsyncParsableCommand {
         commandName: "agent-vm",
         abstract: "Run AI agents inside disposable macOS virtual machines, and undo what they did.",
         version: AgentVM.version,
-        subcommands: [SessionCommand.self, ImageCommand.self, DoctorCommand.self]
+        subcommands: [ExecCommand.self, BoxCommand.self, ImageCommand.self, SessionCommand.self, DoctorCommand.self]
     )
 }
 
@@ -38,6 +38,10 @@ struct StoreOptions: ParsableArguments {
 
     var imageStore: ImageStore {
         return ImageStore(root: SessionStore.defaultRoot())
+    }
+
+    var boxStore: BoxStore {
+        return BoxStore(root: SessionStore.defaultRoot())
     }
 }
 

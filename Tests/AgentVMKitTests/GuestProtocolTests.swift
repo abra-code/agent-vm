@@ -158,7 +158,7 @@ final class GuestPair {
                         GuestRequest(op: .exec, argv: []),
                         GuestRequest(op: .exec, argv: ["/bin/echo"], user: "no-such-account-here")] {
             let pair = try GuestPair()
-            #expect(throws: AgentVMError.self) {
+            #expect(throws: ExecRefusal.self) {
                 _ = try ExecSession(descriptor: pair.client, request: request)
             }
         }
@@ -269,8 +269,15 @@ final class GuestPair {
         do {
             _ = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["no-such-program-anywhere"]))
             Issue.record("expected a refusal")
-        } catch let error as AgentVMError {
-            #expect(error == .guestRefused("no-such-program-anywhere: command not found"))
+        } catch let refusal as ExecRefusal {
+            #expect(refusal == ExecRefusal(message: "no-such-program-anywhere: command not found", status: 127))
+        }
+        let other = try GuestPair()
+        do {
+            _ = try ExecSession(descriptor: other.client, request: GuestRequest(op: .exec, argv: ["/bin/echo"], cwd: "/no/such/folder"))
+            Issue.record("expected a refusal")
+        } catch let refusal as ExecRefusal {
+            #expect(refusal.status == 126)
         }
     }
 

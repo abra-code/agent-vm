@@ -14,6 +14,23 @@
 import Foundation
 import Virtualization
 
+/// The files that make up one macOS guest (an image's or a box's).
+struct MachineFiles: Sendable {
+    var name: String
+    var directory: URL
+    var disk: URL
+    var auxiliaryStorage: URL
+    var hardwareModel: URL
+    var machineIdentifier: URL
+}
+
+extension GoldenImage {
+    var machineFiles: MachineFiles {
+        return MachineFiles(name: name, directory: directory, disk: diskURL, auxiliaryStorage: auxiliaryStorageURL,
+                            hardwareModel: hardwareModelURL, machineIdentifier: machineIdentifierURL)
+    }
+}
+
 /// The resources and devices of a macOS guest.
 public struct MacMachineSpec: Sendable {
     public var cpuCount: Int
@@ -31,28 +48,28 @@ public struct MacMachineSpec: Sendable {
     static let displayWidth = 1280
     static let displayHeight = 800
 
-    /// Builds the configuration for the machine stored in `image`'s folder. Network: NAT for
-    /// now (used to build images); boxes get their own network policy later.
-    func configuration(for image: GoldenImage, auxiliaryStorage: VZMacAuxiliaryStorage) throws -> VZVirtualMachineConfiguration {
+    /// Builds the configuration for the machine in `files`. Network: NAT for now; boxes get
+    /// their own network policy later.
+    func configuration(for files: MachineFiles, auxiliaryStorage: VZMacAuxiliaryStorage) throws -> VZVirtualMachineConfiguration {
         let hardwareData: Data
         let identifierData: Data
         do {
-            hardwareData = try Data(contentsOf: image.hardwareModelURL)
-            identifierData = try Data(contentsOf: image.machineIdentifierURL)
+            hardwareData = try Data(contentsOf: files.hardwareModel)
+            identifierData = try Data(contentsOf: files.machineIdentifier)
         } catch {
-            throw AgentVMError.corruptImageRecord(path: image.directory.path, reason: "machine files unreadable: \(error.localizedDescription)")
+            throw AgentVMError.corruptImageRecord(path: files.directory.path, reason: "machine files unreadable: \(error.localizedDescription)")
         }
         guard let hardwareModel = VZMacHardwareModel(dataRepresentation: hardwareData) else {
-            throw AgentVMError.corruptImageRecord(path: image.hardwareModelURL.path, reason: "not a hardware model")
+            throw AgentVMError.corruptImageRecord(path: files.hardwareModel.path, reason: "not a hardware model")
         }
         guard hardwareModel.isSupported else {
-            throw AgentVMError.virtualMachine(operation: "configure \(image.name)", message: "this Mac cannot run the image's hardware model")
+            throw AgentVMError.virtualMachine(operation: "configure \(files.name)", message: "this Mac cannot run the hardware model")
         }
         guard let identifier = VZMacMachineIdentifier(dataRepresentation: identifierData) else {
-            throw AgentVMError.corruptImageRecord(path: image.machineIdentifierURL.path, reason: "not a machine identifier")
+            throw AgentVMError.corruptImageRecord(path: files.machineIdentifier.path, reason: "not a machine identifier")
         }
         guard let macAddress = VZMACAddress(string: self.macAddress) else {
-            throw AgentVMError.corruptImageRecord(path: image.directory.path, reason: "bad MAC address \(self.macAddress)")
+            throw AgentVMError.corruptImageRecord(path: files.directory.path, reason: "bad MAC address \(self.macAddress)")
         }
 
         let platform = VZMacPlatformConfiguration()
@@ -68,9 +85,9 @@ public struct MacMachineSpec: Sendable {
 
         let disk: VZDiskImageStorageDeviceAttachment
         do {
-            disk = try VZDiskImageStorageDeviceAttachment(url: image.diskURL, readOnly: false, cachingMode: .automatic, synchronizationMode: .full)
+            disk = try VZDiskImageStorageDeviceAttachment(url: files.disk, readOnly: false, cachingMode: .automatic, synchronizationMode: .full)
         } catch {
-            throw AgentVMError.virtualMachine(operation: "attach \(image.diskURL.path)", message: error.localizedDescription)
+            throw AgentVMError.virtualMachine(operation: "attach \(files.disk.path)", message: error.localizedDescription)
         }
         configuration.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: disk)]
 
@@ -91,7 +108,7 @@ public struct MacMachineSpec: Sendable {
         do {
             try configuration.validate()
         } catch {
-            throw AgentVMError.virtualMachine(operation: "configure \(image.name)", message: error.localizedDescription)
+            throw AgentVMError.virtualMachine(operation: "configure \(files.name)", message: error.localizedDescription)
         }
         return configuration
     }

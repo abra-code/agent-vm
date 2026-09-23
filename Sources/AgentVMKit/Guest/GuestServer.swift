@@ -130,7 +130,9 @@ public final class GuestServer: @unchecked Sendable {
         do {
             started = try start(request)
         } catch {
-            try? channel.send(.response, json: GuestResponse.failure("\(error)"))
+            var response = GuestResponse.failure("\(error)")
+            response.status = (error as? Refusal)?.status ?? 126
+            try? channel.send(.response, json: response)
             return
         }
         let pid = started.pid
@@ -336,7 +338,7 @@ public final class GuestServer: @unchecked Sendable {
             throw Refusal("working directory \(directory) does not exist")
         }
         guard let executable = Self.resolveExecutable(program, path: environment["PATH"] ?? Self.defaultPath, directory: directory) else {
-            throw Refusal("\(program): command not found")
+            throw Refusal("\(program): command not found", status: 127)
         }
 
         let spawnPath: String
@@ -458,12 +460,15 @@ public final class GuestServer: @unchecked Sendable {
         return ["agent-vm-guest", "exec-as", user, directory, executable, "--"] + argv
     }
 
-    /// A request the daemon turns down; `message` goes to the host as is.
+    /// A request the daemon turns down; `message` goes to the host as is, with the shell's
+    /// status for it (127 not found, 126 cannot run).
     struct Refusal: Error, CustomStringConvertible {
         var message: String
+        var status: Int32
 
-        init(_ message: String) {
+        init(_ message: String, status: Int32 = 126) {
             self.message = message
+            self.status = status
         }
 
         var description: String {

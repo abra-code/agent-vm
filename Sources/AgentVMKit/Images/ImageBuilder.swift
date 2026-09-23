@@ -159,7 +159,7 @@ public final class ImageBuilder {
         } catch {
             throw AgentVMError.virtualMachine(operation: "create auxiliary storage", message: error.localizedDescription)
         }
-        let machine = MacMachine(configuration: try spec(image).configuration(for: image, auxiliaryStorage: auxiliaryStorage))
+        let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
 
         log("Installing macOS (a few minutes)...")
         var reported = -1

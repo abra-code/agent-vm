@@ -82,14 +82,17 @@ public struct GuestResponse: Codable, Equatable, Sendable {
     public var osBuild: String?
     /// The started process (exec only).
     public var pid: Int32?
+    /// For a refused exec: the status a shell would give (127 not found, 126 cannot run).
+    public var status: Int32?
 
-    public init(ok: Bool, error: String? = nil, v: Int? = nil, version: String? = nil, osBuild: String? = nil, pid: Int32? = nil) {
+    public init(ok: Bool, error: String? = nil, v: Int? = nil, version: String? = nil, osBuild: String? = nil, pid: Int32? = nil, status: Int32? = nil) {
         self.ok = ok
         self.error = error
         self.v = v
         self.version = version
         self.osBuild = osBuild
         self.pid = pid
+        self.status = status
     }
 
     public static func failure(_ message: String) -> GuestResponse {

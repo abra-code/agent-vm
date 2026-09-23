@@ -2,7 +2,7 @@
 
 Run AI agents and their tools inside disposable macOS virtual machines, so a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac.
 
-> **Status:** early development. Sessions (snapshot, change report and undo) work today, with or without a virtual machine; so do golden images (`image create`, macOS installed and set up with no clicks) and `doctor`. Everything else in this README describes the intended tool so the interface can be reviewed before it is built.
+> **Status:** early development. Working today: sessions (snapshot, change report and undo, with or without a virtual machine), golden images (`image create`, macOS installed and set up with no clicks), boxes with `agent-vm exec` (NAT network for now), and `doctor`. The rest of this README describes the intended tool: project sharing, the allowlist network and packs are not built yet.
 
 ## What it does
 
@@ -64,6 +64,35 @@ agent-vm session list                          # all sessions and their states
 | `ended` | The run is over; undo is still available. |
 | `undone` | The project was restored; what the agent left is kept in the session folder. |
 | `discarded` | Snapshot and replaced tree deleted; only the record remains. |
+
+## Boxes and exec (works today, NAT network)
+
+A box is an instant copy-on-write clone of a ready image with its own identity (MAC address, machine identifier). `box start` runs it in the background under a supervisor process that owns the virtual machine; `agent-vm exec` runs programs in it.
+
+```sh
+agent-vm box create dev1 --image dev          # instant: an APFS clone of the image
+agent-vm box start dev1                       # boots in about 10 seconds, waits until ready
+agent-vm exec --box dev1 -- uname -a
+printf 'b\na\n' | agent-vm exec --box dev1 -- sort
+agent-vm exec --box dev1 --cwd /tmp --env FOO=bar -- sh -c 'echo $FOO; pwd'
+agent-vm box list
+agent-vm box stop dev1                        # clean shutdown through the guest daemon
+agent-vm box delete dev1
+```
+
+- **`exec` behaves like the program itself.**
+  - stdin, stdout and stderr are streamed: about 550 MB/s out of the box, 430 MB/s into it.
+  - SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1 and SIGUSR2 go to the program's process group.
+  - The exit status is the program's: 128 + the signal number when a signal ended it, 127 when the program is not found, 126 when it cannot be started, and 125 when agent-vm itself fails (for example, the box is not running). A closed output (`exec ... | head -1`) ends `exec` with 141, as SIGPIPE would end the program locally, and the program is hung up.
+  - If `agent-vm exec` is killed, the program gets SIGHUP, then SIGKILL 3 seconds later.
+  - Programs run as the box user in their home folder unless `--user` or `--cwd` say otherwise.
+- **How it connects:** `exec` asks the box's supervisor, over a Unix socket only you can use (`Boxes/<name>/control.sock`), for a connection to the guest daemon. It then talks to the daemon directly, so the supervisor is not in the data path.
+- **Boxes need the image's volume**: the clone costs nothing until the box writes, and the box's disk grows as the guest works.
+- **`box start` is safe to repeat**: on a running box it reports the box, and during another start it waits for that one.
+- **The supervisor** is `agent-vm box serve <name>` in its own session, logging to `Boxes/<name>/supervisor.log`. It holds the box's lock, so a running box cannot be deleted or started twice. SIGTERM, SIGINT or SIGHUP to it stop the box cleanly, the same as `box stop`.
+- **Network for now: NAT.** A box can reach the internet and your local network; the allowlist proxy comes next.
+- **macOS runs at most two macOS guests at once**, whichever applications started them (`agent-vm doctor` counts them).
+- **Socket paths:** the control socket's full path must stay under 104 bytes, which a very long `AGENT_VM_HOME` can exceed.
 
 ## Images: macOS installed and set up with no clicks (works today)
 
