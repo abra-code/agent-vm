@@ -67,21 +67,22 @@ agent-vm session list                          # all sessions and their states
 
 ## Images: macOS installed and set up with no clicks (works today)
 
-A golden image is the macOS guest boxes will be cloned from. `image create` installs macOS from a restore image (`.ipsw`) and sets it up without a single click, using the guest provisioning added to Virtualization in macOS 27: the first boot creates an administrator account, logs it in automatically and turns on Remote Login.
+A golden image is the macOS guest boxes will be cloned from. `image create` installs macOS from a restore image (`.ipsw`) and sets it up without a single click, using the guest provisioning added to Virtualization in macOS 27: the first boot creates an administrator account, logs it in automatically and turns on Remote Login. agent-vm then copies its guest daemon in over SSH, checks that it answers over vsock and runs programs as the account, turns Remote Login off again, and shuts the guest down through the daemon.
 
 ```sh
-Scripts/build.sh                                    # starting VMs needs the signed binary
+Scripts/build.sh                                    # signed agent-vm and agent-vm-guest
 .build/signed/release/agent-vm image create dev --ipsw ~/Downloads/UniversalMac_27.0_26A428_Restore.ipsw
 agent-vm image list
 agent-vm image delete dev
 ```
 
-- **Takes about 3.5 minutes** on a MacBook Air M5 from a local restore image: about 3 minutes to install, then about 30 seconds for the first boot, an SSH check of the new account, and a clean shutdown. The disk is a 64 GB sparse file that holds about 28 GB after setup.
+- **Takes about 4 minutes** on a MacBook Air M5 from a local restore image: about 3 minutes to install, then about a minute for the first boot, the SSH check of the new account, the guest daemon, and a clean shutdown. The disk is a 64 GB sparse file that holds about 28 GB after setup.
+- **The guest daemon** (`agent-vm-guest`, a root LaunchDaemon started at boot) is the only way into a finished image: it runs programs for the host over vsock, needs no network, and accepts connections only from the host. Its protocol is described in [Docs/guest-protocol.md](Docs/guest-protocol.md). `image create` installs the `agent-vm-guest` found next to `agent-vm` (or `--guest-daemon <path>`).
 - **Options:** `--cpus` (default 4), `--memory-gb` (8), `--disk-gb` (64; at least 40), `--user` (the account name, default `agent`). Values below what the restore image requires are raised to its minimum.
-- **The account's password** is 24 random characters, stored only in the image folder (`Password`, mode 0600). During the build, agent-vm reaches the guest with the system's `/usr/bin/ssh` using password authentication. It never uses your SSH configuration, keys, agent or `known_hosts` file: the guest's host key goes into the image folder.
-- **Where it lives:** `~/Library/Application Support/agent-vm/Images/<name>/` (or `$AGENT_VM_HOME/Images/<name>/`): `image.json` (state, macOS version and build, resources, timings), the disk, the auxiliary storage, the hardware model and the machine identifier.
+- **The account's password** is 24 random characters, stored only in the image folder (`Password`, mode 0600). During the build, agent-vm reaches the guest with the system's `/usr/bin/ssh` using password authentication, until the daemon is in place. It never uses your SSH configuration, keys, agent or `known_hosts` file: the guest's host key goes into the image folder.
+- **Where it lives:** `~/Library/Application Support/agent-vm/Images/<name>/` (or `$AGENT_VM_HOME/Images/<name>/`): `image.json` (state, macOS version and build, resources, timings, guest daemon version and protocol), the disk, the auxiliary storage, the hardware model and the machine identifier.
 - **A failed or interrupted build** stays in the list with its state (`installing`, `provisioning`) or `failed` and the reason; delete it and create it again. An image in use by another agent-vm process cannot be deleted.
-- **Not yet:** downloading the restore image (get it from Apple, or reuse the one a VM app such as Viable keeps in its bundle), installing the guest daemon, and turning SSH off again in the finished image.
+- **Not yet:** downloading the restore image (get it from Apple, or reuse the one a VM app such as Viable keeps in its bundle), and developer tools in the image (Command Line Tools install non-interactively; measured, not yet automated).
 
 ## Building
 

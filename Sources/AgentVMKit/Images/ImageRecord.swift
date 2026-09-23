@@ -43,6 +43,9 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     public var userName: String
     public var installSeconds: Double?
     public var provisionSeconds: Double?
+    /// agent-vm-guest installed in the image, as it reported itself over vsock.
+    public var guestVersion: String?
+    public var guestProtocol: Int?
 }
 
 public struct GoldenImage: Sendable {

@@ -1,16 +1,66 @@
 // Sources/agent-vm-guest/main.swift
 //
-// Entry point of the daemon that runs inside the guest. Only the version report exists so far.
+// The daemon inside a box. Installed by `agent-vm image create` as the root LaunchDaemon
+// com.abracode.agent-vm.guest; talks to the host over vsock only.
+//
+//   agent-vm-guest serve [--port N] [--user NAME]   answer the host (hello, exec, shutdown)
+//   agent-vm-guest exec-as USER DIR -- PROGRAM ...  (internal) drop privileges and exec
+//   agent-vm-guest --version
 
 import AgentVMKit
+import Darwin
 import Foundation
 
-let arguments = CommandLine.arguments.dropFirst()
+let arguments = Array(CommandLine.arguments.dropFirst())
 
-if arguments.first == "--version" {
-    print("agent-vm-guest \(AgentVM.version) (protocol \(AgentVM.guestProtocolVersion))")
-    exit(0)
+func usage() -> Never {
+    FileHandle.standardError.write(Data("usage: agent-vm-guest serve [--port N] [--user NAME] | exec-as USER DIR -- PROGRAM [ARGS...] | --version\n".utf8))
+    exit(64) // EX_USAGE
 }
 
-FileHandle.standardError.write(Data("agent-vm-guest \(AgentVM.version): not implemented yet. Try --version.\n".utf8))
-exit(64) // EX_USAGE
+switch arguments.first {
+case "--version":
+    print("agent-vm-guest \(AgentVM.version) (protocol \(AgentVM.guestProtocolVersion))")
+    exit(0)
+
+case "exec-as":
+    GuestServer.execAs(Array(arguments.dropFirst()))
+
+case "serve":
+    // A host that goes away mid-write must not kill the daemon.
+    signal(SIGPIPE, SIG_IGN)
+    var port = GuestProtocol.port
+    var user: String?
+    var index = 1
+    while index < arguments.count {
+        let value = index + 1 < arguments.count ? arguments[index + 1] : nil
+        switch (arguments[index], value) {
+        case ("--port", let value?):
+            guard let parsed = UInt32(value) else {
+                usage()
+            }
+            port = parsed
+        case ("--user", let value?):
+            user = value
+        default:
+            usage()
+        }
+        index += 2
+    }
+    guard let helper = Bundle.main.executableURL?.resolvingSymlinksInPath().path else {
+        FileHandle.standardError.write(Data("agent-vm-guest: cannot find its own executable\n".utf8))
+        exit(1)
+    }
+    let listener: Int32
+    do {
+        listener = try GuestServer.listen(port: port)
+    } catch {
+        FileHandle.standardError.write(Data("agent-vm-guest: \(error)\n".utf8))
+        exit(1)
+    }
+    FileHandle.standardError.write(Data("agent-vm-guest \(AgentVM.version): listening on vsock port \(port), default user \(user ?? "(self)")\n".utf8))
+    GuestServer(defaultUser: user, helperPath: helper).run(listener: listener)
+
+default:
+    usage()
+}

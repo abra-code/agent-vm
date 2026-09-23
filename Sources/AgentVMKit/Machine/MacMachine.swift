@@ -195,6 +195,24 @@ public final class MacMachine: NSObject, VZVirtualMachineDelegate {
         stopped = true
     }
 
+    /// Opens a vsock connection to `port` in the guest (the guest daemon listens on
+    /// `GuestProtocol.port`). Fails at once when nothing listens there yet.
+    public func connect(toPort port: UInt32) async throws -> GuestConnection {
+        guard let device = machine.socketDevices.first as? VZVirtioSocketDevice else {
+            throw AgentVMError.virtualMachine(operation: "connect to the guest", message: "the machine has no vsock device")
+        }
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<GuestConnection, Error>) in
+            device.connect(toPort: port) { result in
+                switch result {
+                case let .success(connection):
+                    continuation.resume(returning: GuestConnection(connection))
+                case let .failure(error):
+                    continuation.resume(throwing: AgentVMError.guestUnreachable("vsock port \(port): \(error.localizedDescription)"))
+                }
+            }
+        }
+    }
+
     // MARK: - VZVirtualMachineDelegate (called on the main queue)
 
     nonisolated public func guestDidStop(_ virtualMachine: VZVirtualMachine) {
@@ -209,6 +227,36 @@ public final class MacMachine: NSObject, VZVirtualMachineDelegate {
             stopError = message
             stopped = true
         }
+    }
+}
+
+/// One vsock connection to the guest. Its descriptor stays valid only while this object is
+/// alive and not closed: closing it also breaks copies handed to other processes (measured),
+/// so the owner closes it only when every user of the descriptor is done.
+public final class GuestConnection: @unchecked Sendable {
+    private let connection: VZVirtioSocketConnection
+    private let lock = NSLock()
+    private var closed = false
+
+    init(_ connection: VZVirtioSocketConnection) {
+        self.connection = connection
+    }
+
+    public var descriptor: Int32 {
+        return connection.fileDescriptor
+    }
+
+    public func close() {
+        lock.lock()
+        defer { lock.unlock() }
+        if !closed {
+            closed = true
+            connection.close()
+        }
+    }
+
+    deinit {
+        close()
     }
 }
 

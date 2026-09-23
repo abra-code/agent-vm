@@ -38,6 +38,17 @@ public struct GuestSSH: Sendable {
 
     /// ssh's arguments for running `command` in the guest.
     func arguments(_ command: String) throws -> [String] {
+        return try options() + ["-T", "-l", user, host, "--", command]
+    }
+
+    /// scp's arguments for copying the local file `local` to `remote` in the guest. (For scp,
+    /// `-l` is a bandwidth limit, so the user goes into the destination.)
+    func copyArguments(_ local: String, to remote: String) throws -> [String] {
+        return try options() + ["-q", "--", local, "\(user)@\(host):\(remote)"]
+    }
+
+    /// The options ssh and scp share.
+    func options() throws -> [String] {
         // ssh splits UserKnownHostsFile on whitespace ("Application Support" became two files,
         // and the host key landed in ~/Library/Application), so the path is quoted; ssh has no
         // escape for a double quote inside quotes. ssh also expands "%" tokens (escaped as "%%")
@@ -63,11 +74,6 @@ public struct GuestSSH: Sendable {
             "-o", "ForwardX11=no",
             "-o", "ClearAllForwardings=yes",
             "-o", "LogLevel=ERROR",
-            "-T",
-            "-l", user,
-            host,
-            "--",
-            command,
         ]
     }
 
@@ -86,9 +92,21 @@ public struct GuestSSH: Sendable {
     /// Runs `command` in the guest with `input` on its standard input; standard output and
     /// error are returned together. Kills ssh after `timeout`.
     public func run(_ command: String, input: Data? = nil, timeout: Duration = .seconds(60)) async throws -> Result {
+        return try await runTool("/usr/bin/ssh", arguments: try arguments(command), input: input, timeout: timeout, description: command)
+    }
+
+    /// Copies a local file into the guest.
+    public func copy(_ local: URL, to remote: String, timeout: Duration = .seconds(120)) async throws {
+        let result = try await runTool("/usr/bin/scp", arguments: try copyArguments(local.path, to: remote), input: nil, timeout: timeout, description: "scp \(local.lastPathComponent)")
+        guard result.status == 0 else {
+            throw AgentVMError.guestCommandFailed(command: "scp \(local.lastPathComponent) to \(remote)", status: result.status, output: String(result.output.prefix(500)))
+        }
+    }
+
+    private func runTool(_ tool: String, arguments: [String], input: Data?, timeout: Duration, description command: String) async throws -> Result {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = try arguments(command)
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = arguments
         process.environment = environment(base: ProcessInfo.processInfo.environment)
         let output = Pipe()
         let inputPipe = Pipe()
@@ -110,7 +128,7 @@ public struct GuestSSH: Sendable {
             try process.run()
         } catch {
             output.fileHandleForReading.readabilityHandler = nil
-            throw AgentVMError.system(operation: "run /usr/bin/ssh", code: FileSystem.posixCode(error))
+            throw AgentVMError.system(operation: "run \(tool)", code: FileSystem.posixCode(error))
         }
         if let input {
             try? inputPipe.fileHandleForWriting.write(contentsOf: input)

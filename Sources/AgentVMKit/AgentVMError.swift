@@ -41,6 +41,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case virtualMachine(operation: String, message: String)
     /// The guest did not become reachable, or stopped answering.
     case guestUnreachable(String)
+    /// The guest daemon turned a request down (unknown account, program not found, ...).
+    case guestRefused(String)
     /// A command run in the guest failed.
     case guestCommandFailed(command: String, status: Int32, output: String)
 
@@ -84,6 +86,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "\(operation) failed: \(message)"
         case let .guestUnreachable(reason):
             return "the guest is unreachable: \(reason)"
+        case let .guestRefused(reason):
+            return "the guest refused: \(reason)"
         case let .guestCommandFailed(command, status, output):
             let detail = output.isEmpty ? "" : ": \(output)"
             return "`\(command)` failed in the guest (status \(status))\(detail)"

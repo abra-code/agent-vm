@@ -14,8 +14,10 @@ struct ImageCommand: ParsableCommand {
         discussion: """
             An image is macOS installed from a restore image (.ipsw) and set up with no clicks: \
             macOS 27's guest provisioning creates an administrator account, logs it in \
-            automatically and turns on Remote Login. Starting virtual machines needs the \
-            binary built by Scripts/build.sh (see `agent-vm doctor`).
+            automatically and turns on Remote Login. agent-vm then installs its guest daemon \
+            (agent-vm-guest, found next to agent-vm), checks it over vsock, turns Remote Login \
+            off again and shuts the guest down. Starting virtual machines needs the binaries \
+            built by Scripts/build.sh (see `agent-vm doctor`).
             """,
         subcommands: [Create.self, List.self, Delete.self]
     )
@@ -41,6 +43,9 @@ struct ImageCommand: ParsableCommand {
 
         @Option(name: .long, help: "Account name created in the guest.")
         var user = "agent"
+
+        @Option(name: .customLong("guest-daemon"), help: "The agent-vm-guest executable to install (default: the one next to agent-vm).")
+        var guestDaemon: String?
 
         @OptionGroup var options: StoreOptions
 
@@ -71,13 +76,21 @@ struct ImageCommand: ParsableCommand {
                 memoryBytes: UInt64(memoryGB) << 30,
                 diskBytes: UInt64(diskGB) << 30,
                 userName: user,
-                askpassProgram: try AskpassEntry.executablePath())
+                askpassProgram: try AskpassEntry.executablePath(),
+                guestDaemon: try guestDaemonURL())
             let image = try await builder.build(buildOptions)
             if json {
                 try Output.json(image.record)
                 return
             }
             print("Image \(image.name) is ready: \(image.directory.path)")
+        }
+
+        private func guestDaemonURL() throws -> URL {
+            if let guestDaemon {
+                return URL(fileURLWithPath: (guestDaemon as NSString).expandingTildeInPath)
+            }
+            return URL(fileURLWithPath: try AskpassEntry.executablePath()).deletingLastPathComponent().appendingPathComponent("agent-vm-guest")
         }
     }
 

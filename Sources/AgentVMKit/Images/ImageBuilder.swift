@@ -21,9 +21,11 @@ public struct ImageBuildOptions: Sendable {
     public var userName: String
     /// Absolute path of the agent-vm executable, which answers ssh's password prompt.
     public var askpassProgram: String
+    /// The agent-vm-guest executable installed into the image.
+    public var guestDaemon: URL
 
     public init(name: String, restoreImage: URL, cpuCount: Int, memoryBytes: UInt64, diskBytes: UInt64,
-                userName: String, askpassProgram: String) {
+                userName: String, askpassProgram: String, guestDaemon: URL) {
         self.name = name
         self.restoreImage = restoreImage
         self.cpuCount = cpuCount
@@ -31,6 +33,7 @@ public struct ImageBuildOptions: Sendable {
         self.diskBytes = diskBytes
         self.userName = userName
         self.askpassProgram = askpassProgram
+        self.guestDaemon = guestDaemon
     }
 
     public static let defaultCPUCount = 4
@@ -76,6 +79,9 @@ public final class ImageBuilder {
         guard FileSystem.exists(options.restoreImage.path) else {
             throw AgentVMError.virtualMachine(operation: "read restore image", message: "\(options.restoreImage.path) does not exist")
         }
+        guard access(options.guestDaemon.path, X_OK) == 0 else {
+            throw AgentVMError.hostNotReady("the guest daemon \(options.guestDaemon.path) is missing; Scripts/build.sh builds it next to agent-vm")
+        }
         // Fail on an existing name before reading the multi-GB restore image.
         if FileSystem.exists(store.imagesDirectory.appendingPathComponent(options.name).path) {
             let state = (try? store.image(named: options.name))?.record.state.rawValue ?? "unreadable"
@@ -110,7 +116,7 @@ public final class ImageBuilder {
             // machine is still being torn down.
             let machine: MacMachine
             (image, machine) = try await install(image, restore: restore, from: options.restoreImage)
-            image = try await provision(image, machine: machine, askpassProgram: options.askpassProgram)
+            image = try await provision(image, machine: machine, options: options)
             return image
         } catch {
             let reason = "\(error)"
@@ -178,10 +184,10 @@ public final class ImageBuilder {
         return (installed, machine)
     }
 
-    private func provision(_ image: GoldenImage, machine: MacMachine, askpassProgram: String) async throws -> GoldenImage {
+    private func provision(_ image: GoldenImage, machine: MacMachine, options: ImageBuildOptions) async throws -> GoldenImage {
         let clock = ContinuousClock()
         let began = clock.now
-        let current = try store.update(image) { $0.state = .provisioning }
+        var current = try store.update(image) { $0.state = .provisioning }
         let password = try String(contentsOf: image.passwordURL, encoding: .utf8)
 
         let provisioning = VZMacGuestProvisioningOptions()
@@ -197,14 +203,41 @@ public final class ImageBuilder {
         do {
             let host = try await waitForSSH(machine, macAddress: image.record.macAddress)
             let ssh = GuestSSH(host: host, user: image.record.userName, passwordFile: image.passwordURL,
-                               knownHostsFile: image.knownHostsURL, askpassProgram: askpassProgram)
+                               knownHostsFile: image.knownHostsURL, askpassProgram: options.askpassProgram)
             let facts = try await checkAccount(ssh, image: image)
             log("Guest \(host): \(facts)")
 
-            // `requestStop()` leaves a logged-in guest running; shut down from inside. The
-            // connection drops as the guest goes down, so ssh's status is not meaningful.
+            log("Installing the guest daemon")
+            try await installGuestDaemon(options.guestDaemon, user: image.record.userName, over: ssh, password: password)
+            let hello = try await waitForDaemon(machine)
+            let identity = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/id", "-un"]))
+            guard identity.report == ExitReport(status: 0), identity.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == image.record.userName else {
+                throw AgentVMError.guestCommandFailed(command: "id -un", status: identity.report.shellStatus,
+                                                      output: "expected \(image.record.userName), got \"\(identity.stdout.trimmingCharacters(in: .whitespacesAndNewlines))\" \(identity.stderr)")
+            }
+            log("  agent-vm-guest \(hello.version ?? "?") answers over vsock (protocol \(hello.v ?? 0)), runs programs as \(image.record.userName)")
+            current = try store.update(current) { record in
+                record.guestVersion = hello.version
+                record.guestProtocol = hello.v
+            }
+
+            // From here on the daemon is the only way in.
+            let disabled = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDaemon.disableSSHCommand], user: "root"))
+            guard disabled.report == ExitReport(status: 0) else {
+                throw AgentVMError.guestCommandFailed(command: "turn off Remote Login", status: disabled.report.shellStatus, output: disabled.stderr)
+            }
+            try await Task.sleep(for: .seconds(1))
+            let stillOpen = await Task.detached { GuestNetwork.isPortOpen(host, port: 22) }.value
+            if stillOpen {
+                throw AgentVMError.guestCommandFailed(command: "turn off Remote Login", status: 0, output: "SSH still answers on \(host)")
+            }
+            log("  Remote Login turned off")
+
+            // `requestStop()` leaves a logged-in guest running; the daemon shuts it down.
             log("Shutting down")
-            _ = try? await ssh.run("/usr/bin/sudo -S -p '' /sbin/shutdown -h now", input: Data((password + "\n").utf8), timeout: .seconds(30))
+            try await withGuest(machine) { descriptor in
+                try GuestClient.shutdown(descriptor)
+            }
             guard await machine.waitUntilStopped(timeout: Self.shutdownTimeout) else {
                 throw AgentVMError.guestUnreachable("the guest did not shut down within \(Self.shutdownTimeout)")
             }
@@ -223,6 +256,59 @@ public final class ImageBuilder {
             record.state = .ready
             record.provisionSeconds = seconds
         }
+    }
+
+    /// Copies agent-vm-guest and its LaunchDaemon definition into the guest and loads it.
+    private func installGuestDaemon(_ executable: URL, user: String, over ssh: GuestSSH, password: String) async throws {
+        let plist = FileManager.default.temporaryDirectory.appendingPathComponent("agent-vm-guest-\(UUID().uuidString).plist")
+        try GuestDaemon.launchdPlist(user: user).write(to: plist)
+        defer { try? FileManager.default.removeItem(at: plist) }
+        try await ssh.copy(executable, to: GuestDaemon.stagedExecutable)
+        try await ssh.copy(plist, to: GuestDaemon.stagedPlist)
+        try await ssh.check("/usr/bin/sudo -S -p '' /bin/sh -c '\(GuestDaemon.installCommand)'", input: Data((password + "\n").utf8))
+    }
+
+    /// Waits until the daemon answers hello (launchd starts it within a second or two).
+    private func waitForDaemon(_ machine: MacMachine) async throws -> GuestResponse {
+        var lastError: Error = AgentVMError.guestUnreachable("the guest daemon did not answer")
+        for _ in 0..<30 {
+            do {
+                let hello = try await withGuest(machine) { try GuestClient.hello($0) }
+                guard hello.v == AgentVM.guestProtocolVersion else {
+                    throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the guest daemon speaks protocol \(hello.v ?? 0), agent-vm \(AgentVM.guestProtocolVersion)")
+                }
+                return hello
+            } catch let error as AgentVMError {
+                // A daemon that answers but refuses, or speaks another protocol, will not change.
+                switch error {
+                case .guestRefused, .guestCommandFailed:
+                    throw error
+                default:
+                    lastError = error
+                }
+            } catch {
+                lastError = error
+            }
+            try await Task.sleep(for: .seconds(1))
+        }
+        throw lastError
+    }
+
+    private func guestCapture(_ machine: MacMachine, _ request: GuestRequest) async throws -> (report: ExitReport, stdout: String, stderr: String) {
+        return try await withGuest(machine) { try GuestClient.capture($0, request) }
+    }
+
+    /// Runs a blocking protocol exchange on a fresh vsock connection, off the main actor, with
+    /// a read timeout so a stuck guest cannot hang the build.
+    private func withGuest<T: Sendable>(_ machine: MacMachine, _ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
+        let connection = try await machine.connect(toPort: GuestProtocol.port)
+        defer { connection.close() }
+        let descriptor = connection.descriptor
+        var timeout = timeval(tv_sec: 60, tv_usec: 0)
+        _ = setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        return try await Task.detached {
+            try body(descriptor)
+        }.value
     }
 
     /// Waits for the guest's DHCP lease and for its SSH port to accept connections.
