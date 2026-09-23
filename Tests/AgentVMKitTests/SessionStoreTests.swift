@@ -94,7 +94,7 @@ import Testing
         symlink("/etc/passwd", scratch.path("escape"))
         let agentTree = try describeTree(scratch.project.path)
 
-        let undone = try scratch.store.undo(id: session.id)
+        let undone = try scratch.store.undo(id: session.id, mode: .wholeTree).session
 
         #expect(undone.record.state == .undone)
         #expect(try describeTree(scratch.project.path) == original)
@@ -279,7 +279,7 @@ import Testing
         case .denyEverything:
             try addACL("everyone deny delete,readsecurity,list,add_file,add_subdirectory,delete_child", to: scratch.project.path)
         }
-        let undone = try scratch.store.undo(id: session.id)
+        let undone = try scratch.store.undo(id: session.id, mode: .wholeTree).session
 
         #expect(try describeTree(scratch.project.path) == original)
         #expect(!hasACL(scratch.project.path))

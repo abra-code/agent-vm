@@ -170,37 +170,119 @@ public struct SessionStore: Sendable {
         }
     }
 
-    /// Restores the project folder to its state at session start. The replaced tree is moved
-    /// into the session folder (not deleted) and the snapshot stays, so nothing is lost.
+    /// What changed in the project since the session's snapshot.
+    public func report(id: String) throws -> ChangeReport {
+        let current = try session(id: id)
+        guard current.record.state != .discarded else {
+            throw AgentVMError.wrongSessionState(id: id, state: current.record.state.rawValue, operation: "report on")
+        }
+        try requireProject(of: current)
+        return try ChangeScanner.report(session: current)
+    }
+
+    public enum UndoMode: String, Sendable {
+        /// Restore only the entries the change report lists; the project folder keeps its identity.
+        case changedFiles
+        /// Swap the whole project folder with a copy of the snapshot in one atomic step.
+        case wholeTree
+    }
+
+    public struct UndoOutcome: Sendable {
+        public let session: Session
+        /// Details of a file-by-file undo (nil for a whole-tree undo).
+        public let restore: RestoreResult?
+
+        /// True when the project now matches the snapshot.
+        public var isComplete: Bool {
+            return restore.map { $0.failed.isEmpty && $0.remaining == 0 } ?? true
+        }
+    }
+
+    /// Restores the project folder to its state at session start. What the agent left is moved
+    /// into the session folder (`replaced-<ts>/`, never deleted) and the snapshot stays.
     ///
-    /// Programs that still have the project open (an editor, a shell, an agent) keep seeing the
-    /// replaced tree, because the swap exchanges folder identities; stop the agent first.
+    /// - `changedFiles` (default) touches only what changed, so editors and shells with the
+    ///   project open stay attached. If some entry cannot be restored, the session stays
+    ///   undoable: retry, or use `wholeTree`.
+    /// - `wholeTree` swaps folder identities: programs that still have the project open keep
+    ///   seeing the replaced tree until they reopen it.
+    ///
+    /// Stop the agent first either way.
     @discardableResult
-    public func undo(id: String) throws -> Session {
+    public func undo(id: String, mode: UndoMode = .changedFiles) throws -> UndoOutcome {
         return try withLock {
             let current = try session(id: id)
             let state = current.record.state
             guard state == .active || state == .ended else {
                 throw AgentVMError.wrongSessionState(id: id, state: state.rawValue, operation: "undo")
             }
-            let project = current.record.project
-            guard let projectInfo = try? FileSystem.statusRemovingUnreadableACL(project),
-                  FileSystem.isDirectory(projectInfo),
-                  Int64(projectInfo.st_dev) == current.record.projectDevice else {
-                throw AgentVMError.projectMissing(path: project)
-            }
+            try requireProject(of: current)
             guard FileSystem.exists(current.snapshotPath) else {
                 throw AgentVMError.corruptSessionRecord(path: current.directory.path, reason: "the snapshot folder is missing")
             }
+            let replacedName = try unusedReplacedName(in: current.directory)
+            let replacedPath = current.directory.appendingPathComponent(replacedName).path
+            switch mode {
+            case .wholeTree:
+                return UndoOutcome(session: try swapWholeTree(current, replacedName: replacedName, replacedPath: replacedPath),
+                                   restore: nil)
+            case .changedFiles:
+                let report = try ChangeScanner.report(session: current)
+                var restore = try ProjectRestorer.restore(session: current, report: report, replacedPath: replacedPath)
+                // The project has already changed: a failed check must not abort before the
+                // record (and the replaced folder's name) is saved.
+                do {
+                    restore.remaining = try ChangeScanner.report(session: current).changes.filter { !$0.coveredByAncestor }.count
+                } catch {
+                    restore.failed["."] = "could not verify the result: \(error)"
+                }
+                var record = current.record
+                record.replacedTree = replacedName
+                if restore.failed.isEmpty && restore.remaining == 0 {
+                    record.state = .undone
+                    record.undoneAt = Date()
+                    if record.endedAt == nil {
+                        record.endedAt = record.undoneAt
+                    }
+                }
+                let updated = Session(record: record, directory: current.directory)
+                try save(updated)
+                return UndoOutcome(session: updated, restore: restore)
+            }
+        }
+    }
 
+    /// Throws unless the recorded project folder is still there, a folder, on the same volume.
+    private func requireProject(of session: Session) throws {
+        let project = session.record.project
+        guard let projectInfo = try? FileSystem.statusRemovingUnreadableACL(project),
+              FileSystem.isDirectory(projectInfo),
+              Int64(projectInfo.st_dev) == session.record.projectDevice else {
+            throw AgentVMError.projectMissing(path: project)
+        }
+    }
+
+    /// `replaced-<timestamp>`, with a counter if an earlier undo attempt used the same second.
+    private func unusedReplacedName(in directory: URL) throws -> String {
+        let base = Self.replacedPrefix + Self.timestamp(Date())
+        var name = base
+        var counter = 1
+        while FileSystem.exists(directory.appendingPathComponent(name).path) {
+            counter += 1
+            guard counter < 100 else {
+                throw AgentVMError.system(operation: "prepare \(directory.appendingPathComponent(base).path)", code: EEXIST)
+            }
+            name = base + "-\(counter)"
+        }
+        return name
+    }
+
+    private func swapWholeTree(_ current: Session, replacedName: String, replacedPath: String) throws -> Session {
+        let project = current.record.project
+        do {
             // Clone the snapshot under its final "replaced" name, then swap it with the project:
             // afterwards the project holds the snapshot's content and this name holds what the
             // agent left behind.
-            let replacedName = Self.replacedPrefix + Self.timestamp(Date())
-            let replacedPath = current.directory.appendingPathComponent(replacedName).path
-            guard !FileSystem.exists(replacedPath) else {
-                throw AgentVMError.system(operation: "prepare \(replacedPath)", code: EEXIST)
-            }
             try FileSystem.cloneTree(current.snapshotPath, to: replacedPath)
             do {
                 try FileSystem.swapEntries(replacedPath, project)
@@ -208,27 +290,26 @@ public struct SessionStore: Sendable {
                 try? FileSystem.removeTree(replacedPath)
                 throw error
             }
-
-            var record = current.record
-            record.state = .undone
-            record.undoneAt = Date()
-            if record.endedAt == nil {
-                record.endedAt = record.undoneAt
-            }
-            record.replacedTree = replacedName
-            let updated = Session(record: record, directory: current.directory)
-            do {
-                try save(updated)
-            } catch {
-                // Keep disk and record consistent: without the record, the replaced tree would be
-                // orphaned (discard would never delete it). Swap back and drop the restored copy.
-                if (try? FileSystem.swapEntries(replacedPath, project)) != nil {
-                    try? FileSystem.removeTree(replacedPath)
-                }
-                throw error
-            }
-            return updated
         }
+
+        var record = current.record
+        record.state = .undone
+        record.undoneAt = Date()
+        if record.endedAt == nil {
+            record.endedAt = record.undoneAt
+        }
+        record.replacedTree = replacedName
+        let updated = Session(record: record, directory: current.directory)
+        do {
+            try save(updated)
+        } catch {
+            // Keep disk and record consistent: swap back and drop the restored copy.
+            if (try? FileSystem.swapEntries(replacedPath, project)) != nil {
+                try? FileSystem.removeTree(replacedPath)
+            }
+            throw error
+        }
+        return updated
     }
 
     /// Deletes the snapshot and any replaced tree. The record stays, marked discarded, so the
@@ -241,14 +322,16 @@ public struct SessionStore: Sendable {
                 throw AgentVMError.wrongSessionState(id: id, state: current.record.state.rawValue, operation: "discard")
             }
             try FileSystem.removeTree(current.snapshotPath)
-            if let replaced = current.record.replacedTree {
-                // The name comes from the record; only ever delete a direct child of the session
-                // folder that this tool could have created.
-                guard replaced.hasPrefix(Self.replacedPrefix), !replaced.contains("/"), replaced != ".." else {
-                    throw AgentVMError.corruptSessionRecord(
-                        path: current.directory.path, reason: "unexpected replaced-tree name \(replaced)")
-                }
-                try FileSystem.removeTree(current.directory.appendingPathComponent(replaced).path)
+            // Every replaced tree, including those of undo attempts that did not complete: only
+            // direct children of the session folder named the way this tool names them.
+            let children: [String]
+            do {
+                children = try FileManager.default.contentsOfDirectory(atPath: current.directory.path)
+            } catch {
+                throw AgentVMError.system(operation: "list \(current.directory.path)", code: FileSystem.posixCode(error))
+            }
+            for name in children where name.hasPrefix(Self.replacedPrefix) && !name.contains("/") {
+                try FileSystem.removeTree(current.directory.appendingPathComponent(name).path)
             }
             var record = current.record
             record.state = .discarded

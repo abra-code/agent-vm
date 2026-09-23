@@ -168,7 +168,7 @@ enum FileSystem {
     private static let userLockFlags = UInt32(UF_IMMUTABLE | UF_APPEND)
 
     /// What `unlockEntry` changed on one entry, to put back afterwards.
-    private struct SavedEntry {
+    struct SavedEntry {
         let info: stat
         let acl: acl_t?
 
@@ -191,7 +191,7 @@ enum FileSystem {
 
     /// Removes the ACL, clears the user lock flags and makes a folder writable by its owner (no
     /// symlink following); only what is in the way is changed.
-    private static func unlockEntry(_ path: String) throws -> SavedEntry {
+    static func unlockEntry(_ path: String) throws -> SavedEntry {
         let info = try statusRemovingUnreadableACL(path)
         if info.st_flags & userLockFlags != 0 {
             _ = lchflags(path, info.st_flags & ~userLockFlags)
@@ -208,7 +208,7 @@ enum FileSystem {
 
     /// Puts back what `unlockEntry` or `openFolder` changed: mode, then ACL, then flags (an
     /// immutable entry accepts no other change).
-    private static func restoreEntry(_ path: String, _ saved: SavedEntry) {
+    static func restoreEntry(_ path: String, _ saved: SavedEntry) {
         let info = saved.info
         if isDirectory(info), info.st_mode & S_IRWXU != S_IRWXU {
             _ = fchmodat(AT_FDCWD, path, info.st_mode & 0o7777, AT_SYMLINK_NOFOLLOW)

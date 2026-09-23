@@ -1,7 +1,8 @@
 // Sources/agent-vm/SessionCommand.swift
 //
 // `agent-vm session ...`: Live-mode sessions. A session snapshots a project folder before an
-// agent works on it, so the run can be undone as a whole.
+// agent works on it, reports what the agent changed (flagging what would run later on the
+// host), and can undo the run.
 
 import AgentVMKit
 import ArgumentParser
@@ -13,13 +14,13 @@ struct SessionCommand: ParsableCommand {
         abstract: "Snapshot a project before an agent works on it, and undo the run.",
         discussion: """
             A session takes an instant copy-on-write snapshot of the project folder (an APFS \
-            clone of every file). The agent then edits the real folder; `undo` restores the \
-            folder to the snapshot in one atomic swap and keeps what the agent left behind for \
-            recovery.
+            clone of every file). The agent then edits the real folder; `report` lists what \
+            changed and flags files that run code later on this Mac; `undo` puts back what \
+            changed and keeps what the agent left behind for recovery.
             State lives in $AGENT_VM_HOME (default ~/Library/Application Support/agent-vm); the \
             project must be on the same APFS volume.
             """,
-        subcommands: [Start.self, List.self, End.self, Undo.self, Discard.self]
+        subcommands: [Start.self, List.self, Report.self, End.self, Undo.self, Discard.self]
     )
 
     struct Start: ParsableCommand {
@@ -90,33 +91,88 @@ struct SessionCommand: ParsableCommand {
         }
     }
 
-    struct Undo: ParsableCommand {
+    struct Report: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Restore the project to its state when the session started.",
+            abstract: "Show what changed in the project since the session started.",
             discussion: """
-                Stop the agent first. The project folder is swapped atomically with a copy of \
-                the snapshot; what the agent left behind is kept in the session folder. \
-                Programs that still have the project open (editors, shells) keep seeing the \
-                replaced copy until they reopen it.
+                Flags mark changes that run code later on this Mac (git hooks and config, agent \
+                configuration such as .mcp.json or AGENTS.md, build scripts, package manifests, \
+                editor tasks, executables, symlinks leaving the project). They are a review aid, \
+                not a security boundary.
                 """)
 
         @Argument(help: "The session id.")
         var id: String
 
+        @Option(name: .long, help: "Exit with status 2 if any change is flagged at this severity or above (high or medium).")
+        var failOn: RiskFlag.Severity?
+
         @OptionGroup var options: StoreOptions
 
         func run() throws {
-            let session = try options.store.undo(id: id)
+            let report = try options.store.report(id: id)
             if options.json {
-                try Output.json(session.record)
-                return
+                try Output.json(report)
+            } else {
+                Output.printReport(report)
             }
-            print("Restored \(session.record.project) to its state at \(Output.time(session.record.startedAt)).")
-            if let replaced = session.replacedTreePath {
-                print("  the replaced tree is kept at: \(replaced)")
+            if let failOn, report.changes.contains(where: { ($0.highestSeverity ?? .info) >= failOn }) {
+                throw ExitCode(2)
             }
-            print("  editors or shells with the project open should reopen it")
-            print("  delete the snapshot and replaced tree with: agent-vm session discard \(session.id)")
+        }
+    }
+
+    struct Undo: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Restore the project to its state when the session started.",
+            discussion: """
+                Stop the agent first. By default only what changed is put back, so editors and \
+                shells with the project open stay attached; the agent's versions are moved into \
+                the session folder, never deleted. --whole-tree instead swaps the whole folder \
+                with a copy of the snapshot in one atomic step (programs with the project open \
+                then keep seeing the replaced copy until they reopen it).
+                """)
+
+        @Argument(help: "The session id.")
+        var id: String
+
+        @Flag(name: .long, help: "Swap the whole project folder instead of restoring changed files.")
+        var wholeTree = false
+
+        @OptionGroup var options: StoreOptions
+
+        func run() throws {
+            let outcome = try options.store.undo(id: id, mode: wholeTree ? .wholeTree : .changedFiles)
+            let session = outcome.session
+            if options.json {
+                try Output.json(UndoJSON(session: session.record, restore: outcome.restore))
+            } else if outcome.isComplete {
+                print("Restored \(session.record.project) to its state at \(Output.time(session.record.startedAt)).")
+                if let restore = outcome.restore {
+                    print("  \(restore.restored.count) changed entries put back")
+                } else {
+                    print("  editors or shells with the project open should reopen it")
+                }
+                if let replaced = session.replacedTreePath {
+                    print("  what the agent left is kept at: \(replaced)")
+                }
+                print("  delete the snapshot and kept files with: agent-vm session discard \(session.id)")
+            } else if let restore = outcome.restore {
+                print("Could not restore everything in \(session.record.project):")
+                for (path, reason) in restore.failed.sorted(by: { $0.key < $1.key }) {
+                    print("  \(path): \(reason)")
+                }
+                print("  \(restore.remaining) changes remain; the session can still be undone.")
+                print("  Retry, or swap the whole folder: agent-vm session undo \(session.id) --whole-tree")
+            }
+            if !outcome.isComplete {
+                throw ExitCode(1)
+            }
+        }
+
+        struct UndoJSON: Encodable {
+            let session: SessionRecord
+            let restore: RestoreResult?
         }
     }
 
