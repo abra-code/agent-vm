@@ -70,9 +70,14 @@ agent-vm session list                          # all sessions and their states
 ```sh
 swift build
 swift test
+Scripts/build.sh                          # release build, signed ad hoc for this Mac
+Scripts/build.sh --identity <Developer ID Application identity or team ID>
+.build/signed/release/agent-vm doctor     # can this Mac and this binary run boxes?
 ```
 
-Virtualization requires the `com.apple.security.virtualization` entitlement (`Resources/agent-vm.entitlements`), which any developer can use without Apple's approval; binaries that start virtual machines must be signed with it.
+Virtualization refuses every virtual machine from a process without the `com.apple.security.virtualization` entitlement (`Resources/agent-vm.entitlements`). Any developer can use it without Apple's approval, but a plain `swift build` does not sign it in, so `session` commands work from `.build/debug/agent-vm` while anything that starts a virtual machine needs the output of `Scripts/build.sh`. The script builds `agent-vm` and `agent-vm-guest`, signs copies in `.build/signed/<configuration>/` with the hardened runtime (ad hoc by default, or with a Developer ID and a secure timestamp; `AGENT_VM_SIGN_IDENTITY` sets the default), verifies the signatures and runs `agent-vm doctor` with the result.
+
+`agent-vm doctor` checks the macOS version, Apple silicon, the binary's entitlement and signature, free space for the store, and how many virtual machines already run (macOS runs at most two macOS guests at once, whichever applications started them). It exits 1 when something prevents running boxes; `--json` prints the checks for programs.
 
 ## License
 

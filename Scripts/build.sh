@@ -1,0 +1,135 @@
+#!/bin/bash
+#
+# Scripts/build.sh - build agent-vm and agent-vm-guest and sign them, so the host tool carries
+# the com.apple.security.virtualization entitlement it needs to start virtual machines. A plain
+# `swift build` produces binaries without it: Virtualization then refuses every configuration.
+#
+# Usage: Scripts/build.sh [--debug] [--identity <identity>] [--output <folder>]
+#
+#   --identity <identity>  codesign identity: "-" for ad hoc (default; runs on this Mac only),
+#                          or a Developer ID Application identity (name, team ID or SHA-1 hash),
+#                          which also gets a secure timestamp. Default: $AGENT_VM_SIGN_IDENTITY,
+#                          else "-".
+#   --output <folder>      where the signed binaries go (default: .build/signed/<configuration>)
+#   --debug                debug build instead of release
+#
+# Both binaries are signed with the hardened runtime. The guest daemon gets no entitlements:
+# it never starts virtual machines. After signing, the script verifies both signatures and
+# runs `agent-vm doctor` with the signed binary as the end-to-end check.
+#
+# Notarization of a distributable archive is not done here yet.
+
+REPO_ROOT="$(cd "$(/usr/bin/dirname "$0")/.." && /bin/pwd -P)"
+ENTITLEMENTS="$REPO_ROOT/Resources/agent-vm.entitlements"
+IDENTITY="${AGENT_VM_SIGN_IDENTITY:--}"
+CONFIGURATION="release"
+OUTPUT=""
+
+die() {
+    printf 'build.sh: error: %s\n' "$1" >&2
+    exit 1
+}
+
+# Signing failed: remove the copies so an unsigned binary never sits where a signed one is
+# expected.
+die_unsigned() {
+    /bin/rm -f "$OUTPUT/agent-vm" "$OUTPUT/agent-vm-guest"
+    die "$1"
+}
+
+usage() {
+    /usr/bin/sed -n '7,14p' "$0" | /usr/bin/sed 's/^# \{0,1\}//'
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --debug)
+            CONFIGURATION="debug"
+            ;;
+        --identity)
+            shift
+            [ $# -gt 0 ] || die "--identity needs a value"
+            IDENTITY="$1"
+            ;;
+        --output)
+            shift
+            [ $# -gt 0 ] || die "--output needs a value"
+            OUTPUT="$1"
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            usage >&2
+            die "unknown argument: $1"
+            ;;
+    esac
+    shift
+done
+
+[ -n "$IDENTITY" ] || die "the signing identity is empty; use \"-\" for ad hoc"
+[ -f "$ENTITLEMENTS" ] || die "entitlements file missing: $ENTITLEMENTS"
+if [ -z "$OUTPUT" ]; then
+    OUTPUT="$REPO_ROOT/.build/signed/$CONFIGURATION"
+fi
+
+printf 'Building (%s)...\n' "$CONFIGURATION"
+/usr/bin/xcrun swift build --package-path "$REPO_ROOT" -c "$CONFIGURATION" --product agent-vm
+status=$?
+[ "$status" -eq 0 ] || die "swift build of agent-vm failed (status $status)"
+/usr/bin/xcrun swift build --package-path "$REPO_ROOT" -c "$CONFIGURATION" --product agent-vm-guest
+status=$?
+[ "$status" -eq 0 ] || die "swift build of agent-vm-guest failed (status $status)"
+
+bin_dir="$(/usr/bin/xcrun swift build --package-path "$REPO_ROOT" -c "$CONFIGURATION" --show-bin-path)"
+status=$?
+[ "$status" -eq 0 ] && [ -d "$bin_dir" ] || die "could not find the build products folder"
+
+/bin/mkdir -p "$OUTPUT"
+status=$?
+[ "$status" -eq 0 ] || die "cannot create $OUTPUT"
+
+# Sign copies, so the next `swift build` (which relinks in place) cannot silently replace a
+# signed binary with an unsigned one.
+for product in agent-vm agent-vm-guest; do
+    /bin/cp -f "$bin_dir/$product" "$OUTPUT/$product"
+    status=$?
+    [ "$status" -eq 0 ] || die "cannot copy $bin_dir/$product to $OUTPUT"
+done
+
+timestamp="--timestamp"
+if [ "$IDENTITY" = "-" ]; then
+    timestamp="--timestamp=none"
+fi
+
+printf 'Signing with identity "%s"...\n' "$IDENTITY"
+/usr/bin/codesign --force --sign "$IDENTITY" --options runtime "$timestamp" \
+    --identifier com.abracode.agent-vm --entitlements "$ENTITLEMENTS" "$OUTPUT/agent-vm"
+status=$?
+[ "$status" -eq 0 ] || die_unsigned "codesign of agent-vm failed (status $status); is the identity in your keychain? (security find-identity -v -p codesigning)"
+/usr/bin/codesign --force --sign "$IDENTITY" --options runtime "$timestamp" \
+    --identifier com.abracode.agent-vm-guest "$OUTPUT/agent-vm-guest"
+status=$?
+[ "$status" -eq 0 ] || die_unsigned "codesign of agent-vm-guest failed (status $status)"
+
+for product in agent-vm agent-vm-guest; do
+    /usr/bin/codesign --verify --strict --verbose=1 "$OUTPUT/$product"
+    status=$?
+    [ "$status" -eq 0 ] || die_unsigned "signature of $product does not verify"
+done
+
+entitlements="$(/usr/bin/codesign --display --entitlements - --xml "$OUTPUT/agent-vm" 2>/dev/null)"
+case "$entitlements" in
+    *com.apple.security.virtualization*) ;;
+    *) die_unsigned "the signed agent-vm does not carry com.apple.security.virtualization" ;;
+esac
+
+printf '\nSigned binaries in %s\n\n' "$OUTPUT"
+"$OUTPUT/agent-vm" doctor
+status=$?
+if [ "$status" -ne 0 ]; then
+    printf '\nbuild.sh: agent-vm doctor reports a problem (status %s); the binaries are signed, but boxes will not run on this Mac.\n' "$status" >&2
+    exit 2
+fi
+exit 0
