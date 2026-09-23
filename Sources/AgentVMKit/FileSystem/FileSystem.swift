@@ -19,6 +19,20 @@ enum FileSystem {
         return String(cString: resolved)
     }
 
+    /// A store root in canonical form (for example /var -> /private/var), so every printed and
+    /// recorded path matches realpath(3); a root that does not exist yet is resolved through its
+    /// parent.
+    static func canonicalRoot(_ root: URL) -> URL {
+        let given = root.standardizedFileURL
+        if let resolved = try? canonicalPath(given.path) {
+            return URL(fileURLWithPath: resolved, isDirectory: true)
+        }
+        if let parent = try? canonicalPath(given.deletingLastPathComponent().path) {
+            return URL(fileURLWithPath: parent, isDirectory: true).appendingPathComponent(given.lastPathComponent, isDirectory: true)
+        }
+        return given
+    }
+
     /// `lstat` of a path (a symlink is described, not followed).
     static func status(_ path: String) throws -> stat {
         var info = stat()

@@ -9,12 +9,19 @@ import ArgumentParser
 import Foundation
 
 @main
-struct AgentVMCommand: ParsableCommand {
+enum Main {
+    static func main() async {
+        AskpassEntry.handleIfAskpass()
+        await AgentVMCommand.main()
+    }
+}
+
+struct AgentVMCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "agent-vm",
         abstract: "Run AI agents inside disposable macOS virtual machines, and undo what they did.",
         version: AgentVM.version,
-        subcommands: [SessionCommand.self, DoctorCommand.self]
+        subcommands: [SessionCommand.self, ImageCommand.self, DoctorCommand.self]
     )
 }
 
@@ -27,6 +34,10 @@ struct StoreOptions: ParsableArguments {
 
     var store: SessionStore {
         return SessionStore(root: SessionStore.defaultRoot())
+    }
+
+    var imageStore: ImageStore {
+        return ImageStore(root: SessionStore.defaultRoot())
     }
 }
 

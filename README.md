@@ -2,7 +2,7 @@
 
 Run AI agents and their tools inside disposable macOS virtual machines, so a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac.
 
-> **Status:** early development. Sessions (snapshot, change report and undo, below) work today, with or without a virtual machine. Everything else in this README describes the intended tool so the interface can be reviewed before it is built.
+> **Status:** early development. Sessions (snapshot, change report and undo) work today, with or without a virtual machine; so do golden images (`image create`, macOS installed and set up with no clicks) and `doctor`. Everything else in this README describes the intended tool so the interface can be reviewed before it is built.
 
 ## What it does
 
@@ -25,7 +25,7 @@ It builds on Apple's Virtualization framework and the zero-click macOS guest set
 ## Intended usage
 
 ```sh
-agent-vm image build macos-dev            # download macOS, install, configure - no clicks
+agent-vm image create macos-dev          # install macOS and set it up - no clicks
 agent-vm box create dev --image macos-dev
 agent-vm exec --box dev --project ~/src/myapp --net allowlist:npm,github-read -- claude
 agent-vm session report <id>              # what changed, with risky files flagged
@@ -64,6 +64,24 @@ agent-vm session list                          # all sessions and their states
 | `ended` | The run is over; undo is still available. |
 | `undone` | The project was restored; what the agent left is kept in the session folder. |
 | `discarded` | Snapshot and replaced tree deleted; only the record remains. |
+
+## Images: macOS installed and set up with no clicks (works today)
+
+A golden image is the macOS guest boxes will be cloned from. `image create` installs macOS from a restore image (`.ipsw`) and sets it up without a single click, using the guest provisioning added to Virtualization in macOS 27: the first boot creates an administrator account, logs it in automatically and turns on Remote Login.
+
+```sh
+Scripts/build.sh                                    # starting VMs needs the signed binary
+.build/signed/release/agent-vm image create dev --ipsw ~/Downloads/UniversalMac_27.0_26A428_Restore.ipsw
+agent-vm image list
+agent-vm image delete dev
+```
+
+- **Takes about 3.5 minutes** on a MacBook Air M5 from a local restore image: about 3 minutes to install, then about 30 seconds for the first boot, an SSH check of the new account, and a clean shutdown. The disk is a 64 GB sparse file that holds about 28 GB after setup.
+- **Options:** `--cpus` (default 4), `--memory-gb` (8), `--disk-gb` (64; at least 40), `--user` (the account name, default `agent`). Values below what the restore image requires are raised to its minimum.
+- **The account's password** is 24 random characters, stored only in the image folder (`Password`, mode 0600). During the build, agent-vm reaches the guest with the system's `/usr/bin/ssh` using password authentication. It never uses your SSH configuration, keys, agent or `known_hosts` file: the guest's host key goes into the image folder.
+- **Where it lives:** `~/Library/Application Support/agent-vm/Images/<name>/` (or `$AGENT_VM_HOME/Images/<name>/`): `image.json` (state, macOS version and build, resources, timings), the disk, the auxiliary storage, the hardware model and the machine identifier.
+- **A failed or interrupted build** stays in the list with its state (`installing`, `provisioning`) or `failed` and the reason; delete it and create it again. An image in use by another agent-vm process cannot be deleted.
+- **Not yet:** downloading the restore image (get it from Apple, or reuse the one a VM app such as Viable keeps in its bundle), installing the guest daemon, and turning SSH off again in the finished image.
 
 ## Building
 

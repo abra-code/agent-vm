@@ -23,6 +23,26 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case projectMissing(path: String)
     /// A session record on disk could not be read or written.
     case corruptSessionRecord(path: String, reason: String)
+    /// An image name that is not lower-case letters, digits, ".", "_" or "-".
+    case invalidImageName(String)
+    case imageExists(name: String, state: String)
+    case imageNotFound(String)
+    /// Another agent-vm process holds the image's lock (it is being built or used).
+    case imageBusy(String)
+    /// The operation needs the image in another state.
+    case wrongImageState(name: String, state: String, operation: String)
+    /// An image record on disk could not be read or written.
+    case corruptImageRecord(path: String, reason: String)
+    /// A guest account name macOS would not accept, or one it reserves.
+    case invalidUserName(String)
+    /// This Mac or this binary cannot do what was asked (entitlement, free space).
+    case hostNotReady(String)
+    /// Virtualization refused or failed an operation; `message` is its explanation.
+    case virtualMachine(operation: String, message: String)
+    /// The guest did not become reachable, or stopped answering.
+    case guestUnreachable(String)
+    /// A command run in the guest failed.
+    case guestCommandFailed(command: String, status: Int32, output: String)
 
     public var description: String {
         switch self {
@@ -44,6 +64,29 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "the project folder \(path) is missing or was moved to another volume since the session started"
         case let .corruptSessionRecord(path, reason):
             return "session record \(path) is unusable: \(reason)"
+        case let .invalidImageName(name):
+            return "\(name) is not a usable image name (lower-case letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit, at most 63)"
+        case let .imageExists(name, state):
+            return "image \(name) already exists (\(state)); delete it first with `agent-vm image delete \(name)`"
+        case let .imageNotFound(name):
+            return "no image \(name); `agent-vm image list` shows the existing ones"
+        case let .imageBusy(name):
+            return "image \(name) is in use by another agent-vm process"
+        case let .wrongImageState(name, state, operation):
+            return "cannot \(operation) image \(name): it is \(state)"
+        case let .corruptImageRecord(path, reason):
+            return "image record \(path) is unusable: \(reason)"
+        case let .invalidUserName(name):
+            return "\(name) is not a usable account name (lower-case letters, digits and \"_\", starting with a letter; not a name macOS reserves)"
+        case let .hostNotReady(reason):
+            return "cannot build here: \(reason)"
+        case let .virtualMachine(operation, message):
+            return "\(operation) failed: \(message)"
+        case let .guestUnreachable(reason):
+            return "the guest is unreachable: \(reason)"
+        case let .guestCommandFailed(command, status, output):
+            let detail = output.isEmpty ? "" : ": \(output)"
+            return "`\(command)` failed in the guest (status \(status))\(detail)"
         }
     }
 }

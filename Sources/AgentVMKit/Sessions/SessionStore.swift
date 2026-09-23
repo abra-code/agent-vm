@@ -24,16 +24,7 @@ public struct SessionStore: Sendable {
     public let root: URL
 
     public init(root: URL) {
-        // Canonical path (for example /var -> /private/var) so every printed and recorded path
-        // matches realpath(3); a root that does not exist yet is resolved through its parent.
-        let given = root.standardizedFileURL
-        if let resolved = try? FileSystem.canonicalPath(given.path) {
-            self.root = URL(fileURLWithPath: resolved, isDirectory: true)
-        } else if let parent = try? FileSystem.canonicalPath(given.deletingLastPathComponent().path) {
-            self.root = URL(fileURLWithPath: parent, isDirectory: true).appendingPathComponent(given.lastPathComponent, isDirectory: true)
-        } else {
-            self.root = given
-        }
+        self.root = FileSystem.canonicalRoot(root)
     }
 
     /// `$AGENT_VM_HOME` if set and non-empty, otherwise `~/Library/Application Support/agent-vm`.

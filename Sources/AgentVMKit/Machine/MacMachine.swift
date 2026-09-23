@@ -1,0 +1,252 @@
+// Sources/AgentVMKit/Machine/MacMachine.swift
+//
+// A macOS guest: its Virtualization configuration, and the running machine. Virtualization
+// runs a machine on one serial queue; this wrapper uses the main queue, so it is a main-actor
+// class and every call happens on the main actor. The command-line tool's async entry point
+// runs there.
+//
+// Measured on macOS 27 (26A428), MacBook Air M5: installing from a local restore image takes
+// about 3 minutes and leaves about 28 GB on disk; the zero-click first boot has the account
+// logged in and SSH listening about 15 seconds after start. `requestStop()` does not shut down
+// a guest with a logged-in user (it was still running after 3 minutes), so a clean shutdown
+// goes through the guest itself.
+
+import Foundation
+import Virtualization
+
+/// The resources and devices of a macOS guest.
+public struct MacMachineSpec: Sendable {
+    public var cpuCount: Int
+    public var memoryBytes: UInt64
+    public var macAddress: String
+
+    public init(cpuCount: Int, memoryBytes: UInt64, macAddress: String) {
+        self.cpuCount = cpuCount
+        self.memoryBytes = memoryBytes
+        self.macAddress = macAddress
+    }
+
+    /// Guest display size. Small, because nobody looks at it: macOS guests need a display to
+    /// keep Metal and the login session, and a smaller one costs less GPU time.
+    static let displayWidth = 1280
+    static let displayHeight = 800
+
+    /// Builds the configuration for the machine stored in `image`'s folder. Network: NAT for
+    /// now (used to build images); boxes get their own network policy later.
+    func configuration(for image: GoldenImage, auxiliaryStorage: VZMacAuxiliaryStorage) throws -> VZVirtualMachineConfiguration {
+        let hardwareData: Data
+        let identifierData: Data
+        do {
+            hardwareData = try Data(contentsOf: image.hardwareModelURL)
+            identifierData = try Data(contentsOf: image.machineIdentifierURL)
+        } catch {
+            throw AgentVMError.corruptImageRecord(path: image.directory.path, reason: "machine files unreadable: \(error.localizedDescription)")
+        }
+        guard let hardwareModel = VZMacHardwareModel(dataRepresentation: hardwareData) else {
+            throw AgentVMError.corruptImageRecord(path: image.hardwareModelURL.path, reason: "not a hardware model")
+        }
+        guard hardwareModel.isSupported else {
+            throw AgentVMError.virtualMachine(operation: "configure \(image.name)", message: "this Mac cannot run the image's hardware model")
+        }
+        guard let identifier = VZMacMachineIdentifier(dataRepresentation: identifierData) else {
+            throw AgentVMError.corruptImageRecord(path: image.machineIdentifierURL.path, reason: "not a machine identifier")
+        }
+        guard let macAddress = VZMACAddress(string: self.macAddress) else {
+            throw AgentVMError.corruptImageRecord(path: image.directory.path, reason: "bad MAC address \(self.macAddress)")
+        }
+
+        let platform = VZMacPlatformConfiguration()
+        platform.hardwareModel = hardwareModel
+        platform.machineIdentifier = identifier
+        platform.auxiliaryStorage = auxiliaryStorage
+
+        let configuration = VZVirtualMachineConfiguration()
+        configuration.platform = platform
+        configuration.bootLoader = VZMacOSBootLoader()
+        configuration.cpuCount = cpuCount
+        configuration.memorySize = memoryBytes
+
+        let disk: VZDiskImageStorageDeviceAttachment
+        do {
+            disk = try VZDiskImageStorageDeviceAttachment(url: image.diskURL, readOnly: false, cachingMode: .automatic, synchronizationMode: .full)
+        } catch {
+            throw AgentVMError.virtualMachine(operation: "attach \(image.diskURL.path)", message: error.localizedDescription)
+        }
+        configuration.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: disk)]
+
+        let network = VZVirtioNetworkDeviceConfiguration()
+        network.attachment = VZNATNetworkDeviceAttachment()
+        network.macAddress = macAddress
+        configuration.networkDevices = [network]
+
+        let graphics = VZMacGraphicsDeviceConfiguration()
+        graphics.displays = [VZMacGraphicsDisplayConfiguration(widthInPixels: Self.displayWidth, heightInPixels: Self.displayHeight, pixelsPerInch: 80)]
+        configuration.graphicsDevices = [graphics]
+        configuration.keyboards = [VZMacKeyboardConfiguration()]
+        configuration.pointingDevices = [VZMacTrackpadConfiguration()]
+        configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
+        configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
+        configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+
+        do {
+            try configuration.validate()
+        } catch {
+            throw AgentVMError.virtualMachine(operation: "configure \(image.name)", message: error.localizedDescription)
+        }
+        return configuration
+    }
+}
+
+/// A running (or startable) macOS guest, operated on the main queue.
+@MainActor
+public final class MacMachine: NSObject, VZVirtualMachineDelegate {
+    private let machine: VZVirtualMachine
+    private var stopped = false
+    private var stopError: String?
+
+    public init(configuration: VZVirtualMachineConfiguration) {
+        machine = VZVirtualMachine(configuration: configuration)
+        super.init()
+        machine.delegate = self
+    }
+
+    public var isRunning: Bool {
+        return machine.state == .running || machine.state == .starting
+    }
+
+    /// Why the guest stopped on its own with an error, if it did.
+    public var failure: String? {
+        return stopError
+    }
+
+    /// Installs macOS from a local restore image onto the machine's (empty) disk.
+    public func install(from restoreImage: URL, progress: @escaping @MainActor (Double) -> Void) async throws {
+        let installer = VZMacOSInstaller(virtualMachine: machine, restoringFromImageAt: restoreImage)
+        let observation = installer.progress.observe(\.fractionCompleted, options: [.new]) { observed, _ in
+            let fraction = observed.fractionCompleted
+            Task { @MainActor in
+                progress(fraction)
+            }
+        }
+        defer { observation.invalidate() }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            installer.install { result in
+                switch result {
+                case .success:
+                    continuation.resume()
+                case let .failure(error):
+                    continuation.resume(throwing: AgentVMError.virtualMachine(operation: "install macOS", message: error.localizedDescription))
+                }
+            }
+        }
+    }
+
+    /// Starts the guest; with `provisioning`, macOS creates the account and applies the
+    /// settings on this boot (the first boot after install only).
+    public func start(provisioning: VZMacGuestProvisioningOptions?) async throws {
+        let options = VZMacOSVirtualMachineStartOptions()
+        if let provisioning {
+            do {
+                try options.setGuestProvisioning(provisioning)
+            } catch {
+                throw AgentVMError.virtualMachine(operation: "set up the guest account", message: error.localizedDescription)
+            }
+        }
+        stopped = false
+        stopError = nil
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            machine.start(options: options) { error in
+                if let error {
+                    continuation.resume(throwing: AgentVMError.virtualMachine(operation: "start the guest", message: error.localizedDescription))
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
+    /// Waits for the guest to stop by itself; false when `timeout` passes first.
+    public func waitUntilStopped(timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while !stopped && machine.state != .stopped && machine.state != .error {
+            if ContinuousClock.now >= deadline {
+                return false
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return true
+    }
+
+    /// Pulls the plug. The guest gets no chance to flush its disk; use only when it does not
+    /// shut down by itself.
+    public func forceStop() async throws {
+        guard machine.canStop else {
+            return
+        }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            machine.stop { error in
+                if let error {
+                    continuation.resume(throwing: AgentVMError.virtualMachine(operation: "stop the guest", message: error.localizedDescription))
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+        stopped = true
+    }
+
+    // MARK: - VZVirtualMachineDelegate (called on the main queue)
+
+    nonisolated public func guestDidStop(_ virtualMachine: VZVirtualMachine) {
+        MainActor.assumeIsolated {
+            stopped = true
+        }
+    }
+
+    nonisolated public func virtualMachine(_ virtualMachine: VZVirtualMachine, didStopWithError error: any Error) {
+        let message = error.localizedDescription
+        MainActor.assumeIsolated {
+            stopError = message
+            stopped = true
+        }
+    }
+}
+
+/// Reading a restore image (an .ipsw file).
+public enum RestoreImage {
+    public struct Info: Sendable {
+        public var version: String
+        public var build: String
+        public var minimumCPUCount: Int
+        public var minimumMemoryBytes: UInt64
+        public var hardwareModel: Data
+    }
+
+    public static func inspect(_ url: URL) async throws -> Info {
+        // The restore image object is not Sendable: read what is needed inside the handler.
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Info, Error>) in
+            VZMacOSRestoreImage.load(from: url) { result in
+                continuation.resume(with: Result { try info(from: result.get(), url: url) }.mapError { error in
+                    if let error = error as? AgentVMError {
+                        return error
+                    }
+                    return AgentVMError.virtualMachine(operation: "read restore image \(url.path)", message: error.localizedDescription)
+                })
+            }
+        }
+    }
+
+    private static func info(from image: VZMacOSRestoreImage, url: URL) throws -> Info {
+        guard let requirements = image.mostFeaturefulSupportedConfiguration, requirements.hardwareModel.isSupported else {
+            throw AgentVMError.virtualMachine(operation: "read restore image \(url.path)", message: "this Mac cannot run macOS \(image.buildVersion) as a guest")
+        }
+        let os = image.operatingSystemVersion
+        return Info(
+            version: os.patchVersion == 0 ? "\(os.majorVersion).\(os.minorVersion)" : "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)",
+            build: image.buildVersion,
+            minimumCPUCount: requirements.minimumSupportedCPUCount,
+            minimumMemoryBytes: requirements.minimumSupportedMemorySize,
+            hardwareModel: requirements.hardwareModel.dataRepresentation
+        )
+    }
+}
