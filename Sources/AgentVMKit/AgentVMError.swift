@@ -37,6 +37,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case invalidUserName(String)
     /// This Mac or this binary cannot do what was asked (entitlement, free space).
     case hostNotReady(String)
+    /// A network rule that is not a host, wildcard, host:port or known pack.
+    case invalidNetworkRule(String, reason: String)
     case boxExists(String)
     case boxNotFound(String)
     /// The box's supervisor runs; stop the box first.
@@ -87,6 +89,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "\(name) is not a usable account name (lower-case letters, digits and \"_\", starting with a letter; not a name macOS reserves)"
         case let .hostNotReady(reason):
             return "cannot build here: \(reason)"
+        case let .invalidNetworkRule(rule, reason):
+            return "\(rule) is not a usable network rule: \(reason)"
         case let .boxExists(name):
             return "box \(name) already exists; delete it first with `agent-vm box delete \(name)`"
         case let .boxNotFound(name):

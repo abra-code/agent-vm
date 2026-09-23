@@ -3,7 +3,8 @@
 // The daemon inside a box. Installed by `agent-vm image create` as the root LaunchDaemon
 // com.abracode.agent-vm.guest; talks to the host over vsock only.
 //
-//   agent-vm-guest serve [--port N] [--user NAME]   answer the host (hello, exec, shutdown)
+//   agent-vm-guest serve [--port N] [--user NAME]   answer the host (hello, exec, shutdown) and
+//                                                   relay 127.0.0.1:3128 to the host proxy
 //   agent-vm-guest exec-as USER DIR -- PROGRAM ...  (internal) drop privileges and exec
 //   agent-vm-guest --version
 
@@ -54,6 +55,8 @@ case "serve":
     let listener: Int32
     do {
         listener = try GuestServer.listen(port: port)
+        // The box's proxy address; harmless when the host runs no proxy (open network).
+        try GuestRelay.start()
     } catch {
         FileHandle.standardError.write(Data("agent-vm-guest: \(error)\n".utf8))
         exit(1)

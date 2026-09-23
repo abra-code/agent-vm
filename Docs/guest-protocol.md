@@ -78,6 +78,10 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - **Ordering**: frames travel in order on one connection, so a signal sent after input the program is not reading waits behind that input (the guest keeps delivering stdin while the pipe accepts it). Closing the connection always works: the guest notices the host is gone even while stdin is backed up.
 - **Refusals** carry a plain message in `error`, meant to be shown as is (for example `"make: command not found"`).
 
+## Proxy relay
+
+Besides the protocol port, the daemon listens on TCP 127.0.0.1:3128 inside the guest and relays each connection, byte for byte, to vsock port 3128 on the host, where a box in `allowlist` or `off` mode runs its proxy. When the host runs no proxy (`open` mode), the vsock connection fails at once and the client is closed. The relay carries no framing; the host proxy speaks plain HTTP proxy protocol (`CONNECT`, or absolute-form `http://` requests), one request per connection, at most 256 connections at once.
+
 ## Versioning
 
 `AgentVM.guestProtocolVersion` (in `Sources/AgentVMKit/AgentVM.swift`) is bumped on any incompatible change. Images record the daemon version and protocol they were built with (`guestVersion`, `guestProtocol` in `image.json`).

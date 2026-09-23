@@ -26,6 +26,7 @@ struct AgentVMCommand: AsyncParsableCommand {
 }
 
 extension RiskFlag.Severity: ExpressibleByArgument {}
+extension BoxNetwork.Mode: ExpressibleByArgument {}
 
 /// Options shared by commands that read or change the store.
 struct StoreOptions: ParsableArguments {

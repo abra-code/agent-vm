@@ -72,7 +72,9 @@ struct ExecCommand: ParsableCommand {
         guard box.isRunning else {
             throw AgentVMError.boxNotRunning(box.name)
         }
-        var environment: [String: String] = [:]
+        // A proxied box reaches out only through its proxy: tell the tools that ignore the
+        // system proxy (curl, git, SwiftPM, Node). --env overrides.
+        var environment: [String: String] = box.record.effectiveNetwork.usesProxy ? GuestNetworkSetup.proxyEnvironment : [:]
         for entry in env {
             let equals = entry.firstIndex(of: "=")!
             environment[String(entry[..<equals])] = String(entry[entry.index(after: equals)...])

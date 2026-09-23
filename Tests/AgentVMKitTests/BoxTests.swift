@@ -165,6 +165,8 @@ final class FakeHandler: ControlHandler, @unchecked Sendable {
         })
     }
 
+    func controlReload() throws {}
+
     func controlStop() {
         lock.lock()
         stops += 1

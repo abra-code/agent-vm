@@ -2,7 +2,7 @@
 
 Run AI agents and their tools inside disposable macOS virtual machines, so a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac.
 
-> **Status:** early development. Working today: sessions (snapshot, change report and undo, with or without a virtual machine), golden images (`image create`, macOS installed and set up with no clicks), boxes with `agent-vm exec` (NAT network for now), and `doctor`. The rest of this README describes the intended tool: project sharing, the allowlist network and packs are not built yet.
+> **Status:** early development. Working today: sessions (snapshot, change report and undo, with or without a virtual machine), golden images (`image create`, macOS installed and set up with no clicks), boxes with `agent-vm exec`, the allowlist network with host packs and a connection log, and `doctor`. The rest of this README describes the intended tool: project sharing into boxes is not built yet.
 
 ## What it does
 
@@ -65,12 +65,12 @@ agent-vm session list                          # all sessions and their states
 | `undone` | The project was restored; what the agent left is kept in the session folder. |
 | `discarded` | Snapshot and replaced tree deleted; only the record remains. |
 
-## Boxes and exec (works today, NAT network)
+## Boxes and exec (works today)
 
 A box is an instant copy-on-write clone of a ready image with its own identity (MAC address, machine identifier). `box start` runs it in the background under a supervisor process that owns the virtual machine; `agent-vm exec` runs programs in it.
 
 ```sh
-agent-vm box create dev1 --image dev          # instant: an APFS clone of the image
+agent-vm box create dev1 --image dev --allow pack:github --allow pypi.org   # instant APFS clone
 agent-vm box start dev1                       # boots in about 10 seconds, waits until ready
 agent-vm exec --box dev1 -- uname -a
 printf 'b\na\n' | agent-vm exec --box dev1 -- sort
@@ -90,9 +90,43 @@ agent-vm box delete dev1
 - **Boxes need the image's volume**: the clone costs nothing until the box writes, and the box's disk grows as the guest works.
 - **`box start` is safe to repeat**: on a running box it reports the box, and during another start it waits for that one.
 - **The supervisor** is `agent-vm box serve <name>` in its own session, logging to `Boxes/<name>/supervisor.log`. It holds the box's lock, so a running box cannot be deleted or started twice. SIGTERM, SIGINT or SIGHUP to it stop the box cleanly, the same as `box stop`.
-- **Network for now: NAT.** A box can reach the internet and your local network; the allowlist proxy comes next.
 - **macOS runs at most two macOS guests at once**, whichever applications started them (`agent-vm doctor` counts them).
 - **Socket paths:** the control socket's full path must stay under 104 bytes, which a very long `AGENT_VM_HOME` can exceed.
+
+## Network: allowlist, off or open (works today)
+
+Every box has a network mode, chosen at `box create --net` (default `allowlist`) and changed with `box network`:
+
+| Mode | The box's network card | Reaches | Logged |
+|---|---|---|---|
+| `allowlist` | leads nowhere (a fixed address, no route, no DNS) | only listed hosts, through a proxy on this Mac | every attempt |
+| `off` | leads nowhere | nothing | every attempt |
+| `open` | NAT through this Mac | the internet and your local network | no |
+
+```sh
+agent-vm box create dev1 --image dev --allow pack:github --allow '*.example.com' --allow api.example.org:8443
+agent-vm box network dev1 --allow pypi.org --allow files.pythonhosted.org   # takes effect at once
+agent-vm box network dev1 --disallow pypi.org
+agent-vm box netlog dev1 --denied --last 20                                  # what was refused, and why
+agent-vm box packs                                                           # the built-in host lists
+agent-vm box network dev1 --net open                                         # while the box is stopped
+```
+
+- **How the allowlist works.** Programs in the box see a system proxy at 127.0.0.1:3128 (set in the guest's network settings, and as `HTTP_PROXY`/`HTTPS_PROXY` for programs run by `exec`). The guest daemon relays it over vsock to a proxy in the box's supervisor on this Mac. That proxy serves `CONNECT` (HTTPS and anything else tunneled) and plain `http://` requests. It checks each against the rules by host name and port, resolves the name here on the Mac, and connects only to public addresses: an allowed name that resolves to this Mac or your local network is refused (a DNS rebinding defense). Nothing else leaves the box: it has no route and no DNS, so tools that ignore the proxy fail at once.
+- **Rules:**
+  - `github.com` allows exactly that host, and `*.github.com` its subdomains, not the host itself.
+  - A rule without a port allows HTTPS (`CONNECT` to 443) and plain HTTP (`http://` requests to 80), and `host:port` allows that port for both. There are no tunnels to port 80 without an explicit rule: raw requests through a tunnel could name any other site the allowed server hosts. For plain HTTP, the proxy writes the `Host` header from the URL itself.
+  - `pack:<name>` allows a curated list: `apple-updates`, `github`, `npm`, `pypi`, `swiftpm`, `homebrew`, `anthropic` and `openai` (`box packs` lists the hosts).
+- **Which tools follow the proxy** (measured): URLSession programs, `softwareupdate`, Python and pip use the system proxy; curl, git, SwiftPM and Node need the environment variables, which `exec` sets. git over SSH is not proxied; use HTTPS remotes.
+- **The log** (`Boxes/<name>/network.jsonl`, one JSON object per line) records the time, method, host and port, the decision and rule, the address connected to, and the bytes each way.
+  - macOS's own background services (iCloud, software update checks) show up as refused connections unless allowed, about 2-4 a second from an idle guest.
+  - At 64 MB the log moves to `network.jsonl.1`, replacing the previous one.
+- **Limits against a hostile guest:**
+  - at most 256 proxied connections at once (the next get 503);
+  - 30 seconds to send a complete request head of at most 16 KB;
+  - log fields cut to 256 characters.
+- **Rules can change while a box runs**: the supervisor rereads them at once. The mode decides the network card, so it changes only while the box is stopped.
+- **Boxes created before network policy** keep running on NAT (`open`).
 
 ## Images: macOS installed and set up with no clicks (works today)
 

@@ -20,6 +20,8 @@ public final class BoxSupervisor {
     private let state = SupervisorState()
     private var machine: MacMachine?
     private var signalSources: [DispatchSourceSignal] = []
+    /// The dead-end network card's host end (allowlist and off modes).
+    private var link: DeadEndLink?
 
     /// How long the guest may take to boot until its daemon answers, and to shut down.
     static let bootTimeout: Duration = .seconds(180)
@@ -37,18 +39,40 @@ public final class BoxSupervisor {
         }
         defer { lock.release() }
 
+        let network = box.record.effectiveNetwork
+        let proxy = ProxyServer(policy: try CompiledPolicy(network), log: NetworkLog(url: box.networkLogURL))
+        let attachment: MacMachineSpec.Network
+        if network.usesProxy {
+            let link = try DeadEndLink()
+            self.link = link
+            attachment = .fileHandle(link.guestHandle)
+        } else {
+            attachment = .nat
+        }
         let spec = MacMachineSpec(cpuCount: box.record.cpuCount, memoryBytes: box.record.memoryBytes, macAddress: box.record.macAddress)
-        let configuration = try spec.configuration(for: box.machineFiles, auxiliaryStorage: VZMacAuxiliaryStorage(url: box.auxiliaryStorageURL))
+        let configuration = try spec.configuration(for: box.machineFiles, auxiliaryStorage: VZMacAuxiliaryStorage(url: box.auxiliaryStorageURL), network: attachment)
         let machine = MacMachine(configuration: configuration)
         self.machine = machine
 
-        let handler = SupervisorControl(state: state, machine: machine)
+        let handler = SupervisorControl(state: state, machine: machine, box: box, proxy: proxy)
         let server = try ControlServer(path: box.controlSocketPath, handler: handler)
         defer { server.close() }
         installSignalHandlers()
 
-        log("Starting box \(box.name) (\(box.record.cpuCount) CPUs, \(box.record.memoryBytes >> 30) GB, image \(box.record.image))")
+        log("Starting box \(box.name) (\(box.record.cpuCount) CPUs, \(box.record.memoryBytes >> 30) GB, image \(box.record.image), network \(network.mode.rawValue))")
         try await machine.start(provisioning: nil)
+        if network.usesProxy {
+            // Each proxied connection holds two descriptors; the soft limit a shell hands down
+            // is often 256, which the proxy's connection cap alone would exhaust.
+            Self.raiseDescriptorLimit(to: UInt64(ProxyServer.defaultMaxConnections * 2 + 512))
+            // The guest daemon relays 127.0.0.1:3128 here; each connection gets a thread,
+            // up to the proxy's cap.
+            try machine.listen(port: GuestRelay.hostPort) { connection in
+                proxy.accept(client: connection.descriptor) {
+                    connection.close()
+                }
+            }
+        }
 
         let clock = ContinuousClock()
         let began = clock.now
@@ -67,6 +91,13 @@ public final class BoxSupervisor {
             log("The guest daemon did not answer within \(Self.bootTimeout); stopping")
             try? await machine.forceStop()
             throw AgentVMError.guestUnreachable("the guest daemon did not answer within \(Self.bootTimeout)")
+        }
+        do {
+            try await configureNetwork(machine, mode: network.mode)
+        } catch {
+            log("Cannot set up the guest's network (\(error)); stopping")
+            await shutDown(machine)
+            throw error
         }
         state.set(.ready, guestVersion: hello.version)
         log("Ready in \(Int(ImageBuilder.seconds(clock.now - began))) s: agent-vm-guest \(hello.version ?? "?")")
@@ -97,6 +128,30 @@ public final class BoxSupervisor {
             try? await Task.sleep(for: .seconds(1))
         }
         return nil
+    }
+
+    /// Raises the soft limit on open descriptors to at least `wanted` (within the hard limit).
+    static func raiseDescriptorLimit(to wanted: UInt64) {
+        var limit = rlimit()
+        guard getrlimit(RLIMIT_NOFILE, &limit) == 0, limit.rlim_cur < wanted else {
+            return
+        }
+        limit.rlim_cur = min(wanted, limit.rlim_max)
+        _ = setrlimit(RLIMIT_NOFILE, &limit)
+    }
+
+    /// Applies the network mode inside the guest (address, DNS, system proxy) as root.
+    private func configureNetwork(_ machine: MacMachine, mode: BoxNetwork.Mode) async throws {
+        let connection = try await machine.connect(toPort: GuestProtocol.port)
+        defer { connection.close() }
+        let descriptor = connection.descriptor
+        Self.setReadTimeout(descriptor, seconds: 60)
+        let request = GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestNetworkSetup.command(for: mode)], user: "root")
+        let result = try await Task.detached { try GuestClient.capture(descriptor, request) }.value
+        guard result.report == ExitReport(status: 0) else {
+            throw AgentVMError.guestCommandFailed(command: "network setup", status: result.report.shellStatus, output: (result.stderr + result.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        log("Network: \(mode.rawValue)\(mode == .open ? " (NAT)" : " (dead-end card, proxy on vsock port \(GuestRelay.hostPort))")")
     }
 
     private func shutDown(_ machine: MacMachine) async {
@@ -174,10 +229,24 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
     private let state: SupervisorState
     /// Main-actor isolated; used only from the MainActor task below.
     private let machine: MacMachine
+    private let box: Box
+    private let proxy: ProxyServer
 
-    init(state: SupervisorState, machine: MacMachine) {
+    init(state: SupervisorState, machine: MacMachine, box: Box, proxy: ProxyServer) {
         self.state = state
         self.machine = machine
+        self.box = box
+        self.proxy = proxy
+    }
+
+    /// Rereads the network rules from box.json; a mode change needs a restart.
+    func controlReload() throws {
+        let fresh = try BoxStore(root: box.directory.deletingLastPathComponent().deletingLastPathComponent()).box(named: box.name)
+        let network = fresh.record.effectiveNetwork
+        guard network.mode == box.record.effectiveNetwork.mode else {
+            throw AgentVMError.boxRunning(box.name)
+        }
+        proxy.update(try CompiledPolicy(network))
     }
 
     func controlStatus() -> ControlResponse {

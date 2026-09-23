@@ -19,6 +19,8 @@ public struct ControlRequest: Codable, Equatable, Sendable {
         case open
         /// Shut the guest down and end the supervisor.
         case stop
+        /// Reread the box's network rules (after `box network` changed them).
+        case reload
     }
 
     public var v: Int
@@ -71,6 +73,7 @@ public protocol ControlHandler: AnyObject, Sendable {
     func controlStatus() -> ControlResponse
     func controlOpenGuest() throws -> LentConnection
     func controlStop()
+    func controlReload() throws
 }
 
 public enum ControlChannel {
@@ -391,6 +394,13 @@ public final class ControlServer: @unchecked Sendable {
             case .stop:
                 try? ControlChannel.send(ControlResponse(ok: true, state: .stopping), over: connection)
                 handler.controlStop()
+            case .reload:
+                do {
+                    try handler.controlReload()
+                    try? ControlChannel.send(handler.controlStatus(), over: connection)
+                } catch {
+                    try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)
+                }
             }
         }
     }

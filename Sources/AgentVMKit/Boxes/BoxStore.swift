@@ -6,6 +6,7 @@
 //   Boxes/<name>/.lock               held by the box's supervisor while it runs
 //   Boxes/<name>/control.sock        the supervisor's control socket (0600) while it runs
 //   Boxes/<name>/supervisor.log      the supervisor's output
+//   Boxes/<name>/network.jsonl       one line per proxied connection (allowlist and off modes)
 //   Boxes/<name>/Disk.img            APFS clone of the image's disk
 //   Boxes/<name>/AuxiliaryStorage    APFS clone of the image's auxiliary storage
 //   Boxes/<name>/HardwareModel       copy of the image's
@@ -35,6 +36,12 @@ public struct BoxRecord: Codable, Equatable, Sendable {
     public var memoryBytes: UInt64
     public var macAddress: String
     public var userName: String
+    /// What the box may reach; absent in boxes created before network policy (they ran on NAT).
+    public var network: BoxNetwork?
+
+    public var effectiveNetwork: BoxNetwork {
+        return network ?? .legacy
+    }
 }
 
 public struct Box: Sendable {
@@ -51,6 +58,7 @@ public struct Box: Sendable {
     public var lockPath: String { directory.appendingPathComponent(BoxStore.lockName).path }
     public var controlSocketPath: String { directory.appendingPathComponent(BoxStore.controlSocketName).path }
     public var logURL: URL { directory.appendingPathComponent(BoxStore.logName) }
+    public var networkLogURL: URL { directory.appendingPathComponent(BoxStore.networkLogName) }
 
     /// Whether a supervisor runs this box (it holds the lock).
     public var isRunning: Bool {
@@ -69,6 +77,7 @@ public struct BoxStore: Sendable {
     static let lockName = ".lock"
     static let controlSocketName = "control.sock"
     static let logName = "supervisor.log"
+    static let networkLogName = "network.jsonl"
 
     public let root: URL
 
@@ -83,10 +92,13 @@ public struct BoxStore: Sendable {
     /// Clones a ready image into a new box. The image's lock is held while cloning, so the
     /// image cannot be deleted or rebuilt halfway.
     public func create(name: String, from image: GoldenImage, imageStore: ImageStore,
-                       cpuCount: Int? = nil, memoryBytes: UInt64? = nil) throws -> Box {
+                       cpuCount: Int? = nil, memoryBytes: UInt64? = nil,
+                       network: BoxNetwork = BoxNetwork(mode: .allowlist)) throws -> Box {
         guard ImageStore.isValidName(name) else {
             throw AgentVMError.invalidImageName(name)
         }
+        // Reject bad rules and unknown packs before anything is created.
+        _ = try CompiledPolicy(network)
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "create a box from")
         }
@@ -110,7 +122,8 @@ public struct BoxStore: Sendable {
             // Whole seconds: the record is stored with ISO 8601 dates, which drop fractions.
             guestProtocol: image.record.guestProtocol, createdAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)),
             cpuCount: cpuCount ?? image.record.cpuCount, memoryBytes: memoryBytes ?? image.record.memoryBytes,
-            macAddress: VZMACAddress.randomLocallyAdministered().string, userName: image.record.userName)
+            macAddress: VZMACAddress.randomLocallyAdministered().string, userName: image.record.userName,
+            network: network)
         let box = Box(record: record, directory: directory)
         do {
             try Self.cloneFile(image.diskURL, to: box.diskURL)
@@ -171,6 +184,30 @@ public struct BoxStore: Sendable {
             }
         }
         return (boxes, problems)
+    }
+
+    /// Replaces the box's network policy. The mode decides the network card, so it changes
+    /// only while the box is stopped; rules can change any time (a running supervisor rereads
+    /// them on the control socket's `reload`).
+    @discardableResult
+    public func updateNetwork(named name: String, to network: BoxNetwork) throws -> Box {
+        _ = try CompiledPolicy(network)
+        let current = try box(named: name)
+        // A mode change holds the box lock while saving, so no start can slip in between the
+        // check and the write.
+        var lock: FolderLock?
+        if network.mode != current.record.effectiveNetwork.mode {
+            lock = try FolderLock.tryAcquire(current.lockPath)
+            guard lock != nil else {
+                throw AgentVMError.boxRunning(name)
+            }
+        }
+        defer { lock?.release() }
+        var record = current.record
+        record.network = network
+        let updated = Box(record: record, directory: current.directory)
+        try save(updated)
+        return updated
     }
 
     /// Deletes a box and its disk; refused while its supervisor runs.

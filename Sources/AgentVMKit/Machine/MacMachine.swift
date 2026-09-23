@@ -48,9 +48,16 @@ public struct MacMachineSpec: Sendable {
     static let displayWidth = 1280
     static let displayHeight = 800
 
-    /// Builds the configuration for the machine in `files`. Network: NAT for now; boxes get
-    /// their own network policy later.
-    func configuration(for files: MachineFiles, auxiliaryStorage: VZMacAuxiliaryStorage) throws -> VZVirtualMachineConfiguration {
+    /// How the guest's network card is connected.
+    enum Network {
+        /// NAT through the host: the internet and the local network.
+        case nat
+        /// A card whose other end is this handle (a box's dead-end link).
+        case fileHandle(FileHandle)
+    }
+
+    /// Builds the configuration for the machine in `files`.
+    func configuration(for files: MachineFiles, auxiliaryStorage: VZMacAuxiliaryStorage, network: Network = .nat) throws -> VZVirtualMachineConfiguration {
         let hardwareData: Data
         let identifierData: Data
         do {
@@ -91,10 +98,15 @@ public struct MacMachineSpec: Sendable {
         }
         configuration.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: disk)]
 
-        let network = VZVirtioNetworkDeviceConfiguration()
-        network.attachment = VZNATNetworkDeviceAttachment()
-        network.macAddress = macAddress
-        configuration.networkDevices = [network]
+        let card = VZVirtioNetworkDeviceConfiguration()
+        switch network {
+        case .nat:
+            card.attachment = VZNATNetworkDeviceAttachment()
+        case let .fileHandle(handle):
+            card.attachment = VZFileHandleNetworkDeviceAttachment(fileHandle: handle)
+        }
+        card.macAddress = macAddress
+        configuration.networkDevices = [card]
 
         let graphics = VZMacGraphicsDeviceConfiguration()
         graphics.displays = [VZMacGraphicsDisplayConfiguration(widthInPixels: Self.displayWidth, heightInPixels: Self.displayHeight, pixelsPerInch: 80)]
@@ -120,6 +132,9 @@ public final class MacMachine: NSObject, VZVirtualMachineDelegate {
     private let machine: VZVirtualMachine
     private var stopped = false
     private var stopError: String?
+    // Listeners and their delegates (the delegate reference is weak) live as long as the machine.
+    private var listeners: [VZVirtioSocketListener] = []
+    private var acceptors: [SocketAcceptor] = []
 
     public init(configuration: VZVirtualMachineConfiguration) {
         machine = VZVirtualMachine(configuration: configuration)
@@ -230,6 +245,20 @@ public final class MacMachine: NSObject, VZVirtualMachineDelegate {
         }
     }
 
+    /// Accepts guest-initiated vsock connections to `port`; `accept` runs on the main queue
+    /// and owns the connection (close it when done).
+    public func listen(port: UInt32, accept: @escaping @Sendable (GuestConnection) -> Void) throws {
+        guard let device = machine.socketDevices.first as? VZVirtioSocketDevice else {
+            throw AgentVMError.virtualMachine(operation: "listen for the guest", message: "the machine has no vsock device")
+        }
+        let listener = VZVirtioSocketListener()
+        let acceptor = SocketAcceptor(accept)
+        listener.delegate = acceptor
+        acceptors.append(acceptor)
+        listeners.append(listener)
+        device.setSocketListener(listener, forPort: port)
+    }
+
     // MARK: - VZVirtualMachineDelegate (called on the main queue)
 
     nonisolated public func guestDidStop(_ virtualMachine: VZVirtualMachine) {
@@ -244,6 +273,20 @@ public final class MacMachine: NSObject, VZVirtualMachineDelegate {
             stopError = message
             stopped = true
         }
+    }
+}
+
+/// Hands each accepted guest connection to a closure.
+private final class SocketAcceptor: NSObject, VZVirtioSocketListenerDelegate {
+    private let accept: @Sendable (GuestConnection) -> Void
+
+    init(_ accept: @escaping @Sendable (GuestConnection) -> Void) {
+        self.accept = accept
+    }
+
+    func listener(_ listener: VZVirtioSocketListener, shouldAcceptNewConnection connection: VZVirtioSocketConnection, from socketDevice: VZVirtioSocketDevice) -> Bool {
+        accept(GuestConnection(connection))
+        return true
     }
 }
 
