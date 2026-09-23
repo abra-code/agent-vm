@@ -21,7 +21,9 @@ struct ExecCommand: ParsableCommand {
             not found, 126 when it cannot be started, 125 when agent-vm itself fails, for \
             example because the box is not running). If agent-vm exec is \
             killed, the program gets SIGHUP, then SIGKILL 3 seconds later. The program runs \
-            as the box user in their home folder unless --user or --cwd say otherwise.
+            as the box user in their home folder unless --user or --cwd say otherwise. With \
+            --project, the folder appears in the box at the same path and the program starts \
+            there; the box keeps it until another project replaces it or the box stops.
             """
     )
 
@@ -31,8 +33,14 @@ struct ExecCommand: ParsableCommand {
     @Option(name: .long, help: "Account to run as in the guest (default: the box user).")
     var user: String?
 
-    @Option(name: .long, help: "Working folder in the guest (default: the account's home).")
+    @Option(name: .long, help: "Working folder in the guest (default: the project, else the account's home).")
     var cwd: String?
+
+    @Option(name: .long, help: "Share this project folder into the box at the same path (one project per box at a time).")
+    var project: String?
+
+    @Flag(name: .customLong("read-only"), help: "Share the project read only.")
+    var readOnly = false
 
     @Option(name: .long, parsing: .singleValue, help: "Environment variable NAME=VALUE for the program (repeatable).")
     var env: [String] = []
@@ -50,6 +58,9 @@ struct ExecCommand: ParsableCommand {
             guard let equals = entry.firstIndex(of: "="), equals != entry.startIndex else {
                 throw ValidationError("--env needs NAME=VALUE, got \(entry)")
             }
+        }
+        if readOnly && project == nil {
+            throw ValidationError("--read-only applies to --project")
         }
     }
 
@@ -84,13 +95,23 @@ struct ExecCommand: ParsableCommand {
             throw ValidationError("give the program to run after --")
         }
 
+        // The project appears in the box at the same absolute path, and the program starts
+        // there. Sharing and opening the connection are one request: the supervisor keeps the
+        // share unchanged until this process ends.
+        var directory = cwd
+        var projectPath: String?
+        if let project {
+            projectPath = try ProjectShare.validated(project, storeRoot: options.boxStore.root)
+            directory = directory ?? projectPath
+        }
+
         // The control connection stays open for the whole run: the supervisor keeps the vsock
         // connection alive until it closes (and closes it if this process dies).
-        let (control, guest) = try ControlClient.openGuest(path: box.controlSocketPath)
+        let (control, guest) = try ControlClient.openGuest(path: box.controlSocketPath, project: projectPath, readOnly: readOnly)
         let session: ExecSession
         do {
             session = try ExecSession(descriptor: guest, request: GuestRequest(
-                op: .exec, argv: argv, env: environment.isEmpty ? nil : environment, cwd: cwd, user: user))
+                op: .exec, argv: argv, env: environment.isEmpty ? nil : environment, cwd: directory, user: user))
         } catch let refusal as ExecRefusal {
             // Like env(1) and shells: 127 when the program is not found, 126 when it cannot run.
             FileHandle.standardError.write(Data("agent-vm: \(refusal.message)\n".utf8))

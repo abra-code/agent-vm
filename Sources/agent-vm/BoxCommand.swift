@@ -232,7 +232,7 @@ struct BoxCommand: ParsableCommand {
                 if box.isRunning {
                     let response = try ControlClient.request(.reload, path: box.controlSocketPath)
                     guard response.ok else {
-                        throw AgentVMError.guestRefused(response.error ?? "the supervisor did not reload the rules")
+                        throw AgentVMError.supervisorRefused(response.error ?? "the supervisor did not reload the rules")
                     }
                 }
             }

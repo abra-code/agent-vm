@@ -33,6 +33,17 @@ enum FileSystem {
         return given
     }
 
+    /// Device and inode of `path`, symlinks followed; nil when it cannot be examined. Compares
+    /// folders by identity: realpath keeps other names for the same folder
+    /// (/System/Volumes/Data/Users/..., /.nofollow/Users/...), which path prefixes miss.
+    static func identity(_ path: String) -> [UInt64]? {
+        var info = stat()
+        guard stat(path, &info) == 0 else {
+            return nil
+        }
+        return [UInt64(UInt32(bitPattern: info.st_dev)), info.st_ino]
+    }
+
     /// `lstat` of a path (a symlink is described, not followed).
     static func status(_ path: String) throws -> stat {
         var info = stat()

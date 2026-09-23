@@ -2,7 +2,7 @@
 
 Run AI agents and their tools inside disposable macOS virtual machines, so a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac.
 
-> **Status:** early development. Working today: sessions (snapshot, change report and undo, with or without a virtual machine), golden images (`image create`, macOS installed and set up with no clicks), boxes with `agent-vm exec`, the allowlist network with host packs and a connection log, and `doctor`. The rest of this README describes the intended tool: project sharing into boxes is not built yet.
+> **Status:** early development. Working today: sessions (snapshot, change report and undo, with or without a virtual machine), golden images (`image create`, macOS installed and set up with no clicks), boxes with `agent-vm exec`, the allowlist network with host packs and a connection log, projects shared at the same path, and `doctor`. The rest of this README describes the intended tool: packs for tools installed in images, disposable per-session boxes and the Cadabra integration are not built yet.
 
 ## What it does
 
@@ -22,14 +22,16 @@ It builds on Apple's Virtualization framework and the zero-click macOS guest set
 - macOS 27 or later (host and guest)
 - Disk space for one golden image (tens of GB) plus per-box changes
 
-## Intended usage
+## Usage
 
 ```sh
-agent-vm image create macos-dev          # install macOS and set it up - no clicks
-agent-vm box create dev --image macos-dev
-agent-vm exec --box dev --project ~/src/myapp --net allowlist:npm,github-read -- claude
-agent-vm session report <id>              # what changed, with risky files flagged
-agent-vm session undo <id>                # restore the project snapshot
+agent-vm image create macos-dev --ipsw <restore image>   # install macOS and set it up - no clicks
+agent-vm box create dev --image macos-dev --allow pack:npm --allow pack:github --allow pack:anthropic
+agent-vm box start dev
+agent-vm session start --project ~/src/myapp             # snapshot, prints the session id
+agent-vm exec --box dev --project ~/src/myapp -- claude
+agent-vm session report <id>                             # what changed, with risky files flagged
+agent-vm session undo <id>                               # restore the project snapshot
 ```
 
 `agent-vm exec` streams stdin, stdout and stderr, forwards signals and returns the command's exit status, so it can wrap any stdio program - including Agent Client Protocol (ACP) agents and Model Context Protocol (MCP) servers launched by another application.
@@ -127,6 +129,23 @@ agent-vm box network dev1 --net open                                         # w
   - log fields cut to 256 characters.
 - **Rules can change while a box runs**: the supervisor rereads them at once. The mode decides the network card, so it changes only while the box is stopped.
 - **Boxes created before network policy** keep running on NAT (`open`).
+
+## Projects: your folder in the box, at the same path (works today)
+
+```sh
+agent-vm exec --box dev1 --project ~/src/myapp -- swift test      # runs in /Users/you/src/myapp in the box
+agent-vm exec --box dev1 --project ~/src/myapp --read-only -- grep -r TODO .
+agent-vm session start --project ~/src/myapp                      # snapshot first, to review and undo afterwards
+```
+
+- **Same path on both sides**: the project appears in the box at its absolute path on your Mac, so paths in build logs, error messages and editor links match. Programs started with `--project` begin in that folder.
+- **Live**: the box edits your real folder, and you see changes as they happen. Take a session snapshot first (`agent-vm session start`) to get a change report with risky files flagged, and undo.
+- **One project per box at a time**: while a program started with `--project` runs, a different folder or mode is refused; afterwards, `--project` with another folder replaces the previous one. The share lasts until the box stops.
+- **The project's parent folder in the box** must be new or hold only folders, because the share is mounted on it and would hide anything there. So `/Users/Shared/<project>` is refused, since the box has `/Users/Shared/.localized`.
+- **Owners map across**: files you own appear owned by the box user inside the box, and what the box user creates is owned by you on the Mac.
+- **Not shareable**: `/` and folders directly in it, your home folder or any folder containing it, anything inside `~/Library` or a hidden folder of your home (`~/.ssh`, `~/.aws`, ...), and anything overlapping the agent-vm store. These are checked by folder identity, so other names for the same folders (`/System/Volumes/Data/Users/...`) are refused too; session snapshots follow the same home-folder rule.
+- **Keep build output inside the box.** Large files cross the share quickly (1 GB written in 0.7 s), but creating many small files is about 8 times slower than on the box's own disk, and walking a tree about 30 times slower. Put build products on the box's disk: Xcode's DerivedData already lives in the box user's Library, and `swift build --scratch-path ~/build/myapp` does the same for SwiftPM.
+- **How it works**: each box has one virtio file system device, filled on the running box and mounted by the guest daemon. It uses Apple's automount tag: with any other tag, macOS treats the share as a network volume and holds every program not run as root on a privacy prompt nobody can see. The project sits inside a small read-only root mounted on its parent folder, so the guest's volume housekeeping (`.fseventsd`, `.Trashes`) never lands in your project.
 
 ## Images: macOS installed and set up with no clicks (works today)
 

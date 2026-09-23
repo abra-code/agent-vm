@@ -339,7 +339,10 @@ public struct SessionStore: Sendable {
 
     /// Resolves and checks a project path: an existing folder, not `/`, not the home folder or
     /// one of its ancestors, and not overlapping the session store.
-    func validatedProject(_ path: String) throws -> String {
+    /// The canonical project folder for `path`, or why it cannot be one: it must exist, be a
+    /// folder, and be neither the whole disk, the home folder or a folder containing it, nor
+    /// overlap the agent-vm store.
+    public func validatedProject(_ path: String) throws -> String {
         let expanded = (path as NSString).expandingTildeInPath
         let project: String
         do {
@@ -353,9 +356,21 @@ public struct SessionStore: Sendable {
         guard project != "/" else {
             throw AgentVMError.unsuitableProject(path: project, reason: "the whole disk cannot be a project")
         }
+        // By identity, walking up from the home folder: an alias path for the home folder or a
+        // folder above it (/System/Volumes/Data/Users/<me>) must not pass.
         let home = (try? FileSystem.canonicalPath(NSHomeDirectory())) ?? NSHomeDirectory()
-        if project == home || Self.isInside(home, project) {
-            throw AgentVMError.unsuitableProject(path: project, reason: "it is your home folder or contains it; choose the project folder itself")
+        guard let projectID = FileSystem.identity(project) else {
+            throw AgentVMError.unsuitableProject(path: project, reason: "it cannot be examined")
+        }
+        var ancestor = home
+        while true {
+            if FileSystem.identity(ancestor) == projectID {
+                throw AgentVMError.unsuitableProject(path: project, reason: "it is your home folder or contains it; choose the project folder itself")
+            }
+            if ancestor == "/" {
+                break
+            }
+            ancestor = (ancestor as NSString).deletingLastPathComponent
         }
         let store = (try? FileSystem.canonicalPath(root.path)) ?? root.path
         if project == store || Self.isInside(store, project) || Self.isInside(project, store) {

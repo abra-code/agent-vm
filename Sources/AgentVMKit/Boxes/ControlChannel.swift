@@ -15,20 +15,27 @@ public struct ControlRequest: Codable, Equatable, Sendable {
     public enum Operation: String, Codable, Sendable {
         /// The supervisor's state.
         case status
-        /// A new connection to the guest daemon, passed as a descriptor.
+        /// A new connection to the guest daemon, passed as a descriptor. With `path`, the
+        /// project is shared first, and kept for this connection's lifetime.
         case open
         /// Shut the guest down and end the supervisor.
         case stop
         /// Reread the box's network rules (after `box network` changed them).
         case reload
+        /// Share a project folder into the box at the same path (`path`, `readOnly`).
+        case share
     }
 
     public var v: Int
     public var op: Operation
+    public var path: String?
+    public var readOnly: Bool?
 
-    public init(op: Operation) {
+    public init(op: Operation, path: String? = nil, readOnly: Bool? = nil) {
         self.v = ControlChannel.version
         self.op = op
+        self.path = path
+        self.readOnly = readOnly
     }
 }
 
@@ -47,13 +54,19 @@ public struct ControlResponse: Codable, Equatable, Sendable {
     public var state: State?
     public var guestVersion: String?
     public var pid: Int32?
+    /// The project folder shared into the box, if any, and whether read only.
+    public var project: String?
+    public var projectReadOnly: Bool?
 
-    public init(ok: Bool, error: String? = nil, state: State? = nil, guestVersion: String? = nil, pid: Int32? = nil) {
+    public init(ok: Bool, error: String? = nil, state: State? = nil, guestVersion: String? = nil, pid: Int32? = nil,
+                project: String? = nil, projectReadOnly: Bool? = nil) {
         self.ok = ok
         self.error = error
         self.state = state
         self.guestVersion = guestVersion
         self.pid = pid
+        self.project = project
+        self.projectReadOnly = projectReadOnly
     }
 }
 
@@ -71,9 +84,10 @@ public struct LentConnection: Sendable {
 /// What the supervisor answers. Called on the control socket's threads.
 public protocol ControlHandler: AnyObject, Sendable {
     func controlStatus() -> ControlResponse
-    func controlOpenGuest() throws -> LentConnection
+    func controlOpenGuest(project: String?, readOnly: Bool) throws -> LentConnection
     func controlStop()
     func controlReload() throws
+    func controlShare(path: String, readOnly: Bool) throws
 }
 
 public enum ControlChannel {
@@ -385,7 +399,7 @@ public final class ControlServer: @unchecked Sendable {
                 try? ControlChannel.send(handler.controlStatus(), over: connection)
             case .open:
                 do {
-                    let guest = try handler.controlOpenGuest()
+                    let guest = try handler.controlOpenGuest(project: request.path, readOnly: request.readOnly ?? false)
                     lent.append(guest)
                     try ControlChannel.send(ControlResponse(ok: true), over: connection, passing: guest.descriptor)
                 } catch {
@@ -401,6 +415,16 @@ public final class ControlServer: @unchecked Sendable {
                 } catch {
                     try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)
                 }
+            case .share:
+                do {
+                    guard let path = request.path else {
+                        throw AgentVMError.guestRefused("share needs a path")
+                    }
+                    try handler.controlShare(path: path, readOnly: request.readOnly ?? false)
+                    try? ControlChannel.send(handler.controlStatus(), over: connection)
+                } catch {
+                    try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)
+                }
             }
         }
     }
@@ -410,14 +434,20 @@ public final class ControlServer: @unchecked Sendable {
 public enum ControlClient {
     /// How long a client waits for the supervisor's answer; a wedged supervisor must not hang
     /// `box stop` or `exec`.
-    static let answerTimeout = 30
+    public static let answerTimeout = 30
+    /// Sharing a project takes up to four guest commands of at most 60 s each.
+    public static let shareTimeout = 310
 
     /// One request on a fresh connection; the connection is closed afterwards.
     public static func request(_ op: ControlRequest.Operation, path: String) throws -> ControlResponse {
+        return try request(ControlRequest(op: op), path: path)
+    }
+
+    public static func request(_ request: ControlRequest, path: String, timeout: Int = answerTimeout) throws -> ControlResponse {
         let socket = try ControlChannel.connect(path)
         defer { close(socket) }
-        setReceiveTimeout(socket, seconds: answerTimeout)
-        try ControlChannel.send(ControlRequest(op: op), over: socket)
+        setReceiveTimeout(socket, seconds: timeout)
+        try ControlChannel.send(request, over: socket)
         guard let (response, stray) = try ControlChannel.receive(ControlResponse.self, from: socket) else {
             throw GuestProtocolError.disconnected
         }
@@ -429,11 +459,14 @@ public enum ControlClient {
 
     /// A connection to the guest daemon. Keep `control` open for as long as `guest` is in
     /// use: the supervisor closes the guest connection when `control` closes.
-    public static func openGuest(path: String) throws -> (control: Int32, guest: Int32) {
+    /// With `project`, the supervisor shares it first (as `share` does) and keeps it shared,
+    /// unchanged, until `control` closes - one step, so another client cannot switch it in
+    /// between.
+    public static func openGuest(path: String, project: String? = nil, readOnly: Bool = false) throws -> (control: Int32, guest: Int32) {
         let socket = try ControlChannel.connect(path)
         do {
-            setReceiveTimeout(socket, seconds: answerTimeout)
-            try ControlChannel.send(ControlRequest(op: .open), over: socket)
+            setReceiveTimeout(socket, seconds: project == nil ? answerTimeout : shareTimeout)
+            try ControlChannel.send(ControlRequest(op: .open, path: project, readOnly: project == nil ? nil : readOnly), over: socket)
             guard let (response, passed) = try ControlChannel.receive(ControlResponse.self, from: socket) else {
                 throw GuestProtocolError.disconnected
             }
@@ -441,7 +474,7 @@ public enum ControlClient {
                 if let passed {
                     close(passed)
                 }
-                throw AgentVMError.guestRefused(response.error ?? "the supervisor sent no connection")
+                throw AgentVMError.supervisorRefused(response.error ?? "the supervisor sent no connection")
             }
             // The control connection now only has to stay open; nothing more is read.
             setReceiveTimeout(socket, seconds: 0)

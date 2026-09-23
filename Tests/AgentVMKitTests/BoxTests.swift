@@ -7,6 +7,7 @@ import Darwin
 import Foundation
 import Testing
 @testable import AgentVMKit
+import Virtualization
 
 /// A scratch store with a fake "ready" image (small files standing in for the disk).
 final class BoxScratch {
@@ -145,7 +146,10 @@ final class FakeHandler: ControlHandler, @unchecked Sendable {
         return ControlResponse(ok: true, state: ready ? .ready : .starting, guestVersion: "9.9.9", pid: getpid())
     }
 
-    func controlOpenGuest() throws -> LentConnection {
+    func controlOpenGuest(project: String?, readOnly: Bool) throws -> LentConnection {
+        if let project {
+            try controlShare(path: project, readOnly: readOnly)
+        }
         guard ready else {
             throw AgentVMError.guestRefused("not ready")
         }
@@ -166,6 +170,14 @@ final class FakeHandler: ControlHandler, @unchecked Sendable {
     }
 
     func controlReload() throws {}
+
+    private(set) var sharedPaths: [String] = []
+
+    func controlShare(path: String, readOnly: Bool) throws {
+        lock.lock()
+        sharedPaths.append(path)
+        lock.unlock()
+    }
 
     func controlStop() {
         lock.lock()
@@ -321,5 +333,71 @@ final class ShortFolder {
         #expect(throws: (any Error).self) {
             _ = try ControlChannel.listen(path)
         }
+    }
+}
+
+@Suite struct ProjectShareTests {
+    @Test func theAutomountTagIsApples() {
+        #expect(ProjectShare.tag == VZVirtioFileSystemDeviceConfiguration.macOSGuestAutomountTag)
+    }
+
+    @Test func projectsAreMountedOnTheirParent() {
+        let mount = ProjectShare.mountRequests("/Users/me/src/app")
+        #expect(mount.map(\.argv) == [["/bin/mkdir", "-p", "/Users/me/src"], ["/sbin/mount_virtiofs", ProjectShare.tag, "/Users/me/src"]])
+        #expect(mount.allSatisfy { $0.user == "root" })
+        let unmount = ProjectShare.unmountRequest("/Users/me/src/app")
+        #expect(unmount.argv?.first == "/bin/sh" && unmount.argv?.last == "/Users/me/src" && unmount.user == "root")
+        #expect(ProjectShare.parentContentsRequest("/Users/me/src/app").argv?[1] == "/Users/me/src")
+    }
+
+    @Test func sessionsRefuseAliasesOfTheHomeFolder() throws {
+        let scratch = try Scratch()
+        let home = try FileSystem.canonicalPath(NSHomeDirectory())
+        for alias in ["/System/Volumes/Data" + home, "/System/Volumes/Data" + (home as NSString).deletingLastPathComponent] where FileManager.default.fileExists(atPath: alias) {
+            #expect(throws: AgentVMError.self, "\(alias)") {
+                _ = try scratch.store.validatedProject(alias)
+            }
+        }
+    }
+
+    @Test func sensitiveFoldersAreNotShared() throws {
+        let scratch = try Scratch()
+        let store = scratch.root.appendingPathComponent("store")
+        #expect(try ProjectShare.validated(scratch.project.path, storeRoot: store) == scratch.project.path)
+        let home = NSHomeDirectory()
+        for folder in ["\(home)/Library/Caches", "\(home)/.Trash", home, "/"] where FileManager.default.fileExists(atPath: folder) {
+            #expect(throws: AgentVMError.self, "\(folder)") {
+                _ = try ProjectShare.validated(folder, storeRoot: store)
+            }
+        }
+        // Other names realpath keeps for the same folders are recognized too.
+        for folder in ["/System/Volumes/Data\(home)/Library/Caches", "/System/Volumes/Data\(home)", "/.nofollow\(home)/Library"]
+            where FileManager.default.fileExists(atPath: folder) {
+            #expect(throws: AgentVMError.self, "\(folder)") {
+                _ = try ProjectShare.validated(folder, storeRoot: store)
+            }
+        }
+        // Directly in /: nothing to mount the share on.
+        #expect(throws: AgentVMError.self) {
+            _ = try ProjectShare.validated("/Applications", storeRoot: store)
+        }
+    }
+
+    @Test func theControlSocketCarriesShareRequests() throws {
+        let folder = try ShortFolder()
+        let handler = FakeHandler()
+        let server = try ControlServer(path: folder.path + "/control.sock", handler: handler)
+        defer { server.close() }
+        let response = try ControlClient.request(ControlRequest(op: .share, path: "/Users/me/src/app", readOnly: true), path: folder.path + "/control.sock")
+        #expect(response.ok)
+        #expect(handler.sharedPaths == ["/Users/me/src/app"])
+        let missing = try ControlClient.request(ControlRequest(op: .share), path: folder.path + "/control.sock")
+        #expect(!missing.ok)
+
+        // An exec's project travels with its open request: one step on the supervisor.
+        let (control, guest) = try ControlClient.openGuest(path: folder.path + "/control.sock", project: "/Users/me/src/other", readOnly: false)
+        #expect(handler.sharedPaths == ["/Users/me/src/app", "/Users/me/src/other"])
+        close(guest)
+        close(control)
     }
 }

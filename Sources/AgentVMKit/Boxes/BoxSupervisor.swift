@@ -50,11 +50,18 @@ public final class BoxSupervisor {
             attachment = .nat
         }
         let spec = MacMachineSpec(cpuCount: box.record.cpuCount, memoryBytes: box.record.memoryBytes, macAddress: box.record.macAddress)
-        let configuration = try spec.configuration(for: box.machineFiles, auxiliaryStorage: VZMacAuxiliaryStorage(url: box.auxiliaryStorageURL), network: attachment)
+        let configuration = try spec.configuration(for: box.machineFiles, auxiliaryStorage: VZMacAuxiliaryStorage(url: box.auxiliaryStorageURL),
+                                                   network: attachment, shareTag: ProjectShare.tag)
         let machine = MacMachine(configuration: configuration)
         self.machine = machine
 
-        let handler = SupervisorControl(state: state, machine: machine, box: box, proxy: proxy)
+        let name = box.name
+        let handler = SupervisorControl(state: state, machine: machine, box: box, proxy: proxy) { [weak self] path, readOnly, claim in
+            guard let self else {
+                throw AgentVMError.boxNotRunning(name)
+            }
+            try await self.shareProject(path, readOnly: readOnly, claim: claim)
+        }
         let server = try ControlServer(path: box.controlSocketPath, handler: handler)
         defer { server.close() }
         installSignalHandlers()
@@ -140,6 +147,103 @@ public final class BoxSupervisor {
         _ = setrlimit(RLIMIT_NOFILE, &limit)
     }
 
+    /// The share request running now, if any; the next one waits for it.
+    private var shareQueue: Task<Void, Error>?
+
+    /// Shares `path` into the box at the same path, replacing the previous project. Called
+    /// from control threads through the main actor. The awaits inside let other requests run
+    /// on the main actor meanwhile, so requests are chained to change the guest's mounts and
+    /// the device's share one at a time.
+    /// `claim`: the caller runs a program on the project (an exec); the share then stays as
+    /// it is until the claim is released (`SupervisorState.releaseProject`).
+    func shareProject(_ path: String, readOnly: Bool, claim: Bool) async throws {
+        let previous = shareQueue
+        let task = Task { @MainActor in
+            _ = await previous?.result
+            try await self.replaceProject(path, readOnly: readOnly)
+            if claim {
+                self.state.claimProject()
+            }
+        }
+        shareQueue = task
+        try await task.value
+    }
+
+    private func replaceProject(_ path: String, readOnly: Bool) async throws {
+        guard let machine, state.snapshot.state == .ready else {
+            throw AgentVMError.supervisorRefused("box \(box.name) is not ready")
+        }
+        let storeRoot = box.directory.deletingLastPathComponent().deletingLastPathComponent()
+        let project = try ProjectShare.validated(path, storeRoot: storeRoot)
+        let current = state.project
+        if current?.path == project && current?.readOnly == readOnly {
+            return
+        }
+        if let current, state.projectClaims > 0 {
+            throw AgentVMError.supervisorRefused("box \(box.name) is running programs on \(current.path)\(current.readOnly ? " (read only)" : ""); wait until they end, or use another box")
+        }
+        if let current {
+            let result = try await guestCapture(machine, ProjectShare.unmountRequest(current.path))
+            guard result.report == ExitReport(status: 0) else {
+                throw AgentVMError.supervisorRefused("\(current.path) is still in use in box \(box.name) (\(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))); end the programs using it first")
+            }
+            state.setProject(nil)
+            try machine.share(tag: ProjectShare.tag, directory: nil, readOnly: false)
+            log("Unshared \(current.path)")
+            // While the previous project was mounted the guest could change folders on the
+            // new one's path (a symlink swapped in); it has no access now, so resolve again.
+            guard try ProjectShare.validated(path, storeRoot: storeRoot) == project else {
+                throw AgentVMError.unsuitableProject(path: project, reason: "its path changed while the previous project was being unshared")
+            }
+        }
+        try machine.share(tag: ProjectShare.tag, directory: URL(fileURLWithPath: project, isDirectory: true), readOnly: readOnly)
+        var mountTried = false
+        do {
+            let requests = ProjectShare.mountRequests(project)
+            try await guestRun(machine, requests[0])
+            let found = try await guestCapture(machine, ProjectShare.parentContentsRequest(project))
+            let first = found.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard found.report == ExitReport(status: 0), first.isEmpty else {
+                let parent = (project as NSString).deletingLastPathComponent
+                let what = first.isEmpty ? "cannot be examined (\(found.stderr.trimmingCharacters(in: .whitespacesAndNewlines)))" : "already holds \(first)"
+                throw AgentVMError.unsuitableProject(path: project, reason: "\(parent) in the box \(what), which the share would hide; share a folder whose parent is new or empty in the box")
+            }
+            mountTried = true
+            try await guestRun(machine, requests[1])
+        } catch {
+            // Leave nothing mounted. If the guest cannot confirm that, keep the share recorded
+            // so the next request unmounts it first (the unmount succeeds when nothing is there).
+            // Before the mount the parent may be some other mount point: leave it alone.
+            let unmounted = mountTried ? try? await guestCapture(machine, ProjectShare.unmountRequest(project)) : nil
+            if !mountTried || unmounted?.report == ExitReport(status: 0) {
+                try? machine.share(tag: ProjectShare.tag, directory: nil, readOnly: false)
+            } else {
+                state.setProject((project, readOnly))
+            }
+            throw error
+        }
+        state.setProject((project, readOnly))
+        log("Shared \(project)\(readOnly ? " (read only)" : "")")
+    }
+
+    /// Runs one guest request; throws unless it exits with status 0.
+    private func guestRun(_ machine: MacMachine, _ request: GuestRequest) async throws {
+        let result = try await guestCapture(machine, request)
+        guard result.report == ExitReport(status: 0) else {
+            throw AgentVMError.guestCommandFailed(command: request.argv?.joined(separator: " ") ?? "?", status: result.report.shellStatus,
+                                                  output: (result.stderr + result.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    /// Runs one guest request to the end on a fresh vsock connection, off the main actor.
+    private func guestCapture(_ machine: MacMachine, _ request: GuestRequest) async throws -> (report: ExitReport, stdout: String, stderr: String) {
+        let connection = try await machine.connect(toPort: GuestProtocol.port)
+        defer { connection.close() }
+        let descriptor = connection.descriptor
+        Self.setReadTimeout(descriptor, seconds: 60)
+        return try await Task.detached { try GuestClient.capture(descriptor, request) }.value
+    }
+
     /// Applies the network mode inside the guest (address, DNS, system proxy) as root.
     private func configureNetwork(_ machine: MacMachine, mode: BoxNetwork.Mode) async throws {
         let connection = try await machine.connect(toPort: GuestProtocol.port)
@@ -195,6 +299,39 @@ final class SupervisorState: @unchecked Sendable {
     private var current: ControlResponse.State = .starting
     private var guest: String?
     private var stopping = false
+    private var shared: (path: String, readOnly: Bool)?
+    private var claims = 0
+
+    /// Programs (execs) running on the shared project; while any do, it is not switched.
+    var projectClaims: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return claims
+    }
+
+    func claimProject() {
+        lock.lock()
+        claims += 1
+        lock.unlock()
+    }
+
+    func releaseProject() {
+        lock.lock()
+        claims = max(0, claims - 1)
+        lock.unlock()
+    }
+
+    var project: (path: String, readOnly: Bool)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return shared
+    }
+
+    func setProject(_ project: (path: String, readOnly: Bool)?) {
+        lock.lock()
+        shared = project
+        lock.unlock()
+    }
 
     func set(_ state: ControlResponse.State, guestVersion: String?) {
         lock.lock()
@@ -231,12 +368,42 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
     private let machine: MacMachine
     private let box: Box
     private let proxy: ProxyServer
+    private let share: @Sendable @MainActor (String, Bool, Bool) async throws -> Void
 
-    init(state: SupervisorState, machine: MacMachine, box: Box, proxy: ProxyServer) {
+    init(state: SupervisorState, machine: MacMachine, box: Box, proxy: ProxyServer,
+         share: @escaping @Sendable @MainActor (String, Bool, Bool) async throws -> Void) {
         self.state = state
         self.machine = machine
         self.box = box
         self.proxy = proxy
+        self.share = share
+    }
+
+    /// Shares a project on the main actor; blocks this control thread (at most 5 minutes:
+    /// up to four guest commands of at most 60 s each).
+    func controlShare(path: String, readOnly: Bool) throws {
+        try shareBlocking(path: path, readOnly: readOnly, claim: false)
+    }
+
+    private func shareBlocking(path: String, readOnly: Bool, claim: Bool) throws {
+        let result = ShareResult()
+        let done = DispatchSemaphore(value: 0)
+        let share = self.share
+        Task { @MainActor in
+            do {
+                try await share(path, readOnly, claim)
+                result.set(nil)
+            } catch {
+                result.set(error)
+            }
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + 300) == .success else {
+            throw AgentVMError.guestUnreachable("sharing \(path) timed out")
+        }
+        if let error = result.error {
+            throw error
+        }
     }
 
     /// Rereads the network rules from box.json; a mode change needs a restart.
@@ -251,15 +418,40 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
 
     func controlStatus() -> ControlResponse {
         let snapshot = state.snapshot
-        return ControlResponse(ok: true, state: snapshot.state, guestVersion: snapshot.guestVersion, pid: getpid())
+        let project = state.project
+        return ControlResponse(ok: true, state: snapshot.state, guestVersion: snapshot.guestVersion, pid: getpid(),
+                               project: project?.path, projectReadOnly: project?.readOnly)
     }
 
     /// Opens a vsock connection on the main actor and lends its descriptor. Blocks this
     /// control thread (never the main actor) for at most 30 seconds.
-    func controlOpenGuest() throws -> LentConnection {
+    /// With `project`, shares it first and claims it for the connection's lifetime.
+    func controlOpenGuest(project: String?, readOnly: Bool) throws -> LentConnection {
         guard state.snapshot.state == .ready, !state.stopRequested else {
-            throw AgentVMError.guestRefused("the box is \(state.snapshot.state.rawValue), not ready")
+            throw AgentVMError.supervisorRefused("box \(box.name) is \(state.snapshot.state.rawValue), not ready")
         }
+        if let project {
+            try shareBlocking(path: project, readOnly: readOnly, claim: true)
+        }
+        let state = self.state
+        do {
+            let lent = try openConnection()
+            guard project != nil else {
+                return lent
+            }
+            return LentConnection(descriptor: lent.descriptor, release: {
+                lent.release()
+                state.releaseProject()
+            })
+        } catch {
+            if project != nil {
+                state.releaseProject()
+            }
+            throw error
+        }
+    }
+
+    private func openConnection() throws -> LentConnection {
         let result = OpenResult()
         let done = DispatchSemaphore(value: 0)
         let machine = self.machine
@@ -280,6 +472,23 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
 
     func controlStop() {
         state.requestStop()
+    }
+}
+
+private final class ShareResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Error?
+
+    func set(_ error: Error?) {
+        lock.lock()
+        stored = error
+        lock.unlock()
+    }
+
+    var error: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
     }
 }
 

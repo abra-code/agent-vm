@@ -56,8 +56,10 @@ public struct MacMachineSpec: Sendable {
         case fileHandle(FileHandle)
     }
 
-    /// Builds the configuration for the machine in `files`.
-    func configuration(for files: MachineFiles, auxiliaryStorage: VZMacAuxiliaryStorage, network: Network = .nat) throws -> VZVirtualMachineConfiguration {
+    /// Builds the configuration for the machine in `files`. `shareTag` adds one virtio file
+    /// system device with that tag and nothing shared yet (`MacMachine.share` fills it on the
+    /// running machine; the device set itself is fixed at start).
+    func configuration(for files: MachineFiles, auxiliaryStorage: VZMacAuxiliaryStorage, network: Network = .nat, shareTag: String? = nil) throws -> VZVirtualMachineConfiguration {
         let hardwareData: Data
         let identifierData: Data
         do {
@@ -116,6 +118,9 @@ public struct MacMachineSpec: Sendable {
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
+        if let shareTag {
+            configuration.directorySharingDevices = [VZVirtioFileSystemDeviceConfiguration(tag: shareTag)]
+        }
 
         do {
             try configuration.validate()
@@ -243,6 +248,26 @@ public final class MacMachine: NSObject, VZVirtualMachineDelegate {
                 }
             }
         }
+    }
+
+    /// Shares `directory` (or nothing) through the file system device tagged `tag`, as the
+    /// one entry of a synthetic read-only root, named after the folder. The guest must not
+    /// have it mounted while the share changes.
+    public func share(tag: String, directory: URL?, readOnly: Bool) throws {
+        guard let device = machine.directorySharingDevices.compactMap({ $0 as? VZVirtioFileSystemDevice }).first(where: { $0.tag == tag }) else {
+            throw AgentVMError.virtualMachine(operation: "share a folder", message: "the machine has no file system device \(tag)")
+        }
+        guard let directory else {
+            device.share = nil
+            return
+        }
+        let name = directory.lastPathComponent
+        do {
+            try VZMultipleDirectoryShare.validateName(name)
+        } catch {
+            throw AgentVMError.virtualMachine(operation: "share \(directory.path)", message: error.localizedDescription)
+        }
+        device.share = VZMultipleDirectoryShare(directories: [name: VZSharedDirectory(url: directory, readOnly: readOnly)])
     }
 
     /// Accepts guest-initiated vsock connections to `port`; `accept` runs on the main queue
