@@ -17,13 +17,22 @@ let package = Package(
         .executable(name: "agent-vm", targets: ["agent-vm"]),
         .executable(name: "agent-vm-guest", targets: ["agent-vm-guest"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
+    ],
     targets: [
         // Host-side library: box images and clones, the VM supervisor, the guest protocol,
-        // network policy, snapshots and change reports.
+        // network policy, sessions with project snapshots and change reports.
         .target(name: "AgentVMKit"),
 
         // The command-line tool; `agent-vm serve --box <name>` also runs the per-box supervisor.
-        .executableTarget(name: "agent-vm", dependencies: ["AgentVMKit"]),
+        .executableTarget(
+            name: "agent-vm",
+            dependencies: [
+                "AgentVMKit",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
 
         // The daemon installed inside the guest; talks to the host over vsock only.
         .executableTarget(name: "agent-vm-guest", dependencies: ["AgentVMKit"]),
