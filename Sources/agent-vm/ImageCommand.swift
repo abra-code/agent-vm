@@ -47,6 +47,10 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .customLong("guest-daemon"), help: "The agent-vm-guest executable to install (default: the one next to agent-vm).")
         var guestDaemon: String?
 
+        @Flag(name: .customLong("command-line-tools"), inversion: .prefixedNo,
+              help: "Install Xcode's Command Line Tools (clang, swift, git, python3; about 530 MB, needs the internet).")
+        var commandLineTools = true
+
         @OptionGroup var options: StoreOptions
 
         func validate() throws {
@@ -77,7 +81,8 @@ struct ImageCommand: ParsableCommand {
                 diskBytes: UInt64(diskGB) << 30,
                 userName: user,
                 askpassProgram: try AskpassEntry.executablePath(),
-                guestDaemon: try guestDaemonURL())
+                guestDaemon: try guestDaemonURL(),
+                commandLineTools: commandLineTools)
             let image = try await builder.build(buildOptions)
             if json {
                 try Output.json(image.record)

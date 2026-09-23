@@ -23,9 +23,11 @@ public struct ImageBuildOptions: Sendable {
     public var askpassProgram: String
     /// The agent-vm-guest executable installed into the image.
     public var guestDaemon: URL
+    /// Install Xcode's Command Line Tools (clang, swift, git, python3) into the image.
+    public var commandLineTools: Bool
 
     public init(name: String, restoreImage: URL, cpuCount: Int, memoryBytes: UInt64, diskBytes: UInt64,
-                userName: String, askpassProgram: String, guestDaemon: URL) {
+                userName: String, askpassProgram: String, guestDaemon: URL, commandLineTools: Bool = true) {
         self.name = name
         self.restoreImage = restoreImage
         self.cpuCount = cpuCount
@@ -34,6 +36,7 @@ public struct ImageBuildOptions: Sendable {
         self.userName = userName
         self.askpassProgram = askpassProgram
         self.guestDaemon = guestDaemon
+        self.commandLineTools = commandLineTools
     }
 
     public static let defaultCPUCount = 4
@@ -221,6 +224,21 @@ public final class ImageBuilder {
                 record.guestProtocol = hello.v
             }
 
+            // Boxes have no use for Spotlight, and indexing the whole new disk competes with the
+            // first boot's installs: the Command Line Tools took 26 minutes during the first
+            // boot's indexing and 83 s in a settled box (measured).
+            let spotlight = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/mdutil", "-a", "-i", "off"], cwd: "/", user: "root"))
+            if spotlight.report == ExitReport(status: 0) {
+                log("  Spotlight indexing off")
+            } else {
+                log("  note: could not turn Spotlight indexing off: \((spotlight.stderr + spotlight.stdout).trimmingCharacters(in: .whitespacesAndNewlines))")
+            }
+
+            if options.commandLineTools {
+                let label = try await installCommandLineTools(machine)
+                current = try store.update(current) { $0.commandLineTools = label }
+            }
+
             // From here on the daemon is the only way in.
             let disabled = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDaemon.disableSSHCommand], user: "root"))
             guard disabled.report == ExitReport(status: 0) else {
@@ -294,17 +312,47 @@ public final class ImageBuilder {
         throw lastError
     }
 
-    private func guestCapture(_ machine: MacMachine, _ request: GuestRequest) async throws -> (report: ExitReport, stdout: String, stderr: String) {
-        return try await withGuest(machine) { try GuestClient.capture($0, request) }
+    /// Installs the Command Line Tools through softwareupdate (over the image build's NAT) and
+    /// checks them as the box user; returns the installed label.
+    private func installCommandLineTools(_ machine: MacMachine) async throws -> String {
+        let clock = ContinuousClock()
+        let began = clock.now
+        log("Installing the Command Line Tools (about 530 MB)")
+        let listed = try await guestCapture(machine, CommandLineTools.listRequest, readTimeout: 300)
+        guard listed.report == ExitReport(status: 0), let label = CommandLineTools.label(fromListOutput: listed.stdout) else {
+            _ = try? await guestCapture(machine, CommandLineTools.cleanupRequest)
+            throw AgentVMError.guestCommandFailed(command: "softwareupdate --list", status: listed.report.shellStatus,
+                                                  output: "no Command Line Tools offered: \(String(listed.stdout.suffix(400)))")
+        }
+        log("  \(label)")
+        // softwareupdate can be silent for minutes while it downloads.
+        let installed = try await guestCapture(machine, CommandLineTools.installRequest(label: label), readTimeout: 1800)
+        _ = try? await guestCapture(machine, CommandLineTools.cleanupRequest)
+        guard installed.report == ExitReport(status: 0) else {
+            throw AgentVMError.guestCommandFailed(command: "softwareupdate --install \(label)", status: installed.report.shellStatus,
+                                                  output: String((installed.stdout + installed.stderr).suffix(400)))
+        }
+        let verified = try await guestCapture(machine, CommandLineTools.verifyRequest)
+        guard verified.report == ExitReport(status: 0) else {
+            throw AgentVMError.guestCommandFailed(command: "check the Command Line Tools", status: verified.report.shellStatus,
+                                                  output: (verified.stderr + verified.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        let summary = verified.stdout.split(whereSeparator: \.isNewline).dropFirst().joined(separator: "; ")
+        log("  installed in \(Int(Self.seconds(clock.now - began))) s: \(summary)")
+        return label
+    }
+
+    private func guestCapture(_ machine: MacMachine, _ request: GuestRequest, readTimeout: Int = 60) async throws -> (report: ExitReport, stdout: String, stderr: String) {
+        return try await withGuest(machine, readTimeout: readTimeout) { try GuestClient.capture($0, request) }
     }
 
     /// Runs a blocking protocol exchange on a fresh vsock connection, off the main actor, with
-    /// a read timeout so a stuck guest cannot hang the build.
-    private func withGuest<T: Sendable>(_ machine: MacMachine, _ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
+    /// a read timeout (seconds without any frame) so a stuck guest cannot hang the build.
+    private func withGuest<T: Sendable>(_ machine: MacMachine, readTimeout: Int = 60, _ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
         let connection = try await machine.connect(toPort: GuestProtocol.port)
         defer { connection.close() }
         let descriptor = connection.descriptor
-        var timeout = timeval(tv_sec: 60, tv_usec: 0)
+        var timeout = timeval(tv_sec: readTimeout, tv_usec: 0)
         _ = setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         return try await Task.detached {
             try body(descriptor)

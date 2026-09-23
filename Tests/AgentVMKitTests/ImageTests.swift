@@ -283,3 +283,35 @@ import Testing
         }
     }
 }
+
+@Suite struct CommandLineToolsTests {
+    @Test func theNewestToolsLabelIsChosen() {
+        let output = """
+            Software Update Tool
+
+            Finding available software
+            Software Update found the following new or updated software:
+            * Label: Command Line Tools for Xcode 26.4-26.4
+            \tTitle: Command Line Tools for Xcode 26.4, Version: 26.4, Size: 512000KiB, Recommended: YES,
+            * Label: macOS Tahoe 27.0.1-26A500
+            \tTitle: macOS 27.0.1, Version: 27.0.1, Size: 3000000KiB, Recommended: YES, Action: restart,
+            * Label: Command Line Tools for Xcode 27.0-27.0
+            \tTitle: Command Line Tools for Xcode 27.0, Version: 27.0, Size: 519460KiB, Recommended: YES,
+            """
+        #expect(CommandLineTools.label(fromListOutput: output) == "Command Line Tools for Xcode 27.0-27.0")
+        #expect(CommandLineTools.label(fromListOutput: "Software Update Tool\n\nFinding available software\nNo new software available.\n") == nil)
+        #expect(CommandLineTools.version(of: "Command Line Tools for Xcode 27.0-27.0") == [27, 0, 27, 0])
+        let withBeta = output + "\n* Label: Command Line Tools beta 3 for Xcode 27.1-27.1\n"
+        #expect(CommandLineTools.label(fromListOutput: withBeta) == "Command Line Tools for Xcode 27.0-27.0")
+        #expect(CommandLineTools.label(fromListOutput: "* Label: Command Line Tools beta 3 for Xcode 27.1-27.1\n") == "Command Line Tools beta 3 for Xcode 27.1-27.1")
+    }
+
+    @Test func requestsRunWhereTheyMust() {
+        #expect(CommandLineTools.listRequest.user == "root")
+        #expect(CommandLineTools.installRequest(label: "Command Line Tools for Xcode 27.0-27.0").argv
+                == ["/usr/sbin/softwareupdate", "--install", "Command Line Tools for Xcode 27.0-27.0", "--agree-to-license"])
+        #expect(CommandLineTools.cleanupRequest.argv == ["/bin/rm", "-f", CommandLineTools.onDemandFlag])
+        // Checked as the box user: that is who will use the tools.
+        #expect(CommandLineTools.verifyRequest.user == nil)
+    }
+}

@@ -6,7 +6,7 @@
 // descriptor to the guest daemon (SCM_RIGHTS), so `agent-vm exec` talks to the guest directly
 // and the supervisor is not in the data path. The supervisor keeps that vsock connection open
 // until the client closes its control connection: closing it earlier would break the client's
-// copy (measured in spike 2).
+// copy (measured).
 
 import Darwin
 import Foundation

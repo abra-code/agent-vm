@@ -1,8 +1,8 @@
 // Sources/AgentVMKit/Guest/GuestDaemon.swift
 //
 // Where agent-vm-guest lives inside an image and how launchd runs it: a root LaunchDaemon
-// started at boot (before any login), restarted if it exits, logging to /var/log. Measured in
-// spike 2: a copied, linker-signed binary runs this way without quarantine or approval.
+// started at boot (before any login), restarted if it exits, logging to /var/log. Measured on
+// macOS 27 guests: a copied, linker-signed binary runs this way without quarantine or approval.
 
 import Foundation
 

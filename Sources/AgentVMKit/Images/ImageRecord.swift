@@ -46,6 +46,8 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     /// agent-vm-guest installed in the image, as it reported itself over vsock.
     public var guestVersion: String?
     public var guestProtocol: Int?
+    /// The Command Line Tools installed in the image (softwareupdate's label), if any.
+    public var commandLineTools: String?
 }
 
 public struct GoldenImage: Sendable {

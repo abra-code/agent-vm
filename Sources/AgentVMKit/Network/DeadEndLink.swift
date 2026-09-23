@@ -4,9 +4,10 @@
 // over a datagram socket pair whose host end forwards nothing. The guest gets a fixed address
 // (10.254.0.2/24, router 10.254.0.1) and reaches the outside only through the proxy over vsock.
 //
-// One thing is answered: ARP for the router. Measured in spike 2: without an ARP answer macOS
-// keeps the link "not reachable" - no default route, the proxy settings never become global,
-// and URLSession reports -1009 "offline". With the answer, the whole system uses the proxy.
+// One thing is answered: ARP for the router. Measured on macOS 27 guests: without an ARP
+// answer macOS keeps the link "not reachable" - no default route, the proxy settings never
+// become global, and URLSession reports -1009 "offline". With the answer, the whole system
+// uses the proxy.
 // Every other frame is read and dropped (reading keeps the socket buffer from filling up).
 
 import Darwin

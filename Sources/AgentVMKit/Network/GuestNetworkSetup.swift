@@ -4,7 +4,7 @@
 // (as root) every time the box starts, since the same disk can be run in any mode:
 // - allowlist/off: the fixed dead-end address, no DNS servers, and the system web and secure
 //   web proxy at 127.0.0.1:3128 (the daemon's relay to the host proxy). URLSession tools,
-//   softwareupdate and Python follow the system proxy (measured in spike 2).
+//   softwareupdate and Python follow the system proxy (measured on macOS 27 guests).
 // - open: DHCP from the NAT, no proxy.
 // Programs run through exec also get HTTP_PROXY/HTTPS_PROXY (curl, git and SwiftPM ignore the
 // system proxy - measured) - see `proxyEnvironment`.

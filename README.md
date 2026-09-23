@@ -158,13 +158,14 @@ agent-vm image list
 agent-vm image delete dev
 ```
 
-- **Takes about 4 minutes** on a MacBook Air M5 from a local restore image: about 3 minutes to install, then about a minute for the first boot, the SSH check of the new account, the guest daemon, and a clean shutdown. The disk is a 64 GB sparse file that holds about 28 GB after setup.
+- **Takes about 6 minutes** on a MacBook Air M5 from a local restore image. About 3 minutes go to installing macOS, and about 3 more to the first boot: the SSH check of the new account, the guest daemon, the Command Line Tools and a clean shutdown. The disk is a 64 GB sparse file that holds about 28 GB after setup, plus about 2 GB for the tools.
+- **Developer tools**: Xcode's Command Line Tools (clang, Swift, git, make, Python 3) are installed without a dialog. They are about 530 MB from Apple, so the build needs the internet; `--no-command-line-tools` skips them. Spotlight indexing is turned off in images: boxes have no use for it, and indexing a new disk slowed the tools install from about 2 to 26 minutes.
 - **The guest daemon** (`agent-vm-guest`, a root LaunchDaemon started at boot) is the only way into a finished image: it runs programs for the host over vsock, needs no network, and accepts connections only from the host. Its protocol is described in [Docs/guest-protocol.md](Docs/guest-protocol.md). `image create` installs the `agent-vm-guest` found next to `agent-vm` (or `--guest-daemon <path>`).
 - **Options:** `--cpus` (default 4), `--memory-gb` (8), `--disk-gb` (64; at least 40), `--user` (the account name, default `agent`). Values below what the restore image requires are raised to its minimum.
 - **The account's password** is 24 random characters, stored only in the image folder (`Password`, mode 0600). During the build, agent-vm reaches the guest with the system's `/usr/bin/ssh` using password authentication, until the daemon is in place. It never uses your SSH configuration, keys, agent or `known_hosts` file: the guest's host key goes into the image folder.
 - **Where it lives:** `~/Library/Application Support/agent-vm/Images/<name>/` (or `$AGENT_VM_HOME/Images/<name>/`): `image.json` (state, macOS version and build, resources, timings, guest daemon version and protocol), the disk, the auxiliary storage, the hardware model and the machine identifier.
 - **A failed or interrupted build** stays in the list with its state (`installing`, `provisioning`) or `failed` and the reason; delete it and create it again. An image in use by another agent-vm process cannot be deleted.
-- **Not yet:** downloading the restore image (get it from Apple, or reuse the one a VM app such as Viable keeps in its bundle), and developer tools in the image (Command Line Tools install non-interactively; measured, not yet automated).
+- **Not yet:** downloading the restore image (get it from Apple, or reuse the one a VM app such as Viable keeps in its bundle), and tools beyond the Command Line Tools (Node, Homebrew, agent command-line tools).
 
 ## Building
 
