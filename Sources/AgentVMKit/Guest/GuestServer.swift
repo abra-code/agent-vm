@@ -224,13 +224,8 @@ public final class GuestServer: @unchecked Sendable {
             stdin.close()
             // With job control the foreground job has a group of its own; it is hung up too
             // (the master is still open here: runExec closes it after this thread ends).
-            var groups = [pid]
-            if let terminal {
-                let foreground = tcgetpgrp(terminal)
-                if foreground > 0 && foreground != pid {
-                    groups.append(foreground)
-                }
-            }
+            let foreground = terminal.map { tcgetpgrp($0) } ?? -1
+            let groups = foreground > 0 && foreground != pid ? [pid, foreground] : [pid]
             for group in groups {
                 _ = kill(-group, SIGHUP)
             }

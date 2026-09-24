@@ -46,7 +46,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - `notices`: exec only, optional: `true` asks for notice frames (feature `prompt-notices`, below).
 
 ```json
-{"ok": true, "v": 1, "version": "0.0.1", "osBuild": "26A428", "pid": 612}
+{"ok": true, "v": 1, "version": "0.1.0", "osBuild": "26A428", "pid": 612}
 ```
 
 - `ok`: false with `error` (a message for a person) when the request is refused; the guest then closes the connection.

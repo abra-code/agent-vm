@@ -5,7 +5,7 @@
 
 public enum AgentVM {
     /// The tool's version, reported by `agent-vm --version` and `agent-vm-guest --version`.
-    public static let version = "0.0.1"
+    public static let version = "0.1.0"
 
     /// Version of the host-to-guest protocol. Bumped on any incompatible change to the frames
     /// exchanged over vsock; the host refuses to drive a guest daemon with a different value.
