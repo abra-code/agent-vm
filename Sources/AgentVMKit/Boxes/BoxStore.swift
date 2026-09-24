@@ -95,7 +95,7 @@ public struct BoxStore: Sendable {
                        cpuCount: Int? = nil, memoryBytes: UInt64? = nil,
                        network: BoxNetwork = BoxNetwork(mode: .allowlist)) throws -> Box {
         guard ImageStore.isValidName(name) else {
-            throw AgentVMError.invalidImageName(name)
+            throw AgentVMError.invalidBoxName(name)
         }
         // Reject bad rules and unknown packs before anything is created.
         _ = try CompiledPolicy(network)
@@ -141,7 +141,7 @@ public struct BoxStore: Sendable {
 
     public func box(named name: String) throws -> Box {
         guard ImageStore.isValidName(name) else {
-            throw AgentVMError.invalidImageName(name)
+            throw AgentVMError.invalidBoxName(name)
         }
         let directory = boxesDirectory.appendingPathComponent(name, isDirectory: true)
         guard FileSystem.exists(directory.path) else {
@@ -213,7 +213,7 @@ public struct BoxStore: Sendable {
     /// Deletes a box and its disk; refused while its supervisor runs.
     public func delete(named name: String) throws {
         guard ImageStore.isValidName(name) else {
-            throw AgentVMError.invalidImageName(name)
+            throw AgentVMError.invalidBoxName(name)
         }
         let directory = boxesDirectory.appendingPathComponent(name, isDirectory: true)
         guard FileSystem.exists(directory.path) else {

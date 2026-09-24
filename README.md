@@ -183,6 +183,21 @@ Virtualization refuses every virtual machine from a process without the `com.app
 
 `agent-vm doctor` checks the macOS version, Apple silicon, the binary's entitlement and signature, free space for the store, and how many virtual machines already run (macOS runs at most two macOS guests at once, whichever applications started them). It exits 1 when something prevents running boxes; `--json` prints the checks for programs.
 
+## Testing
+
+`swift test` runs the unit tests. `Tests/Shell/run.sh` runs out-of-process tests: shell scripts that drive the signed binary from `Scripts/build.sh` the way a user or a program would, and check its output, exit statuses and files.
+
+```sh
+Tests/Shell/run.sh fast                   # seconds, no virtual machine, a private store per test
+Tests/Shell/run.sh extended               # minutes, real boxes from the image "dev"
+Tests/Shell/run.sh all --filter network   # both tiers, only tests whose name contains "network"
+```
+
+- **fast** covers the CLI, sessions (report, undo, refusals), the image and box stores, network rules and recipe checks. Each test gets its own `AGENT_VM_HOME` in a scratch folder, so it never touches your images or boxes.
+- **extended** starts real boxes: their life cycle, exec (streams, exit statuses, signals, a killed client), the allowlist network (it needs the internet), project shares, and derived images built from recipes. It uses your store (or `$AGENT_VM_TEST_HOME`) and needs a ready image named `dev` (or `$AGENT_VM_TEST_IMAGE`); without one those tests are skipped. It creates boxes and images named `shtest-*` and deletes them. A full install from a restore image runs only when `$AGENT_VM_TEST_IPSW` names one. The tier takes about 4 minutes, and macOS runs at most two virtual machines at once, so stop other boxes first.
+
+A test that fails keeps its scratch folder, with the commands it ran and their output, and the last lines are printed. `--keep` keeps every folder, and `--agent-vm <path>` tests another binary.
+
 ## License
 
 Apache License 2.0 - see [LICENSE](LICENSE).

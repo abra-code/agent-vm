@@ -71,7 +71,7 @@ final class BoxScratch {
         #expect(throws: AgentVMError.boxExists("b1")) {
             _ = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images)
         }
-        #expect(throws: AgentVMError.invalidImageName("../b")) {
+        #expect(throws: AgentVMError.invalidBoxName("../b")) {
             _ = try fixture.boxes.create(name: "../b", from: fixture.image, imageStore: fixture.images)
         }
     }

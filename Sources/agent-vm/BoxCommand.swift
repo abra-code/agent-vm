@@ -46,6 +46,10 @@ struct BoxCommand: ParsableCommand {
         @OptionGroup var options: StoreOptions
 
         func validate() throws {
+            // Before the image is looked up: a bad name is the first thing to hear about.
+            guard ImageStore.isValidName(name) else {
+                throw ValidationError(AgentVMError.invalidBoxName(name).description)
+            }
             if let cpus, !(1...256).contains(cpus) {
                 throw ValidationError("--cpus must be between 1 and 256")
             }
