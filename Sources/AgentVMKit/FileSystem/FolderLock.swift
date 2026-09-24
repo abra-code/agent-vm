@@ -54,6 +54,9 @@ public final class FolderLock: @unchecked Sendable {
 
     public func release() {
         if descriptor >= 0 {
+            // Unlock first: close alone releases the lock only when no other reference to this
+            // open file exists anywhere, and a lock seemed to outlive its release under load.
+            _ = flock(descriptor, LOCK_UN)
             close(descriptor)
             descriptor = -1
         }

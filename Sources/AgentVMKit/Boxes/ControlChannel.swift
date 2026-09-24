@@ -406,8 +406,9 @@ public final class ControlServer: @unchecked Sendable {
                     try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)
                 }
             case .stop:
-                try? ControlChannel.send(ControlResponse(ok: true, state: .stopping), over: connection)
+                // Act, then acknowledge: a client that saw the answer can rely on the stop.
                 handler.controlStop()
+                try? ControlChannel.send(ControlResponse(ok: true, state: .stopping), over: connection)
             case .reload:
                 do {
                     try handler.controlReload()

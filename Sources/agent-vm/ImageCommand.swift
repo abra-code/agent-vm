@@ -24,31 +24,39 @@ struct ImageCommand: ParsableCommand {
 
     struct Create: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Install macOS from a restore image and set it up, with no clicks.")
+            abstract: "Build an image: install macOS from a restore image, or start from another image.",
+            discussion: """
+                With --ipsw, macOS is installed and set up with no clicks (about 6 minutes). With \
+                --from, a ready image is cloned and the recipe applied to the clone (minutes, and \
+                one base image can carry several tool sets).
+                """)
 
         @Argument(help: "Name of the new image (lower-case letters, digits, \".\", \"_\", \"-\").")
         var name: String
 
         @Option(name: .long, help: "The macOS restore image (.ipsw) to install.")
-        var ipsw: String
+        var ipsw: String?
 
-        @Option(name: .long, help: "Virtual CPUs.")
-        var cpus = ImageBuildOptions.defaultCPUCount
+        @Option(name: .long, help: "A ready image to start from instead of a restore image.")
+        var from: String?
 
-        @Option(name: .customLong("memory-gb"), help: "Memory in GB.")
-        var memoryGB = Int(ImageBuildOptions.defaultMemoryBytes >> 30)
+        @Option(name: .long, help: "Virtual CPUs (default \(ImageBuildOptions.defaultCPUCount), or the base image's).")
+        var cpus: Int?
 
-        @Option(name: .customLong("disk-gb"), help: "Disk size in GB (a sparse file; it takes only what the guest writes).")
-        var diskGB = Int(ImageBuildOptions.defaultDiskBytes >> 30)
+        @Option(name: .customLong("memory-gb"), help: "Memory in GB (default \(ImageBuildOptions.defaultMemoryBytes >> 30), or the base image's).")
+        var memoryGB: Int?
 
-        @Option(name: .long, help: "Account name created in the guest.")
-        var user = "agent"
+        @Option(name: .customLong("disk-gb"), help: "Disk size in GB (default \(ImageBuildOptions.defaultDiskBytes >> 30); a sparse file that takes only what the guest writes). Not with --from.")
+        var diskGB: Int?
 
-        @Option(name: .customLong("guest-daemon"), help: "The agent-vm-guest executable to install (default: the one next to agent-vm).")
+        @Option(name: .long, help: "Account name created in the guest (default agent). Not with --from.")
+        var user: String?
+
+        @Option(name: .customLong("guest-daemon"), help: "The agent-vm-guest executable to install (default: the one next to agent-vm). Not with --from.")
         var guestDaemon: String?
 
         @Flag(name: .customLong("command-line-tools"), inversion: .prefixedNo,
-              help: "Install Xcode's Command Line Tools (clang, swift, git, python3; about 530 MB, needs the internet). Default: yes, or what the recipe says.")
+              help: "Install Xcode's Command Line Tools (clang, swift, git, python3; about 530 MB, needs the internet). Default: yes for --ipsw, or what the recipe says; with --from, only if the base lacks them.")
         var commandLineTools: Bool?
 
         @Option(name: .long, help: "A JSON recipe of steps to run in the image (see Docs/image-recipes.md).")
@@ -57,11 +65,21 @@ struct ImageCommand: ParsableCommand {
         @OptionGroup var options: StoreOptions
 
         func validate() throws {
-            guard cpus > 0, memoryGB > 0, diskGB > 0 else {
-                throw ValidationError("--cpus, --memory-gb and --disk-gb must be positive")
+            guard (ipsw == nil) != (from == nil) else {
+                throw ValidationError("give either --ipsw (install macOS) or --from (start from a ready image)")
             }
-            guard cpus <= 256, memoryGB <= 4096, diskGB <= 65536 else {
-                throw ValidationError("--cpus, --memory-gb or --disk-gb is far beyond what any Mac offers")
+            if from != nil {
+                guard diskGB == nil, user == nil, guestDaemon == nil else {
+                    throw ValidationError("--disk-gb, --user and --guest-daemon come from the base image with --from")
+                }
+                guard recipe != nil || commandLineTools == true else {
+                    throw ValidationError("with --from, give --recipe (or --command-line-tools): otherwise the new image would be a plain copy")
+                }
+            }
+            for (value, limit, option) in [(cpus, 256, "--cpus"), (memoryGB, 4096, "--memory-gb"), (diskGB, 65536, "--disk-gb")] {
+                if let value, !(1...limit).contains(value) {
+                    throw ValidationError("\(option) must be between 1 and \(limit)")
+                }
             }
         }
 
@@ -78,18 +96,28 @@ struct ImageCommand: ParsableCommand {
                     print(line)
                 }
             }
-            let buildOptions = ImageBuildOptions(
-                name: name,
-                restoreImage: URL(fileURLWithPath: (ipsw as NSString).expandingTildeInPath),
-                cpuCount: cpus,
-                memoryBytes: UInt64(memoryGB) << 30,
-                diskBytes: UInt64(diskGB) << 30,
-                userName: user,
-                askpassProgram: try AskpassEntry.executablePath(),
-                guestDaemon: try guestDaemonURL(),
-                commandLineTools: commandLineTools ?? loadedRecipe?.commandLineTools ?? true,
-                recipe: loadedRecipe)
-            let image = try await builder.build(buildOptions)
+            let image: GoldenImage
+            if let from {
+                image = try await builder.derive(ImageDeriveOptions(
+                    name: name,
+                    base: from,
+                    recipe: loadedRecipe,
+                    commandLineTools: commandLineTools ?? loadedRecipe?.commandLineTools ?? false,
+                    cpuCount: cpus,
+                    memoryBytes: memoryGB.map { UInt64($0) << 30 }))
+            } else {
+                image = try await builder.build(ImageBuildOptions(
+                    name: name,
+                    restoreImage: URL(fileURLWithPath: ((ipsw ?? "") as NSString).expandingTildeInPath),
+                    cpuCount: cpus ?? ImageBuildOptions.defaultCPUCount,
+                    memoryBytes: memoryGB.map { UInt64($0) << 30 } ?? ImageBuildOptions.defaultMemoryBytes,
+                    diskBytes: diskGB.map { UInt64($0) << 30 } ?? ImageBuildOptions.defaultDiskBytes,
+                    userName: user ?? "agent",
+                    askpassProgram: try AskpassEntry.executablePath(),
+                    guestDaemon: try guestDaemonURL(),
+                    commandLineTools: commandLineTools ?? loadedRecipe?.commandLineTools ?? true,
+                    recipe: loadedRecipe))
+            }
             if json {
                 try Output.json(image.record)
                 return
@@ -126,7 +154,14 @@ struct ImageCommand: ParsableCommand {
             for image in images {
                 let record = image.record
                 let state = record.state.rawValue.padding(toLength: 12, withPad: " ", startingAt: 0)
-                print("\(record.name)  \(state)  macOS \(record.macOSVersion) (\(record.macOSBuild))  \(record.cpuCount) CPUs  \(record.memoryBytes >> 30) GB  created \(Output.time(record.createdAt))")
+                var line = "\(record.name)  \(state)  macOS \(record.macOSVersion) (\(record.macOSBuild))  \(record.cpuCount) CPUs  \(record.memoryBytes >> 30) GB  created \(Output.time(record.createdAt))"
+                if let base = record.derivedFrom {
+                    line += "  from \(base.image)"
+                }
+                if let recipe = record.recipe {
+                    line += "  recipe \(recipe.description ?? String(recipe.digest.prefix(12)))"
+                }
+                print(line)
                 if let failure = record.failure {
                     print("    failed: \(failure)")
                 }

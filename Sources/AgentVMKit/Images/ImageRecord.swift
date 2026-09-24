@@ -51,6 +51,15 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     /// The recipe applied to the image, if any (its text is kept as recipe.json next to it).
     public var recipe: RecipeInfo?
 
+    /// The image this one was built from (`image create --from`), and that image's recipe
+    /// digest at the time, if any.
+    public var derivedFrom: DerivedFrom?
+
+    public struct DerivedFrom: Codable, Equatable, Sendable {
+        public var image: String
+        public var recipeDigest: String?
+    }
+
     public struct RecipeInfo: Codable, Equatable, Sendable {
         public var description: String?
         /// SHA-256 of the recipe and the files it copies.

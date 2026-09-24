@@ -315,3 +315,44 @@ import Testing
         #expect(CommandLineTools.verifyRequest.user == nil)
     }
 }
+
+@Suite struct DerivedImageTests {
+    @MainActor
+    @Test func onlyReadyBasesWithTheCurrentDaemonAreUsed() async throws {
+        let scratch = try Scratch()
+        let store = ImageStore(root: scratch.root.appendingPathComponent("store", isDirectory: true))
+        var ready = ImageStoreTests.record("base", state: .ready)
+        ready.guestProtocol = AgentVM.guestProtocolVersion
+        _ = try store.create(ready).1.release()
+        var old = ImageStoreTests.record("old", state: .ready)
+        old.guestProtocol = nil
+        _ = try store.create(old).1.release()
+        _ = try store.create(ImageStoreTests.record("half", state: .provisioning)).1.release()
+
+        let builder = ImageBuilder(store: store) { _ in }
+        func refusal(_ base: String, name: String = "new") async -> AgentVMError? {
+            do {
+                _ = try await builder.derive(ImageDeriveOptions(name: name, base: base, recipe: nil, commandLineTools: false))
+                return nil
+            } catch {
+                return error as? AgentVMError
+            }
+        }
+        #expect(await refusal("half") == .wrongImageState(name: "half", state: "provisioning", operation: "build an image from"))
+        if case .wrongImageState(name: "old", _, _)? = await refusal("old") {} else {
+            Issue.record("an image without the current guest daemon must be refused")
+        }
+        #expect(await refusal("missing") == .imageNotFound("missing"))
+        #expect(await refusal("base", name: "base") == .imageExists(name: "base", state: "ready"))
+        #expect(await refusal("base", name: "Bad") == .invalidImageName("Bad"))
+        // Nothing was created by the refusals.
+        #expect(try store.list().images.map(\.name) == ["base", "half", "old"])
+    }
+
+    @Test func recordsFromBeforeDerivedImagesStillRead() throws {
+        let json = #"{"formatVersion":1,"name":"dev","state":"ready","createdAt":"2026-09-23T10:00:00Z","createdBy":"0.0.1","macOSVersion":"27.0","macOSBuild":"26A428","cpuCount":4,"memoryBytes":8589934592,"diskBytes":68719476736,"macAddress":"da:51:72:d4:e5:72","userName":"agent"}"#
+        let record = try SessionStore.decoder.decode(ImageRecord.self, from: Data(json.utf8))
+        #expect(record.derivedFrom == nil)
+        #expect(record.recipe == nil)
+    }
+}

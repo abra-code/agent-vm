@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "description": "Claude Code, Codex and opencode (needs Node: build from an image with Recipes/homebrew-node)",
+  "steps": [
+    {
+      "name": "Agent command-line tools from npm",
+      "run": "npm install --global --no-fund --no-audit @anthropic-ai/claude-code @openai/codex opencode-ai",
+      "timeoutSeconds": 1800
+    }
+  ],
+  "checks": ["node --version", "claude --version", "codex --version", "opencode --version"]
+}

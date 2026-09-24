@@ -1,6 +1,11 @@
 # Image recipes, version 1
 
-A recipe is a JSON file that says what to install in an image besides macOS: Homebrew, Node, an agent's command-line tool, your dotfiles. `agent-vm image create <name> --ipsw <file> --recipe <recipe.json>` runs it while it builds the image, after macOS is set up and the Command Line Tools are installed, and before the image is sealed.
+A recipe is a JSON file that says what to install in an image besides macOS: Homebrew, Node, an agent's command-line tool, your dotfiles. There are two ways to run one:
+
+- `agent-vm image create <name> --ipsw <file> --recipe <recipe.json>` runs it while it builds a new image, after macOS is set up and the Command Line Tools are installed, and before the image is sealed.
+- `agent-vm image create <name> --from <image> --recipe <recipe.json>` runs it on a clone of a ready image. This takes minutes and leaves the base image untouched.
+
+Examples are in [../Recipes/](../Recipes/README.md).
 
 ```json
 {
@@ -23,7 +28,7 @@ A recipe is a JSON file that says what to install in an image besides macOS: Hom
 |---|---|---|
 | `version` | yes | The recipe format version: `1`. |
 | `description` | no | Shown while building and recorded in `image.json`. |
-| `commandLineTools` | no | `false` skips Xcode's Command Line Tools (default `true`). `--[no-]command-line-tools` on the command line overrides it. |
+| `commandLineTools` | no | `false` skips Xcode's Command Line Tools (default `true` for a new image). With `--from`, `true` installs them only if the base image lacks them. `--[no-]command-line-tools` on the command line overrides it. |
 | `steps` | no | What to run, in order. |
 | `checks` | no | Commands run as the box user after the steps; each must exit 0 within 300 seconds, and its first line of output is shown. |
 

@@ -57,6 +57,27 @@ public struct ImageBuildOptions: Sendable {
     }
 }
 
+/// An image built from another image (`image create --from`).
+public struct ImageDeriveOptions: Sendable {
+    public var name: String
+    public var base: String
+    public var recipe: ImageRecipe?
+    /// Install the Command Line Tools if the base lacks them.
+    public var commandLineTools: Bool
+    /// nil: the base image's.
+    public var cpuCount: Int?
+    public var memoryBytes: UInt64?
+
+    public init(name: String, base: String, recipe: ImageRecipe?, commandLineTools: Bool, cpuCount: Int? = nil, memoryBytes: UInt64? = nil) {
+        self.name = name
+        self.base = base
+        self.recipe = recipe
+        self.commandLineTools = commandLineTools
+        self.cpuCount = cpuCount
+        self.memoryBytes = memoryBytes
+    }
+}
+
 @MainActor
 public final class ImageBuilder {
     public let store: ImageStore
@@ -137,16 +158,122 @@ public final class ImageBuilder {
 
     /// Refuses before anything is written when the build cannot succeed: without the
     /// virtualization entitlement every VM is refused, and an install needs about 30 GB.
-    static func checkHost(_ facts: HostFacts) throws {
+    static func checkHost(_ facts: HostFacts, minimumFree: Int64 = minimumFreeBytes) throws {
         if facts.hasVirtualizationEntitlement == false {
             throw AgentVMError.hostNotReady("this agent-vm binary lacks the com.apple.security.virtualization entitlement; build it with Scripts/build.sh")
         }
-        if let free = facts.storeFreeBytes, free < minimumFreeBytes {
-            throw AgentVMError.hostNotReady("\(free >> 30) GB free on the volume of \(facts.storeRoot); an image needs about 30 GB, and \(minimumFreeBytes >> 30) GB free leaves room for the guest to work")
+        if let free = facts.storeFreeBytes, free < minimumFree {
+            throw AgentVMError.hostNotReady("\(free >> 30) GB free on the volume of \(facts.storeRoot); \(minimumFree >> 30) GB free leaves room for the image and for the guest to work")
         }
     }
 
     static let minimumFreeBytes: Int64 = 40 << 30
+    /// A derived image starts as a clone and grows by what its recipe installs.
+    static let minimumFreeBytesToDerive: Int64 = 10 << 30
+
+    // MARK: - Derived images
+
+    /// Builds an image from a ready one: clones it (instant, copy-on-write; its own MAC and
+    /// machine identifier), boots it on NAT, and applies the Command Line Tools if asked and
+    /// missing, then the recipe, through the guest daemon. Minutes instead of a macOS install,
+    /// and one base can carry several tool sets.
+    public func derive(_ options: ImageDeriveOptions) async throws -> GoldenImage {
+        guard ImageStore.isValidName(options.name) else {
+            throw AgentVMError.invalidImageName(options.name)
+        }
+        if FileSystem.exists(store.imagesDirectory.appendingPathComponent(options.name).path) {
+            let state = (try? store.image(named: options.name))?.record.state.rawValue ?? "unreadable"
+            throw AgentVMError.imageExists(name: options.name, state: state)
+        }
+        let base = try store.image(named: options.base)
+        guard base.record.state == .ready else {
+            throw AgentVMError.wrongImageState(name: base.name, state: base.record.state.rawValue, operation: "build an image from")
+        }
+        guard base.record.guestProtocol == AgentVM.guestProtocolVersion else {
+            throw AgentVMError.wrongImageState(name: base.name, state: "built with guest protocol \(base.record.guestProtocol.map(String.init) ?? "none"), not \(AgentVM.guestProtocolVersion)", operation: "build an image from")
+        }
+        try Self.checkHost(HostFacts.current(storeRoot: store.root), minimumFree: Self.minimumFreeBytesToDerive)
+        let cpuCount = options.cpuCount ?? base.record.cpuCount
+        let memoryBytes = options.memoryBytes ?? base.record.memoryBytes
+        guard cpuCount <= VZVirtualMachineConfiguration.maximumAllowedCPUCount,
+              memoryBytes <= VZVirtualMachineConfiguration.maximumAllowedMemorySize else {
+            throw AgentVMError.virtualMachine(operation: "configure \(options.name)", message: "\(cpuCount) CPUs and \(memoryBytes >> 30) GB exceed what this Mac allows")
+        }
+
+        guard let baseLock = try store.tryLock(base) else {
+            throw AgentVMError.imageBusy(base.name)
+        }
+        var record = base.record
+        // Written by this agent-vm, so in its format, whatever format the base was written in.
+        record.formatVersion = ImageRecord.currentFormatVersion
+        record.name = options.name
+        record.state = .installing
+        record.failure = nil
+        record.createdAt = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+        record.createdBy = AgentVM.version
+        record.cpuCount = cpuCount
+        record.memoryBytes = memoryBytes
+        record.macAddress = VZMACAddress.randomLocallyAdministered().string
+        record.installSeconds = nil
+        record.provisionSeconds = nil
+        record.recipe = nil
+        record.derivedFrom = ImageRecord.DerivedFrom(image: base.name, recipeDigest: base.record.recipe?.digest)
+        let created: (GoldenImage, ImageStore.Lock)
+        do {
+            created = try store.create(record)
+        } catch {
+            baseLock.release()
+            throw error
+        }
+        var image = created.0
+        let lock = created.1
+        defer { lock.release() }
+
+        let clock = ContinuousClock()
+        let began = clock.now
+        do {
+            log("Cloning \(base.name) (macOS \(base.record.macOSBuild)\(base.record.recipe.map { ", recipe \($0.description ?? String($0.digest.prefix(12)))" } ?? ""))")
+            do {
+                defer { baseLock.release() }
+                try BoxStore.cloneFile(base.diskURL, to: image.diskURL)
+                try BoxStore.cloneFile(base.auxiliaryStorageURL, to: image.auxiliaryStorageURL)
+                try BoxStore.cloneFile(base.hardwareModelURL, to: image.hardwareModelURL)
+                try BoxStore.cloneFile(base.passwordURL, to: image.passwordURL)
+                try VZMacMachineIdentifier().dataRepresentation.write(to: image.machineIdentifierURL)
+            }
+            image = try store.update(image) { $0.state = .provisioning }
+
+            let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
+            let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
+            log("Booting")
+            try await machine.start(provisioning: nil)
+            do {
+                // A clone boots like any box: the daemon answers once macOS is up.
+                let hello = try await waitForDaemon(machine, attempts: 180)
+                log("  agent-vm-guest \(hello.version ?? "?") answers over vsock")
+                image = try await configure(image, machine: machine, commandLineTools: options.commandLineTools, recipe: options.recipe)
+                try await shutDown(machine)
+            } catch {
+                if machine.isRunning {
+                    try? await machine.forceStop()
+                }
+                throw error
+            }
+            let seconds = Self.seconds(clock.now - began)
+            log("Built in \(Int(seconds)) s")
+            return try store.update(image) { record in
+                record.state = .ready
+                record.provisionSeconds = seconds
+            }
+        } catch {
+            let reason = "\(error)"
+            _ = try? store.update(image) { record in
+                record.state = .failed
+                record.failure = reason
+            }
+            throw error
+        }
+    }
 
     // MARK: - Steps
 
@@ -228,27 +355,7 @@ public final class ImageBuilder {
                 record.guestProtocol = hello.v
             }
 
-            // Boxes have no use for Spotlight, and indexing the whole new disk competes with the
-            // first boot's installs: the Command Line Tools took 26 minutes during the first
-            // boot's indexing and 83 s in a settled box (measured).
-            let spotlight = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/mdutil", "-a", "-i", "off"], cwd: "/", user: "root"))
-            if spotlight.report == ExitReport(status: 0) {
-                log("  Spotlight indexing off")
-            } else {
-                log("  note: could not turn Spotlight indexing off: \((spotlight.stderr + spotlight.stdout).trimmingCharacters(in: .whitespacesAndNewlines))")
-            }
-
-            if options.commandLineTools {
-                let label = try await installCommandLineTools(machine)
-                current = try store.update(current) { $0.commandLineTools = label }
-            }
-            if let recipe = options.recipe {
-                try await apply(recipe, machine: machine, boxUser: image.record.userName)
-                try Data(recipe.text.utf8).write(to: image.recipeURL)
-                current = try store.update(current) { record in
-                    record.recipe = ImageRecord.RecipeInfo(description: recipe.description, digest: recipe.digest)
-                }
-            }
+            current = try await configure(current, machine: machine, commandLineTools: options.commandLineTools, recipe: options.recipe)
 
             // From here on the daemon is the only way in.
             let disabled = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDaemon.disableSSHCommand], user: "root"))
@@ -262,17 +369,7 @@ public final class ImageBuilder {
             }
             log("  Remote Login turned off")
 
-            // `requestStop()` leaves a logged-in guest running; the daemon shuts it down.
-            log("Shutting down")
-            try await withGuest(machine) { descriptor in
-                try GuestClient.shutdown(descriptor)
-            }
-            guard await machine.waitUntilStopped(timeout: Self.shutdownTimeout) else {
-                throw AgentVMError.guestUnreachable("the guest did not shut down within \(Self.shutdownTimeout)")
-            }
-            if let failure = machine.failure {
-                throw AgentVMError.virtualMachine(operation: "shut down the guest", message: failure)
-            }
+            try await shutDown(machine)
         } catch {
             if machine.isRunning {
                 try? await machine.forceStop()
@@ -287,6 +384,53 @@ public final class ImageBuilder {
         }
     }
 
+    /// What every image gets once its guest daemon answers: Spotlight indexing off, the
+    /// Command Line Tools when asked for and missing, then the recipe. Returns the updated
+    /// image.
+    private func configure(_ image: GoldenImage, machine: MacMachine, commandLineTools: Bool, recipe: ImageRecipe?) async throws -> GoldenImage {
+        var current = image
+        // Boxes have no use for Spotlight, and indexing the whole new disk competes with the
+        // first boot's installs: the Command Line Tools took 26 minutes during the first
+        // boot's indexing and 83 s in a settled box (measured).
+        let spotlight = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/mdutil", "-a", "-i", "off"], cwd: "/", user: "root"))
+        if spotlight.report == ExitReport(status: 0) {
+            log("  Spotlight indexing off")
+        } else {
+            log("  note: could not turn Spotlight indexing off: \((spotlight.stderr + spotlight.stdout).trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+
+        if commandLineTools {
+            if let installed = current.record.commandLineTools {
+                log("  Command Line Tools already installed (\(installed))")
+            } else {
+                let label = try await installCommandLineTools(machine)
+                current = try store.update(current) { $0.commandLineTools = label }
+            }
+        }
+        if let recipe {
+            try await apply(recipe, machine: machine, boxUser: current.record.userName)
+            try Data(recipe.text.utf8).write(to: current.recipeURL)
+            current = try store.update(current) { record in
+                record.recipe = ImageRecord.RecipeInfo(description: recipe.description, digest: recipe.digest)
+            }
+        }
+        return current
+    }
+
+    /// `requestStop()` leaves a logged-in guest running; the daemon shuts it down.
+    private func shutDown(_ machine: MacMachine) async throws {
+        log("Shutting down")
+        try await withGuest(machine) { descriptor in
+            try GuestClient.shutdown(descriptor)
+        }
+        guard await machine.waitUntilStopped(timeout: Self.shutdownTimeout) else {
+            throw AgentVMError.guestUnreachable("the guest did not shut down within \(Self.shutdownTimeout)")
+        }
+        if let failure = machine.failure {
+            throw AgentVMError.virtualMachine(operation: "shut down the guest", message: failure)
+        }
+    }
+
     /// Copies agent-vm-guest and its LaunchDaemon definition into the guest and loads it.
     private func installGuestDaemon(_ executable: URL, user: String, over ssh: GuestSSH, password: String) async throws {
         let plist = FileManager.default.temporaryDirectory.appendingPathComponent("agent-vm-guest-\(UUID().uuidString).plist")
@@ -298,9 +442,13 @@ public final class ImageBuilder {
     }
 
     /// Waits until the daemon answers hello (launchd starts it within a second or two).
-    private func waitForDaemon(_ machine: MacMachine) async throws -> GuestResponse {
+    private func waitForDaemon(_ machine: MacMachine, attempts: Int = 30) async throws -> GuestResponse {
         var lastError: Error = AgentVMError.guestUnreachable("the guest daemon did not answer")
-        for _ in 0..<30 {
+        for _ in 0..<attempts {
+            // A guest that stopped will not answer; say so now rather than after every attempt.
+            guard machine.isRunning else {
+                throw AgentVMError.guestUnreachable("the guest stopped before its daemon answered\(machine.failure.map { ": \($0)" } ?? "")")
+            }
             do {
                 let hello = try await withGuest(machine) { try GuestClient.hello($0) }
                 guard hello.v == AgentVM.guestProtocolVersion else {
