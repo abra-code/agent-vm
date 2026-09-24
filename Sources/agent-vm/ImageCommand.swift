@@ -19,7 +19,7 @@ struct ImageCommand: ParsableCommand {
             off again and shuts the guest down. Starting virtual machines needs the binaries \
             built by Scripts/build.sh (see `agent-vm doctor`).
             """,
-        subcommands: [Create.self, List.self, Delete.self, UpdateGuest.self]
+        subcommands: [Create.self, List.self, Delete.self, Setup.self, UpdateGuest.self]
     )
 
     struct Create: AsyncParsableCommand {
@@ -139,6 +139,51 @@ struct ImageCommand: ParsableCommand {
         return URL(fileURLWithPath: try AskpassEntry.executablePath()).deletingLastPathComponent().appendingPathComponent("agent-vm-guest")
     }
 
+    struct Setup: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "setup",
+            abstract: "Do an image's one-time steps in its own interface: Full Disk Access for the guest daemon.",
+            discussion: """
+                Boots the image with its screen in an interactive window on this Mac. System \
+                Settings opens on Full Disk Access, and Finder shows agent-vm-guest: drag it into \
+                the list, turn it on, and press Type Password when macOS asks for the \
+                administrator password. The window notices the grant. Do any other one-time steps \
+                the image needs, then close the window: the image shuts down, and boxes made from \
+                it afterwards inherit what was done. Without Full Disk Access, a program in a box \
+                that opens the account's Desktop, Documents or Downloads waits on a prompt that \
+                nobody sees. Needs a login session on this Mac (not SSH).
+                """)
+
+        @Argument(help: "The image to set up.")
+        var name: String
+
+        @OptionGroup var options: StoreOptions
+
+        /// `agent-vm image setup ...` runs AppKit's loop from main, for the window.
+        static func shouldRunAppKit(_ arguments: [String]) -> Bool {
+            return Array(arguments.dropFirst().prefix(2)) == ["image", "setup"] && BoxSupervisor.canShowWindows
+        }
+
+        @MainActor
+        func run() async throws {
+            let json = options.json
+            let builder = ImageBuilder(store: options.imageStore) { line in
+                if json {
+                    FileHandle.standardError.write(Data((line + "\n").utf8))
+                } else {
+                    print(line)
+                }
+            }
+            let image = try await builder.setUp(named: name)
+            if json {
+                try Output.json(image.record)
+                return
+            }
+            let granted = image.record.fullDiskAccess?.granted == true
+            print("Image \(image.name) is set up\(granted ? "" : "; agent-vm-guest has no Full Disk Access yet (run image setup again to grant it)")")
+        }
+    }
+
     struct UpdateGuest: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "update-guest",
@@ -207,6 +252,16 @@ struct ImageCommand: ParsableCommand {
                 let missing = GuestFeature.all.filter { !(record.guestFeatures ?? []).contains($0) }
                 if record.state == .ready && !missing.isEmpty {
                     print("    agent-vm-guest lacks \(missing.joined(separator: ", ")); `agent-vm image update-guest \(record.name)` adds it")
+                }
+                if record.state == .ready {
+                    switch record.hasFullDiskAccess {
+                    case true?:
+                        break
+                    case false?:
+                        print("    agent-vm-guest has no Full Disk Access: programs in boxes that open Desktop, Documents or Downloads wait on a hidden prompt; `agent-vm image setup \(record.name)`")
+                    case nil:
+                        print("    Full Disk Access for agent-vm-guest is not checked\(record.fullDiskAccess == nil ? "" : " for its current version"); `agent-vm image setup \(record.name)`")
+                    }
                 }
                 if let failure = record.failure {
                     print("    failed: \(failure)")

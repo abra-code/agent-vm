@@ -88,7 +88,7 @@ public struct ImageDeriveOptions: Sendable {
 @MainActor
 public final class ImageBuilder {
     public let store: ImageStore
-    private let log: @MainActor (String) -> Void
+    let log: @MainActor (String) -> Void
 
     /// How long the first boot may take to bring up SSH, and the shutdown to finish.
     static let provisionTimeout: Duration = .seconds(600)
@@ -281,7 +281,11 @@ public final class ImageBuilder {
             if let replacedDaemon, replacedDaemon.replaced {
                 image = try await checkGuestDaemon(image, digest: replacedDaemon.digest)
             } else if let replacedDaemon {
-                image = try store.update(image) { $0.guestDigest = replacedDaemon.digest }
+                image = try store.update(image) { record in
+                    record.guestDigest = replacedDaemon.digest
+                    // Probed in configure, under this same daemon (the base may not have had its digest).
+                    record.fullDiskAccess?.guestDigest = replacedDaemon.digest
+                }
             }
             let seconds = Self.seconds(clock.now - began)
             log("Built in \(Int(seconds)) s")
@@ -333,6 +337,7 @@ public final class ImageBuilder {
                     record.guestFeatures = hello.features
                     record.guestDigest = outcome.digest
                 }
+                image = try await recordFullDiskAccess(image, machine: machine, digest: outcome.digest)
             }
             try await shutDown(machine)
         } catch {
@@ -484,6 +489,9 @@ public final class ImageBuilder {
         } else {
             log("  note: could not turn Spotlight indexing off: \((spotlight.stderr + spotlight.stdout).trimmingCharacters(in: .whitespacesAndNewlines))")
         }
+        // A window on a box (box view) must never meet a lock screen that asks for the password.
+        try await keepDesktopUnlocked(machine, user: current.record.userName,
+                                      password: try String(contentsOf: current.passwordURL, encoding: .utf8))
 
         if commandLineTools {
             if let installed = current.record.commandLineTools {
@@ -500,11 +508,12 @@ public final class ImageBuilder {
                 record.recipe = ImageRecord.RecipeInfo(description: recipe.description, digest: recipe.digest)
             }
         }
-        return current
+        // Checked, so image list says whether boxes can open protected folders (image setup).
+        return try await recordFullDiskAccess(current, machine: machine, digest: current.record.guestDigest)
     }
 
     /// `requestStop()` leaves a logged-in guest running; the daemon shuts it down.
-    private func shutDown(_ machine: MacMachine) async throws {
+    func shutDown(_ machine: MacMachine) async throws {
         log("Shutting down")
         try await withGuest(machine) { descriptor in
             try GuestClient.shutdown(descriptor)
@@ -562,8 +571,9 @@ public final class ImageBuilder {
                 throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the new agent-vm-guest lacks \(missing.joined(separator: ", "))")
             }
             log("  agent-vm-guest \(hello.version ?? "?") answers (\((hello.features ?? []).joined(separator: ", ")))")
+            let checked = try await recordFullDiskAccess(image, machine: machine, digest: digest)
             try await shutDown(machine)
-            return try store.update(image) { record in
+            return try store.update(checked) { record in
                 record.guestVersion = hello.version
                 record.guestProtocol = hello.v
                 record.guestFeatures = hello.features
@@ -582,7 +592,7 @@ public final class ImageBuilder {
     }
 
     /// Waits until the daemon answers hello (launchd starts it within a second or two).
-    private func waitForDaemon(_ machine: MacMachine, attempts: Int = 30) async throws -> GuestResponse {
+    func waitForDaemon(_ machine: MacMachine, attempts: Int = 30) async throws -> GuestResponse {
         var lastError: Error = AgentVMError.guestUnreachable("the guest daemon did not answer")
         for _ in 0..<attempts {
             // A guest that stopped will not answer; say so now rather than after every attempt.
@@ -722,13 +732,13 @@ public final class ImageBuilder {
         }
     }
 
-    private func guestCapture(_ machine: MacMachine, _ request: GuestRequest, readTimeout: Int = 60) async throws -> (report: ExitReport, stdout: String, stderr: String) {
+    func guestCapture(_ machine: MacMachine, _ request: GuestRequest, readTimeout: Int = 60) async throws -> (report: ExitReport, stdout: String, stderr: String) {
         return try await withGuest(machine, readTimeout: readTimeout) { try GuestClient.capture($0, request) }
     }
 
     /// Runs a blocking protocol exchange on a fresh vsock connection, off the main actor, with
     /// a read timeout (seconds without any frame) so a stuck guest cannot hang the build.
-    private func withGuest<T: Sendable>(_ machine: MacMachine, readTimeout: Int = 60, _ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
+    func withGuest<T: Sendable>(_ machine: MacMachine, readTimeout: Int = 60, _ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
         let connection = try await machine.connect(toPort: GuestProtocol.port)
         defer { connection.close() }
         let descriptor = connection.descriptor
@@ -788,7 +798,7 @@ public final class ImageBuilder {
         throw lastError
     }
 
-    private func spec(_ image: GoldenImage) -> MacMachineSpec {
+    func spec(_ image: GoldenImage) -> MacMachineSpec {
         return MacMachineSpec(cpuCount: image.record.cpuCount, memoryBytes: image.record.memoryBytes, macAddress: image.record.macAddress)
     }
 
@@ -846,7 +856,7 @@ public final class ImageBuilder {
 /// Turns a program's output into build-log lines ("      | ..."), sent to the main actor in
 /// order, and keeps the last few kilobytes for error messages.
 final class LineEmitter: @unchecked Sendable {
-    private let log: @MainActor (String) -> Void
+    let log: @MainActor (String) -> Void
     private let lock = NSLock()
     private var partial: [UInt8] = []
     private var recent: [UInt8] = []

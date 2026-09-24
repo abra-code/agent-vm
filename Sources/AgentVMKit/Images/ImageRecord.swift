@@ -50,6 +50,32 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     /// its executable; nil in images built before they were recorded.
     public var guestFeatures: [String]?
     public var guestDigest: String?
+    /// What `image setup` last found; nil when it never ran on this image (or its base).
+    public var fullDiskAccess: FullDiskAccess?
+
+    /// Full Disk Access for agent-vm-guest inside the image. macOS ties the grant to the
+    /// daemon's code signature, so it is recorded with the daemon it was checked for.
+    public struct FullDiskAccess: Codable, Equatable, Sendable {
+        public var granted: Bool
+        /// SHA-256 of the agent-vm-guest that was checked.
+        public var guestDigest: String?
+        public var checkedAt: Date
+
+        public init(granted: Bool, guestDigest: String?, checkedAt: Date) {
+            self.granted = granted
+            self.guestDigest = guestDigest
+            self.checkedAt = checkedAt
+        }
+    }
+
+    /// Whether programs in boxes of this image can open protected folders without a prompt:
+    /// true or false when known for the current daemon, nil when unknown.
+    public var hasFullDiskAccess: Bool? {
+        guard let fullDiskAccess, fullDiskAccess.guestDigest == guestDigest else {
+            return nil
+        }
+        return fullDiskAccess.granted
+    }
     /// The Command Line Tools installed in the image (softwareupdate's label), if any.
     public var commandLineTools: String?
     /// The recipe applied to the image, if any (its text is kept as recipe.json next to it).

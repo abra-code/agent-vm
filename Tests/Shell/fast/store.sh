@@ -131,6 +131,10 @@ test_images_name_missing_guest_features() {
     run_avm image list
     assert_status 0 || return 1
     assert_out_contains "agent-vm-guest lacks terminal; \`agent-vm image update-guest dev\` adds it" || return 1
+    assert_out_contains "Full Disk Access for agent-vm-guest is not checked; \`agent-vm image setup dev\`" || return 1
+    run_avm image setup broken
+    assert_status 1 || return 1
+    assert_err_contains "cannot set up image broken: it is failed" || return 1
     assert_not_contains "$OUT" "update-guest broken" "stdout" || return 1
     run_avm image update-guest broken
     assert_status 1 || return 1

@@ -55,10 +55,53 @@ public final class BoxSupervisor {
         guard let machine, state.snapshot.state != .stopping, !state.stopRequested else {
             throw AgentVMError.boxNotRunning(box.name)
         }
-        let viewer = self.viewer ?? BoxViewer(name: box.name, machine: machine)
+        let password = try? String(contentsOf: box.passwordURL, encoding: .utf8)
+        let firstShow = self.viewer == nil
+        let viewer = self.viewer ?? BoxViewer(name: box.name, machine: machine, password: password)
         self.viewer = viewer
         viewer.show(interactive: interactive)
         log("Showing the screen\(interactive ? " (interactive)" : " (view only)")")
+        // The screen saver and screen lock are per machine, so a box starts with them on
+        // (GuestDesktop): off while someone may be looking, without holding up the window.
+        if firstShow, let password {
+            let user = box.record.userName
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    return
+                }
+                do {
+                    let note = try await GuestDesktop.keepUnlocked(user: user, password: password, desktopWait: 5) { request, input in
+                        let connection = try await machine.connect(toPort: GuestProtocol.port)
+                        defer { connection.close() }
+                        let descriptor = connection.descriptor
+                        Self.setReadTimeout(descriptor, seconds: 60)
+                        return try await Task.detached { try GuestClient.capture(descriptor, request, input: input) }.value
+                    }
+                    self.log(note.map { "Screen lock: \($0)" } ?? "Screen lock, screen saver and display sleep off")
+                } catch {
+                    self.log("Screen lock: \(error)")
+                }
+            }
+        }
+    }
+
+    /// Types the box password (or `text`) into the open window's focused field in the guest.
+    private func type(text: String?) async throws {
+        guard let viewer else {
+            throw AgentVMError.supervisorRefused("box \(box.name) shows no window; open one with `agent-vm box view \(box.name) --interactive`")
+        }
+        // As the Type Password button: a view-only window takes no input, typed or not.
+        guard viewer.isInteractive else {
+            throw AgentVMError.supervisorRefused("the window of box \(box.name) is view only; open it with `agent-vm box view \(box.name) --interactive` to type")
+        }
+        if let text {
+            try await viewer.type(text)
+            log("Typed \(text.count) characters into the screen")
+        } else {
+            let password = try String(contentsOf: box.passwordURL, encoding: .utf8)
+            try await viewer.type(password)
+            log("Typed the password into the screen")
+        }
     }
 
     /// Runs the box until it stops; returns when the VM is down and the socket is gone.
@@ -95,6 +138,11 @@ public final class BoxSupervisor {
                 throw AgentVMError.boxNotRunning(name)
             }
             try self.view(interactive: interactive)
+        } type: { [weak self] text in
+            guard let self else {
+                throw AgentVMError.boxNotRunning(name)
+            }
+            try await self.type(text: text)
         }
         let server = try ControlServer(path: box.controlSocketPath, handler: handler)
         defer { server.close() }
@@ -408,11 +456,14 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
     private let proxy: ProxyServer
     private let share: @Sendable @MainActor (String, Bool, Bool) async throws -> Void
     private let view: @Sendable @MainActor (Bool) throws -> Void
+    private let type: @Sendable @MainActor (String?) async throws -> Void
 
     init(state: SupervisorState, machine: MacMachine, box: Box, proxy: ProxyServer,
          share: @escaping @Sendable @MainActor (String, Bool, Bool) async throws -> Void,
-         view: @escaping @Sendable @MainActor (Bool) throws -> Void) {
+         view: @escaping @Sendable @MainActor (Bool) throws -> Void,
+         type: @escaping @Sendable @MainActor (String?) async throws -> Void) {
         self.view = view
+        self.type = type
         self.state = state
         self.machine = machine
         self.box = box
@@ -424,6 +475,28 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
     /// up to four guest commands of at most 60 s each).
     func controlShare(path: String, readOnly: Bool) throws {
         try shareBlocking(path: path, readOnly: readOnly, claim: false)
+    }
+
+    /// Types into the box's window on the main actor; blocks this control thread for at most 60 s.
+    func controlType(text: String?) throws {
+        let result = ShareResult()
+        let done = DispatchSemaphore(value: 0)
+        let type = self.type
+        Task { @MainActor in
+            do {
+                try await type(text)
+                result.set(nil)
+            } catch {
+                result.set(error)
+            }
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + 60) == .success else {
+            throw AgentVMError.supervisorRefused("typing into box \(box.name) timed out")
+        }
+        if let error = result.error {
+            throw error
+        }
     }
 
     /// Shows the box's screen on the main actor; blocks this control thread for at most 30 s.

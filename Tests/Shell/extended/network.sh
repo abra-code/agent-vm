@@ -62,7 +62,8 @@ test_no_way_around_the_proxy() {
     assert_status 0 || return 1
     # Without the proxy there is no route and no DNS.
     run_avm exec --box "$BOX" --env HTTPS_PROXY= --env https_proxy= -- /usr/bin/curl -sS -m 5 -o /dev/null https://1.1.1.1
-    assert_status 28 || return 1
+    # 28 (timed out) or 7 (refused at once), depending on the guest's routing state: no connection.
+    [ "$STATUS" -eq 28 ] || [ "$STATUS" -eq 7 ] || { fail "expected no connection (28 or 7), got $STATUS"; return 1; }
 }
 
 test_the_mac_is_unreachable_from_the_box() {

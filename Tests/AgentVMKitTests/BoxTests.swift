@@ -127,6 +127,7 @@ final class FakeHandler: ControlHandler, @unchecked Sendable {
     private var releasedCount = 0
     private var stops = 0
     private var views: [Bool] = []
+    private(set) var typed: [String] = []
     var ready = true
     /// The far ends of lent pairs, to check what the client received.
     private(set) var farEnds: [Int32] = []
@@ -189,6 +190,13 @@ final class FakeHandler: ControlHandler, @unchecked Sendable {
     func controlView(interactive: Bool) throws {
         lock.lock()
         views.append(interactive)
+        lock.unlock()
+        throw AgentVMError.supervisorRefused("no screen in tests")
+    }
+
+    func controlType(text: String?) throws {
+        lock.lock()
+        typed.append(text ?? "<password>")
         lock.unlock()
         throw AgentVMError.supervisorRefused("no screen in tests")
     }

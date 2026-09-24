@@ -89,3 +89,9 @@ test_terminal_sessions_need_a_terminal() {
     assert_status 64 || return 1
     assert_err_contains "box shell needs a terminal on stdin" || return 1
 }
+
+test_box_view_types_one_thing() {
+    run_avm box view nosuchbox --type-password --type x
+    assert_status 64 || return 1
+    assert_err_contains "--type-password and --type do not go together" || return 1
+}

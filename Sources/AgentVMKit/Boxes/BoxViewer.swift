@@ -18,13 +18,23 @@ import Virtualization
 final class BoxViewer: NSObject, NSWindowDelegate {
     private let name: String
     private let machine: MacMachine
+    /// The guest account's password, typed by the Type Password button (interactive only).
+    private let password: String?
+    /// A line of instructions under the title bar.
+    private let note: String?
+    private let onClose: (@MainActor () -> Void)?
     private var window: NSWindow?
     private var screen: BoxScreen?
     private var shield: InputShield?
+    private var typeButton: NSButton?
+    private var noteLabel: NSTextField?
 
-    init(name: String, machine: MacMachine) {
+    init(name: String, machine: MacMachine, password: String? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil) {
         self.name = name
         self.machine = machine
+        self.password = password
+        self.note = note
+        self.onClose = onClose
     }
 
     /// Whether this process runs in a login session with a window server (not over SSH, not as a
@@ -42,6 +52,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         shield.isHidden = interactive
         screen.viewOnly = !interactive
         screen.capturesSystemKeys = interactive
+        typeButton?.isEnabled = interactive
         window.title = interactive ? "agent-vm box \(name)" : "agent-vm box \(name) - view only"
         NSApplication.shared.setActivationPolicy(.accessory)
         // In front even though the supervisor is not the active application (the user is in
@@ -80,16 +91,155 @@ final class BoxViewer: NSObject, NSWindowDelegate {
             window.setContentSize(NSSize(width: size.width * scale, height: size.height * scale))
         }
         window.center()
+        if password != nil || note != nil {
+            window.addTitlebarAccessoryViewController(makeAccessory())
+        }
         self.window = window
         self.screen = screen
         self.shield = shield
         return window
     }
 
+    /// Under the title bar: the note, and the Type Password button.
+    private func makeAccessory() -> NSTitlebarAccessoryViewController {
+        let bar = NSStackView()
+        bar.orientation = .horizontal
+        bar.edgeInsets = NSEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
+        if let note {
+            let label = NSTextField(wrappingLabelWithString: note)
+            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            bar.addArrangedSubview(label)
+            noteLabel = label
+        }
+        if password != nil {
+            let button = NSButton(title: "Type Password", target: self, action: #selector(typePassword(_:)))
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+            button.toolTip = "Types the box account's password into the focused field in the box (for login windows and administrator prompts)"
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            bar.addArrangedSubview(button)
+            typeButton = button
+        }
+        let accessory = NSTitlebarAccessoryViewController()
+        accessory.view = bar
+        accessory.layoutAttribute = .bottom
+        return accessory
+    }
+
+    /// Whether keys and clicks reach the guest (the window was last shown interactive).
+    var isInteractive: Bool {
+        return screen.map { !$0.viewOnly } ?? false
+    }
+
+    /// Replaces the note under the title bar (a window made with a note).
+    func setNote(_ text: String) {
+        noteLabel?.stringValue = text
+    }
+
+    @objc private func typePassword(_ sender: Any?) {
+        guard let password else {
+            return
+        }
+        Task { @MainActor in
+            try? await self.type(password)
+        }
+    }
+
+    /// Types `text` into the guest as key presses on a US keyboard (the guest's layout), into
+    /// whatever has the focus there. Letters, digits, space, return and a few punctuation marks.
+    func type(_ text: String) async throws {
+        guard let window, let screen else {
+            throw AgentVMError.supervisorRefused("the window of box \(name) is not open")
+        }
+        // Through the window, as typed keys arrive, to the screen as first responder.
+        window.makeFirstResponder(screen)
+        // A view-only window gives the keys back to the shield, or the person's own keys would
+        // reach the guest from then on.
+        defer {
+            if screen.viewOnly, let shield {
+                window.makeFirstResponder(shield)
+            }
+        }
+        let keys = try text.map { character in
+            guard let key = GuestKeys.key(for: character) else {
+                throw AgentVMError.supervisorRefused("cannot type \"\(character)\" into box \(name)")
+            }
+            return (character, key)
+        }
+        for (character, key) in keys {
+            let modifiers: NSEvent.ModifierFlags = key.shift ? [.shift] : []
+            if key.shift {
+                window.sendEvent(try Self.event(.flagsChanged, modifiers: .shift, characters: "", keyCode: GuestKeys.shift, window: window))
+            }
+            let characters = String(character)
+            window.sendEvent(try Self.event(.keyDown, modifiers: modifiers, characters: characters, keyCode: key.code, window: window))
+            window.sendEvent(try Self.event(.keyUp, modifiers: modifiers, characters: characters, keyCode: key.code, window: window))
+            if key.shift {
+                window.sendEvent(try Self.event(.flagsChanged, modifiers: [], characters: "", keyCode: GuestKeys.shift, window: window))
+            }
+            // The guest reads a keyboard, not a stream: give each key its own report.
+            try await Task.sleep(for: .milliseconds(15))
+        }
+    }
+
+    private static func event(_ type: NSEvent.EventType, modifiers: NSEvent.ModifierFlags, characters: String, keyCode: UInt16,
+                              window: NSWindow) throws -> NSEvent {
+        // From a Core Graphics keyboard event, as a real key press is: the screen view reads the
+        // key from it (an NSEvent made with keyEvent(with:...) alone reached nothing, measured).
+        let source = CGEventSource(stateID: .privateState)
+        guard let cgEvent = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: type != .keyUp) else {
+            throw AgentVMError.supervisorRefused("cannot make a key event")
+        }
+        if type == .flagsChanged {
+            cgEvent.type = .flagsChanged
+        }
+        // As a physical left Shift sets them: the generic mask plus the left-Shift device bit
+        // (0x2); with the generic mask alone the guest saw no Shift (measured).
+        cgEvent.flags = modifiers.contains(.shift) ? CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue | 0x2 | 0x100) : CGEventFlags(rawValue: 0x100)
+        guard let event = NSEvent(cgEvent: cgEvent) else {
+            throw AgentVMError.supervisorRefused("cannot make a key event")
+        }
+        _ = characters
+        _ = window
+        return event
+    }
+
     func windowWillClose(_ notification: Notification) {
         // Back to a background process; the window is kept for the next box view.
         NSApplication.shared.setActivationPolicy(.prohibited)
+        onClose?()
     }
+}
+
+/// US keyboard key codes (the guest's layout) for what the viewer types.
+enum GuestKeys {
+    static let shift: UInt16 = 56
+
+    static func key(for character: Character) -> (code: UInt16, shift: Bool)? {
+        if let lower = letters[Character(character.lowercased())], character.isLetter {
+            return (lower, character.isUppercase)
+        }
+        if let code = plain[character] {
+            return (code, false)
+        }
+        if let code = shifted[character] {
+            return (code, true)
+        }
+        return nil
+    }
+
+    private static let letters: [Character: UInt16] = [
+        "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12, "w": 13,
+        "e": 14, "r": 15, "y": 16, "t": 17, "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38, "k": 40, "n": 45, "m": 46,
+    ]
+    private static let plain: [Character: UInt16] = [
+        "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "9": 25, "7": 26, "8": 28, "0": 29,
+        "=": 24, "-": 27, "/": 44, ".": 47, ",": 43, ";": 41, "'": 39, " ": 49, "\r": 36, "\n": 36,
+    ]
+    private static let shifted: [Character: UInt16] = [
+        "_": 27, "+": 24, ">": 47, "<": 43, ":": 41, "\"": 39, "?": 44, "!": 18, "@": 19,
+    ]
 }
 
 /// The box's screen. Virtualization gives it a tracking area of its own, which sends it pointer

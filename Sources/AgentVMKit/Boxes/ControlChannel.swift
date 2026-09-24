@@ -26,6 +26,8 @@ public struct ControlRequest: Codable, Equatable, Sendable {
         case share
         /// Show the box's screen in a window on this Mac (`interactive`: keyboard and mouse too).
         case view
+        /// Type into the open window's focused field in the guest: `text`, or the box password.
+        case type
     }
 
     public var v: Int
@@ -33,9 +35,11 @@ public struct ControlRequest: Codable, Equatable, Sendable {
     public var path: String?
     public var readOnly: Bool?
     public var interactive: Bool?
+    public var text: String?
 
-    public init(op: Operation, path: String? = nil, readOnly: Bool? = nil, interactive: Bool? = nil) {
+    public init(op: Operation, path: String? = nil, readOnly: Bool? = nil, interactive: Bool? = nil, text: String? = nil) {
         self.interactive = interactive
+        self.text = text
         self.v = ControlChannel.version
         self.op = op
         self.path = path
@@ -96,6 +100,7 @@ public protocol ControlHandler: AnyObject, Sendable {
     func controlReload() throws
     func controlShare(path: String, readOnly: Bool) throws
     func controlView(interactive: Bool) throws
+    func controlType(text: String?) throws
 }
 
 public enum ControlChannel {
@@ -438,6 +443,13 @@ public final class ControlServer: @unchecked Sendable {
             case .view:
                 do {
                     try handler.controlView(interactive: request.interactive ?? false)
+                    try? ControlChannel.send(handler.controlStatus(), over: connection)
+                } catch {
+                    try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)
+                }
+            case .type:
+                do {
+                    try handler.controlType(text: request.text)
                     try? ControlChannel.send(handler.controlStatus(), over: connection)
                 } catch {
                     try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)

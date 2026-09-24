@@ -18,7 +18,7 @@ enum Main {
         // box's screen. The loop is entered here, in main itself: entered inside a main-actor
         // job (as a command's run() is), it would never drain the main queue again, and the
         // supervisor, which runs on the main actor, would never start (measured).
-        if BoxCommand.Serve.shouldRunAppKit(CommandLine.arguments) {
+        if BoxCommand.Serve.shouldRunAppKit(CommandLine.arguments) || ImageCommand.Setup.shouldRunAppKit(CommandLine.arguments) {
             BoxCommand.Serve.runsAppKit = true
             let application = NSApplication.shared
             application.setActivationPolicy(.prohibited)

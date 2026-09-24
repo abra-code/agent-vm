@@ -180,9 +180,22 @@ struct BoxCommand: ParsableCommand {
         @Flag(name: .long, help: "Let keyboard and mouse reach the box.")
         var interactive = false
 
+        @Flag(name: .customLong("type-password"), help: "Then type the box account's password into the focused field in the box (implies --interactive).")
+        var typePassword = false
+
+        @Option(name: .long, help: .hidden)
+        var type: String?
+
         @OptionGroup var options: StoreOptions
 
+        func validate() throws {
+            if typePassword && type != nil {
+                throw ValidationError("--type-password and --type do not go together")
+            }
+        }
+
         func run() throws {
+            let interactive = self.interactive || typePassword || type != nil
             let box = try options.boxStore.box(named: name)
             guard box.isRunning else {
                 throw AgentVMError.boxNotRunning(box.name)
@@ -196,11 +209,18 @@ struct BoxCommand: ParsableCommand {
             guard response.ok else {
                 throw AgentVMError.supervisorRefused(response.error ?? "no reason given")
             }
+            if typePassword || type != nil {
+                // The password stays in the box folder: the supervisor reads it there.
+                let typed = try ControlClient.request(ControlRequest(op: .type, text: type), path: box.controlSocketPath, timeout: 70)
+                guard typed.ok else {
+                    throw AgentVMError.supervisorRefused(typed.error ?? "no reason given")
+                }
+            }
             if options.json {
                 try Output.json(response)
                 return
             }
-            print("Showing box \(box.name)\(interactive ? "" : " (view only; --interactive to use keyboard and mouse)")")
+            print("Showing box \(box.name)\(interactive ? "" : " (view only; --interactive to use keyboard and mouse)")\(typePassword ? "; typed the password" : "")")
         }
     }
 

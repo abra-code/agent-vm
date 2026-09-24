@@ -141,3 +141,72 @@ test_sigterm_ends_a_box_shell() {
     assert_eq "$_status_line" "shell-status=143" "agent-vm's status" || return 1
     assert_eq "$(/bin/cat "$SCRATCH/tty-after")" "$(/bin/cat "$SCRATCH/tty-before")" "terminal settings" || return 1
 }
+
+# The screen lock and screen saver are per machine, so a box gets them turned off when its screen
+# is first shown (box view); display sleep stays off from the image.
+test_the_desktop_never_locks() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    run_avm box view "$BOX"
+    case "$ERR" in
+        *"outside a login session"*)
+            skip "the supervisor runs outside a login session"
+            return 0
+            ;;
+    esac
+    /bin/sleep 8
+    run_avm exec --box "$BOX" --user root -- /bin/sh -c 'uid=$(/usr/bin/id -u agent); /bin/launchctl asuser $uid /usr/bin/sudo -u agent /usr/sbin/sysadminctl -screenLock status 2>&1; /usr/bin/pmset -g | /usr/bin/grep displaysleep'
+    assert_status 0 || return 1
+    assert_out_contains "screenLock is off" || return 1
+    assert_out_contains "displaysleep         0" || return 1
+}
+
+# Full Disk Access is probed while building and recorded; the derived image has none yet.
+test_images_record_full_disk_access() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    local _image
+    _image="$(/bin/cat "$FILE_SCRATCH/image")"
+    run_avm image list
+    assert_out_contains "agent-vm-guest has no Full Disk Access" || return 1
+    assert_out_contains "\`agent-vm image setup $_image\`" || return 1
+}
+
+# box view --type and --type-password: keys reach the focused field in the guest (a script
+# reading a line in the guest's Terminal), Shift included. Skipped outside a login session.
+test_typing_into_the_screen() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    run_avm box view "$BOX" --interactive
+    case "$ERR" in
+        *"outside a login session"*)
+            skip "the supervisor runs outside a login session"
+            return 0
+            ;;
+    esac
+    assert_status 0 || return 1
+    local _reader='rm -f /tmp/started /tmp/typed; printf "#!/bin/sh\necho started > /tmp/started\nIFS= read -r line\nprintf \"%%s\" \"\$line\" > /tmp/typed\n" > /tmp/reader.command; chmod 755 /tmp/reader.command'
+    local _text _expected
+    for _text in 'Typed-OK_42 x/y.z >AB' '<password>'; do
+        run_avm exec --box "$BOX" -- /bin/sh -c "$_reader"
+        run_avm exec --box "$BOX" --user root -- /bin/sh -c 'uid=$(/usr/bin/id -u agent); /bin/launchctl asuser $uid /usr/bin/sudo -u agent /usr/bin/open /tmp/reader.command'
+        local _waited=0
+        while [ "$_waited" -lt 30 ]; do
+            /bin/sleep 1
+            _waited=$((_waited + 1))
+            run_avm exec --box "$BOX" -- /bin/test -f /tmp/started
+            [ "$STATUS" -eq 0 ] && break
+        done
+        /bin/sleep 1
+        if [ "$_text" = "<password>" ]; then
+            run_avm box view "$BOX" --type-password
+            assert_status 0 || return 1
+            run_avm box view "$BOX" --type $'\r'
+            _expected="$(/bin/cat "${AGENT_VM_HOME:-$HOME/Library/Application Support/agent-vm}/Boxes/$BOX/Password")"
+        else
+            run_avm box view "$BOX" --type "$_text"$'\r'
+            _expected="$_text"
+        fi
+        assert_status 0 || return 1
+        /bin/sleep 2
+        run_avm exec --box "$BOX" -- /bin/cat /tmp/typed
+        [ "$OUT" = "$_expected" ] || { fail "the guest read something else than was typed (${#OUT} characters, ${#_expected} expected)"; return 1; }
+    done
+}
