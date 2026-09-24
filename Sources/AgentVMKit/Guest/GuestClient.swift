@@ -88,10 +88,17 @@ public final class ExecSession: @unchecked Sendable {
         try channel.send(Frame(.signal, signal.bigEndianBytes))
     }
 
-    /// Reads frames until the program exits; output goes to the two handlers in order.
-    public func run(stdout: ([UInt8]) throws -> Void, stderr: ([UInt8]) throws -> Void) throws -> ExitReport {
+    /// Reads frames until the program exits; output goes to the two handlers in order, and
+    /// notices (sent only when the request asked for them) to `notice`.
+    public func run(stdout: ([UInt8]) throws -> Void, stderr: ([UInt8]) throws -> Void,
+                    notice: (GuestNotice) -> Void = { _ in }) throws -> ExitReport {
         while let frame = try channel.receive() {
             switch frame.type {
+            case .notice:
+                // One the host cannot read is dropped: a notice is advice, never the output.
+                if let decoded = try? JSONDecoder().decode(GuestNotice.self, from: Data(frame.payload)) {
+                    notice(decoded)
+                }
             case .stdout:
                 try stdout(frame.payload)
             case .stderr:

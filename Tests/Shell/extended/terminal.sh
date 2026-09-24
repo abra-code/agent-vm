@@ -210,3 +210,28 @@ test_typing_into_the_screen() {
         [ "$OUT" = "$_expected" ] || { fail "the guest read something else than was typed (${#OUT} characters, ${#_expected} expected)"; return 1; }
     done
 }
+
+# A program waiting on a permission prompt nobody sees (the derived image has no Full Disk
+# Access) is reported by exec and in the exec log. Named to run last in this file: the prompt
+# stays on the guest's screen, where it could take the focus the typing test needs.
+test_waiting_on_a_permission_prompt_is_reported() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    "$AGENT_VM" exec --box "$BOX" -- /bin/sh -c 'ls ~/Downloads' > "$SCRATCH/prompt.out" 2> "$SCRATCH/prompt.err" &
+    local _client=$!
+    local _waited=0
+    while [ "$_waited" -lt 20 ]; do
+        /bin/sleep 1
+        _waited=$((_waited + 1))
+        [ -s "$SCRATCH/prompt.err" ] && break
+    done
+    kill -TERM "$_client"
+    wait "$_client"
+    local _status=$?
+    local _err
+    _err="$(/bin/cat "$SCRATCH/prompt.err")"
+    printf '$ exec -- sh -c "ls ~/Downloads" (stopped after %ss)\n%s\n[status %s]\n' "$_waited" "$_err" "$_status"
+    assert_contains "$_err" "ls is waiting for permission to use the Downloads folder" "stderr" || return 1
+    assert_contains "$_err" "agent-vm box view $BOX --interactive" "stderr" || return 1
+    run_avm box execlog "$BOX" --last 1
+    assert_out_contains "(waited on a permission prompt for the Downloads folder)" || return 1
+}

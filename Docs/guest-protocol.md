@@ -31,6 +31,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 | 0x20 | stdout | guest to host | bytes the program wrote to standard output |
 | 0x21 | stderr | guest to host | bytes the program wrote to standard error |
 | 0x22 | exit | guest to host | JSON, how the program ended; last frame |
+| 0x23 | notice | guest to host | JSON, something the program waits on that nobody sees (feature `prompt-notices`, only when the request asked for `notices`) |
 
 ## Request and response
 
@@ -42,6 +43,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - `op` (required): `hello`, `exec` or `shutdown`.
 - `argv`, `env`, `cwd`, `user`: exec only; all but `argv` optional.
 - `terminal`: exec only, optional: `{"rows": 24, "columns": 80}` runs the program on a new terminal of that size (feature `terminal`, below).
+- `notices`: exec only, optional: `true` asks for notice frames (feature `prompt-notices`, below).
 
 ```json
 {"ok": true, "v": 1, "version": "0.0.1", "osBuild": "26A428", "pid": 612}
@@ -49,7 +51,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 
 - `ok`: false with `error` (a message for a person) when the request is refused; the guest then closes the connection.
 - `version`, `osBuild`: hello only (agent-vm-guest's version, the guest's macOS build).
-- `features`: hello only, what the daemon supports beyond this document's base (see Versioning). Today: `terminal`.
+- `features`: hello only, what the daemon supports beyond this document's base (see Versioning). Today: `terminal` and `prompt-notices`.
 - `pid`: exec only, the started process.
 - `status`: a refused exec only, the status a shell would give: 127 when the program is not found, 126 when it cannot be run (unknown account, missing folder).
 
@@ -88,6 +90,11 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - **Signals** from `signal` frames go to the terminal's foreground process group (what a key would reach), which with job control is not the program's own group.
 - **Host goes away**: the foreground job's group is hung up and killed along with the program's.
 - **After exit**: output is forwarded until every holder of the terminal closes it, at most 2 seconds; then the guest closes the terminal, which hangs up what still has it open.
+
+**exec with `notices`** (feature `prompt-notices`): the guest tells the host when the program waits on something nobody in the box can see.
+- **Why**: every program exec runs is started by the daemon, so macOS asks on the daemon's behalf before one opens protected data (the account's Downloads, Documents or Desktop folders, other apps, the camera). The question appears on the guest's screen, and the program waits for an answer.
+- **How**: the daemon reads the privacy service's log (`log stream`, subsystem `com.apple.TCC`) from its start. An `AUTHREQ_ATTRIBUTION` line names the program that tried the access, and an `AUTHREQ_PROMPTING` line with the same message id (from the same tccd process) says a prompt went up. The program's session id is the exec's pid, since every exec starts a new session, so descendants count too.
+- **Frame**: `{"kind": "permission-prompt", "service": "kTCCServiceSystemPolicyDownloadsFolder", "program": "/bin/ls", "pid": 688}`. It is advice, never output: a host that cannot read one drops it. None follows the `exit` frame.
 
 ## Proxy relay
 

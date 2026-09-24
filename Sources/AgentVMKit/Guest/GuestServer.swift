@@ -58,6 +58,10 @@ public final class GuestServer: @unchecked Sendable {
 
     /// Accepts host connections forever, one thread each.
     public func run(listener: Int32) -> Never {
+        // Only the real daemon (root) watches: a notice needs the privacy log, which only root reads.
+        if geteuid() == 0 {
+            PromptWatcher.shared.start()
+        }
         while true {
             var address = sockaddr_vm()
             var length = socklen_t(MemoryLayout<sockaddr_vm>.size)
@@ -142,6 +146,11 @@ public final class GuestServer: @unchecked Sendable {
         } catch {
             _ = kill(-pid, SIGKILL)
         }
+        // Programs of this exec that wait on a privacy prompt are said so (PromptWatcher).
+        let notices = request.notices == true ? PromptWatcher.shared.register(pid: pid, channel: channel) : nil
+        defer {
+            notices.map(PromptWatcher.shared.unregister)
+        }
 
         let output = DispatchGroup()
         let stopTerminal = StopFlag()
@@ -189,6 +198,8 @@ public final class GuestServer: @unchecked Sendable {
             stopTerminal.set()
             _ = output.wait(timeout: .now() + 1)
         }
+        // No notice may follow the exit frame.
+        notices.map(PromptWatcher.shared.unregister)
         if let report = exited.report {
             try? channel.send(.exit, json: report)
         }

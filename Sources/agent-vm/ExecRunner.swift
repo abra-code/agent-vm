@@ -87,7 +87,8 @@ struct ExecRunner {
         let session: ExecSession
         do {
             session = try ExecSession(descriptor: guest, request: GuestRequest(
-                op: .exec, argv: argv, env: environment.isEmpty ? nil : environment, cwd: directory, user: user, terminal: size))
+                op: .exec, argv: argv, env: environment.isEmpty ? nil : environment, cwd: directory, user: user, terminal: size,
+                notices: status.guestFeatures?.contains(GuestFeature.promptNotices) == true ? true : nil))
         } catch let refusal as ExecRefusal {
             // Like env(1) and shells: 127 when the program is not found, 126 when it cannot run.
             FileHandle.standardError.write(Data("agent-vm: \(refusal.message)\n".utf8))
@@ -127,7 +128,12 @@ struct ExecRunner {
 
         let report: ExitReport
         do {
-            report = try session.run(stdout: { Self.writeAll(STDOUT_FILENO, $0) }, stderr: { Self.writeAll(STDERR_FILENO, $0) })
+            let terminal = self.terminal
+            let boxName = box.name
+            let image = box.record.image
+            report = try session.run(stdout: { Self.writeAll(STDOUT_FILENO, $0) }, stderr: { Self.writeAll(STDERR_FILENO, $0) }, notice: { notice in
+                Self.report(notice, box: boxName, image: image, terminal: terminal)
+            })
         } catch {
             throw AgentVMError.guestUnreachable("the connection to box \(box.name) ended: \(error)")
         }
@@ -136,6 +142,20 @@ struct ExecRunner {
         // control connection (with the process) returns the guest connection.
         _ = control
         ExecExit.shared.exit(report.shellStatus)
+    }
+
+    /// Says on stderr what the program waits on, and records it for the exec log. On a terminal
+    /// in raw mode, lines need a carriage return.
+    static func report(_ notice: GuestNotice, box: String, image: String, terminal: Bool) {
+        guard notice.kind == .permissionPrompt else {
+            return
+        }
+        ExecExit.shared.prompted(notice.serviceDescription)
+        let program = notice.program.map { ($0 as NSString).lastPathComponent } ?? "the program"
+        let end = terminal ? "\r\n" : "\n"
+        let message = "agent-vm: \(program) is waiting for permission to use \(notice.serviceDescription): macOS asks on the box's screen, where nobody sees it. "
+            + "Answer it with `agent-vm box view \(box) --interactive`, or give the image Full Disk Access with `agent-vm image setup \(image)` (boxes made afterwards inherit it).\(end)"
+        writeAll(STDERR_FILENO, Array(message.utf8))
     }
 
     /// The local terminal's size (stdin's, else stdout's), 24 x 80 when neither is a terminal.
@@ -179,6 +199,7 @@ final class ExecExit: @unchecked Sendable {
     private var log: ExecLog?
     private var id: String?
     private var guestPid: Int32?
+    private var prompts: [String] = []
     private let began = ContinuousClock.now
 
     func record(log: ExecLog, id: String) {
@@ -192,6 +213,15 @@ final class ExecExit: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         self.guestPid = guestPid
+    }
+
+    /// The program waited on a permission prompt for `what` (for the exec log's end line).
+    func prompted(_ what: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        if !prompts.contains(what) {
+            prompts.append(what)
+        }
     }
 
     /// Raw mode on stdin, when it is a terminal: no echo, no line editing, no signals from keys,
@@ -228,7 +258,7 @@ final class ExecExit: @unchecked Sendable {
             let elapsed = (ContinuousClock.now - began).components
             let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
             log.append(ExecLog.Entry(id: id, event: .end, time: Date(), guestPid: guestPid, status: status,
-                                     seconds: (seconds * 1000).rounded() / 1000))
+                                     seconds: (seconds * 1000).rounded() / 1000, prompts: prompts.isEmpty ? nil : prompts))
         }
         Darwin.exit(status)
     }

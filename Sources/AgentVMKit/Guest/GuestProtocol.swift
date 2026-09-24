@@ -32,6 +32,9 @@ public enum FrameType: UInt8, Sendable {
     case stdout = 0x20
     case stderr = 0x21
     case exit = 0x22
+    /// Something the program waits on that nobody in the box may see (feature `prompt-notices`,
+    /// sent only when the request asked for notices): JSON, a GuestNotice.
+    case notice = 0x23
 }
 
 public struct Frame: Equatable, Sendable {
@@ -67,8 +70,13 @@ public struct GuestRequest: Codable, Equatable, Sendable {
     /// output then arrives as stdout frames only. Needs the `terminal` feature: a guest
     /// without it ignores the field.
     public var terminal: TerminalSize?
+    /// Send notice frames (feature `prompt-notices`): for example when the program waits on a
+    /// privacy prompt shown on the guest's screen. A guest without the feature ignores the field.
+    public var notices: Bool?
 
-    public init(op: Operation, argv: [String]? = nil, env: [String: String]? = nil, cwd: String? = nil, user: String? = nil, terminal: TerminalSize? = nil) {
+    public init(op: Operation, argv: [String]? = nil, env: [String: String]? = nil, cwd: String? = nil, user: String? = nil, terminal: TerminalSize? = nil,
+                notices: Bool? = nil) {
+        self.notices = notices
         self.v = AgentVM.guestProtocolVersion
         self.op = op
         self.argv = argv
@@ -116,8 +124,10 @@ public struct GuestResponse: Codable, Equatable, Sendable {
 public enum GuestFeature {
     /// exec with `terminal`, and resize frames.
     public static let terminal = "terminal"
+    /// exec with `notices`, and notice frames.
+    public static let promptNotices = "prompt-notices"
     /// Everything this build's daemon supports.
-    public static let all = [terminal]
+    public static let all = [terminal, promptNotices]
 }
 
 /// A terminal's size in character cells.

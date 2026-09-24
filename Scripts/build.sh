@@ -30,10 +30,10 @@ die() {
     exit 1
 }
 
-# Signing failed: remove the copies so an unsigned binary never sits where a signed one is
-# expected.
+# Signing failed: drop the staged copies. The signed binaries already in place stay: an
+# unsigned binary never sits where a signed one is expected.
 die_unsigned() {
-    /bin/rm -f "$OUTPUT/agent-vm" "$OUTPUT/agent-vm-guest"
+    /bin/rm -rf "$STAGE"
     die "$1"
 }
 
@@ -90,12 +90,21 @@ status=$?
 status=$?
 [ "$status" -eq 0 ] || die "cannot create $OUTPUT"
 
+# Copies are signed in a staging folder next to the output and then renamed into place: a
+# running box supervisor keeps its old file, where rewriting the file under it would get it
+# killed (macOS stops a process whose signed code changes), and the box with it.
+STAGE="$OUTPUT/.staging"
+/bin/rm -rf "$STAGE"
+/bin/mkdir -p "$STAGE"
+status=$?
+[ "$status" -eq 0 ] || die "cannot create $STAGE"
+
 # Sign copies, so the next `swift build` (which relinks in place) cannot silently replace a
 # signed binary with an unsigned one.
 for product in agent-vm agent-vm-guest; do
-    /bin/cp -f "$bin_dir/$product" "$OUTPUT/$product"
+    /bin/cp -f "$bin_dir/$product" "$STAGE/$product"
     status=$?
-    [ "$status" -eq 0 ] || die "cannot copy $bin_dir/$product to $OUTPUT"
+    [ "$status" -eq 0 ] || die_unsigned "cannot copy $bin_dir/$product to $STAGE"
 done
 
 timestamp="--timestamp"
@@ -105,25 +114,32 @@ fi
 
 printf 'Signing with identity "%s"...\n' "$IDENTITY"
 /usr/bin/codesign --force --sign "$IDENTITY" --options runtime "$timestamp" \
-    --identifier com.abracode.agent-vm --entitlements "$ENTITLEMENTS" "$OUTPUT/agent-vm"
+    --identifier com.abracode.agent-vm --entitlements "$ENTITLEMENTS" "$STAGE/agent-vm"
 status=$?
 [ "$status" -eq 0 ] || die_unsigned "codesign of agent-vm failed (status $status); is the identity in your keychain? (security find-identity -v -p codesigning)"
 /usr/bin/codesign --force --sign "$IDENTITY" --options runtime "$timestamp" \
-    --identifier com.abracode.agent-vm-guest "$OUTPUT/agent-vm-guest"
+    --identifier com.abracode.agent-vm-guest "$STAGE/agent-vm-guest"
 status=$?
 [ "$status" -eq 0 ] || die_unsigned "codesign of agent-vm-guest failed (status $status)"
 
 for product in agent-vm agent-vm-guest; do
-    /usr/bin/codesign --verify --strict --verbose=1 "$OUTPUT/$product"
+    /usr/bin/codesign --verify --strict --verbose=1 "$STAGE/$product"
     status=$?
     [ "$status" -eq 0 ] || die_unsigned "signature of $product does not verify"
 done
 
-entitlements="$(/usr/bin/codesign --display --entitlements - --xml "$OUTPUT/agent-vm" 2>/dev/null)"
+entitlements="$(/usr/bin/codesign --display --entitlements - --xml "$STAGE/agent-vm" 2>/dev/null)"
 case "$entitlements" in
     *com.apple.security.virtualization*) ;;
     *) die_unsigned "the signed agent-vm does not carry com.apple.security.virtualization" ;;
 esac
+
+for product in agent-vm agent-vm-guest; do
+    /bin/mv -f "$STAGE/$product" "$OUTPUT/$product"
+    status=$?
+    [ "$status" -eq 0 ] || die_unsigned "cannot move the signed $product into $OUTPUT"
+done
+/bin/rm -rf "$STAGE"
 
 printf '\nSigned binaries in %s\n\n' "$OUTPUT"
 "$OUTPUT/agent-vm" doctor

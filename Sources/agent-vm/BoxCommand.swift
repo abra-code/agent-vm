@@ -406,6 +406,9 @@ struct BoxCommand: ParsableCommand {
                 if let project = record.project {
                     line += "  [project \(project)\(record.readOnly == true ? ", read only" : "")]"
                 }
+                if let prompts = record.prompts, !prompts.isEmpty {
+                    line += "  (waited on a permission prompt for \(prompts.joined(separator: ", ")))"
+                }
                 print(line)
             }
         }

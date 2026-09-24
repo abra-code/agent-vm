@@ -32,10 +32,13 @@ public final class ExecLog: @unchecked Sendable {
         /// The shell status exec exited with (the program's, or 125-127 for failures).
         public var status: Int32?
         public var seconds: Double?
+        /// What the program waited on a permission prompt for (an end line; see GuestNotice).
+        public var prompts: [String]?
 
         public init(id: String, event: Event, time: Date, argv: [String]? = nil, user: String? = nil, cwd: String? = nil,
                     project: String? = nil, readOnly: Bool? = nil, terminal: Bool? = nil, hostPid: Int32? = nil,
-                    guestPid: Int32? = nil, status: Int32? = nil, seconds: Double? = nil) {
+                    guestPid: Int32? = nil, status: Int32? = nil, seconds: Double? = nil, prompts: [String]? = nil) {
+            self.prompts = prompts
             self.id = id
             self.event = event
             self.time = time
@@ -67,6 +70,8 @@ public final class ExecLog: @unchecked Sendable {
         /// Nil while running, or when the client died without writing an end.
         public var status: Int32?
         public var seconds: Double?
+        /// Permission prompts the program waited on.
+        public var prompts: [String]?
     }
 
     public let url: URL
@@ -125,6 +130,7 @@ public final class ExecLog: @unchecked Sendable {
                 }
                 records[position].status = entry.status
                 records[position].seconds = entry.seconds
+                records[position].prompts = entry.prompts
                 records[position].guestPid = records[position].guestPid ?? entry.guestPid
             }
         }
