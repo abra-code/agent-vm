@@ -16,11 +16,20 @@ public final class FolderLock: @unchecked Sendable {
     /// Takes the lock on `path` (created if missing, never through a symlink); nil when
     /// another open file holds it, in this process or another.
     public static func tryAcquire(_ path: String) throws -> FolderLock? {
-        let descriptor = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        // Both calls retry when a signal interrupts them (child processes exiting send SIGCHLD);
+        // isHeld would otherwise report a free lock as held.
+        var descriptor: Int32
+        repeat {
+            descriptor = open(path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        } while descriptor < 0 && errno == EINTR
         guard descriptor >= 0 else {
             throw AgentVMError.system(operation: "open lock \(path)", code: errno)
         }
-        if flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+        var locked: Int32
+        repeat {
+            locked = flock(descriptor, LOCK_EX | LOCK_NB)
+        } while locked != 0 && errno == EINTR
+        if locked != 0 {
             let code = errno
             close(descriptor)
             if code == EWOULDBLOCK {

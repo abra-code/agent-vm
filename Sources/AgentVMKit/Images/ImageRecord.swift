@@ -48,6 +48,14 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     public var guestProtocol: Int?
     /// The Command Line Tools installed in the image (softwareupdate's label), if any.
     public var commandLineTools: String?
+    /// The recipe applied to the image, if any (its text is kept as recipe.json next to it).
+    public var recipe: RecipeInfo?
+
+    public struct RecipeInfo: Codable, Equatable, Sendable {
+        public var description: String?
+        /// SHA-256 of the recipe and the files it copies.
+        public var digest: String
+    }
 }
 
 public struct GoldenImage: Sendable {
@@ -63,4 +71,5 @@ public struct GoldenImage: Sendable {
     public var machineIdentifierURL: URL { directory.appendingPathComponent(ImageStore.machineIdentifierName) }
     public var passwordURL: URL { directory.appendingPathComponent(ImageStore.passwordName) }
     public var knownHostsURL: URL { directory.appendingPathComponent(ImageStore.knownHostsName) }
+    public var recipeURL: URL { directory.appendingPathComponent(ImageStore.recipeName) }
 }

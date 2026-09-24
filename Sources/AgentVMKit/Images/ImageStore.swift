@@ -11,6 +11,7 @@
 //   Images/<name>/MachineIdentifier   VZMacMachineIdentifier.dataRepresentation
 //   Images/<name>/Password            the guest account's password (0600)
 //   Images/<name>/known_hosts         the guest's SSH host key, recorded at first contact
+//   Images/<name>/recipe.json         the recipe applied to the image, if any
 //
 // Creating the folder with mkdir is the atomic claim on a name; the lock keeps `delete` away
 // from an image that is being built.
@@ -27,6 +28,7 @@ public struct ImageStore: Sendable {
     static let machineIdentifierName = "MachineIdentifier"
     static let passwordName = "Password"
     static let knownHostsName = "known_hosts"
+    static let recipeName = "recipe.json"
 
     public let root: URL
 

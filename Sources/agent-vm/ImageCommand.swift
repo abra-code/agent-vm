@@ -48,8 +48,11 @@ struct ImageCommand: ParsableCommand {
         var guestDaemon: String?
 
         @Flag(name: .customLong("command-line-tools"), inversion: .prefixedNo,
-              help: "Install Xcode's Command Line Tools (clang, swift, git, python3; about 530 MB, needs the internet).")
-        var commandLineTools = true
+              help: "Install Xcode's Command Line Tools (clang, swift, git, python3; about 530 MB, needs the internet). Default: yes, or what the recipe says.")
+        var commandLineTools: Bool?
+
+        @Option(name: .long, help: "A JSON recipe of steps to run in the image (see Docs/image-recipes.md).")
+        var recipe: String?
 
         @OptionGroup var options: StoreOptions
 
@@ -65,6 +68,8 @@ struct ImageCommand: ParsableCommand {
         @MainActor
         func run() async throws {
             let json = options.json
+            // Checked before anything is built: a bad recipe fails in a second, not after install.
+            let loadedRecipe = try recipe.map { try ImageRecipe.load(from: URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)) }
             let builder = ImageBuilder(store: options.imageStore) { line in
                 // With --json, progress goes to stderr so stdout holds only the record.
                 if json {
@@ -82,7 +87,8 @@ struct ImageCommand: ParsableCommand {
                 userName: user,
                 askpassProgram: try AskpassEntry.executablePath(),
                 guestDaemon: try guestDaemonURL(),
-                commandLineTools: commandLineTools)
+                commandLineTools: commandLineTools ?? loadedRecipe?.commandLineTools ?? true,
+                recipe: loadedRecipe)
             let image = try await builder.build(buildOptions)
             if json {
                 try Output.json(image.record)

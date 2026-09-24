@@ -25,9 +25,12 @@ public struct ImageBuildOptions: Sendable {
     public var guestDaemon: URL
     /// Install Xcode's Command Line Tools (clang, swift, git, python3) into the image.
     public var commandLineTools: Bool
+    /// Steps and checks run after the tools, before the image is sealed.
+    public var recipe: ImageRecipe?
 
     public init(name: String, restoreImage: URL, cpuCount: Int, memoryBytes: UInt64, diskBytes: UInt64,
-                userName: String, askpassProgram: String, guestDaemon: URL, commandLineTools: Bool = true) {
+                userName: String, askpassProgram: String, guestDaemon: URL, commandLineTools: Bool = true,
+                recipe: ImageRecipe? = nil) {
         self.name = name
         self.restoreImage = restoreImage
         self.cpuCount = cpuCount
@@ -37,6 +40,7 @@ public struct ImageBuildOptions: Sendable {
         self.askpassProgram = askpassProgram
         self.guestDaemon = guestDaemon
         self.commandLineTools = commandLineTools
+        self.recipe = recipe
     }
 
     public static let defaultCPUCount = 4
@@ -238,6 +242,13 @@ public final class ImageBuilder {
                 let label = try await installCommandLineTools(machine)
                 current = try store.update(current) { $0.commandLineTools = label }
             }
+            if let recipe = options.recipe {
+                try await apply(recipe, machine: machine, boxUser: image.record.userName)
+                try Data(recipe.text.utf8).write(to: image.recipeURL)
+                current = try store.update(current) { record in
+                    record.recipe = ImageRecord.RecipeInfo(description: recipe.description, digest: recipe.digest)
+                }
+            }
 
             // From here on the daemon is the only way in.
             let disabled = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDaemon.disableSSHCommand], user: "root"))
@@ -340,6 +351,87 @@ public final class ImageBuilder {
         let summary = verified.stdout.split(whereSeparator: \.isNewline).dropFirst().joined(separator: "; ")
         log("  installed in \(Int(Self.seconds(clock.now - began))) s: \(summary)")
         return label
+    }
+
+    /// Runs a recipe's steps, then its checks; any failure fails the build with the step's name
+    /// and the end of its output.
+    func apply(_ recipe: ImageRecipe, machine: MacMachine, boxUser: String) async throws {
+        let clock = ContinuousClock()
+        let began = clock.now
+        log("Recipe\(recipe.description.map { ": \($0)" } ?? "") (\(recipe.steps.count) steps, \(recipe.checks.count) checks)")
+        for (index, step) in recipe.steps.enumerated() {
+            let stepBegan = clock.now
+            log("  [\(index + 1)/\(recipe.steps.count)] \(step.name)\(step.user == "root" ? " (as root)" : "")")
+            let request: GuestRequest
+            var input: Data?
+            switch step.action {
+            case let .run(command):
+                request = ImageRecipe.runRequest(step, command: command, boxUser: boxUser)
+            case let .copy(source, destination, mode):
+                request = ImageRecipe.copyRequest(step, destination: destination, mode: mode)
+                input = try ImageRecipe.copyContents(step, source: source)
+            }
+            let label = "recipe step \(index + 1) (\(step.name))"
+            let emit = LineEmitter(log: log)
+            let report: ExitReport
+            do {
+                report = try await runStreaming(machine, request, input: input, readTimeout: step.timeoutSeconds, emit: emit)
+            } catch {
+                emit.flush()
+                throw Self.recipeFailure(label, error, timeoutSeconds: step.timeoutSeconds, output: emit.tail)
+            }
+            guard report == ExitReport(status: 0) else {
+                throw AgentVMError.guestCommandFailed(command: label, status: report.shellStatus, output: emit.tail)
+            }
+            log("      done in \(Int(Self.seconds(clock.now - stepBegan))) s")
+        }
+        for check in recipe.checks {
+            let result: (report: ExitReport, stdout: String, stderr: String)
+            do {
+                result = try await guestCapture(machine, ImageRecipe.checkRequest(check), readTimeout: Self.checkTimeoutSeconds)
+            } catch {
+                throw Self.recipeFailure("recipe check \(check)", error, timeoutSeconds: Self.checkTimeoutSeconds, output: "")
+            }
+            let output = (result.stdout + result.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard result.report == ExitReport(status: 0) else {
+                throw AgentVMError.guestCommandFailed(command: "recipe check \(check)", status: result.report.shellStatus, output: String(output.suffix(800)))
+            }
+            log("  check \(check): \(output.split(whereSeparator: \.isNewline).first.map(String.init) ?? "ok")")
+        }
+        log("  recipe applied in \(Int(Self.seconds(clock.now - began))) s")
+    }
+
+    nonisolated static let checkTimeoutSeconds = 300
+
+    /// A step or check that ended without an exit status (silent past its timeout, refused, or
+    /// the connection lost), as an error that names it and keeps the end of its output.
+    nonisolated static func recipeFailure(_ label: String, _ error: Error, timeoutSeconds: Int, output: String) -> Error {
+        let last = output.isEmpty ? "" : "; last output:\n\(output)"
+        switch error {
+        case GuestProtocolError.io(operation: "read", code: EAGAIN):
+            // SO_RCVTIMEO expired; closing the connection makes the daemon stop the program.
+            // 124 is what timeout(1) exits with.
+            return AgentVMError.guestCommandFailed(command: label, status: 124, output: "no output for \(timeoutSeconds) s, stopped\(last)")
+        case let refusal as ExecRefusal:
+            return AgentVMError.guestCommandFailed(command: label, status: refusal.status, output: refusal.message)
+        default:
+            return AgentVMError.guestUnreachable("during \(label): \(error)\(last)")
+        }
+    }
+
+    /// Runs one request with its output shown line by line in the build log (indented) through
+    /// `emit`, and `input` as its standard input; returns how it ended.
+    private func runStreaming(_ machine: MacMachine, _ request: GuestRequest, input: Data?, readTimeout: Int, emit: LineEmitter) async throws -> ExitReport {
+        return try await withGuest(machine, readTimeout: readTimeout) { descriptor in
+            let session = try ExecSession(descriptor: descriptor, request: request)
+            if let input {
+                try session.sendStdin(Array(input))
+            }
+            try session.sendStdinEnd()
+            let report = try session.run(stdout: { emit.add($0) }, stderr: { emit.add($0) })
+            emit.flush()
+            return report
+        }
     }
 
     private func guestCapture(_ machine: MacMachine, _ request: GuestRequest, readTimeout: Int = 60) async throws -> (report: ExitReport, stdout: String, stderr: String) {
@@ -460,5 +552,79 @@ public final class ImageBuilder {
     nonisolated static func seconds(_ duration: Duration) -> Double {
         let parts = duration.components
         return Double(parts.seconds) + Double(parts.attoseconds) / 1e18
+    }
+}
+
+/// Turns a program's output into build-log lines ("      | ..."), sent to the main actor in
+/// order, and keeps the last few kilobytes for error messages.
+final class LineEmitter: @unchecked Sendable {
+    private let log: @MainActor (String) -> Void
+    private let lock = NSLock()
+    private var partial: [UInt8] = []
+    private var recent: [UInt8] = []
+
+    init(log: @escaping @MainActor (String) -> Void) {
+        self.log = log
+    }
+
+    func add(_ bytes: [UInt8]) {
+        lock.lock()
+        recent.append(contentsOf: bytes)
+        if recent.count > 4096 {
+            recent.removeFirst(recent.count - 4096)
+        }
+        partial.append(contentsOf: bytes)
+        var lines: [String] = []
+        while let newline = partial.firstIndex(of: 10) {
+            lines.append(Self.shownText(partial[..<newline]))
+            partial.removeSubrange(...newline)
+        }
+        // A progress bar redraws its line with carriage returns: keep only what a terminal
+        // would still show, and never hold more than a few kilobytes.
+        if let lastReturn = partial.lastIndex(of: 13) {
+            partial.removeSubrange(...lastReturn)
+        }
+        if partial.count > 4096 {
+            lines.append(Self.shownText(partial[...]))
+            partial = []
+        }
+        lock.unlock()
+        send(lines)
+    }
+
+    /// A line as a terminal would show it: the text after its last carriage return.
+    static func shownText(_ bytes: ArraySlice<UInt8>) -> String {
+        let visible = bytes.lastIndex(of: 13).map { bytes[bytes.index(after: $0)...] } ?? bytes
+        return String(decoding: visible, as: UTF8.self)
+    }
+
+    func flush() {
+        lock.lock()
+        let rest = partial.isEmpty ? [] : [String(decoding: partial, as: UTF8.self)]
+        partial = []
+        lock.unlock()
+        send(rest)
+    }
+
+    var tail: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(decoding: recent, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func send(_ lines: [String]) {
+        guard !lines.isEmpty else {
+            return
+        }
+        let log = self.log
+        // Long lines are cut at 200 characters: the log is for following along.
+        let shown = lines.map { "      | " + String($0.prefix(200)) }
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                for line in shown {
+                    log(line)
+                }
+            }
+        }
     }
 }
