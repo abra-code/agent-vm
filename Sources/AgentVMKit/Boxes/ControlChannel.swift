@@ -24,14 +24,18 @@ public struct ControlRequest: Codable, Equatable, Sendable {
         case reload
         /// Share a project folder into the box at the same path (`path`, `readOnly`).
         case share
+        /// Show the box's screen in a window on this Mac (`interactive`: keyboard and mouse too).
+        case view
     }
 
     public var v: Int
     public var op: Operation
     public var path: String?
     public var readOnly: Bool?
+    public var interactive: Bool?
 
-    public init(op: Operation, path: String? = nil, readOnly: Bool? = nil) {
+    public init(op: Operation, path: String? = nil, readOnly: Bool? = nil, interactive: Bool? = nil) {
+        self.interactive = interactive
         self.v = ControlChannel.version
         self.op = op
         self.path = path
@@ -91,6 +95,7 @@ public protocol ControlHandler: AnyObject, Sendable {
     func controlStop()
     func controlReload() throws
     func controlShare(path: String, readOnly: Bool) throws
+    func controlView(interactive: Bool) throws
 }
 
 public enum ControlChannel {
@@ -426,6 +431,13 @@ public final class ControlServer: @unchecked Sendable {
                         throw AgentVMError.guestRefused("share needs a path")
                     }
                     try handler.controlShare(path: path, readOnly: request.readOnly ?? false)
+                    try? ControlChannel.send(handler.controlStatus(), over: connection)
+                } catch {
+                    try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)
+                }
+            case .view:
+                do {
+                    try handler.controlView(interactive: request.interactive ?? false)
                     try? ControlChannel.send(handler.controlStatus(), over: connection)
                 } catch {
                     try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)

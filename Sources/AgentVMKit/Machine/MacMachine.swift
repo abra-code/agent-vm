@@ -43,8 +43,9 @@ public struct MacMachineSpec: Sendable {
         self.macAddress = macAddress
     }
 
-    /// Guest display size. Small, because nobody looks at it: macOS guests need a display to
-    /// keep Metal and the login session, and a smaller one costs less GPU time.
+    /// Guest display size. Small, because it is only looked at now and then (`box view`): macOS
+    /// guests need a display to keep Metal and the login session, and a smaller one costs less
+    /// GPU time.
     static let displayWidth = 1280
     static let displayHeight = 800
 
@@ -154,6 +155,11 @@ public final class MacMachine: NSObject, VZVirtualMachineDelegate {
     /// Why the guest stopped on its own with an error, if it did.
     public var failure: String? {
         return stopError
+    }
+
+    /// Shows this machine's display in `view`.
+    public func attach(_ view: VZVirtualMachineView) {
+        view.virtualMachine = machine
     }
 
     /// Installs macOS from a local restore image onto the machine's (empty) disk.

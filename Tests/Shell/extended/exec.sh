@@ -130,3 +130,27 @@ test_a_terminal_needs_a_guest_that_has_one() {
     assert_status 125 || return 1
     assert_out_contains "image update-guest $TEST_IMAGE" || return 1
 }
+
+# box view: the supervisor opens a window on this Mac's screen (briefly, during the test; it goes
+# with the box at teardown). Skipped when the tests run outside a login session (SSH, CI).
+test_box_view_shows_the_screen_and_the_box_keeps_working() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    run_avm box view "$BOX"
+    case "$ERR" in
+        *"outside a login session"*)
+            skip "the supervisor runs outside a login session"
+            return 0
+            ;;
+    esac
+    assert_status 0 || return 1
+    assert_out_contains "view only" || return 1
+    run_avm box view "$BOX" --interactive
+    assert_status 0 || return 1
+    local _log="${AGENT_VM_HOME:-$HOME/Library/Application Support/agent-vm}/Boxes/$BOX/supervisor.log"
+    assert_contains "$(/bin/cat "$_log")" "Showing the screen (view only)" "supervisor.log" || return 1
+    assert_contains "$(/bin/cat "$_log")" "Showing the screen (interactive)" "supervisor.log" || return 1
+    # The supervisor's main actor is not held up by the window.
+    run_avm exec --box "$BOX" -- /bin/echo still-running
+    assert_status 0 || return 1
+    assert_eq "$OUT" "still-running" "exec after box view" || return 1
+}

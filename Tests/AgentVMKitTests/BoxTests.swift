@@ -126,6 +126,7 @@ final class FakeHandler: ControlHandler, @unchecked Sendable {
     private let lock = NSLock()
     private var releasedCount = 0
     private var stops = 0
+    private var views: [Bool] = []
     var ready = true
     /// The far ends of lent pairs, to check what the client received.
     private(set) var farEnds: [Int32] = []
@@ -179,6 +180,19 @@ final class FakeHandler: ControlHandler, @unchecked Sendable {
         lock.unlock()
     }
 
+    var viewRequests: [Bool] {
+        lock.lock()
+        defer { lock.unlock() }
+        return views
+    }
+
+    func controlView(interactive: Bool) throws {
+        lock.lock()
+        views.append(interactive)
+        lock.unlock()
+        throw AgentVMError.supervisorRefused("no screen in tests")
+    }
+
     func controlStop() {
         lock.lock()
         stops += 1
@@ -218,6 +232,18 @@ final class ShortFolder {
         let stop = try ControlClient.request(.stop, path: socketPath(scratch))
         #expect(stop.state == .stopping)
         #expect(handler.stopCount == 1)
+    }
+
+    /// A view request reaches the handler with its mode; the handler's refusal comes back.
+    @Test func viewRequestsReachTheHandler() throws {
+        let scratch = try ShortFolder()
+        let handler = FakeHandler()
+        let server = try ControlServer(path: socketPath(scratch), handler: handler)
+        defer { server.close() }
+        let response = try ControlClient.request(ControlRequest(op: .view, interactive: true), path: socketPath(scratch))
+        #expect(!response.ok)
+        #expect(response.error?.contains("no screen in tests") == true)
+        #expect(handler.viewRequests == [true])
     }
 
     @Test func theSocketIsPrivateAndRemovedOnClose() throws {

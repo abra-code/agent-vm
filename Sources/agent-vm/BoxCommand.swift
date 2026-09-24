@@ -4,6 +4,7 @@
 // supervisor process (`box serve`, started detached by `box start`).
 
 import AgentVMKit
+import AppKit
 import ArgumentParser
 import Foundation
 
@@ -18,9 +19,10 @@ struct BoxCommand: ParsableCommand {
             Network modes: allowlist (default) - only listed hosts, through a proxy on this Mac \
             that logs every attempt; off - nothing; open - NAT to the internet and your local \
             network. See `box network`, `box netlog` and `box packs`. `box shell` opens a shell in \
-            the box on this terminal; `box execlog` shows what exec and shell ran there.
+            the box on this terminal, `box view` shows its screen in a window, and `box execlog` \
+            shows what exec and shell ran there.
             """,
-        subcommands: [Create.self, List.self, Start.self, Stop.self, Delete.self, Shell.self, ExecLogCommand.self, Network.self, NetLog.self,
+        subcommands: [Create.self, List.self, Start.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self,
                       Packs.self, Serve.self]
     )
 
@@ -157,6 +159,48 @@ struct BoxCommand: ParsableCommand {
             if !options.json {
                 print("Stopped box \(box.name)")
             }
+        }
+    }
+
+    struct View: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Show a running box's screen in a window on this Mac.",
+            discussion: """
+                The box's supervisor opens the window (or brings it to the front); closing it \
+                leaves the box running. View only by default: keys and clicks do not reach the \
+                box. With --interactive they do, as in a VM app. The screen shows the box's \
+                desktop (Finder, system dialogs, permission prompts); programs run with exec do \
+                not appear on it, so use `box shell` and `box execlog` to follow those. A box \
+                started over SSH or by a service has no window server and cannot show one.
+                """)
+
+        @Argument(help: "The running box.")
+        var name: String
+
+        @Flag(name: .long, help: "Let keyboard and mouse reach the box.")
+        var interactive = false
+
+        @OptionGroup var options: StoreOptions
+
+        func run() throws {
+            let box = try options.boxStore.box(named: name)
+            guard box.isRunning else {
+                throw AgentVMError.boxNotRunning(box.name)
+            }
+            // Supervisors from before `view` answer their status without guest features.
+            let status = try ControlClient.request(.status, path: box.controlSocketPath)
+            guard status.guestFeatures != nil else {
+                throw AgentVMError.supervisorRefused("box \(box.name) was started by an older agent-vm; restart it (`agent-vm box stop \(box.name)`, then `box start`) to view its screen")
+            }
+            let response = try ControlClient.request(ControlRequest(op: .view, interactive: interactive), path: box.controlSocketPath)
+            guard response.ok else {
+                throw AgentVMError.supervisorRefused(response.error ?? "no reason given")
+            }
+            if options.json {
+                try Output.json(response)
+                return
+            }
+            print("Showing box \(box.name)\(interactive ? "" : " (view only; --interactive to use keyboard and mouse)")")
         }
     }
 
@@ -429,12 +473,34 @@ struct BoxCommand: ParsableCommand {
             // Control clients that go away mid-write must not end the supervisor.
             signal(SIGPIPE, SIG_IGN)
             let box = try options.boxStore.box(named: name)
-            let supervisor = BoxSupervisor(box: box) { line in
+            // In a login session main runs AppKit's loop (see Main): the supervisor is then an
+            // application without a Dock icon, and `box view` can show the box's screen.
+            let windows = Self.runsAppKit
+            let supervisor = BoxSupervisor(box: box, windows: windows) { line in
                 let formatter = ISO8601DateFormatter()
                 print("\(formatter.string(from: Date())) \(line)")
                 fflush(stdout)
             }
+            guard windows else {
+                try await supervisor.run()
+                return
+            }
+            // No App Nap for a background application that serves a VM, its proxy and execs.
+            let activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "running box \(box.name)")
+            let delegate = SupervisorApplicationDelegate { supervisor.requestStop() }
+            NSApplication.shared.delegate = delegate
+            defer {
+                withExtendedLifetime((activity, delegate)) {}
+            }
             try await supervisor.run()
+        }
+
+        /// Set by main when it runs AppKit's loop for this supervisor.
+        @MainActor static var runsAppKit = false
+
+        /// `agent-vm box serve <name>` in a login session (with a window server).
+        static func shouldRunAppKit(_ arguments: [String]) -> Bool {
+            return Array(arguments.dropFirst().prefix(2)) == ["box", "serve"] && BoxSupervisor.canShowWindows
         }
     }
 }

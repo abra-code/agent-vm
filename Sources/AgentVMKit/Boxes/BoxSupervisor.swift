@@ -27,9 +27,38 @@ public final class BoxSupervisor {
     static let bootTimeout: Duration = .seconds(180)
     static let shutdownTimeout: Duration = .seconds(90)
 
-    public init(box: Box, log: @escaping @MainActor (String) -> Void) {
+    /// Whether this process runs AppKit and can show the box's screen (`box view`).
+    private let windows: Bool
+    private var viewer: BoxViewer?
+
+    /// `windows`: the caller runs NSApplication on the main thread (see BoxViewer).
+    public init(box: Box, windows: Bool = false, log: @escaping @MainActor (String) -> Void) {
         self.box = box
+        self.windows = windows
         self.log = log
+    }
+
+    /// Whether a supervisor started here could show windows (a login session, not SSH).
+    public nonisolated static var canShowWindows: Bool {
+        return BoxViewer.canShowWindows
+    }
+
+    /// Stops the box cleanly, as `box stop` and SIGTERM do.
+    public func requestStop() {
+        state.requestStop()
+    }
+
+    private func view(interactive: Bool) throws {
+        guard windows else {
+            throw AgentVMError.supervisorRefused("box \(box.name) runs outside a login session (started over SSH or by a service), so it cannot show a window; stop it and start it again from a session on this Mac's screen")
+        }
+        guard let machine, state.snapshot.state != .stopping, !state.stopRequested else {
+            throw AgentVMError.boxNotRunning(box.name)
+        }
+        let viewer = self.viewer ?? BoxViewer(name: box.name, machine: machine)
+        self.viewer = viewer
+        viewer.show(interactive: interactive)
+        log("Showing the screen\(interactive ? " (interactive)" : " (view only)")")
     }
 
     /// Runs the box until it stops; returns when the VM is down and the socket is gone.
@@ -61,6 +90,11 @@ public final class BoxSupervisor {
                 throw AgentVMError.boxNotRunning(name)
             }
             try await self.shareProject(path, readOnly: readOnly, claim: claim)
+        } view: { [weak self] interactive in
+            guard let self else {
+                throw AgentVMError.boxNotRunning(name)
+            }
+            try self.view(interactive: interactive)
         }
         let server = try ControlServer(path: box.controlSocketPath, handler: handler)
         defer { server.close() }
@@ -373,9 +407,12 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
     private let box: Box
     private let proxy: ProxyServer
     private let share: @Sendable @MainActor (String, Bool, Bool) async throws -> Void
+    private let view: @Sendable @MainActor (Bool) throws -> Void
 
     init(state: SupervisorState, machine: MacMachine, box: Box, proxy: ProxyServer,
-         share: @escaping @Sendable @MainActor (String, Bool, Bool) async throws -> Void) {
+         share: @escaping @Sendable @MainActor (String, Bool, Bool) async throws -> Void,
+         view: @escaping @Sendable @MainActor (Bool) throws -> Void) {
+        self.view = view
         self.state = state
         self.machine = machine
         self.box = box
@@ -387,6 +424,28 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
     /// up to four guest commands of at most 60 s each).
     func controlShare(path: String, readOnly: Bool) throws {
         try shareBlocking(path: path, readOnly: readOnly, claim: false)
+    }
+
+    /// Shows the box's screen on the main actor; blocks this control thread for at most 30 s.
+    func controlView(interactive: Bool) throws {
+        let result = ShareResult()
+        let done = DispatchSemaphore(value: 0)
+        let view = self.view
+        Task { @MainActor in
+            do {
+                try view(interactive)
+                result.set(nil)
+            } catch {
+                result.set(error)
+            }
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + 30) == .success else {
+            throw AgentVMError.supervisorRefused("showing the screen of box \(box.name) timed out")
+        }
+        if let error = result.error {
+            throw error
+        }
     }
 
     private func shareBlocking(path: String, readOnly: Bool, claim: Bool) throws {

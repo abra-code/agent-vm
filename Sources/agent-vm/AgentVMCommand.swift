@@ -5,13 +5,31 @@
 // program such as Cadabra.
 
 import AgentVMKit
+import AppKit
 import ArgumentParser
 import Foundation
 
 @main
 enum Main {
+    @MainActor
     static func main() async {
         AskpassEntry.handleIfAskpass()
+        // A box supervisor in a login session runs AppKit's loop, so `box view` can show the
+        // box's screen. The loop is entered here, in main itself: entered inside a main-actor
+        // job (as a command's run() is), it would never drain the main queue again, and the
+        // supervisor, which runs on the main actor, would never start (measured).
+        if BoxCommand.Serve.shouldRunAppKit(CommandLine.arguments) {
+            BoxCommand.Serve.runsAppKit = true
+            let application = NSApplication.shared
+            application.setActivationPolicy(.prohibited)
+            Task { @MainActor in
+                await AgentVMCommand.main()
+                exit(0)
+            }
+            application.run()
+            // run() returns only after NSApp.stop, which nothing calls; the command must not run twice.
+            return
+        }
         await AgentVMCommand.main()
     }
 }

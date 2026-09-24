@@ -79,6 +79,7 @@ printf 'b\na\n' | agent-vm exec --box dev1 -- sort
 agent-vm exec --box dev1 --cwd /tmp --env FOO=bar -- sh -c 'echo $FOO; pwd'
 agent-vm box shell dev1                       # a login shell in the box, on this terminal
 agent-vm exec -t --box dev1 -- top            # any full-screen program
+agent-vm box view dev1                        # the box's screen in a window (view only)
 agent-vm box execlog dev1                     # what exec and shell ran there
 agent-vm box list
 agent-vm box stop dev1                        # clean shutdown through the guest daemon
@@ -100,11 +101,12 @@ agent-vm box delete dev1
   - `box shell <name>` opens the account's login shell in the box on your terminal (`--user root` for root, `--project` to start in a shared project). It is `exec --tty` with the shell, over the box's private channel: SSH stays off and no network is involved.
   - `exec -t` (`--tty`) runs any program on a terminal in the box: editors, `top`, agents with a full-screen interface. Your terminal is put in raw mode, so keys such as Control-C go to the program as typed, and window size changes follow. SIGHUP or SIGTERM to `agent-vm` ends the session, as for ssh. Its output, standard error included, arrives on standard output. The terminal type is yours when the guest knows it, else `xterm-256color`.
   - `box execlog <name>` lists every program `exec` and `box shell` ran in the box: start time, duration, exit status, account and command (`--json` adds folders, project and process ids). The log is kept on your Mac (`Boxes/<name>/exec.jsonl`), out of the box's reach, until the box is deleted. With `box netlog` it shows what happened in a box. It never records the programs' environment, but command lines are recorded as given, so keep keys out of them.
+  - `box view <name>` shows the box's screen in a window on your Mac, as a VM app would; closing the window leaves the box running. It is view only unless you add `--interactive`: keys and clicks do not reach the box. The screen shows the box's desktop (Finder, system dialogs, permission prompts that would otherwise wait unseen). Programs run with `exec` do not appear on it, because the guest daemon starts them outside the desktop session; `box shell` and `box execlog` are the way to follow those. The box's supervisor opens the window, so a box started over SSH or by a service, with no screen to draw on, cannot show one.
   - Terminals need an image whose guest daemon has them: `image list` names what an image lacks, and `image update-guest <image>` adds it.
 - **How it connects:** `exec` asks the box's supervisor, over a Unix socket only you can use (`Boxes/<name>/control.sock`), for a connection to the guest daemon. It then talks to the daemon directly, so the supervisor is not in the data path.
 - **Boxes need the image's volume**: the clone costs nothing until the box writes, and the box's disk grows as the guest works.
 - **`box start` is safe to repeat**: on a running box it reports the box, and during another start it waits for that one.
-- **The supervisor** is `agent-vm box serve <name>` in its own session, logging to `Boxes/<name>/supervisor.log`. It holds the box's lock, so a running box cannot be deleted or started twice. SIGTERM, SIGINT or SIGHUP to it stop the box cleanly, the same as `box stop`.
+- **The supervisor** is `agent-vm box serve <name>` in its own session, logging to `Boxes/<name>/supervisor.log`. It holds the box's lock, so a running box cannot be deleted or started twice. SIGTERM, SIGINT or SIGHUP to it stop the box cleanly, the same as `box stop`. Started in a login session, it is also an application without a Dock icon or menu (so `box view` can open a window): quitting it, as a logout does, stops the box cleanly too.
 - **macOS runs at most two macOS guests at once**, whichever applications started them (`agent-vm doctor` counts them).
 - **Socket paths:** the control socket's full path must stay under 104 bytes, which a very long `AGENT_VM_HOME` can exceed.
 
@@ -208,7 +210,7 @@ Tests/Shell/run.sh all --filter network   # both tiers, only tests whose name co
 ```
 
 - **fast** covers the CLI, sessions (report, undo, refusals), the image and box stores, network rules and recipe checks. Each test gets its own `AGENT_VM_HOME` in a scratch folder, so it never touches your images or boxes.
-- **extended** starts real boxes: their life cycle, exec (streams, exit statuses, signals, a killed client), the allowlist network (it needs the internet), project shares, and derived images built from recipes. It uses your store (or `$AGENT_VM_TEST_HOME`) and needs a ready image named `dev` (or `$AGENT_VM_TEST_IMAGE`); without one those tests are skipped. It creates boxes and images named `shtest-*` and deletes them. A full install from a restore image runs only when `$AGENT_VM_TEST_IPSW` names one. The tier takes about 4 minutes, and macOS runs at most two virtual machines at once, so stop other boxes first.
+- **extended** starts real boxes: their life cycle, exec (streams, exit statuses, signals, a killed client), terminals, `box shell` and the exec log, `box view` (a window appears briefly), the allowlist network (it needs the internet), project shares, and derived images built from recipes. It uses your store (or `$AGENT_VM_TEST_HOME`) and needs a ready image named `dev` (or `$AGENT_VM_TEST_IMAGE`); without one those tests are skipped. It creates boxes and images named `shtest-*` and deletes them. A full install from a restore image runs only when `$AGENT_VM_TEST_IPSW` names one. The tier takes about 7 minutes, and macOS runs at most two virtual machines at once, so stop other boxes first.
 
 A test that fails keeps its scratch folder, with the commands it ran and their output, and the last lines are printed. `--keep` keeps every folder, and `--agent-vm <path>` tests another binary.
 

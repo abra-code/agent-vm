@@ -145,3 +145,14 @@ test_box_execlog_needs_a_box() {
     assert_status 1 || return 1
     assert_err_contains "no box nosuch" || return 1
 }
+
+test_box_view_needs_a_running_box() {
+    fake_image dev
+    run_avm box create b1 --image dev
+    run_avm box view b1
+    assert_status 1 || return 1
+    assert_err_contains "box b1 is not running" || return 1
+    run_avm box view nosuch
+    assert_status 1 || return 1
+    assert_err_contains "no box nosuch" || return 1
+}
