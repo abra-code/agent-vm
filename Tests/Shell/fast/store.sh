@@ -104,6 +104,9 @@ test_a_stopped_box_refuses_exec_and_stop() {
     run_avm box netlog b1
     assert_status 0 || return 1
     assert_out_contains "No connections logged" || return 1
+    run_avm box execlog b1
+    assert_status 0 || return 1
+    assert_out_contains "Nothing run in box b1" || return 1
     run_avm box delete b1
     assert_status 0 || return 1
     assert_missing "$AGENT_VM_HOME/Boxes/b1" || return 1
@@ -118,4 +121,27 @@ test_names_are_checked() {
     assert_err_contains "not a usable box name" || return 1
     run_avm image delete ../etc
     assert_status 1 || return 1
+}
+
+# Images from before guest features were recorded (or with an older agent-vm-guest) say what
+# they lack and how to add it; updating needs a ready image.
+test_images_name_missing_guest_features() {
+    fake_image dev
+    fake_image broken failed
+    run_avm image list
+    assert_status 0 || return 1
+    assert_out_contains "agent-vm-guest lacks terminal; \`agent-vm image update-guest dev\` adds it" || return 1
+    assert_not_contains "$OUT" "update-guest broken" "stdout" || return 1
+    run_avm image update-guest broken
+    assert_status 1 || return 1
+    assert_err_contains "cannot update the guest daemon of image broken: it is failed" || return 1
+    run_avm image update-guest nosuch
+    assert_status 1 || return 1
+    assert_err_contains "no image nosuch" || return 1
+}
+
+test_box_execlog_needs_a_box() {
+    run_avm box execlog nosuch
+    assert_status 1 || return 1
+    assert_err_contains "no box nosuch" || return 1
 }

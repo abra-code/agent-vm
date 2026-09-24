@@ -29,9 +29,13 @@ public enum GuestClient {
         }
     }
 
-    /// Runs a program and collects its output (for short commands the host itself needs).
-    public static func capture(_ descriptor: Int32, _ request: GuestRequest) throws -> (report: ExitReport, stdout: String, stderr: String) {
+    /// Runs a program and collects its output (for short commands the host itself needs), with
+    /// `input` as its stdin.
+    public static func capture(_ descriptor: Int32, _ request: GuestRequest, input: Data? = nil) throws -> (report: ExitReport, stdout: String, stderr: String) {
         let session = try ExecSession(descriptor: descriptor, request: request)
+        if let input {
+            try session.sendStdin(Array(input))
+        }
         try session.sendStdinEnd()
         var stdout = Data()
         var stderr = Data()
@@ -72,6 +76,11 @@ public final class ExecSession: @unchecked Sendable {
 
     public func sendStdinEnd() throws {
         try channel.send(Frame(.stdinEnd))
+    }
+
+    /// Sets the size of the program's terminal (exec with `terminal` only).
+    public func sendResize(_ size: TerminalSize) throws {
+        try channel.send(Frame(.resize, size.bytes))
     }
 
     /// Delivers a signal to the program's process group.

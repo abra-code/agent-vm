@@ -106,4 +106,16 @@ enum Output {
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter.string(from: date)
     }
+
+    /// A command as a shell would take it back: words with anything but letters, digits and
+    /// @%+=:,./_- single-quoted.
+    static func shellQuoted(_ argv: [String]) -> String {
+        let plain = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+=:,./_-")
+        return argv.map { word in
+            if !word.isEmpty && word.allSatisfy({ plain.contains($0) }) {
+                return word
+            }
+            return "'" + word.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }.joined(separator: " ")
+    }
 }

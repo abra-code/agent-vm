@@ -109,7 +109,8 @@ public final class GuestServer: @unchecked Sendable {
         }
         switch request.op {
         case .hello:
-            try? channel.send(.response, json: GuestResponse(ok: true, v: AgentVM.guestProtocolVersion, version: AgentVM.version, osBuild: Self.osBuild()))
+            try? channel.send(.response, json: GuestResponse(ok: true, v: AgentVM.guestProtocolVersion, version: AgentVM.version, osBuild: Self.osBuild(),
+                                                               features: GuestFeature.all))
         case .shutdown:
             try? channel.send(.response, json: GuestResponse(ok: true, v: AgentVM.guestProtocolVersion))
             channel.shutdownBoth()
@@ -143,12 +144,24 @@ public final class GuestServer: @unchecked Sendable {
         }
 
         let output = DispatchGroup()
-        for (descriptor, type) in [(started.stdout, FrameType.stdout), (started.stderr, FrameType.stderr)] {
+        let stopTerminal = StopFlag()
+        if let terminal = started.terminal {
             output.enter()
             Thread.detachNewThread {
-                Self.pump(descriptor, type, into: channel)
-                close(descriptor)
+                // The master is closed at the end of runExec, not here: the host reader uses it
+                // (resize, foreground job) until then, and a closed number may be reused by
+                // another exec's terminal.
+                Self.pumpTerminal(terminal, into: channel, stop: stopTerminal)
                 output.leave()
+            }
+        } else {
+            for (descriptor, type) in [(started.stdout, FrameType.stdout), (started.stderr, FrameType.stderr)] {
+                output.enter()
+                Thread.detachNewThread {
+                    Self.pump(descriptor, type, into: channel)
+                    close(descriptor)
+                    output.leave()
+                }
             }
         }
 
@@ -164,14 +177,18 @@ public final class GuestServer: @unchecked Sendable {
         let stdin = OnceCloser(started.stdin)
         let readerDone = DispatchSemaphore(value: 0)
         Thread.detachNewThread {
-            Self.readHost(channel: channel, pid: pid, stdin: stdin, exited: exited)
+            Self.readHost(channel: channel, pid: pid, terminal: started.terminal, stdin: stdin, exited: exited)
             readerDone.signal()
         }
 
         reaped.wait()
         // Background children may hold the pipes open; do not wait for them forever. Pumps
         // still running after this find the channel closed.
-        _ = output.wait(timeout: .now() + 2)
+        if output.wait(timeout: .now() + 2) == .timedOut, started.terminal != nil {
+            // The terminal pump polls; stopped, it returns at once.
+            stopTerminal.set()
+            _ = output.wait(timeout: .now() + 1)
+        }
         if let report = exited.report {
             try? channel.send(.exit, json: report)
         }
@@ -179,16 +196,37 @@ public final class GuestServer: @unchecked Sendable {
         channel.shutdownBoth()
         // The reader must be out of `receive` before the descriptor is closed and reused.
         readerDone.wait()
+        if let terminal = started.terminal {
+            // Neither the reader nor the pump (stopped, with the channel shut) uses the master
+            // any more. Closing it hangs up whatever still has the terminal open.
+            stopTerminal.set()
+            output.wait()
+            close(terminal)
+        }
     }
 
     /// Host-to-guest frames during exec. When the host goes away (or breaks the protocol),
-    /// the process group is hung up, then killed.
-    private static func readHost(channel: FrameChannel, pid: pid_t, stdin: OnceCloser, exited: ExitState) {
+    /// the process group is hung up, then killed. With a terminal, signals go to its foreground
+    /// job (what a key such as Control-C would reach), and resize frames set its size.
+    private static func readHost(channel: FrameChannel, pid: pid_t, terminal: Int32?, stdin: OnceCloser, exited: ExitState) {
         func hangUp() {
             stdin.close()
-            _ = kill(-pid, SIGHUP)
+            // With job control the foreground job has a group of its own; it is hung up too
+            // (the master is still open here: runExec closes it after this thread ends).
+            var groups = [pid]
+            if let terminal {
+                let foreground = tcgetpgrp(terminal)
+                if foreground > 0 && foreground != pid {
+                    groups.append(foreground)
+                }
+            }
+            for group in groups {
+                _ = kill(-group, SIGHUP)
+            }
             DispatchQueue.global().asyncAfter(deadline: .now() + hangupGrace) {
-                _ = kill(-pid, SIGKILL)
+                for group in groups {
+                    _ = kill(-group, SIGKILL)
+                }
             }
         }
         while true {
@@ -214,7 +252,13 @@ public final class GuestServer: @unchecked Sendable {
                 stdin.close()
             case .signal:
                 if let signal = Int32(bigEndianBytes: frame.payload), allowedSignals.contains(signal), !exited.isFinished {
-                    _ = kill(-pid, signal)
+                    let foreground = terminal.map { tcgetpgrp($0) } ?? -1
+                    _ = kill(foreground > 0 ? -foreground : -pid, signal)
+                }
+            case .resize:
+                // Ignored without a terminal. Setting the size sends SIGWINCH to the foreground job.
+                if let terminal, var size = TerminalSize(bytes: frame.payload).map({ winsize(ws_row: $0.rows, ws_col: $0.columns, ws_xpixel: 0, ws_ypixel: 0) }) {
+                    _ = ioctl(terminal, TIOCSWINSZ, &size)
                 }
             default:
                 // Anything else from the host is a protocol error: treat it as a hangup.
@@ -242,6 +286,30 @@ public final class GuestServer: @unchecked Sendable {
         }
     }
 
+    /// A terminal's output (the non-blocking master side) until every descriptor for the
+    /// terminal's device is closed, or `stop` is set: a background process may keep the terminal
+    /// open long after the program exited.
+    private static func pumpTerminal(_ master: Int32, into channel: FrameChannel, stop: StopFlag) {
+        var buffer = [UInt8](repeating: 0, count: 65536)
+        while !stop.isSet {
+            let count = read(master, &buffer, buffer.count)
+            if count > 0 {
+                // When the host is gone, keep draining so the program does not block writing.
+                try? channel.send(Frame(.stdout, Array(buffer[0..<count])))
+                continue
+            }
+            if count < 0 && errno == EINTR {
+                continue
+            }
+            guard count < 0 && errno == EAGAIN else {
+                // End of file or EIO: the terminal's device is closed on the program's side.
+                return
+            }
+            var watched = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
+            _ = poll(&watched, 1, 200)
+        }
+    }
+
     static func report(_ status: Int32) -> ExitReport {
         // WIFEXITED / WEXITSTATUS / WTERMSIG are macros Swift does not import.
         let low = status & 0x7f
@@ -256,8 +324,10 @@ public final class GuestServer: @unchecked Sendable {
     struct Started {
         var pid: pid_t
         var stdin: Int32
+        /// With a terminal: its master side (also `terminal`); stderr is then -1.
         var stdout: Int32
         var stderr: Int32
+        var terminal: Int32?
     }
 
     struct Account: Equatable {
@@ -341,25 +411,39 @@ public final class GuestServer: @unchecked Sendable {
             throw Refusal("\(program): command not found", status: 127)
         }
 
+        // Another account, or a terminal (which only the new process itself can make its
+        // controlling terminal), goes through the helper.
+        let direct = account.uid == geteuid() && request.terminal == nil
         let spawnPath: String
         let spawnArguments: [String]
-        if account.uid == geteuid() {
+        if direct {
             spawnPath = executable
             spawnArguments = argv
         } else {
-            guard geteuid() == 0, let helperPath else {
+            guard account.uid == geteuid() || geteuid() == 0 else {
                 throw Refusal("cannot run as \(account.name): the guest daemon is not root")
             }
+            guard let helperPath else {
+                throw Refusal("cannot run \(request.terminal == nil ? "as \(account.name)" : "on a terminal"): the guest daemon has no exec-as helper")
+            }
             spawnPath = helperPath
-            spawnArguments = Self.execAsArguments(user: account.name, directory: directory, executable: executable, argv: argv)
+            spawnArguments = Self.execAsArguments(user: account.name, directory: directory, executable: executable, argv: argv,
+                                                  terminal: request.terminal != nil)
         }
         return try Self.spawn(spawnPath, arguments: spawnArguments, environment: environment,
-                              directory: account.uid == geteuid() ? directory : nil)
+                              directory: direct ? directory : nil,
+                              terminal: request.terminal, terminalOwner: account.uid)
     }
 
-    /// posix_spawn with pipes for stdio, a new session, default signal handling, and no other
+    /// posix_spawn with pipes for stdio (or, with `terminal`, a new pseudo-terminal that becomes
+    /// the program's controlling terminal), a new session, default signal handling, and no other
     /// inherited descriptors.
-    static func spawn(_ path: String, arguments: [String], environment: [String: String], directory: String?) throws -> Started {
+    static func spawn(_ path: String, arguments: [String], environment: [String: String], directory: String?,
+                      terminal: TerminalSize? = nil, terminalOwner: uid_t? = nil) throws -> Started {
+        if let terminal {
+            return try spawnOnTerminal(path, arguments: arguments, environment: environment, directory: directory,
+                                       size: terminal, owner: terminalOwner)
+        }
         var input: [Int32] = [-1, -1]
         var output: [Int32] = [-1, -1]
         var error: [Int32] = [-1, -1]
@@ -379,6 +463,73 @@ public final class GuestServer: @unchecked Sendable {
         posix_spawn_file_actions_adddup2(&actions, input[0], 0)
         posix_spawn_file_actions_adddup2(&actions, output[1], 1)
         posix_spawn_file_actions_adddup2(&actions, error[1], 2)
+        let pid: pid_t
+        do {
+            pid = try spawnProcess(path, arguments: arguments, environment: environment, directory: directory, actions: &actions)
+        } catch let failure {
+            for descriptor in input + output + error {
+                close(descriptor)
+            }
+            throw failure
+        }
+        close(input[0])
+        close(output[1])
+        close(error[1])
+        return Started(pid: pid, stdin: input[1], stdout: output[0], stderr: error[0], terminal: nil)
+    }
+
+    /// The terminal variant. The program opens the terminal's device itself as the leader of its
+    /// new session, which makes it the controlling terminal (a dup2 would not). The daemon keeps
+    /// only the master side, non-blocking: input is written to it, output read from it.
+    private static func spawnOnTerminal(_ path: String, arguments: [String], environment: [String: String], directory: String?,
+                                        size: TerminalSize, owner: uid_t?) throws -> Started {
+        let master = posix_openpt(O_RDWR | O_NOCTTY)
+        guard master >= 0 else {
+            throw Refusal("cannot open a terminal: \(String(cString: strerror(errno)))")
+        }
+        guard grantpt(master) == 0, unlockpt(master) == 0, let name = ptsname(master).map({ String(cString: $0) }) else {
+            let code = errno
+            close(master)
+            throw Refusal("cannot set up a terminal: \(String(cString: strerror(code)))")
+        }
+        _ = fcntl(master, F_SETFD, FD_CLOEXEC)
+        // Held open until the program has it: the size set here would otherwise be reset when
+        // the device is first opened. The account owns its terminal, as after a login.
+        let held = open(name, O_RDWR | O_NOCTTY | O_CLOEXEC)
+        guard held >= 0 else {
+            let code = errno
+            close(master)
+            throw Refusal("cannot open \(name): \(String(cString: strerror(code)))")
+        }
+        defer { close(held) }
+        var cells = winsize(ws_row: size.rows, ws_col: size.columns, ws_xpixel: 0, ws_ypixel: 0)
+        _ = ioctl(held, TIOCSWINSZ, &cells)
+        if let owner, owner != geteuid() {
+            _ = fchown(held, owner, gid_t(bitPattern: -1))
+        }
+
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        posix_spawn_file_actions_addopen(&actions, 0, name, O_RDWR, 0)
+        posix_spawn_file_actions_adddup2(&actions, 0, 1)
+        posix_spawn_file_actions_adddup2(&actions, 0, 2)
+        let pid: pid_t
+        do {
+            pid = try spawnProcess(path, arguments: arguments, environment: environment, directory: directory, actions: &actions)
+        } catch {
+            close(master)
+            throw error
+        }
+        _ = fcntl(master, F_SETFL, fcntl(master, F_GETFL) | O_NONBLOCK)
+        // A second descriptor for input, so closing input (stdin end) leaves output flowing.
+        let input = dup(master)
+        _ = fcntl(input, F_SETFD, FD_CLOEXEC)
+        return Started(pid: pid, stdin: input, stdout: master, stderr: -1, terminal: master)
+    }
+
+    private static func spawnProcess(_ path: String, arguments: [String], environment: [String: String], directory: String?,
+                                     actions: inout posix_spawn_file_actions_t?) throws -> pid_t {
         if let directory {
             posix_spawn_file_actions_addchdir(&actions, directory)
         }
@@ -401,31 +552,47 @@ public final class GuestServer: @unchecked Sendable {
                 posix_spawn(&pid, path, &actions, &attributes, argv, envp)
             }
         }
-        close(input[0])
-        close(output[1])
-        close(error[1])
         guard status == 0 else {
-            close(input[1])
-            close(output[0])
-            close(error[0])
             throw Refusal("cannot start \(path): \(String(cString: strerror(status)))")
         }
-        return Started(pid: pid, stdin: input[1], stdout: output[0], stderr: error[0])
+        return pid
     }
 
     // MARK: - exec-as (runs in a fresh process)
 
-    /// `agent-vm-guest exec-as <user> <directory> <executable> -- <argv0> [arguments...]`: become the
-    /// account (supplementary groups, group, user - in that order, then verify root cannot be
-    /// regained), change to the directory, and exec. The environment was set by the daemon.
-    /// Exits 126 when any step fails, as a shell does for "cannot execute".
+    /// `agent-vm-guest exec-as [--terminal] <user> <directory> <executable> -- <argv0> [arguments...]`:
+    /// with --terminal, make stdin (a terminal, this process leading a new session) the controlling
+    /// terminal; become the account unless already running as it (supplementary groups, group,
+    /// user - in that order, then verify root cannot be regained); change to the directory, and
+    /// exec. The environment was set by the daemon. Exits 126 when any step fails, as a shell does
+    /// for "cannot execute".
     public static func execAs(_ arguments: [String]) -> Never {
-        guard let (name, directory, executable, command) = parseExecAs(arguments) else {
-            fail("usage: agent-vm-guest exec-as <user> <directory> <executable> -- <argv0> [arguments...]")
+        guard let (name, directory, executable, command, terminal) = parseExecAs(arguments) else {
+            fail("usage: agent-vm-guest exec-as [--terminal] <user> <directory> <executable> -- <argv0> [arguments...]")
         }
         guard let account = account(named: name) else {
             fail("no such account: \(name)")
         }
+        // On macOS, opening a terminal never makes it the controlling one; only this does.
+        if terminal && ioctl(0, TIOCSCTTY, 0) != 0 {
+            fail("cannot take the terminal: \(String(cString: strerror(errno)))")
+        }
+        if getuid() == account.uid && geteuid() == account.uid {
+            // Already the account (the daemon itself runs as it): nothing to change.
+        } else {
+            becomeAccount(account)
+        }
+        guard chdir(directory) == 0 else {
+            fail("cannot enter \(directory): \(String(cString: strerror(errno)))")
+        }
+        _ = withCStrings(command) { argv in
+            execv(executable, argv)
+        }
+        fail("cannot run \(executable): \(String(cString: strerror(errno)))")
+    }
+
+    private static func becomeAccount(_ account: Account) {
+        let name = account.name
         guard initgroups(name, Int32(bitPattern: account.gid)) == 0 else {
             fail("initgroups(\(name)): \(String(cString: strerror(errno)))")
         }
@@ -437,27 +604,22 @@ public final class GuestServer: @unchecked Sendable {
                 fail("privileges were not dropped")
             }
         }
-        guard chdir(directory) == 0 else {
-            fail("cannot enter \(directory): \(String(cString: strerror(errno)))")
-        }
-        _ = withCStrings(command) { argv in
-            execv(executable, argv)
-        }
-        fail("cannot run \(executable): \(String(cString: strerror(errno)))")
     }
 
-    /// `<user> <directory> <executable> -- <argv0> [arguments...]` (what follows `exec-as`).
+    /// `[--terminal] <user> <directory> <executable> -- <argv0> [arguments...]` (what follows `exec-as`).
     /// The executable is separate from argv[0], so the program sees the name it was asked by.
-    static func parseExecAs(_ arguments: [String]) -> (user: String, directory: String, executable: String, argv: [String])? {
+    static func parseExecAs(_ arguments: [String]) -> (user: String, directory: String, executable: String, argv: [String], terminal: Bool)? {
+        let terminal = arguments.first == "--terminal"
+        let arguments = terminal ? Array(arguments.dropFirst()) : arguments
         guard arguments.count >= 5, arguments[3] == "--", !arguments[0].isEmpty, !arguments[2].isEmpty else {
             return nil
         }
-        return (arguments[0], arguments[1], arguments[2], Array(arguments[4...]))
+        return (arguments[0], arguments[1], arguments[2], Array(arguments[4...]), terminal)
     }
 
     /// The helper's arguments for running `executable` with `argv` as `user` in `directory`.
-    static func execAsArguments(user: String, directory: String, executable: String, argv: [String]) -> [String] {
-        return ["agent-vm-guest", "exec-as", user, directory, executable, "--"] + argv
+    static func execAsArguments(user: String, directory: String, executable: String, argv: [String], terminal: Bool = false) -> [String] {
+        return ["agent-vm-guest", "exec-as"] + (terminal ? ["--terminal"] : []) + [user, directory, executable, "--"] + argv
     }
 
     /// A request the daemon turns down; `message` goes to the host as is, with the shell's
@@ -508,6 +670,24 @@ public final class GuestServer: @unchecked Sendable {
 
     static func log(_ message: String) {
         FileHandle.standardError.write(Data("agent-vm-guest: \(message)\n".utf8))
+    }
+}
+
+/// Set once, read from another thread.
+private final class StopFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    func set() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }
 

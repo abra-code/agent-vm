@@ -7,6 +7,7 @@
 // a logged-in user. Every step is written to the image record, so an interrupted or failed
 // build is visible in `agent-vm image list`.
 
+import CryptoKit
 import Darwin
 import Foundation
 import Security
@@ -68,7 +69,13 @@ public struct ImageDeriveOptions: Sendable {
     public var cpuCount: Int?
     public var memoryBytes: UInt64?
 
-    public init(name: String, base: String, recipe: ImageRecipe?, commandLineTools: Bool, cpuCount: Int? = nil, memoryBytes: UInt64? = nil) {
+    /// The agent-vm-guest to put in the new image when the base has another one (nil: keep the
+    /// base's).
+    public var guestDaemon: URL?
+
+    public init(name: String, base: String, recipe: ImageRecipe?, commandLineTools: Bool, cpuCount: Int? = nil, memoryBytes: UInt64? = nil,
+                guestDaemon: URL? = nil) {
+        self.guestDaemon = guestDaemon
         self.name = name
         self.base = base
         self.recipe = recipe
@@ -193,6 +200,9 @@ public final class ImageBuilder {
             throw AgentVMError.wrongImageState(name: base.name, state: "built with guest protocol \(base.record.guestProtocol.map(String.init) ?? "none"), not \(AgentVM.guestProtocolVersion)", operation: "build an image from")
         }
         try Self.checkHost(HostFacts.current(storeRoot: store.root), minimumFree: Self.minimumFreeBytesToDerive)
+        if let guestDaemon = options.guestDaemon, access(guestDaemon.path, X_OK) != 0 {
+            throw AgentVMError.hostNotReady("the guest daemon \(guestDaemon.path) is missing; Scripts/build.sh builds it next to agent-vm")
+        }
         let cpuCount = options.cpuCount ?? base.record.cpuCount
         let memoryBytes = options.memoryBytes ?? base.record.memoryBytes
         guard cpuCount <= VZVirtualMachineConfiguration.maximumAllowedCPUCount,
@@ -245,19 +255,33 @@ public final class ImageBuilder {
 
             let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
             let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
+            var replacedDaemon: (digest: String, replaced: Bool)?
             log("Booting")
             try await machine.start(provisioning: nil)
             do {
                 // A clone boots like any box: the daemon answers once macOS is up.
                 let hello = try await waitForDaemon(machine, attempts: 180)
                 log("  agent-vm-guest \(hello.version ?? "?") answers over vsock")
+                image = try store.update(image) { record in
+                    record.guestVersion = hello.version
+                    record.guestFeatures = hello.features
+                }
                 image = try await configure(image, machine: machine, commandLineTools: options.commandLineTools, recipe: options.recipe)
+                // Last, so the recipe ran under the daemon it was tested with.
+                if let guestDaemon = options.guestDaemon {
+                    replacedDaemon = try await replaceGuestDaemon(guestDaemon, machine: machine)
+                }
                 try await shutDown(machine)
             } catch {
                 if machine.isRunning {
                     try? await machine.forceStop()
                 }
                 throw error
+            }
+            if let replacedDaemon, replacedDaemon.replaced {
+                image = try await checkGuestDaemon(image, digest: replacedDaemon.digest)
+            } else if let replacedDaemon {
+                image = try store.update(image) { $0.guestDigest = replacedDaemon.digest }
             }
             let seconds = Self.seconds(clock.now - began)
             log("Built in \(Int(seconds)) s")
@@ -274,6 +298,66 @@ public final class ImageBuilder {
             throw error
         }
     }
+
+    // MARK: - Updating the guest daemon
+
+    /// Puts this agent-vm's agent-vm-guest into a ready image, in place: boots it, replaces the
+    /// daemon if it differs, shuts down, and boots once more to check the new one (a minute or
+    /// two). Boxes made from the image earlier keep their own. The image stays ready, and is
+    /// marked failed only when the new daemon does not answer.
+    public func updateGuest(named name: String, guestDaemon: URL) async throws -> GoldenImage {
+        var image = try store.image(named: name)
+        guard image.record.state == .ready else {
+            throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "update the guest daemon of")
+        }
+        guard access(guestDaemon.path, X_OK) == 0 else {
+            throw AgentVMError.hostNotReady("the guest daemon \(guestDaemon.path) is missing; Scripts/build.sh builds it next to agent-vm")
+        }
+        try Self.checkHost(HostFacts.current(storeRoot: store.root), minimumFree: Self.minimumFreeBytesToUpdate)
+        guard let lock = try store.tryLock(image) else {
+            throw AgentVMError.imageBusy(image.name)
+        }
+        defer { lock.release() }
+
+        let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
+        let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
+        log("Booting \(image.name)")
+        try await machine.start(provisioning: nil)
+        let outcome: (digest: String, replaced: Bool)
+        do {
+            let hello = try await waitForDaemon(machine, attempts: 180)
+            log("  agent-vm-guest \(hello.version ?? "?") answers (\((hello.features ?? []).joined(separator: ", ")))")
+            outcome = try await replaceGuestDaemon(guestDaemon, machine: machine)
+            if !outcome.replaced {
+                image = try store.update(image) { record in
+                    record.guestFeatures = hello.features
+                    record.guestDigest = outcome.digest
+                }
+            }
+            try await shutDown(machine)
+        } catch {
+            if machine.isRunning {
+                try? await machine.forceStop()
+            }
+            throw error
+        }
+        guard outcome.replaced else {
+            return image
+        }
+        do {
+            return try await checkGuestDaemon(image, digest: outcome.digest)
+        } catch {
+            let reason = "the new agent-vm-guest did not start: \(error)"
+            _ = try? store.update(image) { record in
+                record.state = .failed
+                record.failure = reason
+            }
+            throw error
+        }
+    }
+
+    /// Updating writes little: a new daemon and whatever two boots write.
+    static let minimumFreeBytesToUpdate: Int64 = 2 << 30
 
     // MARK: - Steps
 
@@ -353,6 +437,8 @@ public final class ImageBuilder {
             current = try store.update(current) { record in
                 record.guestVersion = hello.version
                 record.guestProtocol = hello.v
+                record.guestFeatures = hello.features
+                record.guestDigest = try? Self.sha256(of: options.guestDaemon)
             }
 
             current = try await configure(current, machine: machine, commandLineTools: options.commandLineTools, recipe: options.recipe)
@@ -439,6 +525,60 @@ public final class ImageBuilder {
         try await ssh.copy(executable, to: GuestDaemon.stagedExecutable)
         try await ssh.copy(plist, to: GuestDaemon.stagedPlist)
         try await ssh.check("/usr/bin/sudo -S -p '' /bin/sh -c '\(GuestDaemon.installCommand)'", input: Data((password + "\n").utf8))
+    }
+
+    /// Puts `executable` in the guest in place of its agent-vm-guest when the two differ (by
+    /// SHA-256), through the running daemon; the new one runs from the next boot.
+    private func replaceGuestDaemon(_ executable: URL, machine: MacMachine) async throws -> (digest: String, replaced: Bool) {
+        let digest = try Self.sha256(of: executable)
+        let installed = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/shasum", "-a", "256", GuestDaemon.executablePath],
+                                                                     cwd: "/", user: "root"))
+        if installed.report == ExitReport(status: 0), installed.stdout.hasPrefix(digest + " ") {
+            log("  agent-vm-guest is already this agent-vm's")
+            return (digest, false)
+        }
+        log("Replacing agent-vm-guest with this agent-vm's")
+        let data = try Data(contentsOf: executable)
+        let request = GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDaemon.replaceCommand(digest: digest)], cwd: "/", user: "root")
+        let replaced = try await withGuest(machine, readTimeout: 120) { try GuestClient.capture($0, request, input: data) }
+        guard replaced.report == ExitReport(status: 0), replaced.stdout.hasPrefix(digest + " ") else {
+            throw AgentVMError.guestCommandFailed(command: "replace agent-vm-guest", status: replaced.report.shellStatus,
+                                                  output: (replaced.stderr + replaced.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return (digest, true)
+    }
+
+    /// Boots `image` once more, checks that its new agent-vm-guest answers with every feature
+    /// this agent-vm knows, records it, and shuts down.
+    private func checkGuestDaemon(_ image: GoldenImage, digest: String) async throws -> GoldenImage {
+        let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
+        let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
+        log("Booting again to check the new agent-vm-guest")
+        try await machine.start(provisioning: nil)
+        do {
+            let hello = try await waitForDaemon(machine, attempts: 180)
+            let missing = GuestFeature.all.filter { !(hello.features ?? []).contains($0) }
+            guard missing.isEmpty else {
+                throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the new agent-vm-guest lacks \(missing.joined(separator: ", "))")
+            }
+            log("  agent-vm-guest \(hello.version ?? "?") answers (\((hello.features ?? []).joined(separator: ", ")))")
+            try await shutDown(machine)
+            return try store.update(image) { record in
+                record.guestVersion = hello.version
+                record.guestProtocol = hello.v
+                record.guestFeatures = hello.features
+                record.guestDigest = digest
+            }
+        } catch {
+            if machine.isRunning {
+                try? await machine.forceStop()
+            }
+            throw error
+        }
+    }
+
+    static func sha256(of url: URL) throws -> String {
+        return SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Waits until the daemon answers hello (launchd starts it within a second or two).

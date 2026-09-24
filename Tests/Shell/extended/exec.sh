@@ -111,3 +111,22 @@ test_credentials_reach_the_program_and_nowhere_else() {
     _found="$(/usr/bin/grep -rl --exclude=Disk.img --exclude=AuxiliaryStorage -e "$_secret" "$_folder" 2>/dev/null)"
     assert_eq "$_found" "" "files in the box folder holding the value" || return 1
 }
+
+# A box whose guest daemon predates terminals refuses --tty with a way out, instead of running
+# the program without one.
+test_a_terminal_needs_a_guest_that_has_one() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    local _features
+    _features="$(/usr/bin/plutil -extract guestFeatures json -o - "$FILE_SCRATCH/box-start.json" 2>/dev/null)"
+    case "$_features" in
+        *'"terminal"'*)
+            skip "the box's agent-vm-guest has terminal support (see terminal.sh)"
+            return 0
+            ;;
+    esac
+    OUT="$(/usr/bin/script -q /dev/null "$AGENT_VM" exec -t --box "$BOX" -- /usr/bin/true < /dev/null 2>&1)"
+    STATUS=$?
+    printf '$ (on a terminal) exec -t\n%s\n[status %s]\n' "$OUT" "$STATUS"
+    assert_status 125 || return 1
+    assert_out_contains "image update-guest $TEST_IMAGE" || return 1
+}

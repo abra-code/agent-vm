@@ -236,7 +236,7 @@ final class ShortFolder {
         let handler = FakeHandler()
         let server = try ControlServer(path: socketPath(scratch), handler: handler)
         defer { server.close() }
-        let (control, guest) = try ControlClient.openGuest(path: socketPath(scratch))
+        let (control, guest, _) = try ControlClient.openGuest(path: socketPath(scratch))
         // What the client writes on the passed descriptor arrives at the far end.
         #expect(write(guest, "ping", 4) == 4)
         var buffer = [UInt8](repeating: 0, count: 4)
@@ -395,7 +395,7 @@ final class ShortFolder {
         #expect(!missing.ok)
 
         // An exec's project travels with its open request: one step on the supervisor.
-        let (control, guest) = try ControlClient.openGuest(path: folder.path + "/control.sock", project: "/Users/me/src/other", readOnly: false)
+        let (control, guest, _) = try ControlClient.openGuest(path: folder.path + "/control.sock", project: "/Users/me/src/other", readOnly: false)
         #expect(handler.sharedPaths == ["/Users/me/src/app", "/Users/me/src/other"])
         close(guest)
         close(control)

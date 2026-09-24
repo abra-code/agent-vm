@@ -106,7 +106,7 @@ public final class BoxSupervisor {
             await shutDown(machine)
             throw error
         }
-        state.set(.ready, guestVersion: hello.version)
+        state.set(.ready, guestVersion: hello.version, guestFeatures: hello.features ?? [])
         log("Ready in \(Int(ImageBuilder.seconds(clock.now - began))) s: agent-vm-guest \(hello.version ?? "?")")
 
         // Until the guest stops by itself or a stop is requested.
@@ -298,6 +298,7 @@ final class SupervisorState: @unchecked Sendable {
     private let lock = NSLock()
     private var current: ControlResponse.State = .starting
     private var guest: String?
+    private var features: [String] = []
     private var stopping = false
     private var shared: (path: String, readOnly: Bool)?
     private var claims = 0
@@ -333,19 +334,22 @@ final class SupervisorState: @unchecked Sendable {
         lock.unlock()
     }
 
-    func set(_ state: ControlResponse.State, guestVersion: String?) {
+    func set(_ state: ControlResponse.State, guestVersion: String?, guestFeatures: [String]? = nil) {
         lock.lock()
         defer { lock.unlock() }
         current = state
         if let guestVersion {
             guest = guestVersion
         }
+        if let guestFeatures {
+            features = guestFeatures
+        }
     }
 
-    var snapshot: (state: ControlResponse.State, guestVersion: String?) {
+    var snapshot: (state: ControlResponse.State, guestVersion: String?, guestFeatures: [String]) {
         lock.lock()
         defer { lock.unlock() }
-        return (current, guest)
+        return (current, guest, features)
     }
 
     func requestStop() {
@@ -420,7 +424,7 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         let snapshot = state.snapshot
         let project = state.project
         return ControlResponse(ok: true, state: snapshot.state, guestVersion: snapshot.guestVersion, pid: getpid(),
-                               project: project?.path, projectReadOnly: project?.readOnly)
+                               project: project?.path, projectReadOnly: project?.readOnly, guestFeatures: snapshot.guestFeatures)
     }
 
     /// Opens a vsock connection on the main actor and lends its descriptor. Blocks this

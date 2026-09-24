@@ -7,6 +7,7 @@
 //   Boxes/<name>/control.sock        the supervisor's control socket (0600) while it runs
 //   Boxes/<name>/supervisor.log      the supervisor's output
 //   Boxes/<name>/network.jsonl       one line per proxied connection (allowlist and off modes)
+//   Boxes/<name>/exec.jsonl          what agent-vm exec and box shell ran (start and end lines)
 //   Boxes/<name>/Disk.img            APFS clone of the image's disk
 //   Boxes/<name>/AuxiliaryStorage    APFS clone of the image's auxiliary storage
 //   Boxes/<name>/HardwareModel       copy of the image's
@@ -59,6 +60,7 @@ public struct Box: Sendable {
     public var controlSocketPath: String { directory.appendingPathComponent(BoxStore.controlSocketName).path }
     public var logURL: URL { directory.appendingPathComponent(BoxStore.logName) }
     public var networkLogURL: URL { directory.appendingPathComponent(BoxStore.networkLogName) }
+    public var execLogURL: URL { directory.appendingPathComponent(BoxStore.execLogName) }
 
     /// Whether a supervisor runs this box (it holds the lock).
     public var isRunning: Bool {
@@ -78,6 +80,7 @@ public struct BoxStore: Sendable {
     static let controlSocketName = "control.sock"
     static let logName = "supervisor.log"
     static let networkLogName = "network.jsonl"
+    static let execLogName = "exec.jsonl"
 
     public let root: URL
 

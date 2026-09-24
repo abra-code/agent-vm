@@ -19,7 +19,7 @@ struct ImageCommand: ParsableCommand {
             off again and shuts the guest down. Starting virtual machines needs the binaries \
             built by Scripts/build.sh (see `agent-vm doctor`).
             """,
-        subcommands: [Create.self, List.self, Delete.self]
+        subcommands: [Create.self, List.self, Delete.self, UpdateGuest.self]
     )
 
     struct Create: AsyncParsableCommand {
@@ -104,7 +104,8 @@ struct ImageCommand: ParsableCommand {
                     recipe: loadedRecipe,
                     commandLineTools: commandLineTools ?? loadedRecipe?.commandLineTools ?? false,
                     cpuCount: cpus,
-                    memoryBytes: memoryGB.map { UInt64($0) << 30 }))
+                    memoryBytes: memoryGB.map { UInt64($0) << 30 },
+                    guestDaemon: try ImageCommand.localGuestDaemon()))
             } else {
                 image = try await builder.build(ImageBuildOptions(
                     name: name,
@@ -129,7 +130,48 @@ struct ImageCommand: ParsableCommand {
             if let guestDaemon {
                 return URL(fileURLWithPath: (guestDaemon as NSString).expandingTildeInPath)
             }
-            return URL(fileURLWithPath: try AskpassEntry.executablePath()).deletingLastPathComponent().appendingPathComponent("agent-vm-guest")
+            return try ImageCommand.localGuestDaemon()
+        }
+    }
+
+    /// The agent-vm-guest built with this agent-vm, next to it.
+    static func localGuestDaemon() throws -> URL {
+        return URL(fileURLWithPath: try AskpassEntry.executablePath()).deletingLastPathComponent().appendingPathComponent("agent-vm-guest")
+    }
+
+    struct UpdateGuest: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "update-guest",
+            abstract: "Put this agent-vm's guest daemon into a ready image.",
+            discussion: """
+                Boots the image, replaces its agent-vm-guest with the one next to agent-vm when \
+                they differ, and boots it once more to check the new one (a minute or two). \
+                Needed when a newer agent-vm brings guest features (`image list` names what an \
+                image lacks); boxes made from the image earlier keep their daemon, so create \
+                them again. Images built with `--from` get the current daemon automatically.
+                """)
+
+        @Argument(help: "The image to update.")
+        var name: String
+
+        @OptionGroup var options: StoreOptions
+
+        @MainActor
+        func run() async throws {
+            let json = options.json
+            let builder = ImageBuilder(store: options.imageStore) { line in
+                if json {
+                    FileHandle.standardError.write(Data((line + "\n").utf8))
+                } else {
+                    print(line)
+                }
+            }
+            let image = try await builder.updateGuest(named: name, guestDaemon: try ImageCommand.localGuestDaemon())
+            if json {
+                try Output.json(image.record)
+                return
+            }
+            print("Image \(image.name) has agent-vm-guest \(image.record.guestVersion ?? "?") (\((image.record.guestFeatures ?? []).joined(separator: ", ")))")
         }
     }
 
@@ -162,6 +204,10 @@ struct ImageCommand: ParsableCommand {
                     line += "  recipe \(recipe.description ?? String(recipe.digest.prefix(12)))"
                 }
                 print(line)
+                let missing = GuestFeature.all.filter { !(record.guestFeatures ?? []).contains($0) }
+                if record.state == .ready && !missing.isEmpty {
+                    print("    agent-vm-guest lacks \(missing.joined(separator: ", ")); `agent-vm image update-guest \(record.name)` adds it")
+                }
                 if let failure = record.failure {
                     print("    failed: \(failure)")
                 }

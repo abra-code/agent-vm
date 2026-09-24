@@ -26,6 +26,8 @@ public enum FrameType: UInt8, Sendable {
     case stdin = 0x10
     case stdinEnd = 0x11
     case signal = 0x12
+    /// A new terminal size (exec with a terminal only): rows, then columns, 2 bytes each, big-endian.
+    case resize = 0x13
     // Guest to host during exec.
     case stdout = 0x20
     case stderr = 0x21
@@ -61,14 +63,19 @@ public struct GuestRequest: Codable, Equatable, Sendable {
     public var cwd: String?
     /// Account to run as; nil means the daemon's default (the box user).
     public var user: String?
+    /// Run the program on a new terminal (pseudo-terminal) of this size instead of pipes. Its
+    /// output then arrives as stdout frames only. Needs the `terminal` feature: a guest
+    /// without it ignores the field.
+    public var terminal: TerminalSize?
 
-    public init(op: Operation, argv: [String]? = nil, env: [String: String]? = nil, cwd: String? = nil, user: String? = nil) {
+    public init(op: Operation, argv: [String]? = nil, env: [String: String]? = nil, cwd: String? = nil, user: String? = nil, terminal: TerminalSize? = nil) {
         self.v = AgentVM.guestProtocolVersion
         self.op = op
         self.argv = argv
         self.env = env
         self.cwd = cwd
         self.user = user
+        self.terminal = terminal
     }
 }
 
@@ -84,8 +91,11 @@ public struct GuestResponse: Codable, Equatable, Sendable {
     public var pid: Int32?
     /// For a refused exec: the status a shell would give (127 not found, 126 cannot run).
     public var status: Int32?
+    /// What this guest daemon can do beyond protocol 1 (hello only; see GuestFeature).
+    public var features: [String]?
 
-    public init(ok: Bool, error: String? = nil, v: Int? = nil, version: String? = nil, osBuild: String? = nil, pid: Int32? = nil, status: Int32? = nil) {
+    public init(ok: Bool, error: String? = nil, v: Int? = nil, version: String? = nil, osBuild: String? = nil, pid: Int32? = nil, status: Int32? = nil,
+                features: [String]? = nil) {
         self.ok = ok
         self.error = error
         self.v = v
@@ -93,10 +103,43 @@ public struct GuestResponse: Codable, Equatable, Sendable {
         self.osBuild = osBuild
         self.pid = pid
         self.status = status
+        self.features = features
     }
 
     public static func failure(_ message: String) -> GuestResponse {
         return GuestResponse(ok: false, error: message, v: AgentVM.guestProtocolVersion)
+    }
+}
+
+/// Additions to protocol 1 that a guest daemon announces in its hello answer, so an older daemon
+/// (in an image built earlier) is never sent what it would ignore or misread.
+public enum GuestFeature {
+    /// exec with `terminal`, and resize frames.
+    public static let terminal = "terminal"
+    /// Everything this build's daemon supports.
+    public static let all = [terminal]
+}
+
+/// A terminal's size in character cells.
+public struct TerminalSize: Codable, Equatable, Sendable {
+    public var rows: UInt16
+    public var columns: UInt16
+
+    public init(rows: UInt16, columns: UInt16) {
+        self.rows = rows
+        self.columns = columns
+    }
+
+    /// The resize frame's payload.
+    public var bytes: [UInt8] {
+        return [UInt8(rows >> 8), UInt8(rows & 0xff), UInt8(columns >> 8), UInt8(columns & 0xff)]
+    }
+
+    public init?(bytes: [UInt8]) {
+        guard bytes.count == 4 else {
+            return nil
+        }
+        self.init(rows: UInt16(bytes[0]) << 8 | UInt16(bytes[1]), columns: UInt16(bytes[2]) << 8 | UInt16(bytes[3]))
     }
 }
 

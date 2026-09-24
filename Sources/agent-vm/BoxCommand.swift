@@ -17,9 +17,11 @@ struct BoxCommand: ParsableCommand {
             supervisor process; `agent-vm exec --box <name> -- <program>` runs programs in it.
             Network modes: allowlist (default) - only listed hosts, through a proxy on this Mac \
             that logs every attempt; off - nothing; open - NAT to the internet and your local \
-            network. See `box network`, `box netlog` and `box packs`.
+            network. See `box network`, `box netlog` and `box packs`. `box shell` opens a shell in \
+            the box on this terminal; `box execlog` shows what exec and shell ran there.
             """,
-        subcommands: [Create.self, List.self, Start.self, Stop.self, Delete.self, Network.self, NetLog.self, Packs.self, Serve.self]
+        subcommands: [Create.self, List.self, Start.self, Stop.self, Delete.self, Shell.self, ExecLogCommand.self, Network.self, NetLog.self,
+                      Packs.self, Serve.self]
     )
 
     struct Create: ParsableCommand {
@@ -248,6 +250,103 @@ struct BoxCommand: ParsableCommand {
         }
     }
 
+    struct Shell: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Open a login shell in a running box on this terminal.",
+            discussion: """
+                The same as `agent-vm exec --tty --box <name> -- <the account's shell> -l`, over \
+                the box's private channel (no SSH, no network). Exit the shell to return; its \
+                status becomes ours.
+                """)
+
+        @Argument(help: "The running box.")
+        var name: String
+
+        @Option(name: .long, help: "Account to log in as (default: the box user; root works too).")
+        var user: String?
+
+        @Option(name: .long, help: "Share this project folder into the box at the same path and start there.")
+        var project: String?
+
+        @Flag(name: .customLong("read-only"), help: "Share the project read only.")
+        var readOnly = false
+
+        @OptionGroup var options: StoreOptions
+
+        func validate() throws {
+            if readOnly && project == nil {
+                throw ValidationError("--read-only applies to --project")
+            }
+            if isatty(STDIN_FILENO) != 1 {
+                throw ValidationError("box shell needs a terminal on stdin; use `agent-vm exec` to run commands from a script")
+            }
+        }
+
+        func run() throws {
+            // The account's own shell: the guest daemon sets SHELL from the account.
+            ExecRunner(store: options.boxStore, box: name, user: user, cwd: nil, project: project, readOnly: readOnly,
+                       added: [:], argv: ["/bin/sh", "-c", "exec \"$SHELL\" -l"], terminal: true).run()
+        }
+    }
+
+    struct ExecLogCommand: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "execlog",
+            abstract: "Show what agent-vm exec and box shell ran in a box.",
+            discussion: """
+                One entry per program: when it started, how long it ran, its exit status, the \
+                account and the command. The log is kept on this Mac (Boxes/<name>/exec.jsonl), \
+                out of the box's reach, until the box is deleted. It never holds the \
+                programs' environment.
+                """)
+
+        @Argument(help: "The box name.")
+        var name: String
+
+        @Option(name: .long, help: "Only the last N programs.")
+        var last: Int?
+
+        @OptionGroup var options: StoreOptions
+
+        func validate() throws {
+            if let last, last < 0 {
+                throw ValidationError("--last takes a count of 0 or more")
+            }
+        }
+
+        func run() throws {
+            let box = try options.boxStore.box(named: name)
+            let records = ExecLog(url: box.execLogURL).records(last: last)
+            if options.json {
+                try Output.json(records)
+                return
+            }
+            if records.isEmpty {
+                print("Nothing run in box \(box.name) yet.")
+                return
+            }
+            for record in records {
+                let outcome: String
+                if let status = record.status {
+                    outcome = "status \(status)"
+                } else {
+                    outcome = "no end recorded"
+                }
+                let duration = record.seconds.map { String(format: "%.1f s", $0) } ?? "-"
+                var line = "\(Output.time(record.started))  \(outcome.padding(toLength: 15, withPad: " ", startingAt: 0))  "
+                line += "\(duration.padding(toLength: 9, withPad: " ", startingAt: 0))  \(record.user ?? "?")"
+                if record.terminal == true {
+                    line += " (terminal)"
+                }
+                line += "  \(Output.shellQuoted(record.argv))"
+                if let project = record.project {
+                    line += "  [project \(project)\(record.readOnly == true ? ", read only" : "")]"
+                }
+                print(line)
+            }
+        }
+    }
+
     struct NetLog: ParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "netlog",
@@ -263,6 +362,12 @@ struct BoxCommand: ParsableCommand {
         var denied = false
 
         @OptionGroup var options: StoreOptions
+
+        func validate() throws {
+            if let last, last < 0 {
+                throw ValidationError("--last takes a count of 0 or more")
+            }
+        }
 
         func run() throws {
             let box = try options.boxStore.box(named: name)

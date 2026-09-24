@@ -26,7 +26,11 @@ struct ExecCommand: ParsableCommand {
             there; the box keeps it until another project replaces it or the box stops. \
             --env NAME (no value) passes on the value agent-vm itself was given, and \
             --env-file reads NAME=VALUE lines, so API keys stay off the command line; \
-            anything running in the box can read them.
+            anything running in the box can read them. With --tty the program gets a \
+            terminal in the box (its output all arrives on stdout), keys such as Control-C \
+            go to it as typed, and SIGHUP or SIGTERM to agent-vm end the session. Each \
+            run is recorded in the box's exec log (`box execlog`): the command, account, \
+            folders, times and status, never the environment.
             """
     )
 
@@ -44,6 +48,9 @@ struct ExecCommand: ParsableCommand {
 
     @Flag(name: .customLong("read-only"), help: "Share the project read only.")
     var readOnly = false
+
+    @Flag(name: [.customShort("t"), .long], help: "Run the program on a terminal in the box, with this terminal in raw mode (for shells, editors, agents with a full-screen interface).")
+    var tty = false
 
     @Option(name: .long, parsing: .singleValue, help: "Environment variable for the program: NAME=VALUE, or NAME to pass on the value agent-vm was given (repeatable).")
     var env: [String] = []
@@ -63,11 +70,10 @@ struct ExecCommand: ParsableCommand {
         if readOnly && project == nil {
             throw ValidationError("--read-only applies to --project")
         }
+        if tty && isatty(STDIN_FILENO) != 1 {
+            throw ValidationError("--tty needs a terminal on stdin")
+        }
     }
-
-    /// agent-vm's own failures (box not running, connection lost), as docker exec uses it:
-    /// distinct from any status the program itself returns.
-    static let ownFailureStatus: Int32 = 125
 
     func run() throws {
         // Read once, since an --env-file may be a pipe, and before the box: a missing variable
@@ -78,96 +84,11 @@ struct ExecCommand: ParsableCommand {
         } catch let error as AgentVMError {
             throw ValidationError(error.description)
         }
-        do {
-            try runInBox(added: added)
-        } catch {
-            FileHandle.standardError.write(Data("agent-vm: \(error)\n".utf8))
-            Darwin.exit(Self.ownFailureStatus)
-        }
-    }
-
-    /// `added`: the variables from --env-file and --env.
-    private func runInBox(added: [String: String]) throws {
-        signal(SIGPIPE, SIG_IGN)
-        let box = try options.boxStore.box(named: self.box)
-        guard box.isRunning else {
-            throw AgentVMError.boxNotRunning(box.name)
-        }
-        // A proxied box reaches out only through its proxy: tell the tools that ignore the
-        // system proxy (curl, git, SwiftPM, Node). --env-file and --env override.
-        var environment = box.record.effectiveNetwork.usesProxy ? GuestNetworkSetup.proxyEnvironment : [:]
-        environment.merge(added) { _, new in new }
         let argv = command.first == "--" ? Array(command.dropFirst()) : command
         guard !argv.isEmpty else {
             throw ValidationError("give the program to run after --")
         }
-
-        // The project appears in the box at the same absolute path, and the program starts
-        // there. Sharing and opening the connection are one request: the supervisor keeps the
-        // share unchanged until this process ends.
-        var directory = cwd
-        var projectPath: String?
-        if let project {
-            projectPath = try ProjectShare.validated(project, storeRoot: options.boxStore.root)
-            directory = directory ?? projectPath
-        }
-
-        // The control connection stays open for the whole run: the supervisor keeps the vsock
-        // connection alive until it closes (and closes it if this process dies).
-        let (control, guest) = try ControlClient.openGuest(path: box.controlSocketPath, project: projectPath, readOnly: readOnly)
-        let session: ExecSession
-        do {
-            session = try ExecSession(descriptor: guest, request: GuestRequest(
-                op: .exec, argv: argv, env: environment.isEmpty ? nil : environment, cwd: directory, user: user))
-        } catch let refusal as ExecRefusal {
-            // Like env(1) and shells: 127 when the program is not found, 126 when it cannot run.
-            FileHandle.standardError.write(Data("agent-vm: \(refusal.message)\n".utf8))
-            Darwin.exit(refusal.status)
-        }
-
-        var sources: [DispatchSourceSignal] = []
-        for signalNumber in [SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2] {
-            signal(signalNumber, SIG_IGN)
-            let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .global())
-            source.setEventHandler {
-                try? session.sendSignal(signalNumber)
-            }
-            source.resume()
-            sources.append(source)
-        }
-        session.forwardStdin(from: STDIN_FILENO)
-
-        let report: ExitReport
-        do {
-            report = try session.run(stdout: { Self.writeAll(STDOUT_FILENO, $0) }, stderr: { Self.writeAll(STDERR_FILENO, $0) })
-        } catch {
-            throw AgentVMError.guestUnreachable("the connection to box \(box.name) ended: \(error)")
-        }
-        withExtendedLifetime(sources) {}
-        // Exit at once: the stdin thread may still be blocked reading a terminal. Closing the
-        // control connection (with the process) returns the guest connection.
-        _ = control
-        Darwin.exit(report.shellStatus)
-    }
-
-    /// Writes everything. A closed output (EPIPE, as in `exec ... | head -1`) ends us the way
-    /// SIGPIPE would end the program run locally; closing the connection on exit hangs the
-    /// program up. Other errors drop the rest.
-    static func writeAll(_ descriptor: Int32, _ bytes: [UInt8]) {
-        var offset = 0
-        while offset < bytes.count {
-            let written = bytes.withUnsafeBytes { write(descriptor, $0.baseAddress! + offset, bytes.count - offset) }
-            if written < 0 {
-                let code = errno
-                if code == EINTR {
-                    continue
-                }
-                if code == EPIPE {
-                    Darwin.exit(128 + SIGPIPE)
-                }
-                return
-            }
-            offset += written
-        }
+        ExecRunner(store: options.boxStore, box: box, user: user, cwd: cwd, project: project, readOnly: readOnly,
+                   added: added, argv: argv, terminal: tty).run()
     }
 }

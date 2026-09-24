@@ -113,6 +113,18 @@ public enum ExecEnvironment {
         return environment
     }
 
+    /// The TERM for a program on a terminal in the box: the Mac's own when the guest knows it,
+    /// else xterm-256color. Both run macOS, so the Mac's terminal database (terminfo) stands in
+    /// for the guest's; a terminal with its own type (Ghostty, kitty) falls back.
+    public static func terminalType(host: String?, terminfo: String = "/usr/share/terminfo") -> String {
+        let fallback = "xterm-256color"
+        guard let host, let first = host.unicodeScalars.first, first.isASCII, !host.contains("/"), host != "..", host != "." else {
+            return fallback
+        }
+        let folder = String(first.value, radix: 16)
+        return FileSystem.exists("\(terminfo)/\(folder)/\(host)") ? host : fallback
+    }
+
     private static func isASCIILetter(_ scalar: Unicode.Scalar) -> Bool {
         ("a"..."z").contains(scalar) || ("A"..."Z").contains(scalar)
     }

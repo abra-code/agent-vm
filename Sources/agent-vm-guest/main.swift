@@ -5,7 +5,8 @@
 //
 //   agent-vm-guest serve [--port N] [--user NAME]   answer the host (hello, exec, shutdown) and
 //                                                   relay 127.0.0.1:3128 to the host proxy
-//   agent-vm-guest exec-as USER DIR -- PROGRAM ...  (internal) drop privileges and exec
+//   agent-vm-guest exec-as [--terminal] USER DIR EXECUTABLE -- ARGV...  (internal) take the
+//                                                   terminal, drop privileges and exec
 //   agent-vm-guest --version
 
 import AgentVMKit
@@ -15,7 +16,7 @@ import Foundation
 let arguments = Array(CommandLine.arguments.dropFirst())
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("usage: agent-vm-guest serve [--port N] [--user NAME] | exec-as USER DIR -- PROGRAM [ARGS...] | --version\n".utf8))
+    FileHandle.standardError.write(Data("usage: agent-vm-guest serve [--port N] [--user NAME] | exec-as [--terminal] USER DIR EXECUTABLE -- ARGV... | --version\n".utf8))
     exit(64) // EX_USAGE
 }
 

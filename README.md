@@ -77,6 +77,9 @@ agent-vm box start dev1                       # boots in about 10 seconds, waits
 agent-vm exec --box dev1 -- uname -a
 printf 'b\na\n' | agent-vm exec --box dev1 -- sort
 agent-vm exec --box dev1 --cwd /tmp --env FOO=bar -- sh -c 'echo $FOO; pwd'
+agent-vm box shell dev1                       # a login shell in the box, on this terminal
+agent-vm exec -t --box dev1 -- top            # any full-screen program
+agent-vm box execlog dev1                     # what exec and shell ran there
 agent-vm box list
 agent-vm box stop dev1                        # clean shutdown through the guest daemon
 agent-vm box delete dev1
@@ -93,6 +96,11 @@ agent-vm box delete dev1
   - `--env-file PATH` reads one `NAME=VALUE` per line, the value taken as is to the end of the line (no quotes or escapes); a line with only `NAME` passes that variable on, and `#` starts a comment line. The file may be a pipe, so a password manager can hand keys over without a file on disk: `--env-file <(op read ...)`. Later sources win: the proxy settings of a proxied box, then the files, then `--env`.
   - The values go in the exec request straight to the guest daemon. agent-vm does not log them or write them anywhere, and its error messages name variables, never values.
   - What this does not protect: every program in the box can read the value, and an agent can send it to any host the network allows, so an allowed host that accepts uploads is a way out. Prefer keys limited to the task that you can revoke.
+- **Looking inside a box:**
+  - `box shell <name>` opens the account's login shell in the box on your terminal (`--user root` for root, `--project` to start in a shared project). It is `exec --tty` with the shell, over the box's private channel: SSH stays off and no network is involved.
+  - `exec -t` (`--tty`) runs any program on a terminal in the box: editors, `top`, agents with a full-screen interface. Your terminal is put in raw mode, so keys such as Control-C go to the program as typed, and window size changes follow. SIGHUP or SIGTERM to `agent-vm` ends the session, as for ssh. Its output, standard error included, arrives on standard output. The terminal type is yours when the guest knows it, else `xterm-256color`.
+  - `box execlog <name>` lists every program `exec` and `box shell` ran in the box: start time, duration, exit status, account and command (`--json` adds folders, project and process ids). The log is kept on your Mac (`Boxes/<name>/exec.jsonl`), out of the box's reach, until the box is deleted. With `box netlog` it shows what happened in a box. It never records the programs' environment, but command lines are recorded as given, so keep keys out of them.
+  - Terminals need an image whose guest daemon has them: `image list` names what an image lacks, and `image update-guest <image>` adds it.
 - **How it connects:** `exec` asks the box's supervisor, over a Unix socket only you can use (`Boxes/<name>/control.sock`), for a connection to the guest daemon. It then talks to the daemon directly, so the supervisor is not in the data path.
 - **Boxes need the image's volume**: the clone costs nothing until the box writes, and the box's disk grows as the guest works.
 - **`box start` is safe to repeat**: on a running box it reports the box, and during another start it waits for that one.
@@ -168,10 +176,11 @@ agent-vm image delete dev
 - **The guest daemon** (`agent-vm-guest`, a root LaunchDaemon started at boot) is the only way into a finished image: it runs programs for the host over vsock, needs no network, and accepts connections only from the host. Its protocol is described in [Docs/guest-protocol.md](Docs/guest-protocol.md). `image create` installs the `agent-vm-guest` found next to `agent-vm` (or `--guest-daemon <path>`).
 - **Options:** `--cpus` (default 4), `--memory-gb` (8), `--disk-gb` (64; at least 40), `--user` (the account name, default `agent`), `--recipe`, `--no-command-line-tools`. Values below what the restore image requires are raised to its minimum.
 - **The account's password** is 24 random characters, stored only in the image folder (`Password`, mode 0600). During the build, agent-vm reaches the guest with the system's `/usr/bin/ssh` using password authentication, until the daemon is in place. It never uses your SSH configuration, keys, agent or `known_hosts` file: the guest's host key goes into the image folder.
-- **Where it lives:** `~/Library/Application Support/agent-vm/Images/<name>/` (or `$AGENT_VM_HOME/Images/<name>/`): `image.json` (state, macOS version and build, resources, timings, guest daemon version and protocol), the disk, the auxiliary storage, the hardware model and the machine identifier.
+- **Where it lives:** `~/Library/Application Support/agent-vm/Images/<name>/` (or `$AGENT_VM_HOME/Images/<name>/`): `image.json` (state, macOS version and build, resources, timings, the guest daemon's version, protocol, features and SHA-256), the disk, the auxiliary storage, the hardware model and the machine identifier.
 - **A failed or interrupted build** stays in the list with its state (`installing`, `provisioning`) or `failed` and the reason; delete it and create it again. An image in use by another agent-vm process cannot be deleted.
 - **Images from images.** `image create <name> --from <image> --recipe <recipe.json>` clones a ready image and applies the recipe to the clone. The clone gets its own identity, is built on NAT, and costs only what the recipe adds. It takes minutes instead of a macOS install, so tool sets can be layered and rebuilt quickly: in a test, `dev` to `dev-node` (Homebrew and Node) took 2 minutes, then `dev-agents` (Claude Code, Codex, opencode) 1 minute. `image list` shows each image's base and recipe. Example recipes are in [Recipes/](Recipes/README.md).
 - **Recipes: anything else you want in the image.** `--recipe <recipe.json>` runs your steps while the image is built, after the Command Line Tools and before the image is sealed: shell commands as the box user or as root, files copied from next to the recipe, and checks that must pass. Output appears in the build log as it happens, and the image records the recipe and its digest. The format is described in [Docs/image-recipes.md](Docs/image-recipes.md).
+- **Updating the guest daemon.** A newer agent-vm may bring guest features (the terminal for `exec -t` and `box shell` is one), and `image list` names what an image lacks. `image update-guest <image>` boots the image, replaces its `agent-vm-guest` with the one next to `agent-vm` when they differ, and boots it once more to check the new one: about 45 seconds, or 30 when there is nothing to replace. Boxes made from the image earlier keep their daemon; create them again. `image create --from` puts the current daemon into every image it builds.
 - **Not yet:** downloading the restore image (get it from Apple, or reuse the one a VM app such as Viable keeps in its bundle).
 
 ## Building

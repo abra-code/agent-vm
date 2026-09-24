@@ -46,6 +46,10 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     /// agent-vm-guest installed in the image, as it reported itself over vsock.
     public var guestVersion: String?
     public var guestProtocol: Int?
+    /// What that agent-vm-guest announced beyond protocol 1 (GuestFeature), and the SHA-256 of
+    /// its executable; nil in images built before they were recorded.
+    public var guestFeatures: [String]?
+    public var guestDigest: String?
     /// The Command Line Tools installed in the image (softwareupdate's label), if any.
     public var commandLineTools: String?
     /// The recipe applied to the image, if any (its text is kept as recipe.json next to it).

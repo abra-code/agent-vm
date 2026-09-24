@@ -14,7 +14,9 @@ final class GuestPair {
     let client: Int32
     let serverDone = DispatchSemaphore(value: 0)
 
-    init() throws {
+    /// `helperPath`: an exec-as helper (see `builtHelper`); without one, the server runs programs
+    /// only directly, as this test process's account and without a terminal.
+    init(helperPath: String? = nil) throws {
         var pair: [Int32] = [-1, -1]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else {
             throw AgentVMError.system(operation: "socketpair", code: errno)
@@ -23,7 +25,7 @@ final class GuestPair {
         let server = pair[1]
         let done = serverDone
         Thread.detachNewThread {
-            GuestServer(defaultUser: nil, helperPath: nil).serve(descriptor: server)
+            GuestServer(defaultUser: nil, helperPath: helperPath).serve(descriptor: server)
             done.signal()
         }
     }
@@ -31,7 +33,20 @@ final class GuestPair {
     deinit {
         close(client)
     }
+
+    /// The agent-vm-guest this build produced (swift test builds every target), next to the
+    /// test bundle: the real exec-as helper.
+    static func builtHelper() throws -> String {
+        let bundle = Bundle(for: BundleMarker.self).bundleURL
+        let helper = bundle.deletingLastPathComponent().appendingPathComponent("agent-vm-guest").path
+        guard FileManager.default.isExecutableFile(atPath: helper) else {
+            throw AgentVMError.system(operation: "find \(helper) (run swift build first)", code: ENOENT)
+        }
+        return helper
+    }
 }
+
+private final class BundleMarker {}
 
 @Suite struct FrameTests {
     @Test func framesRoundTrip() throws {
@@ -262,6 +277,10 @@ final class GuestPair {
         #expect(parsed.argv == ["echo", "--", "x"])
         #expect(GuestServer.parseExecAs(["agent", "/tmp", "/bin/echo", "echo"]) == nil)
         #expect(GuestServer.parseExecAs(["agent", "/tmp", "/bin/echo", "--"]) == nil)
+        #expect(parsed.terminal == false)
+        let onTerminal = GuestServer.execAsArguments(user: "agent", directory: "/tmp", executable: "/bin/sh", argv: ["sh"], terminal: true)
+        #expect(onTerminal == ["agent-vm-guest", "exec-as", "--terminal", "agent", "/tmp", "/bin/sh", "--", "sh"])
+        #expect(GuestServer.parseExecAs(Array(onTerminal.dropFirst(2)))?.terminal == true)
     }
 
     @Test func refusalsReadOnce() throws {

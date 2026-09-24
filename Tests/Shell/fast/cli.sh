@@ -79,3 +79,13 @@ test_exec_checks_environment_files() {
     run_avm exec --box nosuchbox --env-file "$SCRATCH/good.env" -- /usr/bin/true
     assert_status 125 || return 1
 }
+
+# A terminal session needs a terminal here; checked before any box.
+test_terminal_sessions_need_a_terminal() {
+    run_avm exec -t --box nosuchbox -- /usr/bin/true
+    assert_status 64 || return 1
+    assert_err_contains "--tty needs a terminal on stdin" || return 1
+    run_avm box shell nosuchbox
+    assert_status 64 || return 1
+    assert_err_contains "box shell needs a terminal on stdin" || return 1
+}

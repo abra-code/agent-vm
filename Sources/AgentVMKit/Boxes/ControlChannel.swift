@@ -57,9 +57,11 @@ public struct ControlResponse: Codable, Equatable, Sendable {
     /// The project folder shared into the box, if any, and whether read only.
     public var project: String?
     public var projectReadOnly: Bool?
+    /// What the guest daemon announced beyond protocol 1 (GuestFeature), once ready.
+    public var guestFeatures: [String]?
 
     public init(ok: Bool, error: String? = nil, state: State? = nil, guestVersion: String? = nil, pid: Int32? = nil,
-                project: String? = nil, projectReadOnly: Bool? = nil) {
+                project: String? = nil, projectReadOnly: Bool? = nil, guestFeatures: [String]? = nil) {
         self.ok = ok
         self.error = error
         self.state = state
@@ -67,6 +69,7 @@ public struct ControlResponse: Codable, Equatable, Sendable {
         self.pid = pid
         self.project = project
         self.projectReadOnly = projectReadOnly
+        self.guestFeatures = guestFeatures
     }
 }
 
@@ -401,7 +404,8 @@ public final class ControlServer: @unchecked Sendable {
                 do {
                     let guest = try handler.controlOpenGuest(project: request.path, readOnly: request.readOnly ?? false)
                     lent.append(guest)
-                    try ControlChannel.send(ControlResponse(ok: true), over: connection, passing: guest.descriptor)
+                    // With the status, so the client knows what this guest daemon can do.
+                    try ControlChannel.send(handler.controlStatus(), over: connection, passing: guest.descriptor)
                 } catch {
                     try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)
                 }
@@ -463,7 +467,8 @@ public enum ControlClient {
     /// With `project`, the supervisor shares it first (as `share` does) and keeps it shared,
     /// unchanged, until `control` closes - one step, so another client cannot switch it in
     /// between.
-    public static func openGuest(path: String, project: String? = nil, readOnly: Bool = false) throws -> (control: Int32, guest: Int32) {
+    /// `status` is the supervisor's status as the connection was lent (the guest's features).
+    public static func openGuest(path: String, project: String? = nil, readOnly: Bool = false) throws -> (control: Int32, guest: Int32, status: ControlResponse) {
         let socket = try ControlChannel.connect(path)
         do {
             setReceiveTimeout(socket, seconds: project == nil ? answerTimeout : shareTimeout)
@@ -479,7 +484,7 @@ public enum ControlClient {
             }
             // The control connection now only has to stay open; nothing more is read.
             setReceiveTimeout(socket, seconds: 0)
-            return (socket, passed)
+            return (socket, passed, response)
         } catch {
             close(socket)
             throw error

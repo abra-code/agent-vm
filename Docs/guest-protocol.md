@@ -27,6 +27,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 | 0x10 | stdin | host to guest | bytes for the program's standard input |
 | 0x11 | stdin-end | host to guest | empty; closes the program's standard input |
 | 0x12 | signal | host to guest | 4-byte big-endian signal number |
+| 0x13 | resize | host to guest | rows, then columns, 2 bytes each, big-endian (feature `terminal`; ignored without a terminal) |
 | 0x20 | stdout | guest to host | bytes the program wrote to standard output |
 | 0x21 | stderr | guest to host | bytes the program wrote to standard error |
 | 0x22 | exit | guest to host | JSON, how the program ended; last frame |
@@ -40,6 +41,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - `v` (required): the protocol version. A daemon that speaks another version answers `ok: false`.
 - `op` (required): `hello`, `exec` or `shutdown`.
 - `argv`, `env`, `cwd`, `user`: exec only; all but `argv` optional.
+- `terminal`: exec only, optional: `{"rows": 24, "columns": 80}` runs the program on a new terminal of that size (feature `terminal`, below).
 
 ```json
 {"ok": true, "v": 1, "version": "0.0.1", "osBuild": "26A428", "pid": 612}
@@ -47,6 +49,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 
 - `ok`: false with `error` (a message for a person) when the request is refused; the guest then closes the connection.
 - `version`, `osBuild`: hello only (agent-vm-guest's version, the guest's macOS build).
+- `features`: hello only, what the daemon supports beyond this document's base (see Versioning). Today: `terminal`.
 - `pid`: exec only, the started process.
 - `status`: a refused exec only, the status a shell would give: 127 when the program is not found, 126 when it cannot be run (unknown account, missing folder).
 
@@ -78,10 +81,18 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - **Ordering**: frames travel in order on one connection, so a signal sent after input the program is not reading waits behind that input (the guest keeps delivering stdin while the pipe accepts it). Closing the connection always works: the guest notices the host is gone even while stdin is backed up.
 - **Refusals** carry a plain message in `error`, meant to be shown as is (for example `"make: command not found"`).
 
+**exec with `terminal`** (feature `terminal`): the program runs on a new pseudo-terminal instead of pipes.
+- **Controlling terminal**: the program always starts through `agent-vm-guest exec-as --terminal`, which takes the terminal as its controlling terminal (`TIOCSCTTY`) before anything else; on macOS opening a terminal never does that by itself. The account owns the terminal device, as after a login.
+- **Size**: set before the program starts; `resize` frames change it, which sends SIGWINCH to the foreground job.
+- **Streams**: `stdin` frames go to the terminal as typed, so Control-C, Control-Z and Control-D act through the terminal's settings (the guest's defaults: canonical mode, echo, signals from keys). Everything the program writes, standard error included, arrives as `stdout` frames with the terminal's line endings. `stdin-end` stops input and leaves output flowing.
+- **Signals** from `signal` frames go to the terminal's foreground process group (what a key would reach), which with job control is not the program's own group.
+- **Host goes away**: the foreground job's group is hung up and killed along with the program's.
+- **After exit**: output is forwarded until every holder of the terminal closes it, at most 2 seconds; then the guest closes the terminal, which hangs up what still has it open.
+
 ## Proxy relay
 
 Besides the protocol port, the daemon listens on TCP 127.0.0.1:3128 inside the guest and relays each connection, byte for byte, to vsock port 3128 on the host, where a box in `allowlist` or `off` mode runs its proxy. When the host runs no proxy (`open` mode), the vsock connection fails at once and the client is closed. The relay carries no framing; the host proxy speaks plain HTTP proxy protocol (`CONNECT`, or absolute-form `http://` requests), one request per connection, at most 256 connections at once.
 
 ## Versioning
 
-`AgentVM.guestProtocolVersion` (in `Sources/AgentVMKit/AgentVM.swift`) is bumped on any incompatible change. Images record the daemon version and protocol they were built with (`guestVersion`, `guestProtocol` in `image.json`).
+`AgentVM.guestProtocolVersion` (in `Sources/AgentVMKit/AgentVM.swift`) is bumped on any incompatible change. Additions a host can do without are features instead: the daemon lists them in its hello answer, the box's supervisor keeps that list, and the host never sends a request, field or frame an older daemon would ignore or misread (for a daemon without `terminal`, `exec --tty` is refused with a way to update it). Images record the daemon they were built with (`guestVersion`, `guestProtocol`, `guestFeatures` and `guestDigest`, the SHA-256 of its executable, in `image.json`); `agent-vm image update-guest` puts the current one into an existing image, and `image create --from` does so for the new image.
