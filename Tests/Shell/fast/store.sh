@@ -162,6 +162,29 @@ test_update_guest_checks_every_name_first() {
     assert_err_contains "Missing expected argument '<image> ...'" || return 1
 }
 
+# Both lists name each folder and the space it takes, in text and in JSON (two added keys).
+test_lists_show_folder_and_space() {
+    fake_image dev
+    run_avm box create b1 --image dev
+    assert_status 0 || return 1
+    run_avm image list
+    assert_status 0 || return 1
+    assert_out_contains "/Images/dev" || return 1
+    assert_out_contains "not shared with other images or boxes (what image delete frees)" || return 1
+    run_avm box list
+    assert_status 0 || return 1
+    assert_out_contains "/Boxes/b1" || return 1
+    assert_out_contains "not shared with its image or other boxes (what box delete frees)" || return 1
+    run_avm image list --json
+    assert_status 0 || return 1
+    assert_out_contains '"unsharedBytes"' || return 1
+    assert_out_contains '"macOSBuild"' || return 1
+    run_avm box list --json
+    assert_status 0 || return 1
+    assert_out_contains '"diskUsage"' || return 1
+    assert_out_contains 'Boxes\/b1"' || return 1
+}
+
 test_box_execlog_needs_a_box() {
     run_avm box execlog nosuch
     assert_status 1 || return 1

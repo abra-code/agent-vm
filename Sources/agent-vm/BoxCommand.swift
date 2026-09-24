@@ -85,6 +85,8 @@ struct BoxCommand: ParsableCommand {
         struct Entry: Encodable {
             var box: BoxRecord
             var running: Bool
+            var path: String
+            var diskUsage: DiskUsage
         }
 
         func run() throws {
@@ -93,7 +95,9 @@ struct BoxCommand: ParsableCommand {
                 FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
             }
             if options.json {
-                try Output.json(boxes.map { Entry(box: $0.record, running: $0.isRunning) })
+                try Output.json(boxes.map { box in
+                    Entry(box: box.record, running: box.isRunning, path: box.directory.path, diskUsage: DiskUsage.of(box.directory))
+                })
                 return
             }
             if boxes.isEmpty {
@@ -104,6 +108,9 @@ struct BoxCommand: ParsableCommand {
                 let record = box.record
                 let state = (box.isRunning ? "running" : "stopped").padding(toLength: 8, withPad: " ", startingAt: 0)
                 print("\(record.name)  \(state)  image \(record.image) (macOS \(record.macOSBuild))  \(record.cpuCount) CPUs  \(record.memoryBytes >> 30) GB  network \(record.effectiveNetwork.mode.rawValue)")
+                for line in Output.placeLines(box.directory, DiskUsage.of(box.directory), others: "its image or other boxes", delete: "box delete") {
+                    print(line)
+                }
             }
         }
     }

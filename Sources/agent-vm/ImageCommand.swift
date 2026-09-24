@@ -262,13 +262,35 @@ struct ImageCommand: ParsableCommand {
 
         @OptionGroup var options: StoreOptions
 
+        /// An image's record with its folder and space added as two more keys, so a program
+        /// reading the records as before sees no change.
+        struct Entry: Encodable {
+            var record: ImageRecord
+            var path: String
+            var diskUsage: DiskUsage
+
+            private enum Keys: String, CodingKey {
+                case path
+                case diskUsage
+            }
+
+            func encode(to encoder: Encoder) throws {
+                try record.encode(to: encoder)
+                var container = encoder.container(keyedBy: Keys.self)
+                try container.encode(path, forKey: .path)
+                try container.encode(diskUsage, forKey: .diskUsage)
+            }
+        }
+
         func run() throws {
             let (images, problems) = try options.imageStore.list()
             for problem in problems {
                 FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
             }
             if options.json {
-                try Output.json(images.map(\.record))
+                try Output.json(images.map { image in
+                    Entry(record: image.record, path: image.directory.path, diskUsage: DiskUsage.of(image.directory))
+                })
                 return
             }
             if images.isEmpty {
@@ -286,6 +308,9 @@ struct ImageCommand: ParsableCommand {
                     line += "  recipe \(recipe.description ?? String(recipe.digest.prefix(12)))"
                 }
                 print(line)
+                for place in Output.placeLines(image.directory, DiskUsage.of(image.directory), others: "other images or boxes", delete: "image delete") {
+                    print(place)
+                }
                 let missing = GuestFeature.all.filter { !(record.guestFeatures ?? []).contains($0) }
                 if record.state == .ready && !missing.isEmpty {
                     print("    agent-vm-guest lacks \(missing.joined(separator: ", ")); `agent-vm image update-guest \(record.name)` adds it")

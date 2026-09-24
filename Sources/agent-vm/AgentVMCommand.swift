@@ -118,6 +118,24 @@ enum Output {
         }
     }
 
+    /// Bytes for a person, in decimal units as Finder shows them: "36.1 GB", "310 MB".
+    static func size(_ bytes: Int64) -> String {
+        if bytes >= 999_500_000 {
+            return String(format: "%.1f GB", Double(bytes) / 1e9)
+        }
+        return "\((bytes + 500_000) / 1_000_000) MB"
+    }
+
+    /// The folder of an image or box and the space it takes, as indented lines under its entry
+    /// in a list. `others` names what it may share blocks with; `delete` is the command that
+    /// frees the unshared part.
+    static func placeLines(_ folder: URL, _ usage: DiskUsage, others: String, delete: String) -> [String] {
+        guard let unshared = usage.unsharedBytes else {
+            return ["    \(folder.path)", "    \(size(usage.bytes)) (this volume does not report what is shared)"]
+        }
+        return ["    \(folder.path)", "    \(size(usage.bytes)), of which \(size(unshared)) not shared with \(others) (what \(delete) frees)"]
+    }
+
     static func time(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
