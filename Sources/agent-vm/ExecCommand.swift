@@ -23,7 +23,10 @@ struct ExecCommand: ParsableCommand {
             killed, the program gets SIGHUP, then SIGKILL 3 seconds later. The program runs \
             as the box user in their home folder unless --user or --cwd say otherwise. With \
             --project, the folder appears in the box at the same path and the program starts \
-            there; the box keeps it until another project replaces it or the box stops.
+            there; the box keeps it until another project replaces it or the box stops. \
+            --env NAME (no value) passes on the value agent-vm itself was given, and \
+            --env-file reads NAME=VALUE lines, so API keys stay off the command line; \
+            anything running in the box can read them.
             """
     )
 
@@ -42,8 +45,11 @@ struct ExecCommand: ParsableCommand {
     @Flag(name: .customLong("read-only"), help: "Share the project read only.")
     var readOnly = false
 
-    @Option(name: .long, parsing: .singleValue, help: "Environment variable NAME=VALUE for the program (repeatable).")
+    @Option(name: .long, parsing: .singleValue, help: "Environment variable for the program: NAME=VALUE, or NAME to pass on the value agent-vm was given (repeatable).")
     var env: [String] = []
+
+    @Option(name: .customLong("env-file"), parsing: .singleValue, help: "File of NAME=VALUE lines (or NAME to pass on) for the program's environment (repeatable; --env wins).")
+    var envFile: [String] = []
 
     @Argument(parsing: .captureForPassthrough, help: "The program and its arguments, after --.")
     var command: [String] = []
@@ -53,11 +59,6 @@ struct ExecCommand: ParsableCommand {
     func validate() throws {
         guard !command.isEmpty else {
             throw ValidationError("give the program to run after --, for example: agent-vm exec --box dev -- uname -a")
-        }
-        for entry in env {
-            guard let equals = entry.firstIndex(of: "="), equals != entry.startIndex else {
-                throw ValidationError("--env needs NAME=VALUE, got \(entry)")
-            }
         }
         if readOnly && project == nil {
             throw ValidationError("--read-only applies to --project")
@@ -69,27 +70,33 @@ struct ExecCommand: ParsableCommand {
     static let ownFailureStatus: Int32 = 125
 
     func run() throws {
+        // Read once, since an --env-file may be a pipe, and before the box: a missing variable
+        // or a bad file is a usage error (64), like the checks in validate().
+        let added: [String: String]
         do {
-            try runInBox()
+            added = try ExecEnvironment.overrides(base: [:], files: envFile, entries: env, host: ProcessInfo.processInfo.environment)
+        } catch let error as AgentVMError {
+            throw ValidationError(error.description)
+        }
+        do {
+            try runInBox(added: added)
         } catch {
             FileHandle.standardError.write(Data("agent-vm: \(error)\n".utf8))
             Darwin.exit(Self.ownFailureStatus)
         }
     }
 
-    private func runInBox() throws {
+    /// `added`: the variables from --env-file and --env.
+    private func runInBox(added: [String: String]) throws {
         signal(SIGPIPE, SIG_IGN)
         let box = try options.boxStore.box(named: self.box)
         guard box.isRunning else {
             throw AgentVMError.boxNotRunning(box.name)
         }
         // A proxied box reaches out only through its proxy: tell the tools that ignore the
-        // system proxy (curl, git, SwiftPM, Node). --env overrides.
-        var environment: [String: String] = box.record.effectiveNetwork.usesProxy ? GuestNetworkSetup.proxyEnvironment : [:]
-        for entry in env {
-            let equals = entry.firstIndex(of: "=")!
-            environment[String(entry[..<equals])] = String(entry[entry.index(after: equals)...])
-        }
+        // system proxy (curl, git, SwiftPM, Node). --env-file and --env override.
+        var environment = box.record.effectiveNetwork.usesProxy ? GuestNetworkSetup.proxyEnvironment : [:]
+        environment.merge(added) { _, new in new }
         let argv = command.first == "--" ? Array(command.dropFirst()) : command
         guard !argv.isEmpty else {
             throw ValidationError("give the program to run after --")

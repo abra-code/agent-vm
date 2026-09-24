@@ -88,6 +88,11 @@ agent-vm box delete dev1
   - The exit status is the program's: 128 + the signal number when a signal ended it, 127 when the program is not found, 126 when it cannot be started, and 125 when agent-vm itself fails (for example, the box is not running). A closed output (`exec ... | head -1`) ends `exec` with 141, as SIGPIPE would end the program locally, and the program is hung up.
   - If `agent-vm exec` is killed, the program gets SIGHUP, then SIGKILL 3 seconds later.
   - Programs run as the box user in their home folder unless `--user` or `--cwd` say otherwise.
+- **API keys and other credentials:**
+  - `--env NAME` without a value passes on the value agent-vm was given, as `docker run -e NAME` does: `ANTHROPIC_API_KEY=... agent-vm exec --box dev1 --env ANTHROPIC_API_KEY -- claude`. Unlike docker, a variable that is not set is an error, not a silent omission.
+  - `--env-file PATH` reads one `NAME=VALUE` per line, the value taken as is to the end of the line (no quotes or escapes); a line with only `NAME` passes that variable on, and `#` starts a comment line. The file may be a pipe, so a password manager can hand keys over without a file on disk: `--env-file <(op read ...)`. Later sources win: the proxy settings of a proxied box, then the files, then `--env`.
+  - The values go in the exec request straight to the guest daemon. agent-vm does not log them or write them anywhere, and its error messages name variables, never values.
+  - What this does not protect: every program in the box can read the value, and an agent can send it to any host the network allows, so an allowed host that accepts uploads is a way out. Prefer keys limited to the task that you can revoke.
 - **How it connects:** `exec` asks the box's supervisor, over a Unix socket only you can use (`Boxes/<name>/control.sock`), for a connection to the guest daemon. It then talks to the daemon directly, so the supervisor is not in the data path.
 - **Boxes need the image's volume**: the clone costs nothing until the box writes, and the box's disk grows as the guest works.
 - **`box start` is safe to repeat**: on a running box it reports the box, and during another start it waits for that one.

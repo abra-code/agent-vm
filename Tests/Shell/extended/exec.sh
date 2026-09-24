@@ -90,3 +90,24 @@ test_killing_the_client_ends_the_program() {
     run_avm exec --box "$BOX" -- /bin/sh -c "/bin/ps -axo command | /usr/bin/grep -c '^$_marker'"
     assert_eq "$OUT" "0" "processes left in the guest" || return 1
 }
+
+test_credentials_reach_the_program_and_nowhere_else() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    local _secret="sk-shtest-$$-$RANDOM"
+    printf '# for the agent\nFROM_FILE=file value\nOVERRIDDEN=file\nAVM_SHTEST_KEY\n' > "$SCRATCH/agent.env"
+    run_cmd /usr/bin/env AVM_SHTEST_KEY="$_secret" "$AGENT_VM" exec --box "$BOX" \
+        --env-file "$SCRATCH/agent.env" --env OVERRIDDEN=flag --env AVM_SHTEST_KEY \
+        -- /bin/sh -c 'printf "%s|%s|%s\n" "$AVM_SHTEST_KEY" "$FROM_FILE" "$OVERRIDDEN"'
+    assert_status 0 || return 1
+    assert_eq "$OUT" "$_secret|file value|flag" "the program's variables" || return 1
+    # A pipe, as from a password manager: --env-file <(...).
+    run_cmd "$AGENT_VM" exec --box "$BOX" --env-file <(printf 'PIPED=%s\n' "$_secret") -- /bin/sh -c 'printf "%s\n" "$PIPED"'
+    assert_status 0 || return 1
+    assert_eq "$OUT" "$_secret" "a value from a pipe" || return 1
+    # Not in the box's own records on the Mac.
+    local _folder="${AGENT_VM_HOME:-$HOME/Library/Application Support/agent-vm}/Boxes/$BOX"
+    assert_exists "$_folder/supervisor.log" || return 1
+    local _found
+    _found="$(/usr/bin/grep -rl --exclude=Disk.img --exclude=AuxiliaryStorage -e "$_secret" "$_folder" 2>/dev/null)"
+    assert_eq "$_found" "" "files in the box folder holding the value" || return 1
+}

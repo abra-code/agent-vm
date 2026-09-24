@@ -41,6 +41,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case invalidRecipe(path: String, reason: String)
     /// A network rule that is not a host, wildcard, host:port or known pack.
     case invalidNetworkRule(String, reason: String)
+    /// An unusable --env entry or environment file (the message never includes a value).
+    case invalidEnvironment(String)
     /// A box name that is not lower-case letters, digits, ".", "_" or "-".
     case invalidBoxName(String)
     case boxExists(String)
@@ -99,6 +101,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "recipe \(path): \(reason)"
         case let .invalidNetworkRule(rule, reason):
             return "\(rule) is not a usable network rule: \(reason)"
+        case let .invalidEnvironment(message):
+            return message
         case let .invalidBoxName(name):
             return "\(name) is not a usable box name (lower-case letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit, at most 63)"
         case let .boxExists(name):

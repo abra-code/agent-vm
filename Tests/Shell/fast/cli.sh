@@ -47,7 +47,35 @@ test_exec_failures_of_agent_vm_itself_exit_125() {
 }
 
 test_exec_rejects_malformed_environment() {
-    run_avm exec --box anything --env NOVALUE -- /usr/bin/true
+    run_avm exec --box anything --env =value -- /usr/bin/true
     assert_status 64 || return 1
-    assert_err_contains "NAME=VALUE" || return 1
+    assert_err_contains "NAME=VALUE or the NAME of a variable" || return 1
+    run_avm exec --box anything --env not-a-name -- /usr/bin/true
+    assert_status 64 || return 1
+    assert_err_contains "got not-a-name" || return 1
+}
+
+# Checked before the box: a missing variable is a usage error, and no value is printed.
+test_exec_passes_on_only_variables_that_are_set() {
+    run_cmd /usr/bin/env -u AVM_TEST_UNSET "$AGENT_VM" exec --box nosuchbox --env AVM_TEST_UNSET -- /usr/bin/true
+    assert_status 64 || return 1
+    assert_err_contains "AVM_TEST_UNSET is not set in agent-vm's environment" || return 1
+    # Set, so the next check is the box.
+    run_cmd /usr/bin/env AVM_TEST_KEY=sk-test-value "$AGENT_VM" exec --box nosuchbox --env AVM_TEST_KEY -- /usr/bin/true
+    assert_status 125 || return 1
+    assert_err_contains "no box nosuchbox" || return 1
+}
+
+test_exec_checks_environment_files() {
+    run_avm exec --box nosuchbox --env-file "$SCRATCH/none.env" -- /usr/bin/true
+    assert_status 64 || return 1
+    assert_err_contains "cannot read environment file $SCRATCH/none.env" || return 1
+    printf 'GOOD=1\nexport SECRET=hunter2\n' > "$SCRATCH/bad.env"
+    run_avm exec --box nosuchbox --env-file "$SCRATCH/bad.env" -- /usr/bin/true
+    assert_status 64 || return 1
+    assert_err_contains "bad.env, line 2" || return 1
+    assert_not_contains "$ERR" "hunter2" "stderr" || return 1
+    printf '# keys\nGOOD=1\n' > "$SCRATCH/good.env"
+    run_avm exec --box nosuchbox --env-file "$SCRATCH/good.env" -- /usr/bin/true
+    assert_status 125 || return 1
 }
