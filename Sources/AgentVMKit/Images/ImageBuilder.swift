@@ -311,10 +311,7 @@ public final class ImageBuilder {
     /// widgets hidden). Boxes made from the image earlier keep their own. The image stays
     /// ready, and is marked failed only when the new daemon does not answer.
     public func updateGuest(named name: String, guestDaemon: URL) async throws -> GoldenImage {
-        var image = try store.image(named: name)
-        guard image.record.state == .ready else {
-            throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "update the guest daemon of")
-        }
+        var image = try updatableImage(named: name)
         guard access(guestDaemon.path, X_OK) == 0 else {
             throw AgentVMError.hostNotReady("the guest daemon \(guestDaemon.path) is missing; Scripts/build.sh builds it next to agent-vm")
         }
@@ -361,6 +358,16 @@ public final class ImageBuilder {
             }
             throw error
         }
+    }
+
+    /// The image `updateGuest` would update, or the reason it would refuse (no such image, or
+    /// not ready), without booting anything: several images are checked before the first boot.
+    public func updatableImage(named name: String) throws -> GoldenImage {
+        let image = try store.image(named: name)
+        guard image.record.state == .ready else {
+            throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "update the guest daemon of")
+        }
+        return image
     }
 
     /// Updating writes little: a new daemon and whatever two boots write.

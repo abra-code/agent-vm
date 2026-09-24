@@ -130,7 +130,7 @@ test_images_name_missing_guest_features() {
     fake_image broken failed
     run_avm image list
     assert_status 0 || return 1
-    assert_out_contains "agent-vm-guest lacks terminal, prompt-notices; \`agent-vm image update-guest dev\` adds it" || return 1
+    assert_out_contains "agent-vm-guest lacks terminal, prompt-notices, wallpaper; \`agent-vm image update-guest dev\` adds it" || return 1
     assert_out_contains "Full Disk Access for agent-vm-guest is not checked; \`agent-vm image setup dev\`" || return 1
     run_avm image setup broken
     assert_status 1 || return 1
@@ -142,6 +142,24 @@ test_images_name_missing_guest_features() {
     run_avm image update-guest nosuch
     assert_status 1 || return 1
     assert_err_contains "no image nosuch" || return 1
+}
+
+# Several images: every name is checked before the first boot, so a bad name anywhere in the
+# list refuses the whole run (the fake image dev would fail to boot and say so).
+test_update_guest_checks_every_name_first() {
+    fake_image dev
+    fake_image broken failed
+    run_avm image update-guest dev nosuch
+    assert_status 1 || return 1
+    assert_err_contains "no image nosuch" || return 1
+    assert_not_contains "$OUT" "Booting" "stdout" || return 1
+    run_avm image update-guest dev dev broken
+    assert_status 1 || return 1
+    assert_err_contains "cannot update the guest daemon of image broken: it is failed" || return 1
+    assert_not_contains "$OUT" "Booting" "stdout" || return 1
+    run_avm image update-guest
+    assert_status 64 || return 1
+    assert_err_contains "Missing expected argument '<image> ...'" || return 1
 }
 
 test_box_execlog_needs_a_box() {

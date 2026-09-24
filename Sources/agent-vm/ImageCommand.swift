@@ -187,17 +187,21 @@ struct ImageCommand: ParsableCommand {
     struct UpdateGuest: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "update-guest",
-            abstract: "Put this agent-vm's guest daemon into a ready image.",
+            abstract: "Put this agent-vm's guest daemon into ready images.",
             discussion: """
                 Boots the image, replaces its agent-vm-guest with the one next to agent-vm when \
                 they differ, and boots it once more to check the new one (a minute or two). \
                 Needed when a newer agent-vm brings guest features (`image list` names what an \
                 image lacks); boxes made from the image earlier keep their daemon, so create \
-                them again. Images built with `--from` get the current daemon automatically.
+                them again. Images built with `--from` get the current daemon automatically. \
+                Several images are updated one after another, in the order given; every name is \
+                checked before the first boot, and the first failure stops the rest (a daemon \
+                that does not start marks its image failed, and would mark the next one too). \
+                With --json: the image's record, or an array of them for several names (on a failure, the images updated before it).
                 """)
 
-        @Argument(help: "The image to update.")
-        var name: String
+        @Argument(help: ArgumentHelp("The images to update.", valueName: "image"))
+        var names: [String]
 
         @OptionGroup var options: StoreOptions
 
@@ -211,12 +215,45 @@ struct ImageCommand: ParsableCommand {
                     print(line)
                 }
             }
-            let image = try await builder.updateGuest(named: name, guestDaemon: try ImageCommand.localGuestDaemon())
-            if json {
-                try Output.json(image.record)
-                return
+            let names = names.reduce(into: [String]()) { unique, name in
+                if !unique.contains(name) {
+                    unique.append(name)
+                }
             }
-            print("Image \(image.name) has agent-vm-guest \(image.record.guestVersion ?? "?") (\((image.record.guestFeatures ?? []).joined(separator: ", ")))")
+            let guestDaemon = try ImageCommand.localGuestDaemon()
+            // A mistyped last name should not surface after the first images took minutes each.
+            for name in names {
+                _ = try builder.updatableImage(named: name)
+            }
+            var records: [ImageRecord] = []
+            for (index, name) in names.enumerated() {
+                let image: GoldenImage
+                do {
+                    image = try await builder.updateGuest(named: name, guestDaemon: guestDaemon)
+                } catch {
+                    let skipped = names[(index + 1)...]
+                    if !skipped.isEmpty {
+                        FileHandle.standardError.write(Data("Stopped at image \(name); not updated: \(skipped.joined(separator: ", "))\n".utf8))
+                    }
+                    // The images before this one are updated; a program should not have to
+                    // list the store to learn which.
+                    if json && names.count > 1 {
+                        try Output.json(records)
+                    }
+                    throw error
+                }
+                records.append(image.record)
+                if !json {
+                    print("Image \(image.name) has agent-vm-guest \(image.record.guestVersion ?? "?") (\((image.record.guestFeatures ?? []).joined(separator: ", ")))")
+                }
+            }
+            if json {
+                if records.count == 1 {
+                    try Output.json(records[0])
+                } else {
+                    try Output.json(records)
+                }
+            }
         }
     }
 
