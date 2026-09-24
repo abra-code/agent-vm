@@ -94,6 +94,26 @@ public struct ImageRecord: Codable, Equatable, Sendable {
         public var description: String?
         /// SHA-256 of the recipe and the files it copies.
         public var digest: String
+        /// The files given as its inputs (not part of the digest), by name.
+        public var inputs: [InputInfo]?
+        /// Every parameter's value, given or default.
+        public var parameters: [String: String]?
+
+        public init(description: String?, digest: String, inputs: [InputInfo]? = nil, parameters: [String: String]? = nil) {
+            self.description = description
+            self.digest = digest
+            self.inputs = inputs
+            self.parameters = parameters
+        }
+    }
+
+    /// One recipe input as it was streamed into the guest.
+    public struct InputInfo: Codable, Equatable, Sendable {
+        public var name: String
+        /// The file's name on the Mac that built the image.
+        public var file: String
+        public var bytes: Int64
+        public var sha256: String
     }
 }
 

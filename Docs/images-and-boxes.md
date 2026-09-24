@@ -79,7 +79,7 @@ agent-vm image create dev-node --from dev --recipe Recipes/homebrew-node/recipe.
 agent-vm box create web --image dev-node
 ```
 
-The recipe records what was installed, so the image can be built again the same way. Recipes are described in [image-recipes.md](image-recipes.md), and examples are in [Recipes/](../Recipes/README.md). A derived image is a clone too: it does not change when its base image changes later.
+The recipe records what was installed, so the image can be built again the same way. Tools that need room, such as Xcode and its simulator runtimes (about 4 GB, then 8 GB per runtime), get it with `--disk-gb`: a derived image's disk can be larger than its base's, and images built from it inherit the size. A recipe can also ask for a file you downloaded yourself, such as Xcode's `.xip` (`--input`), and for choices (`--set`); [Recipes/](../Recipes/README.md) has an Xcode example. Recipes are described in [image-recipes.md](image-recipes.md), and examples are in [Recipes/](../Recipes/README.md). A derived image is a clone too: it does not change when its base image changes later.
 
 ### After upgrading agent-vm
 

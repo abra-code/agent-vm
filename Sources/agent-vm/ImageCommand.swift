@@ -46,7 +46,7 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .customLong("memory-gb"), help: "Memory in GB (default \(ImageBuildOptions.defaultMemoryBytes >> 30), or the base image's).")
         var memoryGB: Int?
 
-        @Option(name: .customLong("disk-gb"), help: "Disk size in GB (default \(ImageBuildOptions.defaultDiskBytes >> 30); a sparse file that takes only what the guest writes). Not with --from.")
+        @Option(name: .customLong("disk-gb"), help: "Disk size in GB (default \(ImageBuildOptions.defaultDiskBytes >> 30); a sparse file that takes only what the guest writes). With --from: a larger disk than the base's (default: the base's).")
         var diskGB: Int?
 
         @Option(name: .long, help: "Account name created in the guest (default agent). Not with --from.")
@@ -62,15 +62,27 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .long, help: "A JSON recipe of steps to run in the image (see Docs/image-recipes.md).")
         var recipe: String?
 
+        @Option(name: .customLong("input"), help: ArgumentHelp("A file the recipe asks for, streamed into the image while it is built (repeatable).", valueName: "name=path"))
+        var inputs: [String] = []
+
+        @Option(name: .customLong("set"), help: ArgumentHelp("A value for one of the recipe's parameters (repeatable).", valueName: "name=value"))
+        var settings: [String] = []
+
         @OptionGroup var options: StoreOptions
 
         func validate() throws {
             guard (ipsw == nil) != (from == nil) else {
                 throw ValidationError("give either --ipsw (install macOS) or --from (start from a ready image)")
             }
+            if recipe == nil && !(inputs.isEmpty && settings.isEmpty) {
+                throw ValidationError("--input and --set give values to a recipe's inputs and parameters; add --recipe")
+            }
+            for pair in inputs + settings where !pair.contains("=") || pair.hasPrefix("=") {
+                throw ValidationError("\(pair): give name=value")
+            }
             if from != nil {
-                guard diskGB == nil, user == nil, guestDaemon == nil else {
-                    throw ValidationError("--disk-gb, --user and --guest-daemon come from the base image with --from")
+                guard user == nil, guestDaemon == nil else {
+                    throw ValidationError("--user and --guest-daemon come from the base image with --from")
                 }
                 guard recipe != nil || commandLineTools == true else {
                     throw ValidationError("with --from, give --recipe (or --command-line-tools): otherwise the new image would be a plain copy")
@@ -87,7 +99,10 @@ struct ImageCommand: ParsableCommand {
         func run() async throws {
             let json = options.json
             // Checked before anything is built: a bad recipe fails in a second, not after install.
-            let loadedRecipe = try recipe.map { try ImageRecipe.load(from: URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)) }
+            let loadedRecipe = try recipe.map {
+                try ImageRecipe.load(from: URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath))
+                    .binding(inputs: try Self.pairs(inputs, option: "--input"), parameters: try Self.pairs(settings, option: "--set"))
+            }
             let builder = ImageBuilder(store: options.imageStore) { line in
                 // With --json, progress goes to stderr so stdout holds only the record.
                 if json {
@@ -105,6 +120,7 @@ struct ImageCommand: ParsableCommand {
                     commandLineTools: commandLineTools ?? loadedRecipe?.commandLineTools ?? false,
                     cpuCount: cpus,
                     memoryBytes: memoryGB.map { UInt64($0) << 30 },
+                    diskBytes: diskGB.map { UInt64($0) << 30 },
                     guestDaemon: try ImageCommand.localGuestDaemon()))
             } else {
                 image = try await builder.build(ImageBuildOptions(
@@ -124,6 +140,20 @@ struct ImageCommand: ParsableCommand {
                 return
             }
             print("Image \(image.name) is ready: \(image.directory.path)")
+        }
+
+        /// "name=value" pairs as a map; a name given twice is refused.
+        static func pairs(_ list: [String], option: String) throws -> [String: String] {
+            var result: [String: String] = [:]
+            for pair in list {
+                let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                let name = String(parts[0])
+                guard result[name] == nil else {
+                    throw ValidationError("\(option) \(name) is given twice")
+                }
+                result[name] = parts.count > 1 ? String(parts[1]) : ""
+            }
+            return result
         }
 
         private func guestDaemonURL() throws -> URL {
@@ -306,6 +336,9 @@ struct ImageCommand: ParsableCommand {
                 }
                 if let recipe = record.recipe {
                     line += "  recipe \(recipe.description ?? String(recipe.digest.prefix(12)))"
+                    if let parameters = recipe.parameters, !parameters.isEmpty {
+                        line += " [\(parameters.keys.sorted().map { "\($0)=\(parameters[$0] ?? "")" }.joined(separator: ", "))]"
+                    }
                 }
                 print(line)
                 for place in Output.placeLines(image.directory, DiskUsage.of(image.directory), others: "other images or boxes", delete: "image delete") {

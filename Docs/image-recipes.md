@@ -31,6 +31,8 @@ Examples are in [../Recipes/](../Recipes/README.md).
 | `commandLineTools` | no | `false` skips Xcode's Command Line Tools (default `true` for a new image). With `--from`, `true` installs them only if the base image lacks them. `--[no-]command-line-tools` on the command line overrides it. |
 | `steps` | no | What to run, in order. |
 | `checks` | no | Commands run as the box user after the steps; each must exit 0 within 300 seconds, and its first line of output is shown. |
+| `inputs` | no | Files the builder gives with `--input NAME=PATH`: see Inputs and parameters. |
+| `parameters` | no | Values the builder may set with `--set NAME=VALUE`: see Inputs and parameters. |
 
 Each step does one of two things:
 
@@ -51,6 +53,36 @@ Every step can also have:
 
 A key that is not in these tables is an error, so a misspelling cannot silently skip a step.
 
+## Inputs and parameters
+
+Some things cannot be written into a recipe: a file too big for a `copy` step that cannot be downloaded without an account (Xcode's `.xip` needs an Apple ID), or a choice that differs from one image to the next (which simulator runtimes to install). A recipe declares these, and whoever builds the image gives them:
+
+```json
+{
+  "version": 1,
+  "inputs": {
+    "xcode": { "description": "an Xcode .xip from https://developer.apple.com/download/all/" }
+  },
+  "parameters": {
+    "platforms": { "description": "simulator runtimes, separated by spaces", "default": "iOS" }
+  },
+  "steps": [
+    { "name": "Expand Xcode", "user": "root", "run": "mkdir -p /private/var/tmp/xcode && cd /private/var/tmp/xcode && xip --expand \"$AGENT_VM_INPUT_XCODE\" && mv /private/var/tmp/xcode/*.app /Applications/" },
+    { "name": "Runtimes", "run": "for p in $AGENT_VM_PARAM_PLATFORMS; do xcodebuild -downloadPlatform \"$p\" || exit 1; done" }
+  ]
+}
+```
+
+```sh
+agent-vm image create dev-xcode --from dev --recipe recipe.json --input xcode=~/Downloads/Xcode_27.xip --set platforms="iOS watchOS"
+```
+
+- **Names**: lower-case letters, digits and `_`, starting with a letter, at most 32; an input and a parameter cannot share one. Each declaration is an object with an optional `description`, shown when a value is missing; a parameter can also have a `default`.
+- **Inputs** are all required. Before the first step, agent-vm streams each file into the guest as `/private/var/tmp/agent-vm-inputs/<name>/<file name>` (readable by every account), and deletes that folder after the checks, so the image keeps only what the steps made of them. A file that changes while it is sent fails the build.
+- **Parameters** without a `default` must be set. Values are text, any text but a NUL character; an empty value is a value.
+- **Steps and checks see them** as environment variables: `AGENT_VM_INPUT_<NAME>` (the file's path in the guest) and `AGENT_VM_PARAM_<NAME>` (the value), the name in capitals. A step's own `env` cannot change them.
+- **Mistakes are refused before anything is built**: a missing input or required parameter, a name the recipe does not declare, an input that is not a readable file.
+
 ## What steps can rely on
 
 - **The internet**: the image is built on NAT, so downloads work, but a box's allowlist does not apply to the build.
@@ -70,3 +102,5 @@ A step that exits with a non-zero status, or stays silent past its timeout, fail
 ## Provenance
 
 The image records the recipe's description and a SHA-256 digest of the recipe and every file it copies (`recipe` in `image.json`), and keeps the recipe itself as `recipe.json` in the image folder. The digest is of the recipe file followed by the copied files in step order, so `cat recipe.json <copied files in order> | shasum -a 256` reproduces it.
+
+Inputs are not part of that digest: the same recipe can be built with another Xcode. `recipe.inputs` records each one's name, file name, size and SHA-256 (of the bytes sent, computed while sending), and `recipe.parameters` every parameter's value, given or default.

@@ -68,14 +68,17 @@ public struct ImageDeriveOptions: Sendable {
     /// nil: the base image's.
     public var cpuCount: Int?
     public var memoryBytes: UInt64?
+    /// A larger disk than the base's (nil: the base's size).
+    public var diskBytes: UInt64?
 
     /// The agent-vm-guest to put in the new image when the base has another one (nil: keep the
     /// base's).
     public var guestDaemon: URL?
 
     public init(name: String, base: String, recipe: ImageRecipe?, commandLineTools: Bool, cpuCount: Int? = nil, memoryBytes: UInt64? = nil,
-                guestDaemon: URL? = nil) {
+                diskBytes: UInt64? = nil, guestDaemon: URL? = nil) {
         self.guestDaemon = guestDaemon
+        self.diskBytes = diskBytes
         self.name = name
         self.base = base
         self.recipe = recipe
@@ -209,6 +212,12 @@ public final class ImageBuilder {
               memoryBytes <= VZVirtualMachineConfiguration.maximumAllowedMemorySize else {
             throw AgentVMError.virtualMachine(operation: "configure \(options.name)", message: "\(cpuCount) CPUs and \(memoryBytes >> 30) GB exceed what this Mac allows")
         }
+        // Moving the recovery container needs a few GB past it; a disk never shrinks.
+        if let diskBytes = options.diskBytes, diskBytes != base.record.diskBytes {
+            guard diskBytes >= base.record.diskBytes + Self.minimumDiskGrowth else {
+                throw AgentVMError.virtualMachine(operation: "configure \(options.name)", message: "the disk can only grow, by at least \(Self.minimumDiskGrowth >> 30) GB: \(base.name)'s is \(base.record.diskBytes >> 30) GB")
+            }
+        }
 
         guard let baseLock = try store.tryLock(base) else {
             throw AgentVMError.imageBusy(base.name)
@@ -251,6 +260,13 @@ public final class ImageBuilder {
                 try BoxStore.cloneFile(base.passwordURL, to: image.passwordURL)
                 try VZMacMachineIdentifier().dataRepresentation.write(to: image.machineIdentifierURL)
             }
+            let grown = options.diskBytes.map { $0 > base.record.diskBytes } ?? false
+            if grown, let diskBytes = options.diskBytes {
+                log("Growing the disk from \(base.record.diskBytes >> 30) to \(diskBytes >> 30) GB")
+                let moved = try GuestDisk.grow(image.diskURL, to: diskBytes)
+                log("  recovery container moved to the end (\((moved.sectors * UInt64(GuestDisk.sectorSize)) >> 20) MB)")
+                image = try store.update(image) { $0.diskBytes = diskBytes }
+            }
             image = try store.update(image) { $0.state = .provisioning }
 
             let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
@@ -265,6 +281,9 @@ public final class ImageBuilder {
                 image = try store.update(image) { record in
                     record.guestVersion = hello.version
                     record.guestFeatures = hello.features
+                }
+                if grown {
+                    try await growContainer(machine)
                 }
                 image = try await configure(image, machine: machine, commandLineTools: options.commandLineTools, recipe: options.recipe)
                 // Last, so the recipe ran under the daemon it was tested with.
@@ -484,6 +503,23 @@ public final class ImageBuilder {
         }
     }
 
+    /// Grows the guest's main APFS container into the space `GuestDisk.grow` freed before it,
+    /// and reports the free space that results.
+    private func growContainer(_ machine: MacMachine) async throws {
+        let resized = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDisk.resizeCommand], cwd: "/", user: "root"),
+                                             readTimeout: 600)
+        guard resized.report == ExitReport(status: 0) else {
+            throw AgentVMError.guestCommandFailed(command: "diskutil apfs resizeContainer", status: resized.report.shellStatus,
+                                                  output: String((resized.stdout + resized.stderr).suffix(800)))
+        }
+        let free = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/bin/df", "-h", "/System/Volumes/Data"], cwd: "/"))
+        let line = free.stdout.split(whereSeparator: \.isNewline).last.map(String.init) ?? ""
+        log("  main container grown: \(line.split(separator: " ", omittingEmptySubsequences: true).dropFirst(3).first.map { "\($0) free" } ?? line)")
+    }
+
+    /// Growing a disk moves its recovery container (about 5 GB) past the new space.
+    static let minimumDiskGrowth: UInt64 = 8 << 30
+
     /// What every image gets once its guest daemon answers: Spotlight indexing off, a desktop
     /// that never locks, names the image and hides its widgets, the Command Line Tools when
     /// asked for and missing, then the recipe. Returns the updated image.
@@ -512,10 +548,12 @@ public final class ImageBuilder {
             }
         }
         if let recipe {
-            try await apply(recipe, machine: machine, boxUser: current.record.userName)
+            let inputs = try await apply(recipe, machine: machine, boxUser: current.record.userName)
             try Data(recipe.text.utf8).write(to: current.recipeURL)
             current = try store.update(current) { record in
-                record.recipe = ImageRecord.RecipeInfo(description: recipe.description, digest: recipe.digest)
+                record.recipe = ImageRecord.RecipeInfo(description: recipe.description, digest: recipe.digest,
+                                                       inputs: inputs.isEmpty ? nil : inputs,
+                                                       parameters: recipe.parameterValues.isEmpty ? nil : recipe.parameterValues)
             }
         }
         // Checked, so image list says whether boxes can open protected folders (image setup).
@@ -663,12 +701,112 @@ public final class ImageBuilder {
         return label
     }
 
-    /// Runs a recipe's steps, then its checks; any failure fails the build with the step's name
-    /// and the end of its output.
-    func apply(_ recipe: ImageRecipe, machine: MacMachine, boxUser: String) async throws {
+    /// Runs a recipe: streams its inputs into the guest, runs its steps, then its checks, and
+    /// deletes the inputs again; any failure fails the build with the step's name and the end
+    /// of its output. Returns what was sent as inputs.
+    func apply(_ recipe: ImageRecipe, machine: MacMachine, boxUser: String) async throws -> [ImageRecord.InputInfo] {
         let clock = ContinuousClock()
         let began = clock.now
         log("Recipe\(recipe.description.map { ": \($0)" } ?? "") (\(recipe.steps.count) steps, \(recipe.checks.count) checks)")
+        if !recipe.parameterValues.isEmpty {
+            log("  parameters: \(recipe.parameterValues.keys.sorted().map { "\($0)=\(recipe.parameterValues[$0] ?? "")" }.joined(separator: ", "))")
+        }
+        let inputs: [ImageRecord.InputInfo]
+        do {
+            inputs = try await sendInputs(recipe, machine: machine)
+            try await runSteps(recipe, machine: machine, boxUser: boxUser)
+        } catch {
+            if !recipe.inputFiles.isEmpty {
+                _ = try? await guestCapture(machine, ImageRecipe.removeInputsRequest)
+            }
+            throw error
+        }
+        if !recipe.inputFiles.isEmpty {
+            // Inputs are for the steps; an image keeps only what the steps made of them.
+            let removed = try await guestCapture(machine, ImageRecipe.removeInputsRequest)
+            guard removed.report == ExitReport(status: 0) else {
+                throw AgentVMError.guestCommandFailed(command: "delete the recipe's inputs", status: removed.report.shellStatus,
+                                                      output: (removed.stderr + removed.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
+        log("  recipe applied in \(Int(Self.seconds(clock.now - began))) s")
+        return inputs
+    }
+
+    /// Streams each input into the guest, in name order, as `ImageRecipe.guestInputPath`.
+    private func sendInputs(_ recipe: ImageRecipe, machine: MacMachine) async throws -> [ImageRecord.InputInfo] {
+        let clock = ContinuousClock()
+        var sent: [ImageRecord.InputInfo] = []
+        if !recipe.inputFiles.isEmpty {
+            // Root writes there; whatever a base image left at that path (a link, say) goes first.
+            let cleared = try await guestCapture(machine, ImageRecipe.removeInputsRequest)
+            guard cleared.report == ExitReport(status: 0) else {
+                throw AgentVMError.guestCommandFailed(command: "clear \(ImageRecipe.guestInputsFolder)", status: cleared.report.shellStatus,
+                                                      output: (cleared.stderr + cleared.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
+        for name in recipe.inputFiles.keys.sorted() {
+            guard let file = recipe.inputFiles[name] else {
+                continue
+            }
+            let began = clock.now
+            let path = ImageRecipe.guestInputPath(name, file: file)
+            log("  input \(name): \(file.path)")
+            // Output comes only at the end, when the guest has the whole file; the read timeout
+            // covers the wait for it. A guest program that exits early drops the rest of the
+            // input, so sending cannot block on it.
+            let info = try await withGuest(machine, readTimeout: 600) { descriptor in
+                try Self.streamInput(file, name: name, to: path, descriptor: descriptor)
+            }
+            log("      \(info.bytes >> 20) MB sent in \(Int(Self.seconds(clock.now - began))) s, SHA-256 \(info.sha256.prefix(16))...")
+            sent.append(info)
+        }
+        return sent
+    }
+
+    /// Sends `file` as the standard input of `ImageRecipe.inputRequest`, hashing it on the
+    /// way; refused when the file changes while it is sent, so the recorded digest is of
+    /// what went into the image.
+    nonisolated static func streamInput(_ file: URL, name: String, to path: String, descriptor: Int32) throws -> ImageRecord.InputInfo {
+        var before = stat()
+        guard stat(file.path, &before) == 0 else {
+            throw AgentVMError.system(operation: "read input \(name) (\(file.path))", code: errno)
+        }
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: file)
+        } catch {
+            throw AgentVMError.invalidRecipe(path: file.path, reason: "input \(name): cannot read it: \(error.localizedDescription)")
+        }
+        defer { try? handle.close() }
+        let session = try ExecSession(descriptor: descriptor, request: ImageRecipe.inputRequest(path: path))
+        var hasher = SHA256()
+        var total: Int64 = 0
+        while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty {
+            hasher.update(data: chunk)
+            try session.sendStdin(Array(chunk))
+            total += Int64(chunk.count)
+        }
+        try session.sendStdinEnd()
+        var output: [UInt8] = []
+        let report = try session.run(stdout: { output += $0 }, stderr: { output += $0 })
+        guard report == ExitReport(status: 0) else {
+            throw AgentVMError.guestCommandFailed(command: "send input \(name)", status: report.shellStatus,
+                                                  output: String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        var after = stat()
+        guard stat(file.path, &after) == 0, total == Int64(before.st_size), after.st_size == before.st_size,
+              after.st_mtimespec.tv_sec == before.st_mtimespec.tv_sec, after.st_mtimespec.tv_nsec == before.st_mtimespec.tv_nsec else {
+            throw AgentVMError.invalidRecipe(path: file.path, reason: "input \(name) changed while it was sent; build the image again")
+        }
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        return ImageRecord.InputInfo(name: name, file: file.lastPathComponent, bytes: total, sha256: digest)
+    }
+
+    /// The recipe's steps, then its checks.
+    private func runSteps(_ recipe: ImageRecipe, machine: MacMachine, boxUser: String) async throws {
+        let clock = ContinuousClock()
+        let variables = recipe.variables
         for (index, step) in recipe.steps.enumerated() {
             let stepBegan = clock.now
             log("  [\(index + 1)/\(recipe.steps.count)] \(step.name)\(step.user == "root" ? " (as root)" : "")")
@@ -676,7 +814,7 @@ public final class ImageBuilder {
             var input: Data?
             switch step.action {
             case let .run(command):
-                request = ImageRecipe.runRequest(step, command: command, boxUser: boxUser)
+                request = ImageRecipe.runRequest(step, command: command, boxUser: boxUser, variables: variables)
             case let .copy(source, destination, mode):
                 request = ImageRecipe.copyRequest(step, destination: destination, mode: mode)
                 input = try ImageRecipe.copyContents(step, source: source)
@@ -698,7 +836,7 @@ public final class ImageBuilder {
         for check in recipe.checks {
             let result: (report: ExitReport, stdout: String, stderr: String)
             do {
-                result = try await guestCapture(machine, ImageRecipe.checkRequest(check), readTimeout: Self.checkTimeoutSeconds)
+                result = try await guestCapture(machine, ImageRecipe.checkRequest(check, variables: variables), readTimeout: Self.checkTimeoutSeconds)
             } catch {
                 throw Self.recipeFailure("recipe check \(check)", error, timeoutSeconds: Self.checkTimeoutSeconds, output: "")
             }
@@ -708,7 +846,6 @@ public final class ImageBuilder {
             }
             log("  check \(check): \(output.split(whereSeparator: \.isNewline).first.map(String.init) ?? "ok")")
         }
-        log("  recipe applied in \(Int(Self.seconds(clock.now - began))) s")
     }
 
     nonisolated static let checkTimeoutSeconds = 300

@@ -14,6 +14,9 @@ enum Main {
     @MainActor
     static func main() async {
         AskpassEntry.handleIfAskpass()
+        // Progress lines (an image build's) appear as they happen also when stdout is a file
+        // or a pipe, which stdio would otherwise fill in blocks until the program exits.
+        setvbuf(stdout, nil, _IOLBF, 0)
         // A box supervisor in a login session runs AppKit's loop, so `box view` can show the
         // box's screen. The loop is entered here, in main itself: entered inside a main-actor
         // job (as a command's run() is), it would never drain the main queue again, and the
