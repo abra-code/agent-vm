@@ -5,7 +5,9 @@
 // machine: the screen saver setting is a per-host preference, and the screen lock lives in the
 // guest's keybag, so a box (a clone with its own machine identifier) starts with them back on
 // (measured). Image builds apply it, and so does a box's supervisor when its screen is first
-// shown.
+// shown. Also the desktop's looks and weight: a wallpaper naming the box or image
+// (GuestWallpaper), and hidden widgets (each set once, not per machine: they live in the
+// user's preferences, which a box inherits from its image).
 
 import Foundation
 
@@ -31,18 +33,7 @@ enum GuestDesktop {
     @MainActor
     static func keepUnlocked(user: String, password: String, desktopWait: Int = 60, run: Run) async throws -> String? {
         let uid = try await userID(user, run: run)
-        var desktop = false
-        for attempt in 0...desktopWait {
-            let session = try await run(GuestRequest(op: .exec, argv: ["/bin/launchctl", "print", "gui/\(uid)"], cwd: "/", user: "root"), nil)
-            if session.report == ExitReport(status: 0) {
-                desktop = true
-                break
-            }
-            if attempt < desktopWait {
-                try await Task.sleep(for: .seconds(1))
-            }
-        }
-        guard desktop else {
+        guard try await waitForDesktop(uid: uid, seconds: desktopWait, run: run) else {
             return "\(user) is not logged in to the desktop; the screen lock stays as it is"
         }
         let sleep = try await run(GuestRequest(op: .exec, argv: ["/usr/bin/pmset", "-a", "displaysleep", "0"], cwd: "/", user: "root"), nil)
@@ -59,5 +50,97 @@ enum GuestDesktop {
             return nil
         }
         return "could not turn off everything that locks the screen: \((lock.stderr + status.stderr + saver.stderr + sleep.stderr).trimmingCharacters(in: .whitespacesAndNewlines))"
+    }
+
+    /// Whether the user with id `uid` is logged in to the desktop (the automatic login), waiting
+    /// up to `seconds` for it.
+    @MainActor
+    static func waitForDesktop(uid: String, seconds: Int, run: Run) async throws -> Bool {
+        for attempt in 0...seconds {
+            let session = try await run(GuestRequest(op: .exec, argv: ["/bin/launchctl", "print", "gui/\(uid)"], cwd: "/", user: "root"), nil)
+            if session.report == ExitReport(status: 0) {
+                return true
+            }
+            if attempt < seconds {
+                try await Task.sleep(for: .seconds(1))
+            }
+        }
+        return false
+    }
+
+    /// Hides the desktop widgets for `user`, from their next login: System Settings' Desktop &
+    /// Dock > Show Widgets, off for the desktop and for Stage Manager. macOS puts a few widgets
+    /// on a new account's desktop, and at every login about 20 widget programs start with them,
+    /// 256 MB together; hidden, about 3 start, 70 MB (measured). Nil when they are hidden, else
+    /// why not.
+    ///
+    /// Emptying the widget layout saves a little more (1 program, 35 MB), but the layout is in
+    /// NotificationCenter's container, which only a program with Full Disk Access may open, and
+    /// a new image's daemon has none (macOS refuses silently, without a prompt; measured).
+    @MainActor
+    static func hideWidgets(user: String, run: Run) async throws -> String? {
+        var failures: [String] = []
+        for key in ["StandardHideWidgets", "StageManagerHideWidgets"] {
+            let result = try await run(GuestRequest(op: .exec, argv: ["/usr/bin/defaults", "write", "com.apple.WindowManager", key, "-bool", "true"],
+                                                    user: user), nil)
+            if result.report != ExitReport(status: 0) {
+                failures.append("\(key): \((result.stderr + result.stdout).trimmingCharacters(in: .whitespacesAndNewlines))")
+            }
+        }
+        return failures.isEmpty ? nil : "could not hide the widgets: \(failures.joined(separator: "; "))"
+    }
+
+    /// Makes `png` the wallpaper of `user`'s desktop through agent-vm-guest `wallpaper` (feature
+    /// `wallpaper`), run in their desktop session. Returns what it did, or throws with the
+    /// guest's reason; the caller waits for the desktop first.
+    @MainActor
+    static func setWallpaper(_ png: Data, user: String, uid: String, run: Run) async throws -> GuestWallpaper.Outcome {
+        let request = GuestRequest(op: .exec, argv: ["/bin/launchctl", "asuser", uid, "/usr/bin/sudo", "-u", user,
+                                                     GuestDaemon.executablePath, "wallpaper"], cwd: "/", user: "root")
+        let result = try await run(request, png)
+        let word = result.stdout.split(separator: " ", maxSplits: 1).first.map(String.init) ?? ""
+        guard result.report == ExitReport(status: 0), let outcome = GuestWallpaper.Outcome(rawValue: word) else {
+            throw AgentVMError.guestCommandFailed(command: "agent-vm-guest wallpaper", status: result.report.shellStatus,
+                                                  output: (result.stderr + result.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return outcome
+    }
+
+    /// A desktop that names its machine and runs few widgets: `png` as the wallpaper (skipped,
+    /// with a note, when the guest daemon lacks the feature; with no note when `png` is nil),
+    /// and the widgets hidden. With `widgetsOnce` (boxes) the widgets are hidden only along
+    /// with a new wallpaper, that is on the box's first start, so someone who shows them again
+    /// in System Settings keeps them. Returns lines for the log.
+    @MainActor
+    static func prepare(user: String, png: Data?, features: [String], widgetsOnce: Bool, desktopWait: Int = 60, run: Run) async throws -> [String] {
+        let uid = try await userID(user, run: run)
+        guard try await waitForDesktop(uid: uid, seconds: desktopWait, run: run) else {
+            return ["note: \(user) is not logged in to the desktop; the widgets and wallpaper stay as they are"]
+        }
+        var lines: [String] = []
+        var newWallpaper = false
+        if let png, features.contains(GuestFeature.wallpaper) {
+            do {
+                let outcome = try await setWallpaper(png, user: user, uid: uid, run: run)
+                newWallpaper = outcome == .set
+                switch outcome {
+                case .set:
+                    lines.append("Wallpaper set")
+                case .unchanged:
+                    lines.append("Wallpaper already set")
+                case .kept:
+                    lines.append("Wallpaper kept: someone chose another one in the box")
+                }
+            } catch {
+                lines.append("note: could not set the wallpaper: \(error)")
+            }
+        } else if png != nil {
+            lines.append("note: this agent-vm-guest predates wallpapers; boxes made after `agent-vm image update-guest` on their image get one")
+        }
+        if !widgetsOnce || newWallpaper {
+            let widgets = try await hideWidgets(user: user, run: run)
+            lines.append(widgets.map { "note: \($0)" } ?? "Widgets hidden from the next login")
+        }
+        return lines
     }
 }

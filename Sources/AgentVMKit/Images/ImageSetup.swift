@@ -167,6 +167,25 @@ extension ImageBuilder {
         log(note.map { "  note: \($0)" } ?? "  Screen lock, screen saver and display sleep off")
     }
 
+    /// The image's name as its wallpaper, and hidden widgets (GuestDesktop.prepare); boxes
+    /// cloned from it start that way. `features`: what the running agent-vm-guest announced.
+    /// An older daemon sets no wallpaper, without a note: every caller either replaces it next
+    /// (`image create --from`) or already runs this agent-vm's (`image create`, `update-guest`).
+    /// Only looks: a failure is logged, never fails the build or update.
+    func prepareDesktop(_ image: GoldenImage, machine: MacMachine, features: [String]?) async {
+        let features = features ?? []
+        do {
+            let png = features.contains(GuestFeature.wallpaper) ? try GuestWallpaper.png(for: image.record) : nil
+            let lines = try await GuestDesktop.prepare(user: image.record.userName, png: png,
+                                                       features: features, widgetsOnce: false, run: guestRunner(machine))
+            for line in lines {
+                log("  \(line)")
+            }
+        } catch {
+            log("  note: could not set up the desktop's wallpaper and widgets: \(error)")
+        }
+    }
+
     /// Guest requests on this machine, with stdin, for GuestDesktop.
     func guestRunner(_ machine: MacMachine) -> GuestDesktop.Run {
         return { [self] request, input in

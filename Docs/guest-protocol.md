@@ -46,12 +46,12 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - `notices`: exec only, optional: `true` asks for notice frames (feature `prompt-notices`, below).
 
 ```json
-{"ok": true, "v": 1, "version": "0.1.0", "osBuild": "26A428", "pid": 612}
+{"ok": true, "v": 1, "version": "0.1.1", "osBuild": "26A428", "pid": 612}
 ```
 
 - `ok`: false with `error` (a message for a person) when the request is refused; the guest then closes the connection.
 - `version`, `osBuild`: hello only (agent-vm-guest's version, the guest's macOS build).
-- `features`: hello only, what the daemon supports beyond this document's base (see Versioning). Today: `terminal` and `prompt-notices`.
+- `features`: hello only, what the daemon supports beyond this document's base (see Versioning). Today: `terminal`, `prompt-notices` and `wallpaper`.
 - `pid`: exec only, the started process.
 - `status`: a refused exec only, the status a shell would give: 127 when the program is not found, 126 when it cannot be run (unknown account, missing folder).
 
@@ -95,6 +95,12 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - **Why**: every program exec runs is started by the daemon, so macOS asks on the daemon's behalf before one opens protected data (the account's Downloads, Documents or Desktop folders, other apps, the camera). The question appears on the guest's screen, and the program waits for an answer.
 - **How**: the daemon reads the privacy service's log (`log stream`, subsystem `com.apple.TCC`) from its start. An `AUTHREQ_ATTRIBUTION` line names the program that tried the access, and an `AUTHREQ_PROMPTING` line with the same message id (from the same tccd process) says a prompt went up. The program's session id is the exec's pid, since every exec starts a new session, so descendants count too.
 - **Frame**: `{"kind": "permission-prompt", "service": "kTCCServiceSystemPolicyDownloadsFolder", "program": "/bin/ls", "pid": 688}`. It is advice, never output: a host that cannot read one drops it. None follows the `exit` frame.
+
+**The wallpaper** (feature `wallpaper`): not a new operation, but a command the host runs with exec. `agent-vm-guest wallpaper` reads a PNG (at most 16 MB) on stdin and makes it the calling user's wallpaper on every screen. It must run in that user's desktop session, so the host runs it as root through `launchctl asuser UID sudo -u USER`; outside the session macOS reports success and changes nothing.
+- **File**: `~/Library/Application Support/agent-vm/wallpaper-<first 16 hex digits of its SHA-256>.png`, a new name for a new picture. The previous one is deleted once the desktop reports the new one.
+- **Only the default is replaced**: the picture is set only over macOS's default (`/System/Library/CoreServices/DefaultDesktop.heic`) or an earlier `wallpaper-*.png` of agent-vm's; a wallpaper someone chose in the box stays.
+- **Output**: `set PATH`, `unchanged PATH` when the picture already is the wallpaper, or `kept PATH` when someone chose another one; exit status 1 with a reason on stderr otherwise (not a PNG, no desktop session, the desktop did not take it within 10 seconds).
+- **Who draws it**: agent-vm, on the Mac: the image's name at `image create` and `image update-guest`, the box's name at every `box start` (unchanged after the first, and never over a wallpaper chosen in the box).
 
 ## Proxy relay
 

@@ -126,8 +126,10 @@ public enum GuestFeature {
     public static let terminal = "terminal"
     /// exec with `notices`, and notice frames.
     public static let promptNotices = "prompt-notices"
+    /// `agent-vm-guest wallpaper`, run in the box user's desktop session (GuestWallpaper).
+    public static let wallpaper = "wallpaper"
     /// Everything this build's daemon supports.
-    public static let all = [terminal, promptNotices]
+    public static let all = [terminal, promptNotices, wallpaper]
 }
 
 /// A terminal's size in character cells.

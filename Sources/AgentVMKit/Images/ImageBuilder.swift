@@ -307,8 +307,9 @@ public final class ImageBuilder {
 
     /// Puts this agent-vm's agent-vm-guest into a ready image, in place: boots it, replaces the
     /// daemon if it differs, shuts down, and boots once more to check the new one (a minute or
-    /// two). Boxes made from the image earlier keep their own. The image stays ready, and is
-    /// marked failed only when the new daemon does not answer.
+    /// two). The desktop gets what new images get (the image's name as its wallpaper, its
+    /// widgets hidden). Boxes made from the image earlier keep their own. The image stays
+    /// ready, and is marked failed only when the new daemon does not answer.
     public func updateGuest(named name: String, guestDaemon: URL) async throws -> GoldenImage {
         var image = try store.image(named: name)
         guard image.record.state == .ready else {
@@ -337,6 +338,7 @@ public final class ImageBuilder {
                     record.guestFeatures = hello.features
                     record.guestDigest = outcome.digest
                 }
+                await prepareDesktop(image, machine: machine, features: hello.features)
                 image = try await recordFullDiskAccess(image, machine: machine, digest: outcome.digest)
             }
             try await shutDown(machine)
@@ -475,9 +477,9 @@ public final class ImageBuilder {
         }
     }
 
-    /// What every image gets once its guest daemon answers: Spotlight indexing off, the
-    /// Command Line Tools when asked for and missing, then the recipe. Returns the updated
-    /// image.
+    /// What every image gets once its guest daemon answers: Spotlight indexing off, a desktop
+    /// that never locks, names the image and hides its widgets, the Command Line Tools when
+    /// asked for and missing, then the recipe. Returns the updated image.
     private func configure(_ image: GoldenImage, machine: MacMachine, commandLineTools: Bool, recipe: ImageRecipe?) async throws -> GoldenImage {
         var current = image
         // Boxes have no use for Spotlight, and indexing the whole new disk competes with the
@@ -492,6 +494,7 @@ public final class ImageBuilder {
         // A window on a box (box view) must never meet a lock screen that asks for the password.
         try await keepDesktopUnlocked(machine, user: current.record.userName,
                                       password: try String(contentsOf: current.passwordURL, encoding: .utf8))
+        await prepareDesktop(current, machine: machine, features: current.record.guestFeatures)
 
         if commandLineTools {
             if let installed = current.record.commandLineTools {
@@ -558,7 +561,8 @@ public final class ImageBuilder {
     }
 
     /// Boots `image` once more, checks that its new agent-vm-guest answers with every feature
-    /// this agent-vm knows, records it, and shuts down.
+    /// this agent-vm knows, brings the desktop up to date (wallpaper, widgets), records it, and
+    /// shuts down.
     private func checkGuestDaemon(_ image: GoldenImage, digest: String) async throws -> GoldenImage {
         let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
         let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
@@ -571,6 +575,7 @@ public final class ImageBuilder {
                 throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the new agent-vm-guest lacks \(missing.joined(separator: ", "))")
             }
             log("  agent-vm-guest \(hello.version ?? "?") answers (\((hello.features ?? []).joined(separator: ", ")))")
+            await prepareDesktop(image, machine: machine, features: hello.features)
             let checked = try await recordFullDiskAccess(image, machine: machine, digest: digest)
             try await shutDown(machine)
             return try store.update(checked) { record in

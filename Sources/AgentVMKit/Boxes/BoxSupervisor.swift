@@ -70,13 +70,7 @@ public final class BoxSupervisor {
                     return
                 }
                 do {
-                    let note = try await GuestDesktop.keepUnlocked(user: user, password: password, desktopWait: 5) { request, input in
-                        let connection = try await machine.connect(toPort: GuestProtocol.port)
-                        defer { connection.close() }
-                        let descriptor = connection.descriptor
-                        Self.setReadTimeout(descriptor, seconds: 60)
-                        return try await Task.detached { try GuestClient.capture(descriptor, request, input: input) }.value
-                    }
+                    let note = try await GuestDesktop.keepUnlocked(user: user, password: password, desktopWait: 5, run: Self.guestRunner(machine))
                     self.log(note.map { "Screen lock: \($0)" } ?? "Screen lock, screen saver and display sleep off")
                 } catch {
                     self.log("Screen lock: \(error)")
@@ -190,6 +184,7 @@ public final class BoxSupervisor {
         }
         state.set(.ready, guestVersion: hello.version, guestFeatures: hello.features ?? [])
         log("Ready in \(Int(ImageBuilder.seconds(clock.now - began))) s: agent-vm-guest \(hello.version ?? "?")")
+        prepareDesktop(machine, features: hello.features ?? [])
 
         // Until the guest stops by itself or a stop is requested.
         while machine.isRunning && !state.stopRequested {
@@ -199,6 +194,34 @@ public final class BoxSupervisor {
             await shutDown(machine)
         } else {
             log("The guest stopped\(machine.failure.map { ": \($0)" } ?? "")")
+        }
+    }
+
+    /// The box's name as its wallpaper, and on its first start hidden widgets (GuestDesktop), in
+    /// the background: the box is ready without it, and the desktop comes up a little later.
+    private func prepareDesktop(_ machine: MacMachine, features: [String]) {
+        let record = box.record
+        Task { @MainActor [weak self] in
+            do {
+                let lines = try await GuestDesktop.prepare(user: record.userName, png: try GuestWallpaper.png(for: record),
+                                                           features: features, widgetsOnce: true, run: Self.guestRunner(machine))
+                for line in lines {
+                    self?.log("Desktop: \(line)")
+                }
+            } catch {
+                self?.log("Desktop: \(error)")
+            }
+        }
+    }
+
+    /// Guest requests on `machine`, with stdin, each on a fresh vsock connection (GuestDesktop).
+    private static func guestRunner(_ machine: MacMachine) -> GuestDesktop.Run {
+        return { request, input in
+            let connection = try await machine.connect(toPort: GuestProtocol.port)
+            defer { connection.close() }
+            let descriptor = connection.descriptor
+            setReadTimeout(descriptor, seconds: 60)
+            return try await Task.detached { try GuestClient.capture(descriptor, request, input: input) }.value
         }
     }
 

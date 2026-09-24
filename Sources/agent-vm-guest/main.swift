@@ -7,6 +7,8 @@
 //                                                   relay 127.0.0.1:3128 to the host proxy
 //   agent-vm-guest exec-as [--terminal] USER DIR EXECUTABLE -- ARGV...  (internal) take the
 //                                                   terminal, drop privileges and exec
+//   agent-vm-guest wallpaper < PNG                   (internal) make the PNG the calling user's
+//                                                   wallpaper; run in their desktop session
 //   agent-vm-guest --version
 
 import AgentVMKit
@@ -16,7 +18,7 @@ import Foundation
 let arguments = Array(CommandLine.arguments.dropFirst())
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("usage: agent-vm-guest serve [--port N] [--user NAME] | exec-as [--terminal] USER DIR EXECUTABLE -- ARGV... | --version\n".utf8))
+    FileHandle.standardError.write(Data("usage: agent-vm-guest serve [--port N] [--user NAME] | exec-as [--terminal] USER DIR EXECUTABLE -- ARGV... | wallpaper < PNG | --version\n".utf8))
     exit(64) // EX_USAGE
 }
 
@@ -27,6 +29,19 @@ case "--version":
 
 case "exec-as":
     GuestServer.execAs(Array(arguments.dropFirst()))
+
+case "wallpaper":
+    guard arguments.count == 1 else {
+        usage()
+    }
+    do {
+        let result = try await GuestWallpaper.apply(FileHandle.standardInput.readToEnd() ?? Data())
+        print("\(result.outcome.rawValue) \(result.path)")
+        exit(0)
+    } catch {
+        FileHandle.standardError.write(Data("agent-vm-guest wallpaper: \(error)\n".utf8))
+        exit(1)
+    }
 
 case "serve":
     // A host that goes away mid-write must not kill the daemon.
