@@ -251,3 +251,43 @@ test_image_list_names_what_an_image_needs() {
     assert_out_contains "agent-vm-guest lacks terminal" || return 1
     assert_out_contains "Full Disk Access for agent-vm-guest is not checked" || return 1
 }
+
+# A disposable box that stopped (its tombstone) is never started again; gc deletes it, and so do
+# box list, box start and doctor on their way.
+test_disposable_boxes_are_collected() {
+    fake_image dev
+    run_avm box create d1 --image dev --disposable --json
+    assert_status 0 || return 1
+    assert_json disposable true || return 1
+    run_avm box status d1 --json
+    assert_json disposable true || return 1
+    printf 'stopped\n' > "$AGENT_VM_HOME/Boxes/d1/tombstone"
+    run_avm box start d1
+    assert_status 1 || return 1
+    assert_err_contains "box d1 is disposable and has stopped" || return 1
+    assert_missing "$AGENT_VM_HOME/Boxes/d1" || return 1
+
+    run_avm box create d2 --image dev --disposable
+    run_avm box create kept --image dev
+    run_avm box gc --json
+    assert_status 0 || return 1
+    assert_json deleted 0 || return 1
+    printf 'stopped\n' > "$AGENT_VM_HOME/Boxes/d2/tombstone"
+    run_avm box list --json
+    assert_status 0 || return 1
+    assert_err_contains "deleted disposable box d2" || return 1
+    assert_json 0.box.name kept || return 1
+    assert_missing "$AGENT_VM_HOME/Boxes/d2" || return 1
+    run_avm box gc
+    assert_out_contains "No disposable boxes to delete." || return 1
+}
+
+test_an_owner_must_be_a_running_process() {
+    fake_image dev
+    run_avm box create b1 --image dev
+    run_avm box start b1 --owner-pid 1
+    assert_status 64 || return 1
+    assert_err_contains "--owner-pid 1: no such process of yours" || return 1
+    run_avm box start b1 --owner-pid 999999
+    assert_status 64 || return 1
+}

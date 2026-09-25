@@ -83,3 +83,48 @@ test_lifecycle() {
     run_avm box delete "$_box"
     assert_status 0 || return 1
 }
+
+# The owner lease: a disposable box started with --owner-pid stops when that process exits,
+# leaves a tombstone, and the next box list deletes it.
+test_an_owner_exit_stops_a_disposable_box() {
+    require_image || return $(( $? == 1 ? 0 : 1 ))
+    local _box="shtest-owned-$$"
+    "$AGENT_VM" box delete "$_box" > /dev/null 2>&1
+    cleanup_on_exit box "$_box"
+    /bin/sleep 600 &
+    local _owner=$!
+    run_avm box create "$_box" --image "$TEST_IMAGE" --disposable
+    assert_status 0 || { kill "$_owner"; return 1; }
+    run_avm box start "$_box" --owner-pid "$_owner" --json
+    assert_status 0 || { kill "$_owner"; return 1; }
+    assert_json ownerPid "$_owner" || { kill "$_owner"; return 1; }
+    run_avm box status "$_box" --json
+    assert_json ownerPid "$_owner" || { kill "$_owner"; return 1; }
+    assert_json disposable true || { kill "$_owner"; return 1; }
+    local _folder
+    _folder="$(json_value path)"
+    # Another start with another owner leaves the box and its owner as they are.
+    run_avm box start "$_box" --owner-pid "$$"
+    assert_status 0 || { kill "$_owner"; return 1; }
+    assert_out_contains "stops when process $_owner exits); --owner-pid is ignored" || { kill "$_owner"; return 1; }
+
+    kill "$_owner"
+    wait "$_owner" 2>/dev/null
+    local _waited=0
+    local _state=""
+    while [ "$_waited" -lt 60 ]; do
+        run_avm box status "$_box" --json
+        _state="$(json_value state)"
+        [ "$_state" = "stopped" ] && break
+        /bin/sleep 1
+        _waited=$((_waited + 1))
+    done
+    assert_eq "$_state" "stopped" "the box's state 60 s after its owner exited" || return 1
+    assert_exists "$_folder/tombstone" || return 1
+    assert_contains "$(/bin/cat "$_folder/supervisor.log")" "The owner process $_owner exited; stopping" "supervisor.log" || return 1
+    assert_not_contains "$(/bin/cat "$_folder/supervisor.log")" "pulling the plug" "supervisor.log" || return 1
+    run_avm box list
+    assert_status 0 || return 1
+    assert_err_contains "deleted disposable box $_box" || return 1
+    assert_missing "$_folder" || return 1
+}

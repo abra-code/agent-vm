@@ -23,7 +23,7 @@ struct BoxCommand: ParsableCommand {
             shows what exec and shell ran there, and `box status` shows its state without \
             starting anything.
             """,
-        subcommands: [Create.self, List.self, Status.self, Start.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self,
+        subcommands: [Create.self, List.self, Status.self, Start.self, GC.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self,
                       Packs.self, Serve.self]
     )
 
@@ -48,6 +48,9 @@ struct BoxCommand: ParsableCommand {
         @Option(name: .long, help: "Allow a host (github.com), subdomains (*.example.com), host:port, or pack:<name> (repeatable).")
         var allow: [String] = []
 
+        @Flag(name: .long, help: "A box for one session: once it stops, it is not started again, and `box gc` (run by box list, box start and doctor) deletes it.")
+        var disposable = false
+
         @OptionGroup var options: StoreOptions
 
         func validate() throws {
@@ -67,12 +70,12 @@ struct BoxCommand: ParsableCommand {
             let image = try options.imageStore.image(named: image)
             let box = try options.boxStore.create(name: name, from: image, imageStore: options.imageStore,
                                                   cpuCount: cpus, memoryBytes: memoryGB.map { UInt64($0) << 30 },
-                                                  network: BoxNetwork(mode: net, allow: allow))
+                                                  network: BoxNetwork(mode: net, allow: allow), disposable: disposable)
             if options.json {
                 try Output.json(box.record)
                 return
             }
-            print("Created box \(box.name) from image \(image.name): \(box.directory.path)")
+            print("Created \(disposable ? "disposable " : "")box \(box.name) from image \(image.name): \(box.directory.path)")
             print("  network: \(Network.describe(box.record.effectiveNetwork))")
             print("  start it with: agent-vm box start \(box.name)")
         }
@@ -122,7 +125,7 @@ struct BoxCommand: ParsableCommand {
                 // padding(toLength:) truncates: "unresponsive" is longer than the column.
                 let name = status.state.rawValue
                 let state = name.padding(toLength: max(8, name.count), withPad: " ", startingAt: 0)
-                var lines = ["\(box.name)  \(state)  image \(box.image) (macOS \(box.macOSBuild))  \(box.cpuCount) CPUs  \(box.memoryBytes >> 30) GB  network \(box.effectiveNetwork.mode.rawValue)"]
+                var lines = ["\(box.name)  \(state)  image \(box.image) (macOS \(box.macOSBuild))  \(box.cpuCount) CPUs  \(box.memoryBytes >> 30) GB  network \(box.effectiveNetwork.mode.rawValue)\(box.disposable == true ? "  disposable" : "")"]
                 if status.state != .stopped {
                     if let pid = status.pid {
                         var line = "    supervisor pid \(pid)"
@@ -149,6 +152,9 @@ struct BoxCommand: ParsableCommand {
                     if let project = status.project {
                         lines.append("    project \(project)\(status.projectReadOnly == true ? " (read only)" : "")")
                     }
+                    if let owner = status.ownerPid {
+                        lines.append("    stops when process \(owner) exits")
+                    }
                     if let execs = status.activeExecs, execs > 0 {
                         lines.append("    \(execs) program\(execs == 1 ? "" : "s") running through exec or box shell")
                     }
@@ -158,6 +164,7 @@ struct BoxCommand: ParsableCommand {
         }
 
         func run() throws {
+            GC.collect(options.boxStore)
             let (boxes, problems) = try options.boxStore.list()
             for problem in problems {
                 FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
@@ -215,22 +222,38 @@ struct BoxCommand: ParsableCommand {
         @Argument(help: "The box name.")
         var name: String
 
+        @Option(name: .customLong("owner-pid"), help: "Stop the box when this process (of yours) exits, for example the application that started it. Ignored when the box already runs.")
+        var ownerPid: Int32?
+
         @OptionGroup var options: StoreOptions
+
+        func validate() throws {
+            if let ownerPid, !OwnerWatch.isUsableOwner(ownerPid) {
+                throw ValidationError("--owner-pid \(ownerPid): no such process of yours")
+            }
+        }
 
         func run() throws {
             let box = try options.boxStore.box(named: name)
+            if box.isTombstoned && !box.isRunning {
+                GC.collect(options.boxStore)
+                throw AgentVMError.boxDisposed(box.name)
+            }
+            // The others: a disposable box created long ago but never started is this one's to start.
+            GC.collect(options.boxStore, except: box.name)
             // Starting a running box succeeds, so clients can simply make sure a box is up.
             if box.isRunning, let status = try? ControlClient.request(.status, path: box.controlSocketPath), status.state == .ready {
                 if options.json {
                     try Output.json(status)
                 } else {
-                    print("Box \(box.name) is already running (supervisor pid \(status.pid ?? 0))")
+                    let owner = status.ownerPid.map { ", stops when process \($0) exits" } ?? ""
+                    print("Box \(box.name) is already running (supervisor pid \(status.pid ?? 0)\(owner))\(ownerPid == nil ? "" : "; --owner-pid is ignored")")
                 }
                 return
             }
             let clock = ContinuousClock()
             let began = clock.now
-            let response = try BoxLauncher.start(box, executable: try AskpassEntry.executablePath()) { state in
+            let response = try BoxLauncher.start(box, executable: try AskpassEntry.executablePath(), ownerPid: ownerPid) { state in
                 Events.emit(ProgressEvent(.progress, "  \(state)", step: state, box: box.name), json: options.json)
             }
             if options.json {
@@ -596,6 +619,54 @@ struct BoxCommand: ParsableCommand {
         }
     }
 
+    struct GC: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "gc",
+            abstract: "Delete disposable boxes that have stopped.",
+            discussion: """
+                Deletes every disposable box (`box create --disposable`) whose supervisor left a \
+                tombstone when it stopped, and every one created more than \(Int(BoxStore.unstartedDisposableAge / 60)) minutes \
+                ago that is not running (never started, or its supervisor died). A running box is \
+                never touched. `box list`, `box start` and `doctor` run it first.
+                """)
+
+        @OptionGroup var options: StoreOptions
+
+        struct Result: Encodable {
+            var deleted: [String]
+            var problems: [String]
+        }
+
+        func run() throws {
+            let (deleted, problems) = options.boxStore.collectGarbage()
+            if options.json {
+                try Output.json(Result(deleted: deleted, problems: problems))
+                return
+            }
+            for name in deleted {
+                print("Deleted disposable box \(name)")
+            }
+            for problem in problems {
+                FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
+            }
+            if deleted.isEmpty && problems.isEmpty {
+                print("No disposable boxes to delete.")
+            }
+        }
+
+        /// For the commands that collect first: says on stderr what was deleted, so stdout
+        /// keeps its own output (JSON included).
+        static func collect(_ store: BoxStore, except name: String? = nil) {
+            let (deleted, problems) = store.collectGarbage(except: name)
+            for name in deleted {
+                FileHandle.standardError.write(Data("note: deleted disposable box \(name), which had stopped\n".utf8))
+            }
+            for problem in problems {
+                FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
+            }
+        }
+    }
+
     struct Serve: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Run a box in the foreground as its supervisor (box start does this in the background).",
@@ -603,6 +674,9 @@ struct BoxCommand: ParsableCommand {
 
         @Argument(help: "The box name.")
         var name: String
+
+        @Option(name: .customLong("owner-pid"), help: "Stop the box when this process exits.")
+        var ownerPid: Int32?
 
         @OptionGroup var options: StoreOptions
 
@@ -614,7 +688,7 @@ struct BoxCommand: ParsableCommand {
             // In a login session main runs AppKit's loop (see Main): the supervisor is then an
             // application without a Dock icon, and `box view` can show the box's screen.
             let windows = Self.runsAppKit
-            let supervisor = BoxSupervisor(box: box, windows: windows) { line in
+            let supervisor = BoxSupervisor(box: box, windows: windows, ownerPid: ownerPid) { line in
                 let formatter = ISO8601DateFormatter()
                 print("\(formatter.string(from: Date())) \(line)")
                 fflush(stdout)

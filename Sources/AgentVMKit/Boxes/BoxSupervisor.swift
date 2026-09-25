@@ -30,11 +30,15 @@ public final class BoxSupervisor {
     /// Whether this process runs AppKit and can show the box's screen (`box view`).
     private let windows: Bool
     private var viewer: BoxViewer?
+    /// The process whose exit stops the box (`box start --owner-pid`), and its watch.
+    private let ownerPid: Int32?
+    private var ownerWatch: OwnerWatch?
 
     /// `windows`: the caller runs NSApplication on the main thread (see BoxViewer).
-    public init(box: Box, windows: Bool = false, log: @escaping @MainActor (String) -> Void) {
+    public init(box: Box, windows: Bool = false, ownerPid: Int32? = nil, log: @escaping @MainActor (String) -> Void) {
         self.box = box
         self.windows = windows
+        self.ownerPid = ownerPid
         self.log = log
     }
 
@@ -104,6 +108,29 @@ public final class BoxSupervisor {
             throw AgentVMError.boxRunning(box.name)
         }
         defer { lock.release() }
+        // A delete that ran while this supervisor was starting removed the folder's files, and
+        // taking the lock made a new lock file in what is left: take that away again, so the
+        // delete (or the next one) can finish, and do not start a box that is gone.
+        guard FileSystem.exists(box.directory.appendingPathComponent(BoxStore.recordName).path) else {
+            unlink(box.lockPath)
+            rmdir(box.directory.path)
+            throw AgentVMError.boxNotFound(box.name)
+        }
+        // Checked under the lock: a disposable box that stopped is only ever deleted.
+        guard !box.isTombstoned else {
+            throw AgentVMError.boxDisposed(box.name)
+        }
+        // However it stops (asked, its owner gone, a failed boot), a disposable box leaves a
+        // tombstone for `box gc`, written before the lock is released. The folder stays: the
+        // lock, the socket and this log live in it.
+        defer {
+            if box.record.disposable == true {
+                let text = "stopped \(ISO8601DateFormatter().string(from: Date()))\n"
+                if (try? Data(text.utf8).write(to: box.tombstoneURL)) == nil {
+                    log("Could not leave the tombstone of this disposable box at \(box.tombstoneURL.path)")
+                }
+            }
+        }
 
         let network = box.record.effectiveNetwork
         let proxy = ProxyServer(policy: try CompiledPolicy(network), log: NetworkLog(url: box.networkLogURL))
@@ -141,6 +168,18 @@ public final class BoxSupervisor {
         let server = try ControlServer(path: box.controlSocketPath, handler: handler)
         defer { server.close() }
         installSignalHandlers()
+        if let ownerPid {
+            state.setOwner(ownerPid)
+            log("Owner: process \(ownerPid); the box stops when it exits")
+            // Called on the main queue, so on the main actor.
+            ownerWatch = OwnerWatch(pid: ownerPid, queue: .main) { [state, log] in
+                state.requestStop()
+                MainActor.assumeIsolated {
+                    log("The owner process \(ownerPid) exited; stopping")
+                }
+            }
+        }
+        defer { ownerWatch?.cancel() }
 
         log("Starting box \(box.name) (\(box.record.cpuCount) CPUs, \(box.record.memoryBytes >> 30) GB, image \(box.record.image), network \(network.mode.rawValue))")
         try await machine.start(provisioning: nil)
@@ -408,6 +447,21 @@ final class SupervisorState: @unchecked Sendable {
     private var shared: (path: String, readOnly: Bool)?
     private var claims = 0
     private var execs = 0
+    private var owner: Int32?
+
+    /// The process whose exit stops the box, if any.
+    var ownerPid: Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return owner
+    }
+
+    func setOwner(_ pid: Int32) {
+        lock.lock()
+        owner = pid
+        lock.unlock()
+    }
+
     /// When the supervisor started, in whole seconds (as the store's records keep dates).
     let startedAt = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
 
@@ -603,7 +657,7 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         return ControlResponse(ok: true, state: snapshot.state, guestVersion: snapshot.guestVersion, pid: getpid(),
                                project: project?.path, projectReadOnly: project?.readOnly, guestFeatures: snapshot.guestFeatures,
                                supervisorVersion: AgentVM.version, supervisorPath: Self.executablePath, startedAt: state.startedAt,
-                               activeExecs: state.activeExecs)
+                               activeExecs: state.activeExecs, ownerPid: state.ownerPid)
     }
 
     /// This process's executable, as it was started (a rebuild renames a new file into place,
@@ -702,7 +756,9 @@ private final class OpenResult: @unchecked Sendable {
 public enum BoxLauncher {
     /// Spawns `executable box serve <name>` in its own session, output appended to the box's
     /// supervisor.log, and waits (up to `timeout`) until it reports ready. Returns its status.
-    public static func start(_ box: Box, executable: String, timeout: Duration = .seconds(200),
+    /// `ownerPid`: the process whose exit stops the box; ignored when the box already runs
+    /// (its status names the owner it has).
+    public static func start(_ box: Box, executable: String, ownerPid: Int32? = nil, timeout: Duration = .seconds(200),
                              progress: (String) -> Void) throws -> ControlResponse {
         if box.isRunning {
             // Another start is under way (or done): wait for it rather than fail.
@@ -727,7 +783,7 @@ public enum BoxLauncher {
 
         var pid: pid_t = 0
         // The full path as argv[0], so a process list tells which binary runs the box.
-        let arguments = [executable, "box", "serve", box.name]
+        let arguments = [executable, "box", "serve", box.name] + (ownerPid.map { ["--owner-pid", String($0)] } ?? [])
         let status = GuestServer.withCStrings(arguments) { argv in
             posix_spawn(&pid, executable, &actions, &attributes, argv, environ)
         }

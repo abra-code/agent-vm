@@ -40,10 +40,17 @@ public struct BoxStatus: Encodable, Equatable, Sendable {
     public var guestFeatures: [String]?
     /// Why the state is unresponsive.
     public var statusError: String?
+    /// From the box record: a box that is deleted once it stops (`box create --disposable`).
+    public var disposable: Bool?
+    /// The process whose exit stops the box (`box start --owner-pid`), if any.
+    public var ownerPid: Int32?
 
     public init(state: State, pid: Int32? = nil, supervisorVersion: String? = nil, supervisorPath: String? = nil,
                 startedAt: Date? = nil, project: String? = nil, projectReadOnly: Bool? = nil, activeExecs: Int? = nil,
-                guestVersion: String? = nil, guestFeatures: [String]? = nil, statusError: String? = nil) {
+                guestVersion: String? = nil, guestFeatures: [String]? = nil, statusError: String? = nil,
+                disposable: Bool? = nil, ownerPid: Int32? = nil) {
+        self.disposable = disposable
+        self.ownerPid = ownerPid
         self.state = state
         self.pid = pid
         self.supervisorVersion = supervisorVersion
@@ -66,6 +73,12 @@ public struct BoxStatus: Encodable, Equatable, Sendable {
     /// The box's status as of now. A socket that is not there yet (a supervisor starting up)
     /// is retried for up to `connectWait`.
     public static func of(_ box: Box, connectWait: Duration = .seconds(2)) -> BoxStatus {
+        var status = supervisorStatus(box, connectWait: connectWait)
+        status.disposable = box.record.disposable == true ? true : nil
+        return status
+    }
+
+    private static func supervisorStatus(_ box: Box, connectWait: Duration) -> BoxStatus {
         guard box.isRunning else {
             return .stopped
         }
@@ -105,7 +118,7 @@ public struct BoxStatus: Encodable, Equatable, Sendable {
         return BoxStatus(state: mapped, pid: response.pid, supervisorVersion: response.supervisorVersion, supervisorPath: response.supervisorPath,
                          startedAt: response.startedAt, project: response.project, projectReadOnly: response.projectReadOnly,
                          activeExecs: response.activeExecs, guestVersion: response.guestVersion,
-                         guestFeatures: mapped == .ready ? response.guestFeatures : nil)
+                         guestFeatures: mapped == .ready ? response.guestFeatures : nil, ownerPid: response.ownerPid)
     }
 
     private static func isNotListening(_ error: Error?) -> Bool {

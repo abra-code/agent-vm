@@ -75,10 +75,14 @@ public struct ControlResponse: Codable, Equatable, Sendable {
     /// Guest connections lent with `open` and not yet given back: programs run by exec or box
     /// shell, from any client.
     public var activeExecs: Int?
+    /// The process whose exit stops the box (`box start --owner-pid`), if any.
+    public var ownerPid: Int32?
 
     public init(ok: Bool, error: String? = nil, state: State? = nil, guestVersion: String? = nil, pid: Int32? = nil,
                 project: String? = nil, projectReadOnly: Bool? = nil, guestFeatures: [String]? = nil,
-                supervisorVersion: String? = nil, supervisorPath: String? = nil, startedAt: Date? = nil, activeExecs: Int? = nil) {
+                supervisorVersion: String? = nil, supervisorPath: String? = nil, startedAt: Date? = nil, activeExecs: Int? = nil,
+                ownerPid: Int32? = nil) {
+        self.ownerPid = ownerPid
         self.supervisorVersion = supervisorVersion
         self.supervisorPath = supervisorPath
         self.startedAt = startedAt

@@ -62,6 +62,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case guestCommandFailed(command: String, status: Int32, output: String)
     /// An image build or guest update stopped by a signal (BuildCancellation).
     case canceled(signal: Int32)
+    /// A disposable box that stopped: it is deleted, never started again.
+    case boxDisposed(String)
 
     public var description: String {
         switch self {
@@ -126,6 +128,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
         case let .guestCommandFailed(command, status, output):
             let detail = output.isEmpty ? "" : ": \(output)"
             return "`\(command)` failed in the guest (status \(status))\(detail)"
+        case let .boxDisposed(name):
+            return "box \(name) is disposable and has stopped, so it is not started again (box gc deletes it, and box list, box start and doctor run box gc); create a new box"
         case let .canceled(signal):
             return "canceled by \(signal == SIGINT ? "SIGINT" : signal == SIGTERM ? "SIGTERM" : "signal \(signal)")"
         }

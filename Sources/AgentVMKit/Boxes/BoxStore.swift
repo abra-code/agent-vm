@@ -13,6 +13,8 @@
 //   Boxes/<name>/HardwareModel       copy of the image's
 //   Boxes/<name>/MachineIdentifier   the box's own
 //   Boxes/<name>/Password            copy of the image's (the account is the same)
+//   Boxes/<name>/tombstone           a disposable box that stopped; `box gc` deletes the folder
+//   Boxes/.gc.lock                   held while `box gc` runs, so only one collects at a time
 //
 // A clone takes no space until the box writes, so creating a box is instant; the image must
 // be on the same volume. Each box gets its own MAC address and machine identifier, so two
@@ -39,6 +41,9 @@ public struct BoxRecord: Codable, Equatable, Sendable {
     public var userName: String
     /// What the box may reach; absent in boxes created before network policy (they ran on NAT).
     public var network: BoxNetwork?
+    /// A box for one session: once it stops, its supervisor leaves a tombstone and `box gc`
+    /// deletes it (`box create --disposable`).
+    public var disposable: Bool?
 
     public var effectiveNetwork: BoxNetwork {
         return network ?? .legacy
@@ -61,6 +66,13 @@ public struct Box: Sendable {
     public var logURL: URL { directory.appendingPathComponent(BoxStore.logName) }
     public var networkLogURL: URL { directory.appendingPathComponent(BoxStore.networkLogName) }
     public var execLogURL: URL { directory.appendingPathComponent(BoxStore.execLogName) }
+    public var tombstoneURL: URL { directory.appendingPathComponent(BoxStore.tombstoneName) }
+
+    /// A disposable box that stopped: it is not started again, only deleted. A tombstone in a
+    /// box that is not disposable means nothing.
+    public var isTombstoned: Bool {
+        return record.disposable == true && FileSystem.exists(tombstoneURL.path)
+    }
 
     /// Whether a supervisor runs this box (it holds the lock).
     public var isRunning: Bool {
@@ -81,6 +93,14 @@ public struct BoxStore: Sendable {
     static let logName = "supervisor.log"
     static let networkLogName = "network.jsonl"
     static let execLogName = "exec.jsonl"
+    static let tombstoneName = "tombstone"
+    /// In Boxes/: held while `gc` runs (not a valid box name, so list skips it).
+    static let gcLockName = ".gc.lock"
+
+    /// How old a disposable box without a tombstone must be before `gc` deletes it: one that
+    /// was never started, or whose supervisor died. A client creates and starts one within
+    /// seconds, so a younger one may be about to start.
+    public static let unstartedDisposableAge: TimeInterval = 600
 
     public let root: URL
 
@@ -96,7 +116,7 @@ public struct BoxStore: Sendable {
     /// image cannot be deleted or rebuilt halfway.
     public func create(name: String, from image: GoldenImage, imageStore: ImageStore,
                        cpuCount: Int? = nil, memoryBytes: UInt64? = nil,
-                       network: BoxNetwork = BoxNetwork(mode: .allowlist)) throws -> Box {
+                       network: BoxNetwork = BoxNetwork(mode: .allowlist), disposable: Bool = false) throws -> Box {
         guard ImageStore.isValidName(name) else {
             throw AgentVMError.invalidBoxName(name)
         }
@@ -126,7 +146,7 @@ public struct BoxStore: Sendable {
             guestProtocol: image.record.guestProtocol, createdAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)),
             cpuCount: cpuCount ?? image.record.cpuCount, memoryBytes: memoryBytes ?? image.record.memoryBytes,
             macAddress: VZMACAddress.randomLocallyAdministered().string, userName: image.record.userName,
-            network: network)
+            network: network, disposable: disposable ? true : nil)
         let box = Box(record: record, directory: directory)
         do {
             try Self.cloneFile(image.diskURL, to: box.diskURL)
@@ -222,11 +242,60 @@ public struct BoxStore: Sendable {
         guard FileSystem.exists(directory.path) else {
             throw AgentVMError.boxNotFound(name)
         }
-        guard let lock = try FolderLock.tryAcquire(directory.appendingPathComponent(Self.lockName).path, patience: FolderLock.testPatience) else {
+        let lock: FolderLock?
+        do {
+            lock = try FolderLock.tryAcquire(directory.appendingPathComponent(Self.lockName).path, patience: FolderLock.testPatience)
+        } catch AgentVMError.system(_, ENOENT) {
+            // Deleted meanwhile by another process.
+            throw AgentVMError.boxNotFound(name)
+        }
+        guard let lock else {
             throw AgentVMError.boxRunning(name)
         }
         defer { lock.release() }
+        // The record goes first. A supervisor starting meanwhile can only hold a lock once this
+        // one's file is unlinked (it recreates one while the folder is removed) or released,
+        // and it then finds no record and gives up (BoxSupervisor.run), instead of passing
+        // that check and booting a box whose files are vanishing.
+        _ = unlink(directory.appendingPathComponent(Self.recordName).path)
         try FileSystem.removeTree(directory.path)
+    }
+
+    /// Deletes stopped disposable boxes: those with a tombstone, and those without one created
+    /// more than `unstartedDisposableAge` ago. A box that runs (its lock is held) is never
+    /// touched: delete takes the lock. Returns the boxes deleted, and what could not be done.
+    /// `except`: a box to leave alone (the one `box start` is about to start).
+    public func collectGarbage(now: Date = Date(), except: String? = nil) -> (deleted: [String], problems: [String]) {
+        guard FileSystem.exists(boxesDirectory.path) else {
+            return ([], [])
+        }
+        // One collection at a time: box list, box start and doctor can run at once, and two of
+        // them deleting the same box trip over each other (one recreates the lock file in a
+        // folder the other is removing) and report errors for a box that is gone.
+        guard let collecting = try? FolderLock.tryAcquire(boxesDirectory.appendingPathComponent(Self.gcLockName).path, patience: .seconds(10)) else {
+            return ([], [])
+        }
+        defer { collecting.release() }
+        guard let boxes = try? list().boxes else {
+            return ([], [])
+        }
+        var deleted: [String] = []
+        var problems: [String] = []
+        for box in boxes where box.record.disposable == true && box.name != except && !box.isRunning {
+            let old = now.timeIntervalSince(box.record.createdAt) >= Self.unstartedDisposableAge
+            guard box.isTombstoned || old else {
+                continue
+            }
+            do {
+                try delete(named: box.name)
+                deleted.append(box.name)
+            } catch AgentVMError.boxRunning {
+                // Started meanwhile: no longer garbage.
+            } catch {
+                problems.append("cannot delete disposable box \(box.name): \(error)")
+            }
+        }
+        return (deleted, problems)
     }
 
     private func save(_ box: Box) throws {

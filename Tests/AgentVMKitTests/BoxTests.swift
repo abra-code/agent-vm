@@ -125,7 +125,10 @@ final class BoxScratch {
         let scratch = try Scratch()
         let path = scratch.root.appendingPathComponent(".lock").path
         let brief = try #require(try FolderLock.tryAcquire(path))
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+        // A thread of its own: under a full parallel test run, a global queue can be kept
+        // busy for longer than the patience.
+        Thread.detachNewThread {
+            usleep(50_000)
             brief.release()
         }
         let taken = try #require(try FolderLock.tryAcquire(path, patience: .seconds(2)))
