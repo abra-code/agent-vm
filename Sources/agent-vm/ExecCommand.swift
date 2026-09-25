@@ -30,7 +30,10 @@ struct ExecCommand: ParsableCommand {
             terminal in the box (its output all arrives on stdout), keys such as Control-C \
             go to it as typed, and SIGHUP or SIGTERM to agent-vm end the session. Each \
             run is recorded in the box's exec log (`box execlog`): the command, account, \
-            folders, times and status, never the environment.
+            folders, times and status, never the environment. A program that waits on a \
+            permission prompt on the box's screen, where nobody sees it, is reported on stderr \
+            and in the exec log at once; with --prompts stop (the default when stdin is not a \
+            terminal) agent-vm stops that program, so the caller is not left hanging.
             """
     )
 
@@ -57,6 +60,9 @@ struct ExecCommand: ParsableCommand {
 
     @Option(name: .customLong("env-file"), parsing: .singleValue, help: "File of NAME=VALUE lines (or NAME to pass on) for the program's environment (repeatable; --env wins).")
     var envFile: [String] = []
+
+    @Option(name: .long, help: "When a program waits on a permission prompt nobody sees: wait (for an answer in `box view --interactive`) or stop that program. Default: stop when stdin is not a terminal, else wait.")
+    var prompts: PromptPolicy?
 
     @Argument(parsing: .captureForPassthrough, help: "The program and its arguments, after --.")
     var command: [String] = []
@@ -89,6 +95,8 @@ struct ExecCommand: ParsableCommand {
             throw ValidationError("give the program to run after --")
         }
         ExecRunner(store: options.boxStore, box: box, user: user, cwd: cwd, project: project, readOnly: readOnly,
-                   added: added, argv: argv, terminal: tty).run()
+                   added: added, argv: argv, terminal: tty, prompts: prompts ?? .default).run()
     }
 }
+
+extension PromptPolicy: ExpressibleByArgument {}

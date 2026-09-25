@@ -32,6 +32,27 @@ import Testing
         #expect(log.records(last: -1).isEmpty)
     }
 
+    /// A notice counts as soon as it is written: a running exec already shows its prompts.
+    @Test func noticesReachTheRecordAtOnce() throws {
+        let scratch = try Scratch()
+        let log = ExecLog(url: scratch.root.appendingPathComponent("exec.jsonl"))
+        log.append(ExecLog.Entry(id: "a", event: .start, time: t0, argv: ["/bin/sh", "-c", "ls ~/Downloads"]))
+        log.append(ExecLog.Entry(id: "a", event: .notice, time: t0.addingTimeInterval(1), guestPid: 688, prompt: "the Downloads folder",
+                                 service: "kTCCServiceSystemPolicyDownloadsFolder", program: "/bin/ls", stopped: true))
+        var record = try #require(log.records().first)
+        #expect(record.prompts == ["the Downloads folder"])
+        #expect(record.stoppedOnPrompt == true)
+        #expect(record.status == nil)
+        // The end line repeats the prompt; it is kept once, next to any the end adds.
+        log.append(ExecLog.Entry(id: "a", event: .end, time: t0.addingTimeInterval(2), status: 137, prompts: ["the Downloads folder", "the Desktop folder"]))
+        record = try #require(log.records().first)
+        #expect(record.prompts == ["the Downloads folder", "the Desktop folder"])
+        #expect(record.status == 137)
+        // A notice for no known start is skipped, as an end would be.
+        log.append(ExecLog.Entry(id: "zz", event: .notice, time: t0, prompt: "the Documents folder"))
+        #expect(log.records().count == 1)
+    }
+
     @Test func unreadableLinesAreSkipped() throws {
         let scratch = try Scratch()
         let url = scratch.root.appendingPathComponent("exec.jsonl")

@@ -3,11 +3,26 @@
 // Runs one program in a running box, for `agent-vm exec` and `agent-vm box shell`: streams
 // stdio (or, with a terminal, puts the local terminal in raw mode and relays it, window size
 // included), forwards signals, records the run in the box's exec log, and exits with the
-// program's status.
+// program's status. A program that waits on a permission prompt nobody sees is reported at
+// once (stderr, and a notice line in the exec log) and, with `--prompts stop`, stopped.
 
 import AgentVMKit
 import Darwin
 import Foundation
+
+/// What exec does when a program waits on a permission prompt nobody sees.
+enum PromptPolicy: String, CaseIterable {
+    /// Let it wait: someone answers the prompt in `box view --interactive`.
+    case wait
+    /// Stop the waiting program (only that one), so whoever runs exec is not left hanging.
+    case stop
+
+    /// Without --prompts: stop when stdin is not a terminal (no person is there to go and
+    /// answer), wait when it is.
+    static var `default`: PromptPolicy {
+        return isatty(STDIN_FILENO) == 1 ? .wait : .stop
+    }
+}
 
 struct ExecRunner {
     var store: BoxStore
@@ -20,6 +35,7 @@ struct ExecRunner {
     var added: [String: String]
     var argv: [String]
     var terminal: Bool
+    var prompts: PromptPolicy = .wait
 
     /// agent-vm's own failures (box not running, connection lost), as docker exec uses it:
     /// distinct from any status the program itself returns.
@@ -129,10 +145,9 @@ struct ExecRunner {
         let report: ExitReport
         do {
             let terminal = self.terminal
-            let boxName = box.name
-            let image = box.record.image
+            let prompts = self.prompts
             report = try session.run(stdout: { Self.writeAll(STDOUT_FILENO, $0) }, stderr: { Self.writeAll(STDERR_FILENO, $0) }, notice: { notice in
-                Self.report(notice, box: boxName, image: image, terminal: terminal)
+                Self.report(notice, box: box, terminal: terminal, prompts: prompts)
             })
         } catch {
             throw AgentVMError.guestUnreachable("the connection to box \(box.name) ended: \(error)")
@@ -144,18 +159,54 @@ struct ExecRunner {
         ExecExit.shared.exit(report.shellStatus)
     }
 
-    /// Says on stderr what the program waits on, and records it for the exec log. On a terminal
-    /// in raw mode, lines need a carriage return.
-    static func report(_ notice: GuestNotice, box: String, image: String, terminal: Bool) {
+    /// Says on stderr what the program waits on, and records it in the exec log at once. With
+    /// `.stop`, stops the waiting program (only it: the exec'd program sees it fail, as if
+    /// access had been refused). On a terminal in raw mode, lines need a carriage return.
+    static func report(_ notice: GuestNotice, box: Box, terminal: Bool, prompts: PromptPolicy) {
         guard notice.kind == .permissionPrompt else {
             return
         }
-        ExecExit.shared.prompted(notice.serviceDescription)
+        // Process ids 0 and 1 (and negative ones, process groups) are never the program's.
+        let stopping = prompts == .stop && (notice.pid ?? 0) > 1
+        ExecExit.shared.prompted(notice, stopped: stopping)
         let program = notice.program.map { ($0 as NSString).lastPathComponent } ?? "the program"
         let end = terminal ? "\r\n" : "\n"
-        let message = "agent-vm: \(program) is waiting for permission to use \(notice.serviceDescription): macOS asks on the box's screen, where nobody sees it. "
-            + "Answer it with `agent-vm box view \(box) --interactive`, or give the image Full Disk Access with `agent-vm image setup \(image)` (boxes made afterwards inherit it).\(end)"
-        writeAll(STDERR_FILENO, Array(message.utf8))
+        let setup = "give the image Full Disk Access with `agent-vm image setup \(box.record.image)` (boxes made afterwards inherit it)"
+        if stopping, let pid = notice.pid {
+            let message = "agent-vm: \(program) was waiting for permission to use \(notice.serviceDescription), which macOS asks on the box's screen where nobody sees it, so agent-vm stopped it. "
+                + "To answer such prompts instead, run exec with `--prompts wait` and use `agent-vm box view \(box.name) --interactive`; or \(setup).\(end)"
+            writeAll(STDERR_FILENO, Array(message.utf8))
+            // After the message, so a failure to stop it is always printed after it.
+            stop(pid, in: box, end: end)
+        } else {
+            let message = "agent-vm: \(program) is waiting for permission to use \(notice.serviceDescription): macOS asks on the box's screen, where nobody sees it. "
+                + "Answer it with `agent-vm box view \(box.name) --interactive`, or \(setup).\(end)"
+            writeAll(STDERR_FILENO, Array(message.utf8))
+        }
+    }
+
+    /// Kills the program with process id `pid` in the box, through a guest connection of its
+    /// own (as root: the program may run as another account). In the background: the notice
+    /// arrives on the thread that relays the exec's output, which must keep going.
+    static func stop(_ pid: Int32, in box: Box, end: String) {
+        DispatchQueue.global().async {
+            do {
+                let (control, guest, _) = try ControlClient.openGuest(path: box.controlSocketPath)
+                defer {
+                    close(guest)
+                    close(control)
+                }
+                var timeout = timeval(tv_sec: 30, tv_usec: 0)
+                _ = setsockopt(guest, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+                let result = try GuestClient.capture(guest, GuestRequest(op: .exec, argv: ["/bin/kill", "-KILL", String(pid)], cwd: "/", user: "root"))
+                if result.report != ExitReport(status: 0) {
+                    let reason = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                    writeAll(STDERR_FILENO, Array("agent-vm: could not stop process \(pid) in box \(box.name): \(reason)\(end)".utf8))
+                }
+            } catch {
+                writeAll(STDERR_FILENO, Array("agent-vm: could not stop process \(pid) in box \(box.name): \(error)\(end)".utf8))
+            }
+        }
     }
 
     /// The local terminal's size (stdin's, else stdout's), 24 x 80 when neither is a terminal.
@@ -215,12 +266,18 @@ final class ExecExit: @unchecked Sendable {
         self.guestPid = guestPid
     }
 
-    /// The program waited on a permission prompt for `what` (for the exec log's end line).
-    func prompted(_ what: String) {
+    /// A program of the run waits on a permission prompt: a notice line in the exec log now,
+    /// and the prompt again in the end line.
+    func prompted(_ notice: GuestNotice, stopped: Bool) {
         lock.lock()
         defer { lock.unlock() }
+        let what = notice.serviceDescription
         if !prompts.contains(what) {
             prompts.append(what)
+        }
+        if let log, let id {
+            log.append(ExecLog.Entry(id: id, event: .notice, time: Date(), guestPid: notice.pid, prompt: what, service: notice.service,
+                                     program: notice.program, stopped: stopped ? true : nil))
         }
     }
 

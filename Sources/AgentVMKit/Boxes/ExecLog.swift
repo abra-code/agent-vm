@@ -2,9 +2,9 @@
 //
 // What ran in a box: `agent-vm exec` (and `box shell`) append a line when a program starts and
 // another when it ends, in Boxes/<name>/exec.jsonl on the Mac, where nothing in the box can
-// change them. The program's arguments, account, folders and exit status are recorded; its
-// environment never is (it may hold API keys). A client killed with SIGKILL leaves a start
-// without an end.
+// change them; in between, a notice line as soon as a program waits on a permission prompt.
+// The program's arguments, account, folders and exit status are recorded; its environment
+// never is (it may hold API keys). A client killed with SIGKILL leaves a start without an end.
 
 import Darwin
 import Foundation
@@ -13,6 +13,8 @@ public final class ExecLog: @unchecked Sendable {
     public enum Event: String, Codable, Sendable {
         case start
         case end
+        /// A program of the run waits on a permission prompt nobody sees (written at once).
+        case notice
     }
 
     /// One line. A start has the program's details, an end its outcome; `id` pairs them.
@@ -26,7 +28,8 @@ public final class ExecLog: @unchecked Sendable {
         public var project: String?
         public var readOnly: Bool?
         public var terminal: Bool?
-        /// The exec client on the Mac, and the program in the guest.
+        /// The exec client on the Mac, and the program in the guest (in a notice: the program
+        /// that waits on the prompt, which may be one the exec'd program started).
         public var hostPid: Int32?
         public var guestPid: Int32?
         /// The shell status exec exited with (the program's, or 125-127 for failures).
@@ -34,10 +37,22 @@ public final class ExecLog: @unchecked Sendable {
         public var seconds: Double?
         /// What the program waited on a permission prompt for (an end line; see GuestNotice).
         public var prompts: [String]?
+        /// A notice: what the program waits for in words ("the Downloads folder"), the privacy
+        /// service, the program, and whether agent-vm set out to stop it (`exec --prompts stop`;
+        /// written before the kill, whose rare failure is reported on the exec's stderr).
+        public var prompt: String?
+        public var service: String?
+        public var program: String?
+        public var stopped: Bool?
 
         public init(id: String, event: Event, time: Date, argv: [String]? = nil, user: String? = nil, cwd: String? = nil,
                     project: String? = nil, readOnly: Bool? = nil, terminal: Bool? = nil, hostPid: Int32? = nil,
-                    guestPid: Int32? = nil, status: Int32? = nil, seconds: Double? = nil, prompts: [String]? = nil) {
+                    guestPid: Int32? = nil, status: Int32? = nil, seconds: Double? = nil, prompts: [String]? = nil,
+                    prompt: String? = nil, service: String? = nil, program: String? = nil, stopped: Bool? = nil) {
+            self.prompt = prompt
+            self.service = service
+            self.program = program
+            self.stopped = stopped
             self.prompts = prompts
             self.id = id
             self.event = event
@@ -70,8 +85,10 @@ public final class ExecLog: @unchecked Sendable {
         /// Nil while running, or when the client died without writing an end.
         public var status: Int32?
         public var seconds: Double?
-        /// Permission prompts the program waited on.
+        /// Permission prompts the program waited on, as soon as each was noticed.
         public var prompts: [String]?
+        /// Whether agent-vm stopped a program that waited on one (`exec --prompts stop`).
+        public var stoppedOnPrompt: Bool?
     }
 
     public let url: URL
@@ -130,14 +147,31 @@ public final class ExecLog: @unchecked Sendable {
                 }
                 records[position].status = entry.status
                 records[position].seconds = entry.seconds
-                records[position].prompts = entry.prompts
+                records[position].prompts = Self.merged(records[position].prompts, entry.prompts ?? [])
                 records[position].guestPid = records[position].guestPid ?? entry.guestPid
+            case .notice:
+                guard let position = index[entry.id] else {
+                    continue
+                }
+                records[position].prompts = Self.merged(records[position].prompts, entry.prompt.map { [$0] } ?? [])
+                if entry.stopped == true {
+                    records[position].stoppedOnPrompt = true
+                }
             }
         }
         if let count, records.count > count {
             return Array(records.suffix(max(count, 0)))
         }
         return records
+    }
+
+    /// `list` with `more` added, each once, in order; nil when empty.
+    static func merged(_ list: [String]?, _ more: [String]) -> [String]? {
+        var result = list ?? []
+        for item in more where !result.contains(item) {
+            result.append(item)
+        }
+        return result.isEmpty ? nil : result
     }
 
     /// A short random id pairing a start with its end.

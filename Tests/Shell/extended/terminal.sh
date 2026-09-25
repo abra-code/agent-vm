@@ -212,11 +212,12 @@ test_typing_into_the_screen() {
 }
 
 # A program waiting on a permission prompt nobody sees (the derived image has no Full Disk
-# Access) is reported by exec and in the exec log. Named to run last in this file: the prompt
-# stays on the guest's screen, where it could take the focus the typing test needs.
+# Access) is reported by exec and, at once, in the exec log; with --prompts wait it keeps
+# waiting. Named to run near the end of this file: the prompt stays on the guest's screen,
+# where it could take the focus the typing test needs.
 test_waiting_on_a_permission_prompt_is_reported() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
-    "$AGENT_VM" exec --box "$BOX" -- /bin/sh -c 'ls ~/Downloads' > "$SCRATCH/prompt.out" 2> "$SCRATCH/prompt.err" &
+    "$AGENT_VM" exec --box "$BOX" --prompts wait -- /bin/sh -c 'ls ~/Downloads' < /dev/null > "$SCRATCH/prompt.out" 2> "$SCRATCH/prompt.err" &
     local _client=$!
     local _waited=0
     while [ "$_waited" -lt 20 ]; do
@@ -224,14 +225,55 @@ test_waiting_on_a_permission_prompt_is_reported() {
         _waited=$((_waited + 1))
         [ -s "$SCRATCH/prompt.err" ] && break
     done
+    # In the exec log while the program still waits: the prompt, and no end yet.
+    run_avm box execlog "$BOX" --last 1 --json
+    local _live
+    _live="$(json_value 0.prompts.0)"
+    local _ended
+    _ended="$(json_value 0.status)"
+    local _running=yes
+    kill -0 "$_client" 2>/dev/null || _running=""
     kill -TERM "$_client"
     wait "$_client"
     local _status=$?
     local _err
     _err="$(/bin/cat "$SCRATCH/prompt.err")"
-    printf '$ exec -- sh -c "ls ~/Downloads" (stopped after %ss)\n%s\n[status %s]\n' "$_waited" "$_err" "$_status"
+    printf '$ exec --prompts wait -- sh -c "ls ~/Downloads" (stopped after %ss)\n%s\n[status %s]\n' "$_waited" "$_err" "$_status"
     assert_contains "$_err" "ls is waiting for permission to use the Downloads folder" "stderr" || return 1
     assert_contains "$_err" "agent-vm box view $BOX --interactive" "stderr" || return 1
+    [ -n "$_running" ] || { fail "with --prompts wait, exec ended by itself"; return 1; }
+    assert_eq "$_live" "the Downloads folder" "the prompt in the exec log of the running program" || return 1
+    assert_eq "$_ended" "" "the running program's status" || return 1
     run_avm box execlog "$BOX" --last 1
     assert_out_contains "(waited on a permission prompt for the Downloads folder)" || return 1
+}
+
+# Without a terminal on stdin, exec stops the program that waits (only that one): the shell
+# around it carries on, and sees it killed.
+test_waiting_programs_are_stopped_by_default() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    "$AGENT_VM" exec --box "$BOX" -- /bin/sh -c 'ls ~/Documents; echo "after ls: $?"' < /dev/null > "$SCRATCH/stop.out" 2> "$SCRATCH/stop.err" &
+    local _client=$!
+    local _waited=0
+    local _running=yes
+    while [ "$_waited" -lt 30 ]; do
+        /bin/sleep 1
+        _waited=$((_waited + 1))
+        kill -0 "$_client" 2>/dev/null || { _running=""; break; }
+    done
+    if [ -n "$_running" ]; then
+        kill -TERM "$_client"
+    fi
+    wait "$_client"
+    STATUS=$?
+    OUT="$(/bin/cat "$SCRATCH/stop.out")"
+    ERR="$(/bin/cat "$SCRATCH/stop.err")"
+    printf '$ exec -- sh -c "ls ~/Documents; ..." < /dev/null (%ss)\n%s\n%s\n[status %s]\n' "$_waited" "$OUT" "$ERR" "$STATUS"
+    [ -z "$_running" ] || { fail "exec still waited after 30 s"; return 1; }
+    assert_status 0 || return 1
+    assert_out_contains "after ls: 137" || return 1
+    assert_err_contains "ls was waiting for permission to use the Documents folder" || return 1
+    assert_err_contains "so agent-vm stopped it" || return 1
+    run_avm box execlog "$BOX" --last 1
+    assert_out_contains "(stopped while waiting on a permission prompt for the Documents folder)" || return 1
 }

@@ -509,7 +509,8 @@ struct BoxCommand: ParsableCommand {
                     line += "  [project \(project)\(record.readOnly == true ? ", read only" : "")]"
                 }
                 if let prompts = record.prompts, !prompts.isEmpty {
-                    line += "  (waited on a permission prompt for \(prompts.joined(separator: ", ")))"
+                    let what = record.stoppedOnPrompt == true ? "stopped while waiting" : "waited"
+                    line += "  (\(what) on a permission prompt for \(prompts.joined(separator: ", ")))"
                 }
                 print(line)
             }
