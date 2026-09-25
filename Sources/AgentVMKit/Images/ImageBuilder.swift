@@ -91,15 +91,33 @@ public struct ImageDeriveOptions: Sendable {
 @MainActor
 public final class ImageBuilder {
     public let store: ImageStore
-    let log: @MainActor (String) -> Void
+    /// Where progress, log lines and notices go (ProgressEvent).
+    let report: @MainActor (ProgressEvent) -> Void
+    /// The image being built, updated or set up, named in every event.
+    var subject: String?
 
     /// How long the first boot may take to bring up SSH, and the shutdown to finish.
     static let provisionTimeout: Duration = .seconds(600)
     static let shutdownTimeout: Duration = .seconds(120)
 
-    public init(store: ImageStore, log: @escaping @MainActor (String) -> Void) {
+    public init(store: ImageStore, events: @escaping @MainActor (ProgressEvent) -> Void) {
         self.store = store
-        self.log = log
+        self.report = events
+    }
+
+    /// A line of the build log.
+    func log(_ text: String) {
+        report(ProgressEvent(.log, text, image: subject))
+    }
+
+    /// A step begins (or moves on), with the line a person sees for it.
+    func progress(_ step: String, _ text: String, fraction: Double? = nil, index: Int? = nil, count: Int? = nil) {
+        report(ProgressEvent(.progress, text, step: step, fraction: fraction, index: index, count: count, image: subject))
+    }
+
+    /// Something the user may need to act on; the build goes on.
+    func notice(_ text: String) {
+        report(ProgressEvent(.notice, text, image: subject))
     }
 
     /// Builds the image; on failure the record says which step failed and the folder is kept
@@ -127,7 +145,8 @@ public final class ImageBuilder {
         }
         try Self.checkHost(HostFacts.current(storeRoot: store.root))
 
-        log("Reading \(options.restoreImage.path)")
+        subject = options.name
+        progress("restore-image", "Reading \(options.restoreImage.path)")
         let restore = try await RestoreImage.inspect(options.restoreImage)
         let cpuCount = max(options.cpuCount, restore.minimumCPUCount)
         let memoryBytes = max(options.memoryBytes, restore.minimumMemoryBytes)
@@ -191,6 +210,7 @@ public final class ImageBuilder {
         guard ImageStore.isValidName(options.name) else {
             throw AgentVMError.invalidImageName(options.name)
         }
+        subject = options.name
         if FileSystem.exists(store.imagesDirectory.appendingPathComponent(options.name).path) {
             let state = (try? store.image(named: options.name))?.record.state.rawValue ?? "unreadable"
             throw AgentVMError.imageExists(name: options.name, state: state)
@@ -251,7 +271,7 @@ public final class ImageBuilder {
         let clock = ContinuousClock()
         let began = clock.now
         do {
-            log("Cloning \(base.name) (macOS \(base.record.macOSBuild)\(base.record.recipe.map { ", recipe \($0.description ?? String($0.digest.prefix(12)))" } ?? ""))")
+            progress("clone", "Cloning \(base.name) (macOS \(base.record.macOSBuild)\(base.record.recipe.map { ", recipe \($0.description ?? String($0.digest.prefix(12)))" } ?? ""))")
             do {
                 defer { baseLock.release() }
                 try BoxStore.cloneFile(base.diskURL, to: image.diskURL)
@@ -262,7 +282,7 @@ public final class ImageBuilder {
             }
             let grown = options.diskBytes.map { $0 > base.record.diskBytes } ?? false
             if grown, let diskBytes = options.diskBytes {
-                log("Growing the disk from \(base.record.diskBytes >> 30) to \(diskBytes >> 30) GB")
+                progress("grow-disk", "Growing the disk from \(base.record.diskBytes >> 30) to \(diskBytes >> 30) GB")
                 let moved = try GuestDisk.grow(image.diskURL, to: diskBytes)
                 log("  recovery container moved to the end (\((moved.sectors * UInt64(GuestDisk.sectorSize)) >> 20) MB)")
                 image = try store.update(image) { $0.diskBytes = diskBytes }
@@ -272,7 +292,7 @@ public final class ImageBuilder {
             let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
             let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
             var replacedDaemon: (digest: String, replaced: Bool)?
-            log("Booting")
+            progress("boot", "Booting")
             try await machine.start(provisioning: nil)
             do {
                 // A clone boots like any box: the daemon answers once macOS is up.
@@ -331,6 +351,7 @@ public final class ImageBuilder {
     /// ready, and is marked failed only when the new daemon does not answer.
     public func updateGuest(named name: String, guestDaemon: URL) async throws -> GoldenImage {
         var image = try updatableImage(named: name)
+        subject = image.name
         guard access(guestDaemon.path, X_OK) == 0 else {
             throw AgentVMError.hostNotReady("the guest daemon \(guestDaemon.path) is missing; Scripts/build.sh builds it next to agent-vm")
         }
@@ -342,7 +363,7 @@ public final class ImageBuilder {
 
         let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
         let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
-        log("Booting \(image.name)")
+        progress("boot", "Booting \(image.name)")
         try await machine.start(provisioning: nil)
         let outcome: (digest: String, replaced: Bool)
         do {
@@ -412,13 +433,13 @@ public final class ImageBuilder {
         }
         let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
 
-        log("Installing macOS (a few minutes)...")
+        progress("install", "Installing macOS (a few minutes)...", fraction: 0)
         var reported = -1
-        try await machine.install(from: restoreImage) { [log] fraction in
+        try await machine.install(from: restoreImage) { [self] fraction in
             let percent = Int(fraction * 100)
             if percent / 10 > reported / 10 {
                 reported = percent
-                log("  \(percent)%")
+                progress("install", "  \(percent)%", fraction: Double(percent) / 100)
             }
         }
         // The installer reports success while the machine is still running. Stopping it here
@@ -448,7 +469,7 @@ public final class ImageBuilder {
         provisioning.logsInAutomatically = true
         provisioning.enablesRemoteLogin = true
 
-        log("First boot: creating account \(image.record.userName), logging in, turning on SSH")
+        progress("first-boot", "First boot: creating account \(image.record.userName), logging in, turning on SSH")
         try await machine.start(provisioning: provisioning)
 
         do {
@@ -458,7 +479,7 @@ public final class ImageBuilder {
             let facts = try await checkAccount(ssh, image: image)
             log("Guest \(host): \(facts)")
 
-            log("Installing the guest daemon")
+            progress("guest-daemon", "Installing the guest daemon")
             try await installGuestDaemon(options.guestDaemon, user: image.record.userName, over: ssh, password: password)
             let hello = try await waitForDaemon(machine)
             let identity = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/id", "-un"]))
@@ -532,7 +553,7 @@ public final class ImageBuilder {
         if spotlight.report == ExitReport(status: 0) {
             log("  Spotlight indexing off")
         } else {
-            log("  note: could not turn Spotlight indexing off: \((spotlight.stderr + spotlight.stdout).trimmingCharacters(in: .whitespacesAndNewlines))")
+            notice("  note: could not turn Spotlight indexing off: \((spotlight.stderr + spotlight.stdout).trimmingCharacters(in: .whitespacesAndNewlines))")
         }
         // A window on a box (box view) must never meet a lock screen that asks for the password.
         try await keepDesktopUnlocked(machine, user: current.record.userName,
@@ -562,7 +583,7 @@ public final class ImageBuilder {
 
     /// `requestStop()` leaves a logged-in guest running; the daemon shuts it down.
     func shutDown(_ machine: MacMachine) async throws {
-        log("Shutting down")
+        progress("shutdown", "Shutting down")
         try await withGuest(machine) { descriptor in
             try GuestClient.shutdown(descriptor)
         }
@@ -594,7 +615,7 @@ public final class ImageBuilder {
             log("  agent-vm-guest is already this agent-vm's")
             return (digest, false)
         }
-        log("Replacing agent-vm-guest with this agent-vm's")
+        progress("replace-guest-daemon", "Replacing agent-vm-guest with this agent-vm's")
         let data = try Data(contentsOf: executable)
         let request = GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDaemon.replaceCommand(digest: digest)], cwd: "/", user: "root")
         let replaced = try await withGuest(machine, readTimeout: 120) { try GuestClient.capture($0, request, input: data) }
@@ -611,7 +632,7 @@ public final class ImageBuilder {
     private func checkGuestDaemon(_ image: GoldenImage, digest: String) async throws -> GoldenImage {
         let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
         let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
-        log("Booting again to check the new agent-vm-guest")
+        progress("check-guest-daemon", "Booting again to check the new agent-vm-guest")
         try await machine.start(provisioning: nil)
         do {
             let hello = try await waitForDaemon(machine, attempts: 180)
@@ -676,7 +697,7 @@ public final class ImageBuilder {
     private func installCommandLineTools(_ machine: MacMachine) async throws -> String {
         let clock = ContinuousClock()
         let began = clock.now
-        log("Installing the Command Line Tools (about 530 MB)")
+        progress("command-line-tools", "Installing the Command Line Tools (about 530 MB)")
         let listed = try await guestCapture(machine, CommandLineTools.listRequest, readTimeout: 300)
         guard listed.report == ExitReport(status: 0), let label = CommandLineTools.label(fromListOutput: listed.stdout) else {
             _ = try? await guestCapture(machine, CommandLineTools.cleanupRequest)
@@ -707,7 +728,7 @@ public final class ImageBuilder {
     func apply(_ recipe: ImageRecipe, machine: MacMachine, boxUser: String) async throws -> [ImageRecord.InputInfo] {
         let clock = ContinuousClock()
         let began = clock.now
-        log("Recipe\(recipe.description.map { ": \($0)" } ?? "") (\(recipe.steps.count) steps, \(recipe.checks.count) checks)")
+        progress("recipe", "Recipe\(recipe.description.map { ": \($0)" } ?? "") (\(recipe.steps.count) steps, \(recipe.checks.count) checks)")
         if !recipe.parameterValues.isEmpty {
             log("  parameters: \(recipe.parameterValues.keys.sorted().map { "\($0)=\(recipe.parameterValues[$0] ?? "")" }.joined(separator: ", "))")
         }
@@ -751,7 +772,7 @@ public final class ImageBuilder {
             }
             let began = clock.now
             let path = ImageRecipe.guestInputPath(name, file: file)
-            log("  input \(name): \(file.path)")
+            progress("recipe-input", "  input \(name): \(file.path)")
             // Output comes only at the end, when the guest has the whole file; the read timeout
             // covers the wait for it. A guest program that exits early drops the rest of the
             // input, so sending cannot block on it.
@@ -809,7 +830,8 @@ public final class ImageBuilder {
         let variables = recipe.variables
         for (index, step) in recipe.steps.enumerated() {
             let stepBegan = clock.now
-            log("  [\(index + 1)/\(recipe.steps.count)] \(step.name)\(step.user == "root" ? " (as root)" : "")")
+            progress("recipe-step", "  [\(index + 1)/\(recipe.steps.count)] \(step.name)\(step.user == "root" ? " (as root)" : "")",
+                     fraction: Double(index) / Double(recipe.steps.count), index: index + 1, count: recipe.steps.count)
             let request: GuestRequest
             var input: Data?
             switch step.action {
@@ -820,16 +842,16 @@ public final class ImageBuilder {
                 input = try ImageRecipe.copyContents(step, source: source)
             }
             let label = "recipe step \(index + 1) (\(step.name))"
-            let emit = LineEmitter(log: log)
-            let report: ExitReport
+            let emit = LineEmitter(report: report, image: subject)
+            let ended: ExitReport
             do {
-                report = try await runStreaming(machine, request, input: input, readTimeout: step.timeoutSeconds, emit: emit)
+                ended = try await runStreaming(machine, request, input: input, readTimeout: step.timeoutSeconds, emit: emit)
             } catch {
                 emit.flush()
                 throw Self.recipeFailure(label, error, timeoutSeconds: step.timeoutSeconds, output: emit.tail)
             }
-            guard report == ExitReport(status: 0) else {
-                throw AgentVMError.guestCommandFailed(command: label, status: report.shellStatus, output: emit.tail)
+            guard ended == ExitReport(status: 0) else {
+                throw AgentVMError.guestCommandFailed(command: label, status: ended.shellStatus, output: emit.tail)
             }
             log("      done in \(Int(Self.seconds(clock.now - stepBegan))) s")
         }
@@ -934,7 +956,7 @@ public final class ImageBuilder {
                     throw AgentVMError.guestCommandFailed(command: "id -un", status: 0, output: output)
                 }
                 if lines[1] != image.record.macOSBuild {
-                    log("  note: the guest reports build \(lines[1]), the restore image \(image.record.macOSBuild)")
+                    notice("  note: the guest reports build \(lines[1]), the restore image \(image.record.macOSBuild)")
                 }
                 return "user \(lines[0]), macOS \(lines[1]), console user \(lines[2])"
             } catch {
@@ -1005,13 +1027,15 @@ public final class ImageBuilder {
 /// Turns a program's output into build-log lines ("      | ..."), sent to the main actor in
 /// order, and keeps the last few kilobytes for error messages.
 final class LineEmitter: @unchecked Sendable {
-    let log: @MainActor (String) -> Void
+    let report: @MainActor (ProgressEvent) -> Void
+    let image: String?
     private let lock = NSLock()
     private var partial: [UInt8] = []
     private var recent: [UInt8] = []
 
-    init(log: @escaping @MainActor (String) -> Void) {
-        self.log = log
+    init(report: @escaping @MainActor (ProgressEvent) -> Void, image: String?) {
+        self.report = report
+        self.image = image
     }
 
     func add(_ bytes: [UInt8]) {
@@ -1063,13 +1087,17 @@ final class LineEmitter: @unchecked Sendable {
         guard !lines.isEmpty else {
             return
         }
-        let log = self.log
+        let report = self.report
         // Long lines are cut at 200 characters: the log is for following along.
-        let shown = lines.map { "      | " + String($0.prefix(200)) }
+        let events = lines.map { line -> ProgressEvent in
+            var event = ProgressEvent(.log, "      | " + String(line.prefix(200)), image: image, output: true)
+            event.message = String(line.prefix(200))
+            return event
+        }
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
-                for line in shown {
-                    log(line)
+                for event in events {
+                    report(event)
                 }
             }
         }

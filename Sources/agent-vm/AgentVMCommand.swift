@@ -67,6 +67,25 @@ struct StoreOptions: ParsableArguments {
     }
 }
 
+/// Where a long command's progress goes (ProgressEvent): each event's line on stdout for a
+/// person, as before events existed; with --json one JSON object per line on stderr, so stdout
+/// holds only the command's result.
+enum Events {
+    static func handler(json: Bool) -> @MainActor (ProgressEvent) -> Void {
+        return { event in
+            emit(event, json: json)
+        }
+    }
+
+    static func emit(_ event: ProgressEvent, json: Bool) {
+        if json {
+            FileHandle.standardError.write(Data((event.jsonLine + "\n").utf8))
+        } else {
+            print(event.text)
+        }
+    }
+}
+
 enum Output {
     static func json<T: Encodable>(_ value: T) throws {
         let encoder = JSONEncoder()

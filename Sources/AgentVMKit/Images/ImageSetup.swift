@@ -27,6 +27,7 @@ extension ImageBuilder {
     /// on SIGINT or SIGTERM). The result is recorded in image.json.
     public func setUp(named name: String) async throws -> GoldenImage {
         var image = try store.image(named: name)
+        subject = image.name
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "set up")
         }
@@ -63,7 +64,7 @@ extension ImageBuilder {
                 signal(signalNumber, SIG_DFL)
             }
         }
-        log("Booting \(image.name)")
+        progress("boot", "Booting \(image.name)")
         try await machine.start(provisioning: nil)
         let granted: Bool
         do {
@@ -105,7 +106,8 @@ extension ImageBuilder {
 
         var granted = try await hasFullDiskAccess(machine)
         if granted {
-            log("  agent-vm-guest already has Full Disk Access; close the window when done")
+            // Still the step that waits on the window, so a program can say so.
+            progress("full-disk-access", "  agent-vm-guest already has Full Disk Access; close the window when done")
             viewer.setNote("agent-vm-guest has Full Disk Access. Do any other one-time steps, then close this window.")
         } else {
             let uid = try await userID(machine, user: image.record.userName)
@@ -114,10 +116,10 @@ extension ImageBuilder {
                 let opened = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/bin/launchctl", "asuser", uid, "/usr/bin/sudo", "-u", image.record.userName,
                                                                              "/usr/bin/open"] + target, cwd: "/", user: "root"))
                 if opened.report != ExitReport(status: 0) {
-                    log("  note: could not open \(what) in the guest: \(opened.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+                    notice("  note: could not open \(what) in the guest: \(opened.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
                 }
             }
-            log("  Waiting for Full Disk Access for agent-vm-guest (close the window to stop)")
+            progress("full-disk-access", "  Waiting for Full Disk Access for agent-vm-guest (close the window to stop)")
         }
         while !done.isFinished {
             try await Task.sleep(for: .seconds(2))
@@ -147,7 +149,7 @@ extension ImageBuilder {
     func recordFullDiskAccess(_ image: GoldenImage, machine: MacMachine, digest: String?) async throws -> GoldenImage {
         let granted = try await hasFullDiskAccess(machine)
         if !granted, let previous = image.record.fullDiskAccess, previous.granted, previous.guestDigest != digest {
-            log("  note: Full Disk Access was granted to the previous agent-vm-guest, not to this one (macOS ties it to the daemon's signature); run `agent-vm image setup \(image.name)` to grant it again")
+            notice("  note: Full Disk Access was granted to the previous agent-vm-guest, not to this one (macOS ties it to the daemon's signature); run `agent-vm image setup \(image.name)` to grant it again")
         }
         return try store.update(image) { record in
             record.fullDiskAccess = ImageRecord.FullDiskAccess(granted: granted, guestDigest: digest,
@@ -164,7 +166,11 @@ extension ImageBuilder {
     /// No screen saver, no display sleep and no screen lock for the box user (GuestDesktop).
     func keepDesktopUnlocked(_ machine: MacMachine, user: String, password: String) async throws {
         let note = try await GuestDesktop.keepUnlocked(user: user, password: password, run: guestRunner(machine))
-        log(note.map { "  note: \($0)" } ?? "  Screen lock, screen saver and display sleep off")
+        if let note {
+            notice("  note: \(note)")
+        } else {
+            log("  Screen lock, screen saver and display sleep off")
+        }
     }
 
     /// The image's name as its wallpaper, and hidden widgets (GuestDesktop.prepare); boxes
@@ -182,7 +188,7 @@ extension ImageBuilder {
                 log("  \(line)")
             }
         } catch {
-            log("  note: could not set up the desktop's wallpaper and widgets: \(error)")
+            notice("  note: could not set up the desktop's wallpaper and widgets: \(error)")
         }
     }
 

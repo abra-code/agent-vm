@@ -231,9 +231,7 @@ struct BoxCommand: ParsableCommand {
             let clock = ContinuousClock()
             let began = clock.now
             let response = try BoxLauncher.start(box, executable: try AskpassEntry.executablePath()) { state in
-                if !options.json {
-                    print("  \(state)")
-                }
+                Events.emit(ProgressEvent(.progress, "  \(state)", step: state, box: box.name), json: options.json)
             }
             if options.json {
                 try Output.json(response)
@@ -255,6 +253,10 @@ struct BoxCommand: ParsableCommand {
 
         func run() throws {
             let box = try options.boxStore.box(named: name)
+            // Only for programs: a person sees the result line.
+            if options.json && box.isRunning {
+                Events.emit(ProgressEvent(.progress, "Stopping box \(box.name)", step: "shutdown", box: box.name), json: true)
+            }
             try BoxLauncher.stop(box)
             if !options.json {
                 print("Stopped box \(box.name)")

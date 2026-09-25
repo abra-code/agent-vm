@@ -55,9 +55,14 @@ test_a_failing_recipe_marks_the_image_failed() {
     "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
     cleanup_on_exit image "$_image"
     write_recipe "$SCRATCH/recipe" '{"version": 1, "steps": [{"name": "breaks", "run": "echo about to fail; exit 3"}]}'
-    run_avm image create "$_image" --from "$TEST_IMAGE" --recipe "$SCRATCH/recipe/recipe.json"
+    # With --json, progress comes as events on stderr, the step's output among them.
+    run_avm image create "$_image" --from "$TEST_IMAGE" --recipe "$SCRATCH/recipe/recipe.json" --json
     assert_status 1 || return 1
     assert_err_contains "recipe step 1 (breaks)" || return 1
+    assert_err_events || return 1
+    assert_err_contains '"step":"clone"' || return 1
+    assert_err_contains '{"count":1,"event":"progress","fraction":0,"image":"'"$_image"'","index":1,"message":"[1/1] breaks","step":"recipe-step"}' || return 1
+    assert_err_contains '{"event":"log","image":"'"$_image"'","message":"about to fail","output":true}' || return 1
     assert_eq "$(image_state "$_image")" "failed" "the image's state" || return 1
     run_avm image delete "$_image"
     assert_status 0 || return 1

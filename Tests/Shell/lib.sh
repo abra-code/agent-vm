@@ -106,6 +106,24 @@ assert_json() {
     [ "$_value" = "$2" ] || fail "JSON $1: expected [$2], got [$_value]"
 }
 
+# assert_err_events: with --json, every line on stderr is a progress event (one JSON object),
+# and there is at least one. A failed command's plain "Error: ..." message comes last and may
+# span several lines (a recipe step's output), so the check stops there.
+assert_err_events() {
+    printf '%s\n' "$ERR" | {
+        local _line
+        local _count=0
+        while IFS= read -r _line; do
+            case "$_line" in
+                '{"event":"'*'}' | '{"'*',"event":"'*'}') _count=$((_count + 1)) ;;
+                'Error: '*) break ;;
+                *) fail "stderr line is not a progress event: [$_line]"; return 1 ;;
+            esac
+        done
+        [ "$_count" -gt 0 ] || fail "no progress events on stderr"
+    }
+}
+
 # make_project <folder>: a small project with sources, a git folder and a script.
 make_project() {
     local _dir="$1"

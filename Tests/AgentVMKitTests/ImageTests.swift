@@ -329,7 +329,7 @@ import Testing
         _ = try store.create(old).1.release()
         _ = try store.create(ImageStoreTests.record("half", state: .provisioning)).1.release()
 
-        let builder = ImageBuilder(store: store) { _ in }
+        let builder = ImageBuilder(store: store) { (_: ProgressEvent) in }
         func refusal(_ base: String, name: String = "new") async -> AgentVMError? {
             do {
                 _ = try await builder.derive(ImageDeriveOptions(name: name, base: base, recipe: nil, commandLineTools: false))

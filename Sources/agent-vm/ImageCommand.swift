@@ -103,14 +103,8 @@ struct ImageCommand: ParsableCommand {
                 try ImageRecipe.load(from: URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath))
                     .binding(inputs: try Self.pairs(inputs, option: "--input"), parameters: try Self.pairs(settings, option: "--set"))
             }
-            let builder = ImageBuilder(store: options.imageStore) { line in
-                // With --json, progress goes to stderr so stdout holds only the record.
-                if json {
-                    FileHandle.standardError.write(Data((line + "\n").utf8))
-                } else {
-                    print(line)
-                }
-            }
+            // With --json, progress goes to stderr as JSON lines, so stdout holds only the record.
+            let builder = ImageBuilder(store: options.imageStore, events: Events.handler(json: json))
             let image: GoldenImage
             if let from {
                 image = try await builder.derive(ImageDeriveOptions(
@@ -197,13 +191,7 @@ struct ImageCommand: ParsableCommand {
         @MainActor
         func run() async throws {
             let json = options.json
-            let builder = ImageBuilder(store: options.imageStore) { line in
-                if json {
-                    FileHandle.standardError.write(Data((line + "\n").utf8))
-                } else {
-                    print(line)
-                }
-            }
+            let builder = ImageBuilder(store: options.imageStore, events: Events.handler(json: json))
             let image = try await builder.setUp(named: name)
             if json {
                 try Output.json(image.record)
@@ -238,13 +226,7 @@ struct ImageCommand: ParsableCommand {
         @MainActor
         func run() async throws {
             let json = options.json
-            let builder = ImageBuilder(store: options.imageStore) { line in
-                if json {
-                    FileHandle.standardError.write(Data((line + "\n").utf8))
-                } else {
-                    print(line)
-                }
-            }
+            let builder = ImageBuilder(store: options.imageStore, events: Events.handler(json: json))
             let names = names.reduce(into: [String]()) { unique, name in
                 if !unique.contains(name) {
                     unique.append(name)
@@ -263,7 +245,12 @@ struct ImageCommand: ParsableCommand {
                 } catch {
                     let skipped = names[(index + 1)...]
                     if !skipped.isEmpty {
-                        FileHandle.standardError.write(Data("Stopped at image \(name); not updated: \(skipped.joined(separator: ", "))\n".utf8))
+                        let text = "Stopped at image \(name); not updated: \(skipped.joined(separator: ", "))"
+                        if json {
+                            Events.emit(ProgressEvent(.notice, text, image: name), json: true)
+                        } else {
+                            FileHandle.standardError.write(Data((text + "\n").utf8))
+                        }
                     }
                     // The images before this one are updated; a program should not have to
                     // list the store to learn which.

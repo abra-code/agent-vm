@@ -15,6 +15,8 @@ test_lifecycle() {
     run_avm box start "$_box" --json
     assert_status 0 || return 1
     assert_json state ready || return 1
+    assert_err_events || return 1
+    assert_err_contains '{"box":"'"$_box"'","event":"progress","message":"ready","step":"ready"}' || return 1
     local _pid
     _pid="$(json_value pid)"
 
@@ -58,8 +60,9 @@ test_lifecycle() {
     run_avm box list --json
     assert_status 0 || return 1
 
-    run_avm box stop "$_box"
+    run_avm box stop "$_box" --json
     assert_status 0 || return 1
+    assert_err_contains '"step":"shutdown"' || return 1
     run_avm box status "$_box" --json
     assert_json state stopped || return 1
     run_avm exec --box "$_box" -- /usr/bin/true
