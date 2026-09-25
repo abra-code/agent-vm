@@ -64,6 +64,11 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case canceled(signal: Int32)
     /// A disposable box that stopped: it is deleted, never started again.
     case boxDisposed(String)
+    /// Secrets in the Keychain (SecretStore). Messages name a secret, never its value.
+    case invalidSecret(name: String, reason: String)
+    case secretNotFound(String)
+    case secretUnreadable(name: String, reason: String)
+    case keychain(operation: String, message: String)
 
     public var description: String {
         switch self {
@@ -128,6 +133,14 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
         case let .guestCommandFailed(command, status, output):
             let detail = output.isEmpty ? "" : ": \(output)"
             return "`\(command)` failed in the guest (status \(status))\(detail)"
+        case let .invalidSecret(name, reason):
+            return "secret \(name): \(reason)"
+        case let .secretNotFound(name):
+            return "no secret \(name) in the Keychain; store it with `agent-vm secret set \(name)` (the value is read from stdin)"
+        case let .secretUnreadable(name, reason):
+            return "secret \(name) cannot be read from the Keychain (\(reason)); allow agent-vm when macOS asks, or store it again with `agent-vm secret set \(name)`"
+        case let .keychain(operation, message):
+            return "\(operation) failed: \(message)"
         case let .boxDisposed(name):
             return "box \(name) is disposable and has stopped, so it is not started again (box gc deletes it, and box list, box start and doctor run box gc); create a new box"
         case let .canceled(signal):

@@ -112,6 +112,27 @@ test_credentials_reach_the_program_and_nowhere_else() {
     assert_eq "$_found" "" "files in the box folder holding the value" || return 1
 }
 
+# Keychain secrets reach the program under their own name or another, win over --env, and are
+# recorded nowhere on the Mac. Stored and deleted by this same agent-vm, so macOS never asks.
+test_keychain_secrets_reach_the_program() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    export AGENT_VM_SECRET_SERVICE="agent-vm-shtest-$$-$RANDOM"
+    trap '"$AGENT_VM" secret delete AVM_SHTEST_SECRET > /dev/null 2>&1' EXIT
+    local _secret="sk-kc-$$-$RANDOM"
+    run_avm_input "$_secret" secret set AVM_SHTEST_SECRET
+    assert_status 0 || return 1
+    run_avm exec --box "$BOX" --env AVM_SHTEST_SECRET=from-env --secret AVM_SHTEST_SECRET --secret RENAMED=AVM_SHTEST_SECRET \
+        -- /bin/sh -c 'printf "%s|%s\n" "$AVM_SHTEST_SECRET" "$RENAMED"'
+    assert_status 0 || return 1
+    assert_eq "$OUT" "$_secret|$_secret" "the program's variables" || return 1
+    local _folder="${AGENT_VM_HOME:-$HOME/Library/Application Support/agent-vm}/Boxes/$BOX"
+    local _found
+    _found="$(/usr/bin/grep -rl --exclude=Disk.img --exclude=AuxiliaryStorage -e "$_secret" "$_folder" 2>/dev/null)"
+    assert_eq "$_found" "" "files in the box folder holding the value" || return 1
+    run_avm secret delete AVM_SHTEST_SECRET
+    assert_status 0 || return 1
+}
+
 # A box whose guest daemon predates terminals refuses --tty with a way out, instead of running
 # the program without one.
 test_a_terminal_needs_a_guest_that_has_one() {

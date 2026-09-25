@@ -118,3 +118,47 @@ test_version_names_the_guest_daemon() {
     assert_out_contains "agent-vm $_version (control protocol 1, guest protocol 1)" || return 1
     assert_out_contains "sha256 $_digest" || return 1
 }
+
+# Secrets in the Keychain, through the signed binary only: every item is stored, read and
+# deleted by the same agent-vm, so macOS never asks. A service of this run's own keeps real
+# secrets out of reach; the trap deletes what the test stored, however it ends.
+test_secrets_are_stored_listed_used_and_deleted() {
+    export AGENT_VM_SECRET_SERVICE="agent-vm-shtest-$$-$RANDOM"
+    trap '"$AGENT_VM" secret delete SHTEST_KEY > /dev/null 2>&1' EXIT
+    local _value="s3cr3t-$RANDOM-value"
+    run_avm_input "$_value
+" secret set SHTEST_KEY
+    assert_status 0 || return 1
+    assert_out_contains "Stored secret SHTEST_KEY" || return 1
+    run_avm secret list --json
+    assert_status 0 || return 1
+    assert_json 0.name SHTEST_KEY || return 1
+    assert_json 0.readable true || return 1
+    # Replacing a value, and using it: the secret is read before the box is looked up.
+    run_avm_input "$_value-2" secret set SHTEST_KEY
+    assert_status 0 || return 1
+    run_avm exec --box nosuchbox --secret SHTEST_KEY --secret OTHER=SHTEST_KEY -- /usr/bin/true
+    assert_status 125 || return 1
+    assert_err_contains "no box nosuchbox" || return 1
+    assert_not_contains "$OUT$ERR" "$_value" "output" || return 1
+    run_avm exec --box nosuchbox --secret SHTEST_MISSING -- /usr/bin/true
+    assert_status 125 || return 1
+    assert_err_contains "no secret SHTEST_MISSING in the Keychain" || return 1
+    run_avm exec --box nosuchbox --secret VAR=sk-not-a-name -- /usr/bin/true
+    assert_status 64 || return 1
+    assert_not_contains "$ERR" "sk-not-a-name" "stderr" || return 1
+    run_avm secret delete not-a-name
+    assert_status 64 || return 1
+    run_avm_input "" secret set SHTEST_EMPTY
+    assert_status 1 || return 1
+    assert_err_contains "the value is empty" || return 1
+    run_avm secret set not-a-name
+    assert_status 64 || return 1
+    run_avm secret delete SHTEST_KEY
+    assert_status 0 || return 1
+    run_avm secret list
+    assert_out_contains "No secrets." || return 1
+    run_avm secret delete SHTEST_KEY
+    assert_status 1 || return 1
+    assert_err_contains "no secret SHTEST_KEY" || return 1
+}

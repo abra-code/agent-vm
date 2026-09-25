@@ -100,6 +100,7 @@ agent-vm box start s1 --owner-pid $$               # stops when this shell exits
 - **API keys and other credentials:**
   - `--env NAME` without a value passes on the value agent-vm was given, as `docker run -e NAME` does: `ANTHROPIC_API_KEY=... agent-vm exec --box dev1 --env ANTHROPIC_API_KEY -- claude`. Unlike docker, a variable that is not set is an error, not a silent omission.
   - `--env-file PATH` reads one `NAME=VALUE` per line, the value taken as is to the end of the line (no quotes or escapes); a line with only `NAME` passes that variable on, and `#` starts a comment line. The file may be a pipe, so a password manager can hand keys over without a file on disk: `--env-file <(op read ...)`. Later sources win: the proxy settings of a proxied box, then the files, then `--env`.
+  - `--secret NAME` takes the value from your login Keychain instead, stored once with `agent-vm secret set NAME` (the value is read from stdin, typed without echo on a terminal, never from the command line): `agent-vm exec --box dev1 --secret ANTHROPIC_API_KEY -- claude`. `--secret VAR=NAME` names the variable differently. A secret wins over `--env`, and one that is missing or cannot be read ends `exec` with status 125, naming the secret. `box shell` takes `--secret` too.
   - The values go in the exec request straight to the guest daemon. agent-vm does not log them or write them anywhere, and its error messages name variables, never values.
   - What this does not protect: every program in the box can read the value, and an agent can send it to any host the network allows, so an allowed host that accepts uploads is a way out. Prefer keys limited to the task that you can revoke.
 - **Looking inside a box:**
@@ -119,6 +120,20 @@ agent-vm box start s1 --owner-pid $$               # stops when this shell exits
 - **The supervisor** is `agent-vm box serve <name>` in its own session, started with the full path of the agent-vm that started it as its first argument, so a process list tells which binary runs each box, logging to `Boxes/<name>/supervisor.log`. It holds the box's lock, so a running box cannot be deleted or started twice. SIGTERM, SIGINT or SIGHUP to it stop the box cleanly, the same as `box stop`. Started in a login session, it is also an application without a Dock icon or menu (so `box view` can open a window): quitting it, as a logout does, stops the box cleanly too.
 - **macOS runs at most two macOS guests at once**, whichever applications started them (`agent-vm doctor` counts them).
 - **Socket paths:** the control socket's full path must stay under 104 bytes, which a very long `AGENT_VM_HOME` can exceed.
+
+## Secrets in the Keychain (works today)
+
+```sh
+printf %s "$KEY" | agent-vm secret set ANTHROPIC_API_KEY   # or type it: agent-vm secret set ANTHROPIC_API_KEY
+agent-vm secret list                                       # names only, never values
+agent-vm exec --box dev1 --secret ANTHROPIC_API_KEY -- claude
+agent-vm secret delete ANTHROPIC_API_KEY
+```
+
+- **Where they are:** generic passwords in your login Keychain, service `agent-vm`, account `NAME`, visible in Keychain Access. A name is letters, digits and `_`, since it also names the environment variable.
+- **Who can read them:** macOS ties each item to the agent-vm that stored it. Another program, or an agent-vm signed differently, makes macOS ask you first ("agent-vm wants to use your confidential information"), and `exec` waits for the answer. A build from `Scripts/build.sh` signed ad hoc is a new identity after every rebuild, so in development expect that question once per secret after each rebuild: answer Always Allow, or store the secret again with the new build. A Developer ID build keeps its identity across updates.
+- **`secret list`** shows whether each secret was stored by this very agent-vm, so reads it without a question (`readable` in `--json`). It reads names and attributes only, never a value, so it never asks: macOS offers no way to find out whether a read would ask without asking, so this is what agent-vm can tell (a secret someone chose Always Allow for is still listed as not readable).
+- **What this does not protect:** as for `--env`, every program in the box can read the value, and an agent can send it anywhere the network allows.
 
 ## Network: allowlist, off or open (works today)
 

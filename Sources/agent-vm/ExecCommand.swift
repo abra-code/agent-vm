@@ -25,8 +25,9 @@ struct ExecCommand: ParsableCommand {
             --project, the folder appears in the box at the same path and the program starts \
             there; the box keeps it until another project replaces it or the box stops. \
             --env NAME (no value) passes on the value agent-vm itself was given, and \
-            --env-file reads NAME=VALUE lines, so API keys stay off the command line; \
-            anything running in the box can read them. With --tty the program gets a \
+            --env-file reads NAME=VALUE lines, and --secret NAME takes a key from the \
+            Keychain (`agent-vm secret set`), so API keys stay off the command line; anything \
+            running in the box can read them. With --tty the program gets a \
             terminal in the box (its output all arrives on stdout), keys such as Control-C \
             go to it as typed, and SIGHUP or SIGTERM to agent-vm end the session. Each \
             run is recorded in the box's exec log (`box execlog`): the command, account, \
@@ -61,6 +62,9 @@ struct ExecCommand: ParsableCommand {
     @Option(name: .customLong("env-file"), parsing: .singleValue, help: "File of NAME=VALUE lines (or NAME to pass on) for the program's environment (repeatable; --env wins).")
     var envFile: [String] = []
 
+    @Option(name: .customLong("secret"), parsing: .singleValue, help: SecretOptions.help)
+    var secrets: [String] = []
+
     @Option(name: .long, help: "When a program waits on a permission prompt nobody sees: wait (for an answer in `box view --interactive`) or stop that program. Default: stop when stdin is not a terminal, else wait.")
     var prompts: PromptPolicy?
 
@@ -79,17 +83,20 @@ struct ExecCommand: ParsableCommand {
         if tty && isatty(STDIN_FILENO) != 1 {
             throw ValidationError("--tty needs a terminal on stdin")
         }
+        try SecretOptions.validate(secrets)
     }
 
     func run() throws {
         // Read once, since an --env-file may be a pipe, and before the box: a missing variable
         // or a bad file is a usage error (64), like the checks in validate().
-        let added: [String: String]
+        var added: [String: String]
         do {
             added = try ExecEnvironment.overrides(base: [:], files: envFile, entries: env, host: ProcessInfo.processInfo.environment)
         } catch let error as AgentVMError {
             throw ValidationError(error.description)
         }
+        // After --env, so a secret wins; a missing or unreadable one ends exec with 125.
+        added.merge(SecretOptions.resolve(secrets)) { _, secret in secret }
         let argv = command.first == "--" ? Array(command.dropFirst()) : command
         guard !argv.isEmpty else {
             throw ValidationError("give the program to run after --")

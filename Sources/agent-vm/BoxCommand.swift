@@ -460,12 +460,16 @@ struct BoxCommand: ParsableCommand {
         @Flag(name: .customLong("read-only"), help: "Share the project read only.")
         var readOnly = false
 
+        @Option(name: .customLong("secret"), parsing: .singleValue, help: SecretOptions.help)
+        var secrets: [String] = []
+
         @OptionGroup var options: StoreOptions
 
         func validate() throws {
             if readOnly && project == nil {
                 throw ValidationError("--read-only applies to --project")
             }
+            try SecretOptions.validate(secrets)
             if isatty(STDIN_FILENO) != 1 {
                 throw ValidationError("box shell needs a terminal on stdin; use `agent-vm exec` to run commands from a script")
             }
@@ -474,7 +478,7 @@ struct BoxCommand: ParsableCommand {
         func run() throws {
             // The account's own shell: the guest daemon sets SHELL from the account.
             ExecRunner(store: options.boxStore, box: name, user: user, cwd: nil, project: project, readOnly: readOnly,
-                       added: [:], argv: ["/bin/sh", "-c", "exec \"$SHELL\" -l"], terminal: true).run()
+                       added: SecretOptions.resolve(secrets), argv: ["/bin/sh", "-c", "exec \"$SHELL\" -l"], terminal: true).run()
         }
     }
 
