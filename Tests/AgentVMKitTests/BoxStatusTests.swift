@@ -23,6 +23,7 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
     func controlShare(path: String, readOnly: Bool) throws {}
     func controlView(interactive: Bool) throws {}
     func controlType(text: String?) throws {}
+    func controlSyncClock() throws -> Double { throw AgentVMError.guestRefused("not in tests") }
 }
 
 @Suite struct BoxStatusTests {
@@ -129,7 +130,7 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
 
     @Test func missingFeaturesAskForAGuestUpdate() {
         let access = ImageRecord.FullDiskAccess(granted: true, guestDigest: "d1", checkedAt: Date())
-        #expect(record(features: ["terminal"], access: access).needs == [ImageNeed(kind: .guestUpdate, missing: ["prompt-notices", "wallpaper"])])
+        #expect(record(features: ["terminal"], access: access).needs == [ImageNeed(kind: .guestUpdate, missing: ["prompt-notices", "wallpaper", "time-sync"])])
         #expect(record(features: nil, access: access).needs == [ImageNeed(kind: .guestUpdate, missing: GuestFeature.all)])
     }
 

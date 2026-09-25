@@ -164,6 +164,11 @@ public final class BoxSupervisor {
                 throw AgentVMError.boxNotRunning(name)
             }
             try await self.type(text: text)
+        } syncClock: { [weak self] in
+            guard let self else {
+                throw AgentVMError.boxNotRunning(name)
+            }
+            return try await self.syncClock(reason: "asked")
         }
         let server = try ControlServer(path: box.controlSocketPath, handler: handler)
         defer { server.close() }
@@ -224,10 +229,40 @@ public final class BoxSupervisor {
         state.set(.ready, guestVersion: hello.version, guestFeatures: hello.features ?? [])
         log("Ready in \(Int(ImageBuilder.seconds(clock.now - began))) s: agent-vm-guest \(hello.version ?? "?")")
         prepareDesktop(machine, features: hello.features ?? [])
+        let clockSync = (hello.features ?? []).contains(GuestFeature.timeSync)
+        if clockSync {
+            _ = try? await syncClock(reason: "boot")
+        } else {
+            log("Clock: this agent-vm-guest cannot set the guest's clock (update the image with `agent-vm image update-guest \(box.record.image)`)")
+        }
 
-        // Until the guest stops by itself or a stop is requested.
+        // Until the guest stops by itself or a stop is requested. The guest's clock is set every
+        // few minutes, and at once after the Mac slept: a suspending clock stops during sleep,
+        // a continuous one does not, so their difference grows by the time slept.
+        var lastSync = ContinuousClock.now
+        var continuousMark = ContinuousClock.now
+        var suspendingMark = SuspendingClock.now
         while machine.isRunning && !state.stopRequested {
             try? await Task.sleep(for: .milliseconds(250))
+            guard clockSync else {
+                continue
+            }
+            let continuousNow = ContinuousClock.now
+            let suspendingNow = SuspendingClock.now
+            let slept = (continuousNow - continuousMark) - (suspendingNow - suspendingMark)
+            continuousMark = continuousNow
+            suspendingMark = suspendingNow
+            if (slept > Self.sleepThreshold || continuousNow - lastSync >= Self.clockSyncInterval) && !clockSyncing {
+                lastSync = continuousNow
+                // In a task of its own, one at a time: a guest slow to answer must not keep this
+                // loop from seeing a stop (or the owner's exit) for its 10 s read timeout.
+                clockSyncing = true
+                let reason = slept > Self.sleepThreshold ? "wake" : "interval"
+                Task { @MainActor [weak self] in
+                    _ = try? await self?.syncClock(reason: reason)
+                    self?.clockSyncing = false
+                }
+            }
         }
         if machine.isRunning {
             await shutDown(machine)
@@ -279,6 +314,41 @@ public final class BoxSupervisor {
             try? await Task.sleep(for: .seconds(1))
         }
         return nil
+    }
+
+    /// A periodic clock sync is under way.
+    private var clockSyncing = false
+
+    /// How often the guest's clock is set while the box runs, and how long a sleep of the Mac
+    /// must have been to set it at once.
+    static let clockSyncInterval: Duration = .seconds(300)
+    static let sleepThreshold: Duration = .seconds(5)
+
+    /// Sets the guest's clock to this Mac's; returns how far it was behind (negative: ahead).
+    /// Logged at boot and when asked, otherwise only when it was a second or more off.
+    func syncClock(reason: String) async throws -> Double {
+        // Not once a stop is asked for: the loop's last tick would otherwise delay the shutdown.
+        guard let machine, state.snapshot.state == .ready, !state.stopRequested else {
+            throw AgentVMError.supervisorRefused("box \(box.name) is not ready")
+        }
+        guard state.snapshot.guestFeatures.contains(GuestFeature.timeSync) else {
+            throw AgentVMError.supervisorRefused("the agent-vm-guest of box \(box.name) cannot set its clock; update its image with `agent-vm image update-guest \(box.record.image)` and create the box again")
+        }
+        do {
+            let connection = try await machine.connect(toPort: GuestProtocol.port)
+            defer { connection.close() }
+            let descriptor = connection.descriptor
+            Self.setReadTimeout(descriptor, seconds: 10)
+            let offset = try await Task.detached { try GuestClient.syncTime(descriptor) }.value
+            if reason != "interval" || abs(offset) >= 1 {
+                let direction = offset >= 0 ? "behind" : "ahead"
+                log(String(format: "Clock: set the guest's time (%@; it was %.1f s %@)", reason, abs(offset), direction))
+            }
+            return offset
+        } catch {
+            log("Clock: could not set the guest's time (\(reason)): \(error)")
+            throw error
+        }
     }
 
     /// Raises the soft limit on open descriptors to at least `wanted` (within the hard limit).
@@ -556,11 +626,14 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
     private let share: @Sendable @MainActor (String, Bool, Bool) async throws -> Void
     private let view: @Sendable @MainActor (Bool) throws -> Void
     private let type: @Sendable @MainActor (String?) async throws -> Void
+    private let syncClock: @Sendable @MainActor () async throws -> Double
 
     init(state: SupervisorState, machine: MacMachine, box: Box, proxy: ProxyServer,
          share: @escaping @Sendable @MainActor (String, Bool, Bool) async throws -> Void,
          view: @escaping @Sendable @MainActor (Bool) throws -> Void,
-         type: @escaping @Sendable @MainActor (String?) async throws -> Void) {
+         type: @escaping @Sendable @MainActor (String?) async throws -> Void,
+         syncClock: @escaping @Sendable @MainActor () async throws -> Double) {
+        self.syncClock = syncClock
         self.view = view
         self.type = type
         self.state = state
@@ -596,6 +669,25 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         if let error = result.error {
             throw error
         }
+    }
+
+    /// Sets the guest's clock on the main actor; blocks this control thread for at most 30 s.
+    func controlSyncClock() throws -> Double {
+        let result = ClockResult()
+        let done = DispatchSemaphore(value: 0)
+        let syncClock = self.syncClock
+        Task { @MainActor in
+            do {
+                result.set(.success(try await syncClock()))
+            } catch {
+                result.set(.failure(error))
+            }
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + 30) == .success, let outcome = result.value else {
+            throw AgentVMError.supervisorRefused("setting the clock of box \(box.name) timed out")
+        }
+        return try outcome.get()
     }
 
     /// Shows the box's screen on the main actor; blocks this control thread for at most 30 s.
@@ -729,6 +821,23 @@ private final class ShareResult: @unchecked Sendable {
     }
 
     var error: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+}
+
+private final class ClockResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Result<Double, Error>?
+
+    func set(_ value: Result<Double, Error>) {
+        lock.lock()
+        stored = value
+        lock.unlock()
+    }
+
+    var value: Result<Double, Error>? {
         lock.lock()
         defer { lock.unlock() }
         return stored

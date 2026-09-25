@@ -40,7 +40,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 ```
 
 - `v` (required): the protocol version. A daemon that speaks another version answers `ok: false`.
-- `op` (required): `hello`, `exec` or `shutdown`.
+- `op` (required): `hello`, `exec`, `shutdown`, or `time-sync` (feature `time-sync`).
 - `argv`, `env`, `cwd`, `user`: exec only; all but `argv` optional.
 - `terminal`: exec only, optional: `{"rows": 24, "columns": 80}` runs the program on a new terminal of that size (feature `terminal`, below).
 - `notices`: exec only, optional: `true` asks for notice frames (feature `prompt-notices`, below).
@@ -51,13 +51,15 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 
 - `ok`: false with `error` (a message for a person) when the request is refused; the guest then closes the connection.
 - `version`, `osBuild`: hello only (agent-vm-guest's version, the guest's macOS build).
-- `features`: hello only, what the daemon supports beyond this document's base (see Versioning). Today: `terminal`, `prompt-notices` and `wallpaper`.
+- `features`: hello only, what the daemon supports beyond this document's base (see Versioning). Today: `terminal`, `prompt-notices`, `wallpaper` and `time-sync`.
 - `pid`: exec only, the started process.
 - `status`: a refused exec only, the status a shell would give: 127 when the program is not found, 126 when it cannot be run (unknown account, missing folder).
 
 ## Operations
 
 **hello**: version and health check. The host refuses to drive a daemon with another protocol version.
+
+**time-sync** (feature `time-sync`): `{"v": 1, "op": "time-sync", "epoch": 1790000000.25}` sets the guest's clock to `epoch` (seconds since 1970, with fractions) with `settimeofday`; the answer carries `offset`, how far the guest was behind before (negative: ahead). A time outside 2020 to 2200 is refused and never applied. A box on the allowlist network has no network time, so the supervisor sends it after the daemon's hello at boot, every 5 minutes, and at once after the Mac wakes from sleep.
 
 **shutdown**: the guest answers `ok`, closes the connection and runs `/sbin/shutdown -h now`. This is the only clean way to stop a macOS guest with a logged-in user: Virtualization's `requestStop()` leaves it running.
 

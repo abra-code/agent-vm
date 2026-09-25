@@ -137,7 +137,7 @@ test_images_name_missing_guest_features() {
     fake_image broken failed
     run_avm image list
     assert_status 0 || return 1
-    assert_out_contains "agent-vm-guest lacks terminal, prompt-notices, wallpaper; \`agent-vm image update-guest dev\` adds it" || return 1
+    assert_out_contains "agent-vm-guest lacks terminal, prompt-notices, wallpaper, time-sync; \`agent-vm image update-guest dev\` adds it" || return 1
     assert_out_contains "Full Disk Access for agent-vm-guest is not checked; \`agent-vm image setup dev\`" || return 1
     run_avm image setup broken
     assert_status 1 || return 1
@@ -290,4 +290,12 @@ test_an_owner_must_be_a_running_process() {
     assert_err_contains "--owner-pid 1: no such process of yours" || return 1
     run_avm box start b1 --owner-pid 999999
     assert_status 64 || return 1
+}
+
+test_sync_clock_needs_a_running_box() {
+    fake_image dev
+    run_avm box create b1 --image dev
+    run_avm box sync-clock b1
+    assert_status 1 || return 1
+    assert_err_contains "box b1 is not running" || return 1
 }

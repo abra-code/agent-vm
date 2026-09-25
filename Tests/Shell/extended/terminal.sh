@@ -211,6 +211,33 @@ test_typing_into_the_screen() {
     done
 }
 
+# The guest's clock: set at boot, and by box sync-clock after it was put an hour back (the
+# derived image carries this build's agent-vm-guest, with time-sync).
+test_the_guest_clock_follows_the_mac() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    run_avm box status "$BOX" --json
+    local _folder
+    _folder="$(json_value path)"
+    assert_contains "$(/bin/cat "$_folder/supervisor.log")" "Clock: set the guest's time (boot;" "supervisor.log" || return 1
+    run_avm exec --box "$BOX" --user root -- /bin/sh -c '/bin/date -u "$(/bin/date -u -v-1H +%m%d%H%M%Y.%S)" > /dev/null'
+    assert_status 0 || return 1
+    run_avm box sync-clock "$BOX" --json
+    assert_status 0 || return 1
+    local _offset
+    _offset="$(json_value clockOffset)"
+    local _whole="${_offset%%.*}"
+    [ -n "$_whole" ] && [ "$_whole" -ge 3590 ] && [ "$_whole" -le 3610 ] || { fail "the guest was not about an hour behind: $_offset"; return 1; }
+    run_avm exec --box "$BOX" -- /bin/date +%s
+    local _guest="$OUT"
+    local _mac
+    _mac="$(/bin/date +%s)"
+    local _difference=$(( _mac - _guest ))
+    [ "$_difference" -ge -3 ] && [ "$_difference" -le 3 ] || { fail "guest and Mac differ by $_difference s after sync-clock"; return 1; }
+    run_avm box sync-clock "$BOX"
+    assert_status 0 || return 1
+    assert_out_contains "Set the clock of box $BOX (it was" || return 1
+}
+
 # A program waiting on a permission prompt nobody sees (the derived image has no Full Disk
 # Access) is reported by exec and, at once, in the exec log; with --prompts wait it keeps
 # waiting. Named to run near the end of this file: the prompt stays on the guest's screen,

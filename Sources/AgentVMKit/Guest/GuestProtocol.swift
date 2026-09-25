@@ -56,6 +56,9 @@ public struct GuestRequest: Codable, Equatable, Sendable {
         case exec
         /// Shut the guest down cleanly (the only clean way for a macOS guest with a logged-in user).
         case shutdown
+        /// Set the guest's clock to `epoch` (feature `time-sync`): a box on the allowlist
+        /// network has no network time, and its clock drifts, most of all across the Mac's sleep.
+        case timeSync = "time-sync"
     }
 
     public var v: Int
@@ -73,9 +76,12 @@ public struct GuestRequest: Codable, Equatable, Sendable {
     /// Send notice frames (feature `prompt-notices`): for example when the program waits on a
     /// privacy prompt shown on the guest's screen. A guest without the feature ignores the field.
     public var notices: Bool?
+    /// time-sync: the Mac's time, in seconds since 1970 (with fractions).
+    public var epoch: Double?
 
     public init(op: Operation, argv: [String]? = nil, env: [String: String]? = nil, cwd: String? = nil, user: String? = nil, terminal: TerminalSize? = nil,
-                notices: Bool? = nil) {
+                notices: Bool? = nil, epoch: Double? = nil) {
+        self.epoch = epoch
         self.notices = notices
         self.v = AgentVM.guestProtocolVersion
         self.op = op
@@ -101,9 +107,13 @@ public struct GuestResponse: Codable, Equatable, Sendable {
     public var status: Int32?
     /// What this guest daemon can do beyond protocol 1 (hello only; see GuestFeature).
     public var features: [String]?
+    /// time-sync: how far the guest's clock was behind the time it was set to, in seconds
+    /// (negative: ahead).
+    public var offset: Double?
 
     public init(ok: Bool, error: String? = nil, v: Int? = nil, version: String? = nil, osBuild: String? = nil, pid: Int32? = nil, status: Int32? = nil,
-                features: [String]? = nil) {
+                features: [String]? = nil, offset: Double? = nil) {
+        self.offset = offset
         self.ok = ok
         self.error = error
         self.v = v
@@ -128,8 +138,10 @@ public enum GuestFeature {
     public static let promptNotices = "prompt-notices"
     /// `agent-vm-guest wallpaper`, run in the box user's desktop session (GuestWallpaper).
     public static let wallpaper = "wallpaper"
+    /// The `time-sync` request.
+    public static let timeSync = "time-sync"
     /// Everything this build's daemon supports.
-    public static let all = [terminal, promptNotices, wallpaper]
+    public static let all = [terminal, promptNotices, wallpaper, timeSync]
 }
 
 /// A terminal's size in character cells.

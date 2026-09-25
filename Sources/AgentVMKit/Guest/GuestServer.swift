@@ -24,9 +24,20 @@ public final class GuestServer: @unchecked Sendable {
     static let defaultPath = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     static let hangupGrace: Double = 3
 
-    public init(defaultUser: String?, helperPath: String?) {
+    /// Sets the system clock (settimeofday; the daemon runs as root); replaced in tests.
+    let setClock: @Sendable (Double) -> Int32
+
+    public init(defaultUser: String?, helperPath: String?, setClock: (@Sendable (Double) -> Int32)? = nil) {
         self.defaultUser = defaultUser
         self.helperPath = helperPath
+        self.setClock = setClock ?? Self.setSystemClock
+    }
+
+    /// settimeofday to `epoch`; 0, or the errno.
+    static func setSystemClock(_ epoch: Double) -> Int32 {
+        let seconds = epoch.rounded(.down)
+        var time = timeval(tv_sec: Int(seconds), tv_usec: Int32(((epoch - seconds) * 1_000_000).rounded(.down)))
+        return settimeofday(&time, nil) == 0 ? 0 : errno
     }
 
     // MARK: - Listening
@@ -127,6 +138,24 @@ public final class GuestServer: @unchecked Sendable {
             }
         case .exec:
             runExec(request, channel: channel)
+        case .timeSync:
+            // Plausible times only: from 2020 to 2200. A wrong clock breaks certificates and
+            // tokens, so a value that cannot be the Mac's time is refused, never applied.
+            guard let epoch = request.epoch, epoch.isFinite, epoch > 1_577_836_800, epoch < 7_258_118_400 else {
+                try? channel.send(.response, json: GuestResponse.failure("time-sync needs the time as seconds since 1970"))
+                return
+            }
+            let before = Date().timeIntervalSince1970
+            let code = setClock(epoch)
+            guard code == 0 else {
+                try? channel.send(.response, json: GuestResponse.failure("cannot set the clock: \(String(cString: strerror(code)))"))
+                return
+            }
+            let offset = epoch - before
+            if abs(offset) >= 1 {
+                Self.log(String(format: "clock set by the host (it was %.1f s %@)", abs(offset), offset > 0 ? "behind" : "ahead"))
+            }
+            try? channel.send(.response, json: GuestResponse(ok: true, v: AgentVM.guestProtocolVersion, offset: offset))
         }
     }
 

@@ -23,7 +23,7 @@ struct BoxCommand: ParsableCommand {
             shows what exec and shell ran there, and `box status` shows its state without \
             starting anything.
             """,
-        subcommands: [Create.self, List.self, Status.self, Start.self, GC.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self,
+        subcommands: [Create.self, List.self, Status.self, Start.self, GC.self, SyncClock.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self,
                       Packs.self, Serve.self]
     )
 
@@ -620,6 +620,45 @@ struct BoxCommand: ParsableCommand {
                 print("pack:\(name)")
                 print("    \(NetworkPacks.all[name]!.joined(separator: ", "))")
             }
+        }
+    }
+
+    struct SyncClock: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "sync-clock",
+            abstract: "Set a running box's clock to this Mac's now.",
+            discussion: """
+                The supervisor does this by itself when the box starts, every 5 minutes, and \
+                right after this Mac wakes from sleep: on the allowlist network a box has no \
+                network time, and its clock falls behind. Needs an image whose agent-vm-guest has \
+                the time-sync feature.
+                """)
+
+        @Argument(help: "The running box.")
+        var name: String
+
+        @OptionGroup var options: StoreOptions
+
+        func run() throws {
+            let box = try options.boxStore.box(named: name)
+            guard box.isRunning else {
+                throw AgentVMError.boxNotRunning(box.name)
+            }
+            // A supervisor before 0.2.1 cannot decode the operation and answers with a decoding
+            // error, so its version is checked first.
+            let status = try ControlClient.request(.status, path: box.controlSocketPath)
+            guard let version = status.supervisorVersion, version.compare("0.2.1", options: .numeric) != .orderedAscending else {
+                throw AgentVMError.supervisorRefused("box \(box.name) was started by an agent-vm older than 0.2.1; restart it (`agent-vm box stop \(box.name)`, then `box start`) to set its clock")
+            }
+            let response = try ControlClient.request(ControlRequest(op: .syncClock), path: box.controlSocketPath)
+            guard response.ok, let offset = response.clockOffset else {
+                throw AgentVMError.supervisorRefused(response.error ?? "no offset in the answer")
+            }
+            if options.json {
+                try Output.json(response)
+                return
+            }
+            print(String(format: "Set the clock of box %@ (it was %.1f s %@)", box.name, abs(offset), offset >= 0 ? "behind" : "ahead"))
         }
     }
 

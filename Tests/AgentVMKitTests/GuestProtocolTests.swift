@@ -16,7 +16,7 @@ final class GuestPair {
 
     /// `helperPath`: an exec-as helper (see `builtHelper`); without one, the server runs programs
     /// only directly, as this test process's account and without a terminal.
-    init(helperPath: String? = nil) throws {
+    init(helperPath: String? = nil, setClock: (@Sendable (Double) -> Int32)? = nil) throws {
         var pair: [Int32] = [-1, -1]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else {
             throw AgentVMError.system(operation: "socketpair", code: errno)
@@ -25,7 +25,7 @@ final class GuestPair {
         let server = pair[1]
         let done = serverDone
         Thread.detachNewThread {
-            GuestServer(defaultUser: nil, helperPath: helperPath).serve(descriptor: server)
+            GuestServer(defaultUser: nil, helperPath: helperPath, setClock: setClock).serve(descriptor: server)
             done.signal()
         }
     }

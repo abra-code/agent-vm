@@ -213,6 +213,10 @@ final class FakeHandler: ControlHandler, @unchecked Sendable {
         throw AgentVMError.supervisorRefused("no screen in tests")
     }
 
+    func controlSyncClock() throws -> Double {
+        return 2.5
+    }
+
     func controlType(text: String?) throws {
         lock.lock()
         typed.append(text ?? "<password>")
@@ -259,6 +263,16 @@ final class ShortFolder {
         let stop = try ControlClient.request(.stop, path: socketPath(scratch))
         #expect(stop.state == .stopping)
         #expect(handler.stopCount == 1)
+    }
+
+    /// sync-clock answers with the status and how far the guest's clock was off.
+    @Test func syncClockReturnsTheOffset() throws {
+        let scratch = try ShortFolder()
+        let server = try ControlServer(path: socketPath(scratch), handler: FakeHandler())
+        defer { server.close() }
+        let response = try ControlClient.request(ControlRequest(op: .syncClock), path: socketPath(scratch))
+        #expect(response.ok)
+        #expect(response.clockOffset == 2.5)
     }
 
     /// A view request reaches the handler with its mode; the handler's refusal comes back.
