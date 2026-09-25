@@ -292,16 +292,18 @@ struct ImageCommand: ParsableCommand {
 
         @OptionGroup var options: StoreOptions
 
-        /// An image's record with its folder and space added as two more keys, so a program
-        /// reading the records as before sees no change.
+        /// An image's record with its folder, space and growth over its base added as more
+        /// keys, so a program reading the records as before sees no change.
         struct Entry: Encodable {
             var record: ImageRecord
             var path: String
             var diskUsage: DiskUsage
+            var addedOverBase: Added?
 
             private enum Keys: String, CodingKey {
                 case path
                 case diskUsage
+                case addedOverBase
             }
 
             func encode(to encoder: Encoder) throws {
@@ -309,7 +311,26 @@ struct ImageCommand: ParsableCommand {
                 var container = encoder.container(keyedBy: Keys.self)
                 try container.encode(path, forKey: .path)
                 try container.encode(diskUsage, forKey: .diskUsage)
+                try container.encodeIfPresent(addedOverBase, forKey: .addedOverBase)
             }
+        }
+
+        /// What a derived image's disk holds that its base's does not.
+        struct Added: Encodable {
+            var image: String
+            var bytes: Int64
+        }
+
+        /// The growth of a derived image over its base, when the base is still there and is the
+        /// one it was built from: a base created after the image was rebuilt since, and shares
+        /// nothing with it.
+        static func added(_ image: GoldenImage, among images: [GoldenImage]) -> Added? {
+            guard let name = image.record.derivedFrom?.image,
+                  let base = images.first(where: { $0.name == name }), base.record.createdAt <= image.record.createdAt,
+                  let bytes = DiskUsage.addedBytes(image.diskURL, over: base.diskURL) else {
+                return nil
+            }
+            return Added(image: name, bytes: bytes)
         }
 
         func run() throws {
@@ -319,7 +340,8 @@ struct ImageCommand: ParsableCommand {
             }
             if options.json {
                 try Output.json(images.map { image in
-                    Entry(record: image.record, path: image.directory.path, diskUsage: DiskUsage.of(image.directory))
+                    Entry(record: image.record, path: image.directory.path, diskUsage: DiskUsage.of(image.directory),
+                          addedOverBase: Self.added(image, among: images))
                 })
                 return
             }
@@ -332,7 +354,7 @@ struct ImageCommand: ParsableCommand {
                 let state = record.state.rawValue.padding(toLength: 12, withPad: " ", startingAt: 0)
                 var line = "\(record.name)  \(state)  macOS \(record.macOSVersion) (\(record.macOSBuild))  \(record.cpuCount) CPUs  \(record.memoryBytes >> 30) GB  created \(Output.time(record.createdAt))"
                 if let base = record.derivedFrom {
-                    line += "  from \(base.image)"
+                    line += "  from \"\(base.image)\" image"
                 }
                 if let recipe = record.recipe {
                     line += "  recipe \(recipe.description ?? String(recipe.digest.prefix(12)))"
@@ -343,6 +365,9 @@ struct ImageCommand: ParsableCommand {
                 print(line)
                 for place in Output.placeLines(image.directory, DiskUsage.of(image.directory), others: "other images or boxes", delete: "image delete") {
                     print(place)
+                }
+                if let added = Self.added(image, among: images) {
+                    print("    \(Output.size(added.bytes)) added over base \"\(added.image)\" image")
                 }
                 let missing = GuestFeature.all.filter { !(record.guestFeatures ?? []).contains($0) }
                 if record.state == .ready && !missing.isEmpty {

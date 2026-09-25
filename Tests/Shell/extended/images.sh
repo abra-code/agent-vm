@@ -33,7 +33,7 @@ test_derived_image_with_a_recipe() {
     assert_out_contains "check shtest-hello: hello from the image" || return 1
     run_avm image list
     assert_out_contains "$_image  ready" || return 1
-    assert_out_contains "from $TEST_IMAGE  recipe shell test" || return 1
+    assert_out_contains "from \"$TEST_IMAGE\" image  recipe shell test" || return 1
 
     run_avm box create "$_box" --image "$_image"
     assert_status 0 || return 1

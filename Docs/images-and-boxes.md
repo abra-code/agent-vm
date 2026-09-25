@@ -119,6 +119,8 @@ try1  running   image dev (macOS 26A428)  4 CPUs  8 GB  network allowlist
 
 The first number counts everything the box's disk holds, most of it shared with its image, so adding these numbers up overstates the space used. The second is what only this one holds, and what deleting it gives back.
 
+The second number changes as clones come and go: an image that a later image or box was built from holds little of its own, because the later one shares its data. `dev-xcode` with Xcode installed showed only 440 MB of its own, since `dev-xcode-ios` shares its Xcode. So `image list` gives a third line for an image built with `--from`: what its disk added over the image it was built from (`7.3 GB added over base "dev" image`), which stays the same whatever else is built, so each layer's growth can be followed. Starting the base image again (`image update-guest`, `image setup`) makes it grow a little: blocks the base rewrites were shared with the derived image, and now only the derived image holds the old ones. Besides what the recipe installed, it includes what the build itself wrote, such as a moved recovery container (about 1.5 GB when a disk grows) and what the guest changed while it ran; files the guest deleted are given back to the Mac and do not count.
+
 - `box delete <name>` gives back what the box wrote, and also the image's blocks the image changed after the box was made (`image update-guest` changes some), since the box then holds the old ones alone.
 - `image delete <name>` gives back what only that image holds. Space an image shares with its boxes and derived images stays in use until the last of them is deleted too, because they are clones of the same data. Deleting an image can therefore make a box's unshared space grow: what only the image and that box shared becomes the box's alone.
 - Failed or interrupted image builds stay in `image list`; delete them.
@@ -141,7 +143,14 @@ No. A box keeps its disk until it is deleted. Only deleting and creating it agai
 No. Put the steps into a recipe and build a derived image (`image create --from`): the image then records how it was made and can be built again.
 
 **Does deleting an image break the boxes made from it?**
-No. Each box has its own clone of the disk and keeps working. You can no longer make new boxes from that image, and its disk space is freed only once its boxes are deleted too.
+No, a box keeps working fully. Only `box create` reads the image: it clones the image's disk and auxiliary storage and copies its hardware model and account password into the box's folder, and gives the box its own machine identifier. From then on, starting, stopping, `exec`, `box shell` and `box view` use only the box's own files. Tested: a box made from an image that was then deleted started, ran programs, and kept what it wrote across a stop and a start.
+
+What changes:
+
+- `box list` still names the deleted image, as where the box came from.
+- You can no longer make new boxes from that image, and there is nothing to refresh the box from: to make the box again, build the image again first (from the same recipe).
+- The image's disk space is not all freed: whatever its boxes (or images built from it) still share stays in use until they are deleted too. Space the image shared with only one box becomes that box's own in `box list`.
+- An image built from the deleted one no longer shows what it added over its base in `image list`, since there is no base to compare with.
 
 **Does changing an image change the images derived from it?**
 No. A derived image is a clone made at `image create --from`. To pass a change on, delete the derived image and build it again from the same recipe.

@@ -71,4 +71,98 @@ public struct DiskUsage: Equatable, Sendable, Encodable {
             return buffer.loadUnaligned(fromByteOffset: 4 + MemoryLayout<attribute_set_t>.size, as: off_t.self)
         }
     }
+
+    // MARK: - Added over a base
+
+    /// The bytes of `file`'s data in blocks `base` does not use: what a derived image's disk
+    /// added over the disk it was cloned from, since clones share physical blocks until one
+    /// side writes. Unlike `unsharedBytes`, it does not change when other clones come and go,
+    /// so it traces each layer's growth. Nil when either file cannot be mapped. About 0.3 s
+    /// for two 40 GB disks with 100,000 to 250,000 extents each (measured).
+    public static func addedBytes(_ file: URL, over base: URL) -> Int64? {
+        guard let mine = physicalExtents(file.path), let theirs = physicalExtents(base.path) else {
+            return nil
+        }
+        return uncovered(mine, by: theirs)
+    }
+
+    /// Where a file's data lies on its volume: (device offset, length) of each extent, sorted
+    /// by offset. Holes are skipped (SEEK_DATA, SEEK_HOLE); F_LOG2PHYS_EXT maps the rest. Data
+    /// written but not yet flushed has no blocks yet, and its device offset is -1 (measured).
+    static func physicalExtents(_ path: String) -> [(start: Int64, length: Int64)]? {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            return nil
+        }
+        defer { close(descriptor) }
+        var extents: [(start: Int64, length: Int64)] = []
+        var offset: off_t = 0
+        while true {
+            let data = lseek(descriptor, offset, SEEK_DATA)
+            guard data >= 0 else {
+                // ENXIO: no data past `offset`.
+                if errno == ENXIO {
+                    break
+                }
+                return nil
+            }
+            let hole = lseek(descriptor, data, SEEK_HOLE)
+            guard hole > data else {
+                return nil
+            }
+            var position = data
+            while position < hole {
+                var mapping = log2phys()
+                mapping.l2p_contigbytes = hole - position
+                mapping.l2p_devoffset = position
+                guard fcntl(descriptor, F_LOG2PHYS_EXT, &mapping) == 0, mapping.l2p_contigbytes > 0 else {
+                    return nil
+                }
+                extents.append((Int64(mapping.l2p_devoffset), Int64(mapping.l2p_contigbytes)))
+                position += mapping.l2p_contigbytes
+            }
+            offset = hole
+        }
+        return extents.sorted { $0.start < $1.start }
+    }
+
+    /// The bytes of `ranges` that no range of `others` covers; both sorted by start. A range
+    /// with a negative start (data not yet given blocks) is uncovered, and covers nothing.
+    static func uncovered(_ ranges: [(start: Int64, length: Int64)], by others: [(start: Int64, length: Int64)]) -> Int64 {
+        // `others` as disjoint (start, end) intervals.
+        var covered: [(start: Int64, end: Int64)] = []
+        for other in others where other.length > 0 && other.start >= 0 {
+            if let last = covered.last, other.start <= last.end {
+                covered[covered.count - 1].end = max(last.end, other.start + other.length)
+            } else {
+                covered.append((other.start, other.start + other.length))
+            }
+        }
+        var total: Int64 = 0
+        var first = 0
+        for range in ranges where range.length > 0 {
+            if range.start < 0 {
+                total += range.length
+                continue
+            }
+            var start = range.start
+            let end = range.start + range.length
+            while first < covered.count && covered[first].end <= start {
+                first += 1
+            }
+            var index = first
+            while start < end {
+                guard index < covered.count, covered[index].start < end else {
+                    total += end - start
+                    break
+                }
+                if covered[index].start > start {
+                    total += covered[index].start - start
+                }
+                start = max(start, covered[index].end)
+                index += 1
+            }
+        }
+        return total
+    }
 }

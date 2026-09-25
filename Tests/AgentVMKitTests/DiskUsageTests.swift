@@ -64,4 +64,38 @@ import Testing
         #expect(usage.bytes >= Int64(Self.megabyte))
         #expect(usage.bytes < Int64(2 * Self.megabyte))
     }
+
+    /// The part of some ranges no other range covers: gaps before, between and after, and
+    /// overlapping or touching covers merged.
+    @Test func uncoveredCountsOnlyTheGaps() {
+        let covers: [(start: Int64, length: Int64)] = [(10, 10), (15, 10), (40, 5), (45, 5), (100, 0)]
+        #expect(DiskUsage.uncovered([(0, 100)], by: covers) == 100 - 15 - 10)
+        #expect(DiskUsage.uncovered([(12, 5), (22, 3)], by: covers) == 0)
+        #expect(DiskUsage.uncovered([(0, 5), (24, 10), (49, 2)], by: covers) == 5 + 9 + 1)
+        #expect(DiskUsage.uncovered([(0, 5)], by: []) == 5)
+        #expect(DiskUsage.uncovered([], by: covers) == 0)
+        // Unflushed data (device offset -1) is added, and a base's unflushed data covers nothing.
+        #expect(DiskUsage.uncovered([(-1, 30), (-1, 8), (12, 5)], by: covers) == 30 + 8)
+        #expect(DiskUsage.uncovered([(0, 5)], by: [(-1, 10)]) == 5)
+    }
+
+    /// A clone adds nothing over its original until it is written, then exactly what was
+    /// written; an unrelated file adds all of its data, and a missing one cannot be measured.
+    @Test func aCloneAddsWhatItWrites() throws {
+        let scratch = try Scratch()
+        let base = scratch.path("base.img")
+        let clone = scratch.project.appendingPathComponent("clone.img")
+        try write(base, count: 4 * Self.megabyte)
+        try BoxStore.cloneFile(URL(fileURLWithPath: base), to: clone)
+        #expect(DiskUsage.addedBytes(clone, over: URL(fileURLWithPath: base)) == 0)
+
+        try write(clone.path, count: Self.megabyte, at: UInt64(Self.megabyte))
+        let added = try #require(DiskUsage.addedBytes(clone, over: URL(fileURLWithPath: base)))
+        #expect(added == Int64(Self.megabyte))
+
+        let unrelated = scratch.path("other.img")
+        try write(unrelated, count: 2 * Self.megabyte)
+        #expect(DiskUsage.addedBytes(URL(fileURLWithPath: unrelated), over: URL(fileURLWithPath: base)) == Int64(2 * Self.megabyte))
+        #expect(DiskUsage.addedBytes(URL(fileURLWithPath: scratch.path("missing")), over: URL(fileURLWithPath: base)) == nil)
+    }
 }
