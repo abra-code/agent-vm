@@ -23,6 +23,10 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case projectMissing(path: String)
     /// A session record on disk could not be read or written.
     case corruptSessionRecord(path: String, reason: String)
+    /// A path given to `session undo --path` that cannot be undone on its own.
+    case invalidUndoPath(String, reason: String)
+    /// `session discard --older-than` could not discard these sessions (id and reason each).
+    case sessionsNotDiscarded([String])
     /// An image name that is not lower-case letters, digits, ".", "_" or "-".
     case invalidImageName(String)
     case imageExists(name: String, state: String)
@@ -90,6 +94,10 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "the project folder \(path) is missing or was moved to another volume since the session started"
         case let .corruptSessionRecord(path, reason):
             return "session record \(path) is unusable: \(reason)"
+        case let .invalidUndoPath(path, reason):
+            return "cannot undo \(path) on its own: \(reason)"
+        case let .sessionsNotDiscarded(failures):
+            return "could not discard every session: \(failures.joined(separator: "; "))"
         case let .invalidImageName(name):
             return "\(name) is not a usable image name (lower-case letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit, at most 63)"
         case let .imageExists(name, state):

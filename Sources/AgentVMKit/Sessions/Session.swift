@@ -58,3 +58,26 @@ public struct Session: Sendable {
         return record.replacedTree.map { directory.appendingPathComponent($0).path }
     }
 }
+
+/// A session as the command line prints it: the record's fields, plus `snapshotPath` while the
+/// snapshot exists. The path is not saved in session.json, where it would go stale if the store
+/// moved.
+public struct SessionOutput: Encodable, Sendable {
+    public let record: SessionRecord
+    public let snapshotPath: String?
+
+    public init(_ session: Session) {
+        record = session.record
+        snapshotPath = session.record.state == .discarded ? nil : session.snapshotPath
+    }
+
+    enum Keys: String, CodingKey {
+        case snapshotPath
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        try record.encode(to: encoder)
+        var container = encoder.container(keyedBy: Keys.self)
+        try container.encodeIfPresent(snapshotPath, forKey: .snapshotPath)
+    }
+}

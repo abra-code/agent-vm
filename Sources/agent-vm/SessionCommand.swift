@@ -37,7 +37,7 @@ struct SessionCommand: ParsableCommand {
             let session = try options.store.start(project: project)
             let elapsed = clock.now - began
             if options.json {
-                try Output.json(session.record)
+                try Output.json(SessionOutput(session))
                 return
             }
             print("Started session \(session.id) for \(session.record.project)")
@@ -57,7 +57,7 @@ struct SessionCommand: ParsableCommand {
                 FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
             }
             if options.json {
-                try Output.json(sessions.map(\.record))
+                try Output.json(sessions.map(SessionOutput.init))
                 return
             }
             if sessions.isEmpty {
@@ -84,7 +84,7 @@ struct SessionCommand: ParsableCommand {
         func run() throws {
             let session = try options.store.end(id: id)
             if options.json {
-                try Output.json(session.record)
+                try Output.json(SessionOutput(session))
                 return
             }
             print("Ended session \(session.id). Undo is still available: agent-vm session undo \(session.id)")
@@ -128,24 +128,45 @@ struct SessionCommand: ParsableCommand {
             discussion: """
                 Stop the agent first. By default only what changed is put back, so editors and \
                 shells with the project open stay attached; the agent's versions are moved into \
-                the session folder, never deleted. --whole-tree instead swaps the whole folder \
-                with a copy of the snapshot in one atomic step (programs with the project open \
-                then keep seeing the replaced copy until they reopen it).
+                the session folder, never deleted. --path restores only the entries given (as \
+                `session report` lists them, or absolute inside the project) and what is under \
+                them; the rest stays undoable. --whole-tree instead swaps the whole folder with a \
+                copy of the snapshot in one atomic step (programs with the project open then keep \
+                seeing the replaced copy until they reopen it).
                 """)
 
         @Argument(help: "The session id.")
         var id: String
+
+        @Option(name: .long, help: "Restore only this changed entry and what is under it (repeatable).")
+        var path: [String] = []
 
         @Flag(name: .long, help: "Swap the whole project folder instead of restoring changed files.")
         var wholeTree = false
 
         @OptionGroup var options: StoreOptions
 
+        func validate() throws {
+            if wholeTree && !path.isEmpty {
+                throw ValidationError("--path and --whole-tree cannot be combined: a whole-tree undo restores everything")
+            }
+        }
+
         func run() throws {
-            let outcome = try options.store.undo(id: id, mode: wholeTree ? .wholeTree : .changedFiles)
+            let outcome = try options.store.undo(id: id, mode: wholeTree ? .wholeTree : .changedFiles, paths: path.isEmpty ? nil : path)
             let session = outcome.session
             if options.json {
-                try Output.json(UndoJSON(session: session.record, restore: outcome.restore))
+                try Output.json(UndoJSON(session: SessionOutput(session), restore: outcome.restore))
+            } else if !path.isEmpty, outcome.isComplete, let restore = outcome.restore {
+                print("Restored \(restore.restored.count) changed entries of \(session.record.project) to their state at \(Output.time(session.record.startedAt)).")
+                if let replaced = session.replacedTreePath {
+                    print("  what the agent left there is kept at: \(replaced)")
+                }
+                if session.record.state == .undone {
+                    print("  nothing else changed; delete the snapshot and kept files with: agent-vm session discard \(session.id)")
+                } else {
+                    print("  the rest of the session can still be undone: agent-vm session undo \(session.id)")
+                }
             } else if outcome.isComplete {
                 print("Restored \(session.record.project) to its state at \(Output.time(session.record.startedAt)).")
                 if let restore = outcome.restore {
@@ -171,27 +192,63 @@ struct SessionCommand: ParsableCommand {
         }
 
         struct UndoJSON: Encodable {
-            let session: SessionRecord
+            let session: SessionOutput
             let restore: RestoreResult?
         }
     }
 
     struct Discard: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Delete a session's snapshot and replaced tree. Undo is no longer possible.")
+            abstract: "Delete a session's snapshot and replaced tree. Undo is no longer possible.",
+            discussion: """
+                --older-than DAYS discards every ended or undone session that ended at least that \
+                many days ago (fractions allowed; 0 means all of them). Active sessions are never \
+                discarded by age.
+                """)
 
         @Argument(help: "The session id.")
-        var id: String
+        var id: String?
+
+        @Option(name: .customLong("older-than"), help: ArgumentHelp("Discard every ended or undone session this old or older, instead of one.", valueName: "days"))
+        var olderThan: Double?
 
         @OptionGroup var options: StoreOptions
 
+        func validate() throws {
+            guard (id == nil) != (olderThan == nil) else {
+                throw ValidationError("give either a session id or --older-than DAYS")
+            }
+            if let olderThan, !(olderThan.isFinite && olderThan >= 0) {
+                throw ValidationError("--older-than takes a number of days, 0 or more")
+            }
+        }
+
         func run() throws {
-            let session = try options.store.discard(id: id)
-            if options.json {
-                try Output.json(session.record)
+            guard let olderThan else {
+                let session = try options.store.discard(id: id!)
+                if options.json {
+                    try Output.json(SessionOutput(session))
+                    return
+                }
+                print("Discarded session \(session.id): snapshot deleted; the record remains in `agent-vm session list`.")
                 return
             }
-            print("Discarded session \(session.id): snapshot deleted; the record remains in `agent-vm session list`.")
+            let outcome = try options.store.discard(olderThan: olderThan * 86400)
+            for problem in outcome.unreadable {
+                FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
+            }
+            if options.json {
+                try Output.json(outcome.discarded.map(SessionOutput.init))
+            } else if outcome.discarded.isEmpty {
+                print("No ended or undone sessions that old.")
+            } else {
+                for session in outcome.discarded {
+                    print("Discarded session \(session.id) (\(session.record.project))")
+                }
+            }
+            if !outcome.failures.isEmpty {
+                throw AgentVMError.sessionsNotDiscarded(outcome.failures)
+            }
         }
     }
 }

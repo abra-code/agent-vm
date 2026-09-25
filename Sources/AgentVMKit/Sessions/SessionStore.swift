@@ -198,9 +198,13 @@ public struct SessionStore: Sendable {
     /// - `wholeTree` swaps folder identities: programs that still have the project open keep
     ///   seeing the replaced tree until they reopen it.
     ///
+    /// `paths` (changed files only) restores just those entries of the change report and what
+    /// is under them, relative to the project or absolute inside it; the rest of the session
+    /// stays undoable. The session becomes `undone` only once nothing changed remains.
+    ///
     /// Stop the agent first either way.
     @discardableResult
-    public func undo(id: String, mode: UndoMode = .changedFiles) throws -> UndoOutcome {
+    public func undo(id: String, mode: UndoMode = .changedFiles, paths: [String]? = nil) throws -> UndoOutcome {
         return try withLock {
             let current = try session(id: id)
             let state = current.record.state
@@ -211,6 +215,16 @@ public struct SessionStore: Sendable {
             guard FileSystem.exists(current.snapshotPath) else {
                 throw AgentVMError.corruptSessionRecord(path: current.directory.path, reason: "the snapshot folder is missing")
             }
+            if mode == .wholeTree, let paths {
+                throw AgentVMError.invalidUndoPath(paths.first ?? "", reason: "a whole-tree undo restores everything")
+            }
+            // An empty selection is a caller's mistake, not "everything".
+            if let paths, paths.isEmpty {
+                throw AgentVMError.invalidUndoPath("", reason: "no paths given; undo without paths restores everything")
+            }
+            let report = mode == .changedFiles ? try ChangeScanner.report(session: current) : nil
+            // Paths are checked before anything moves.
+            let selected = try paths.map { try Self.undoSelection($0.map { try relativeUndoPath($0, project: current.record.project) }, in: report?.changes ?? []) }
             let replacedName = try unusedReplacedName(in: current.directory)
             let replacedPath = current.directory.appendingPathComponent(replacedName).path
             switch mode {
@@ -218,18 +232,22 @@ public struct SessionStore: Sendable {
                 return UndoOutcome(session: try swapWholeTree(current, replacedName: replacedName, replacedPath: replacedPath),
                                    restore: nil)
             case .changedFiles:
-                let report = try ChangeScanner.report(session: current)
-                var restore = try ProjectRestorer.restore(session: current, report: report, replacedPath: replacedPath)
+                let changes = selected?.changes ?? report!.changes.filter { !$0.coveredByAncestor }
+                var restore = try ProjectRestorer.restore(session: current, changes: changes, replacedPath: replacedPath)
                 // The project has already changed: a failed check must not abort before the
                 // record (and the replaced folder's name) is saved.
+                var nothingLeft = false
                 do {
-                    restore.remaining = try ChangeScanner.report(session: current).changes.filter { !$0.coveredByAncestor }.count
+                    let left = try ChangeScanner.report(session: current).changes.filter { !$0.coveredByAncestor }
+                    nothingLeft = left.isEmpty
+                    // For a selection, what is left of it.
+                    restore.remaining = selected.map { selection in left.filter { selection.includes($0.path) }.count } ?? left.count
                 } catch {
                     restore.failed["."] = "could not verify the result: \(error)"
                 }
                 var record = current.record
                 record.replacedTree = replacedName
-                if restore.failed.isEmpty && restore.remaining == 0 {
+                if restore.failed.isEmpty && nothingLeft {
                     record.state = .undone
                     record.undoneAt = Date()
                     if record.endedAt == nil {
@@ -241,6 +259,81 @@ public struct SessionStore: Sendable {
                 return UndoOutcome(session: updated, restore: restore)
             }
         }
+    }
+
+    /// The entries `session undo --path` restores.
+    struct UndoSelection {
+        /// The paths asked for, relative to the project.
+        let paths: [String]
+        /// The changes to restore, none inside another one of them that covers it.
+        let changes: [Change]
+
+        func includes(_ path: String) -> Bool {
+            return paths.contains { RelativePath.isWithin(path, $0) }
+        }
+    }
+
+    /// The listed changes at or under `paths`. A path must be a change or hold changes. An
+    /// entry inside a folder the agent deleted or replaced cannot come back without that
+    /// folder, so it is refused, naming the folder; inside a folder the agent added, an entry
+    /// the report lists (it carries a flag) is moved aside on its own.
+    static func undoSelection(_ paths: [String], in changes: [Change]) throws -> UndoSelection {
+        var chosen: [Change] = []
+        for path in paths {
+            let under = changes.filter { RelativePath.isWithin($0.path, path) }
+            // The nearest change that covers `path` as a whole: an added, deleted or retyped folder.
+            let enclosing = changes.filter { $0.path != path && RelativePath.isWithin(path, $0.path) && !$0.coveredByAncestor && $0.entriesInside != nil }
+                .max { RelativePath.depth($0.path) < RelativePath.depth($1.path) }
+            if let enclosing, enclosing.kind != .added {
+                throw AgentVMError.invalidUndoPath(path, reason: "it is inside \(enclosing.path), which the agent \(enclosing.kind == .deleted ? "deleted" : "replaced") as a whole; undo --path \(enclosing.path)")
+            }
+            // Inside an added folder, only what the report lists: an unlisted folder there would
+            // lose only its flagged entries and look undone.
+            guard !under.isEmpty, enclosing == nil || under.contains(where: { $0.path == path }) else {
+                let reason = enclosing.map { "it is inside \($0.path), which the agent added as a whole; undo --path \($0.path) to remove it all" }
+                    ?? "it did not change in this session (`agent-vm session report` lists what did)"
+                throw AgentVMError.invalidUndoPath(path, reason: reason)
+            }
+            for change in under where !chosen.contains(where: { $0.path == change.path }) {
+                chosen.append(change)
+            }
+        }
+        // A covered entry goes only when no folder holding it is restored too: neither the
+        // change covering it nor a listed added folder above it (moved aside as one).
+        let covering = chosen.filter { $0.entriesInside != nil || ($0.kind == .added && $0.type == .directory) }
+        let changes = chosen.filter { change in
+            !change.coveredByAncestor || !covering.contains { $0.path != change.path && RelativePath.isWithin(change.path, $0.path) }
+        }
+        return UndoSelection(paths: paths, changes: changes.sorted { $0.path < $1.path })
+    }
+
+    /// `path` relative to the project: given relative, or absolute inside the project. No "."
+    /// or ".." components; "." alone (or the project's path) is the project folder's own
+    /// permissions and flags, as the report lists them.
+    func relativeUndoPath(_ path: String, project: String) throws -> String {
+        var relative = path
+        if path == "." || path == project || path == project + "/" {
+            return "."
+        }
+        if path.hasPrefix("/") {
+            let prefix = project + "/"
+            guard path.unicodeScalars.starts(with: prefix.unicodeScalars) else {
+                throw AgentVMError.invalidUndoPath(path, reason: "it is not inside the project \(project)")
+            }
+            relative = String(path.unicodeScalars.dropFirst(prefix.unicodeScalars.count))
+        }
+        // "./README.md", as shell completion writes it.
+        while relative.hasPrefix("./") {
+            relative = String(relative.unicodeScalars.dropFirst(2))
+        }
+        let components = RelativePath.components(relative)
+        guard !components.isEmpty else {
+            throw AgentVMError.invalidUndoPath(path, reason: "it names no entry")
+        }
+        guard !components.contains(where: { $0 == "." || $0 == ".." }) else {
+            throw AgentVMError.invalidUndoPath(path, reason: "use a path without . or .. components, as `session report` lists them")
+        }
+        return components.joined(separator: "/")
     }
 
     /// Throws unless the recorded project folder is still there, a folder, on the same volume.
@@ -333,6 +426,33 @@ public struct SessionStore: Sendable {
             try save(updated)
             return updated
         }
+    }
+
+    /// Discards every ended or undone session that ended at least `age` seconds before `now`
+    /// (sessions from before `endedAt` existed count from their start). Active sessions are
+    /// left alone, however old: an agent may still be working. One failure does not stop the
+    /// others; each is returned with its reason. `unreadable` are the records that could not be
+    /// read, as `listWithProblems` reports them.
+    public func discard(olderThan age: TimeInterval, now: Date = Date()) throws -> (discarded: [Session], failures: [String], unreadable: [String]) {
+        let cutoff = now.addingTimeInterval(-age)
+        let (sessions, unreadable) = try listWithProblems()
+        var discarded: [Session] = []
+        var failures: [String] = []
+        for session in sessions {
+            let record = session.record
+            guard record.state == .ended || record.state == .undone, (record.endedAt ?? record.startedAt) <= cutoff else {
+                continue
+            }
+            do {
+                discarded.append(try discard(id: session.id))
+            } catch AgentVMError.wrongSessionState {
+                // Discarded meanwhile by another agent-vm.
+                continue
+            } catch {
+                failures.append("\(session.id): \(error)")
+            }
+        }
+        return (discarded, failures, unreadable)
     }
 
     // MARK: - Validation

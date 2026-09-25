@@ -48,7 +48,9 @@ agent-vm session start --project ~/src/myapp   # instant snapshot, prints the se
 agent-vm session report <id>                   # what changed, with risky files flagged
 agent-vm session end <id>                      # optional: mark the run finished
 agent-vm session undo <id>                     # put the project back as it was at start
+agent-vm session undo <id> --path .mcp.json    # or only some entries (repeatable)
 agent-vm session discard <id>                  # delete the snapshot when you no longer need undo
+agent-vm session discard --older-than 30       # every ended or undone session that ended 30+ days ago
 agent-vm session list                          # all sessions and their states
 ```
 
@@ -56,11 +58,13 @@ agent-vm session list                          # all sessions and their states
 - **The report shows what changed and what to look at first.** Additions, deletions, modifications, type and permission changes, with whole new or deleted folders collapsed to one line. A change is found by content, not by modification time: a file is unchanged when its status-change time (ctime, which a process cannot set), and that of every folder above it, is older than the session start (a moved folder gets a new ctime, the files inside it keep theirs); every other file is compared with its snapshot copy, instantly while both are still APFS clones of the same data, otherwise byte for byte.
 - **Flags mark what would run later on your Mac** - the return path an agent can use even when boxed: git hooks and git configuration (`core.hooksPath`, `core.fsmonitor`, filters), the agents' own configuration and instructions (`.mcp.json`, `.claude/`, `.codex/`, `opencode.json`, `.cursor/`, `CLAUDE.md`, `AGENTS.md`), CI workflows, editor tasks and `.envrc`, build scripts, package manifests, Xcode projects and schemes, new executables (files the agent writes carry no quarantine attribute, so Gatekeeper will not check them), and symlinks that point outside the project. Any other hidden file is marked too. Flags are a review aid, not a security boundary. `--fail-on high` exits with status 2 when something high is flagged, for scripts.
 - **Undo restores only what changed and loses nothing.** Each changed entry is put back from the snapshot; the agent's version is moved into the session folder, mirroring its path, never deleted; the snapshot stays. The project folder keeps its identity, so editors and shells with it open stay attached. `undo --whole-tree` instead swaps the whole folder with a copy of the snapshot in one atomic step. Stop the agent before undoing either way.
+  - `undo --path P` (repeatable) restores only the entries given, as the report lists them (or as absolute paths inside the project), and everything under them; `.` is the project folder's own permissions. The rest stays undoable, and the session counts as undone once nothing changed is left.
+  - A path that did not change is refused before anything moves. So is an entry inside a folder the agent deleted or replaced, which cannot come back without that folder (undo the folder). Inside a folder the agent added, a flagged entry the report lists is moved aside on its own; anything else there is refused (undo the added folder).
 - **Neither undo nor discard can be blocked by the agent.** Folders it made read-only or unreadable, files it locked (`chflags uchg`) and access control lists it added (`chmod +a "everyone deny delete"`) are opened up first; symlinks are never followed. Sockets and FIFOs are left out of the snapshot.
 - **Guard rails.** A session refuses `/`, your home folder or any folder containing it, and folders overlapping the agent-vm store; only one active session per project.
 - **Where state lives.** `~/Library/Application Support/agent-vm/Sessions/<id>/`, or `$AGENT_VM_HOME/Sessions/<id>/`. The project must be on the same APFS volume as the store; for a project on another volume, point `AGENT_VM_HOME` at a folder on that volume.
 - **Known limits.** Access control lists and extended attributes an agent adds or changes are neither reported nor undone. A file nobody can read (mode 000) stops `start`, because it cannot be snapshotted. Sockets and FIFOs are neither snapshotted nor reported.
-- **For programs.** Every session command accepts `--json`: the session record, the change report, or the undo result.
+- **For programs.** Every session command accepts `--json`: the session record, the change report, or the undo result. Records and reports carry `snapshotPath`, the snapshot folder to compare files with, until the session is discarded. `discard --older-than DAYS --json` lists the sessions it discarded; active sessions are never discarded by age.
 
 | State | Meaning |
 |---|---|

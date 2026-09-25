@@ -117,6 +117,171 @@ import Testing
         }
     }
 
+    // MARK: - undo by path
+
+    @Test func undoByPathRestoresOnlyThoseEntries() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let session = try scratch.store.start(project: scratch.project.path)
+        try scratch.write("README.md", "rewritten\n")
+        try FileManager.default.removeItem(atPath: scratch.path("Sources/App/main.swift"))
+        try scratch.write("new/file.txt", "added\n")
+        // A flagged entry inside a folder the agent added is listed, and undoable on its own.
+        try scratch.write("tool/.mcp.json", "{\"mcpServers\": {}}\n")
+        try scratch.write("tool/notes.txt", "notes\n")
+        let report = try scratch.store.report(id: session.id)
+        #expect(report.changes.contains { $0.path == "tool/.mcp.json" && $0.coveredByAncestor })
+
+        let first = try scratch.store.undo(id: session.id, paths: ["./README.md", scratch.path("Sources")])
+        #expect(first.isComplete)
+        #expect(first.restore?.restored == ["README.md", "Sources/App/main.swift"])
+        #expect(first.restore?.remaining == 0)
+        #expect(first.session.record.state == .active)
+        #expect(try scratch.read("README.md") == "hello\n")
+        #expect(try scratch.read("Sources/App/main.swift") == "print(\"hi\")\n")
+        #expect(try scratch.read("new/file.txt") == "added\n")
+        let replaced = try #require(first.session.replacedTreePath)
+        #expect(try String(contentsOfFile: replaced + "/README.md", encoding: .utf8) == "rewritten\n")
+
+        let flagged = try scratch.store.undo(id: session.id, paths: ["tool/.mcp.json/"])
+        #expect(flagged.restore?.restored == ["tool/.mcp.json"])
+        #expect(!FileManager.default.fileExists(atPath: scratch.path("tool/.mcp.json")))
+        #expect(try scratch.read("tool/notes.txt") == "notes\n")
+        #expect(flagged.session.record.state == .active)
+
+        // What is left, all at once; now nothing changed remains.
+        let rest = try scratch.store.undo(id: session.id)
+        #expect(rest.isComplete)
+        #expect(rest.session.record.state == .undone)
+        #expect(try scratch.store.report(id: session.id).changes.isEmpty)
+    }
+
+    @Test func undoByPathMovesANestedListedFolderAsOne() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let session = try scratch.store.start(project: scratch.project.path)
+        // Inside an added folder, a hidden folder and a file in it are both listed (flagged).
+        try scratch.write("tool/.claude/settings.json", "{}\n")
+        try scratch.write("tool/notes.txt", "notes\n")
+        let report = try scratch.store.report(id: session.id)
+        #expect(report.changes.contains { $0.path == "tool/.claude" && $0.coveredByAncestor })
+        #expect(report.changes.contains { $0.path == "tool/.claude/settings.json" && $0.coveredByAncestor })
+
+        let outcome = try scratch.store.undo(id: session.id, paths: ["tool/.claude"])
+        #expect(outcome.isComplete, "\(outcome.restore?.failed ?? [:])")
+        #expect(outcome.restore?.restored == ["tool/.claude"])
+        #expect(!FileManager.default.fileExists(atPath: scratch.path("tool/.claude")))
+        let replaced = try #require(outcome.session.replacedTreePath)
+        #expect(try String(contentsOfFile: replaced + "/tool/.claude/settings.json", encoding: .utf8) == "{}\n")
+        #expect(try scratch.read("tool/notes.txt") == "notes\n")
+    }
+
+    @Test func undoByPathMarksTheSessionUndoneWhenNothingIsLeft() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let session = try scratch.store.start(project: scratch.project.path)
+        try scratch.write("README.md", "rewritten\n")
+        let outcome = try scratch.store.undo(id: session.id, paths: ["README.md"])
+        #expect(outcome.session.record.state == .undone)
+        #expect(outcome.session.record.undoneAt != nil)
+    }
+
+    @Test func undoByPathRefusesPathsItCannotRestoreBeforeMovingAnything() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let session = try scratch.store.start(project: scratch.project.path)
+        try scratch.write("README.md", "rewritten\n")
+        try scratch.write("new/file.txt", "added\n")
+        // Listed (flagged), but its folder is not: undoing the folder would leave the rest.
+        try scratch.write("new/sub/.mcp.json", "{}\n")
+        try FileManager.default.removeItem(atPath: scratch.path("Sources"))
+        let refusals: [(String, String)] = [
+            ("build.sh", "did not change"),
+            ("new/file.txt", "inside new, which the agent added as a whole"),
+            ("new/sub", "inside new, which the agent added as a whole"),
+            ("Sources/App/main.swift", "inside Sources, which the agent deleted as a whole"),
+            ("../elsewhere", "without . or .."),
+            ("/etc/hosts", "not inside the project"),
+            ("", "names no entry"),
+        ]
+        for (path, reason) in refusals {
+            do {
+                try scratch.store.undo(id: session.id, paths: ["README.md", path])
+                Issue.record("\(path) was accepted")
+            } catch let AgentVMError.invalidUndoPath(refused, why) {
+                #expect(refused == path)
+                #expect(why.contains(reason), "\(path): \(why)")
+            }
+        }
+        #expect(throws: AgentVMError.invalidUndoPath("README.md", reason: "a whole-tree undo restores everything")) {
+            try scratch.store.undo(id: session.id, mode: .wholeTree, paths: ["README.md"])
+        }
+        #expect(throws: AgentVMError.invalidUndoPath("", reason: "no paths given; undo without paths restores everything")) {
+            try scratch.store.undo(id: session.id, paths: [])
+        }
+        // Nothing moved, and no replaced folder was made.
+        #expect(try scratch.read("README.md") == "rewritten\n")
+        let children = try FileManager.default.contentsOfDirectory(atPath: session.directory.path)
+        #expect(!children.contains { $0.hasPrefix(SessionStore.replacedPrefix) })
+        #expect(try scratch.store.session(id: session.id).record.state == .active)
+    }
+
+    @Test func theProjectFolderItselfIsUndoneAsDot() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let session = try scratch.store.start(project: scratch.project.path)
+        chmod(scratch.project.path, 0o700)
+        try scratch.write("README.md", "rewritten\n")
+        let outcome = try scratch.store.undo(id: session.id, paths: [scratch.project.path])
+        #expect(outcome.restore?.restored == ["."])
+        #expect(try scratch.read("README.md") == "rewritten\n")
+    }
+
+    // MARK: - snapshotPath and discard by age
+
+    @Test func theSnapshotPathIsPrintedButNotSaved() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let session = try scratch.store.start(project: scratch.project.path)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let object = try #require(try JSONSerialization.jsonObject(with: encoder.encode(SessionOutput(session))) as? [String: Any])
+        #expect(object["snapshotPath"] as? String == session.snapshotPath)
+        #expect(object["id"] as? String == session.id)
+        #expect(object["state"] as? String == "active")
+        let saved = try String(contentsOfFile: session.directory.path + "/session.json", encoding: .utf8)
+        #expect(!saved.contains("snapshotPath"))
+        #expect(try scratch.store.report(id: session.id).snapshotPath == session.snapshotPath)
+
+        let discarded = try scratch.store.discard(id: session.id)
+        let gone = try #require(try JSONSerialization.jsonObject(with: encoder.encode(SessionOutput(discarded))) as? [String: Any])
+        #expect(gone["snapshotPath"] == nil)
+        #expect(gone["state"] as? String == "discarded")
+    }
+
+    @Test func discardByAgeLeavesActiveAndRecentSessions() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let ended = try scratch.store.start(project: scratch.project.path)
+        try scratch.store.end(id: ended.id)
+        let undone = try scratch.store.start(project: scratch.project.path)
+        try scratch.write("README.md", "agent\n")
+        try scratch.store.undo(id: undone.id)
+        let active = try scratch.store.start(project: scratch.project.path)
+
+        let none = try scratch.store.discard(olderThan: 3600)
+        #expect(none.discarded.isEmpty && none.failures.isEmpty)
+
+        let later = try scratch.store.discard(olderThan: 3600, now: Date().addingTimeInterval(7200))
+        #expect(Set(later.discarded.map(\.id)) == [ended.id, undone.id])
+        #expect(later.failures.isEmpty)
+        #expect(try scratch.store.session(id: active.id).record.state == .active)
+        #expect(!FileManager.default.fileExists(atPath: ended.snapshotPath))
+        #expect(FileManager.default.fileExists(atPath: active.snapshotPath))
+        // Already discarded: not again.
+        #expect(try scratch.store.discard(olderThan: 0, now: Date().addingTimeInterval(7200)).discarded.isEmpty)
+    }
+
     @Test func undoRefusesWhenTheProjectIsGone() throws {
         let scratch = try Scratch()
         try scratch.populate()

@@ -22,19 +22,19 @@ public struct RestoreResult: Codable, Equatable, Sendable {
     public var restored: [String] = []
     /// Entries that could not be restored, with the reason.
     public var failed: [String: String] = [:]
-    /// Changes still reported after the restore; 0 when the project matches the snapshot.
+    /// Changes still reported after the restore; 0 when the project matches the snapshot. For
+    /// `undo --path`, only those at or under the paths given.
     public var remaining: Int = 0
 }
 
 enum ProjectRestorer {
-    static func restore(session: Session, report: ChangeReport, replacedPath: String) throws -> RestoreResult {
+    /// Restores `changes`: none of them may be inside another one that covers it (see
+    /// `SessionStore.undoSelection`; for a whole undo, the changes not covered by an ancestor).
+    static func restore(session: Session, changes: [Change], replacedPath: String) throws -> RestoreResult {
         let project = session.record.project
         let snapshot = session.snapshotPath
         var result = RestoreResult()
         try FileSystem.makeDirectory(replacedPath)
-
-        // Only changes not already covered by a changed ancestor; the ancestor's restore covers them.
-        let changes = report.changes.filter { !$0.coveredByAncestor }
         let folderMetadata: (Change) -> Bool = { $0.kind == .metadata && $0.type == .directory }
 
         // Phase 1, deepest first: move the agent's version aside (not for deletions, which have

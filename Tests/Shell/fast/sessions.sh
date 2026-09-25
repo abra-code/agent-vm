@@ -64,6 +64,66 @@ test_report_flags_what_would_run_later_and_undo_restores() {
     assert_json 0.state discarded || return 1
 }
 
+test_undo_by_path_and_discard_by_age() {
+    local _project="$SCRATCH/project"
+    make_project "$_project"
+    start_session "$_project" || return 1
+    printf 'changed\n' > "$_project/README.md"
+    /bin/rm "$_project/build.sh"
+    printf 'added\n' > "$_project/notes.txt"
+
+    run_avm session report "$SESSION" --json
+    assert_status 0 || return 1
+    local _snapshot
+    _snapshot="$(json_value snapshotPath)"
+    assert_eq "$(/bin/cat "$_snapshot/README.md")" "hello" "the snapshot at snapshotPath" || return 1
+
+    # A path that did not change is refused before anything moves.
+    run_avm session undo "$SESSION" --path README.md --path Sources/App/main.swift
+    assert_status 1 || return 1
+    assert_err_contains "cannot undo Sources/App/main.swift on its own: it did not change" || return 1
+    assert_eq "$(/bin/cat "$_project/README.md")" "changed" "README after a refused undo" || return 1
+    run_avm session undo "$SESSION" --path README.md --whole-tree
+    assert_status 64 || return 1
+
+    run_avm session undo "$SESSION" --path README.md --path "$_project/build.sh" --json
+    assert_status 0 || return 1
+    assert_json session.state active || return 1
+    assert_json session.snapshotPath "$_snapshot" || return 1
+    assert_json restore.remaining 0 || return 1
+    assert_eq "$(/bin/cat "$_project/README.md")" "hello" "README after undo --path" || return 1
+    assert_exists "$_project/build.sh" || return 1
+    assert_exists "$_project/notes.txt" || return 1
+
+    run_avm session undo "$SESSION" --path notes.txt
+    assert_status 0 || return 1
+    assert_out_contains "nothing else changed" || return 1
+    assert_missing "$_project/notes.txt" || return 1
+
+    run_avm session list --json
+    assert_json 0.state undone || return 1
+    assert_json 0.snapshotPath "$_snapshot" || return 1
+
+    # By age: an active session stays, an undone one goes once it is old enough.
+    start_session "$_project" || return 1
+    local _active="$SESSION"
+    run_avm session discard --older-than 1
+    assert_status 0 || return 1
+    assert_out_contains "No ended or undone sessions that old." || return 1
+    run_avm session discard --older-than 0 --json
+    assert_status 0 || return 1
+    assert_json 0.state discarded || return 1
+    assert_json 1 "" || return 1
+    assert_missing "$_snapshot" || return 1
+    run_avm session list --json
+    assert_json 1.id "$_active" || return 1
+    assert_json 1.state active || return 1
+    run_avm session discard
+    assert_status 64 || return 1
+    run_avm session discard "$_active" --older-than 0
+    assert_status 64 || return 1
+}
+
 test_whole_tree_undo_swaps_the_folder() {
     local _project="$SCRATCH/project"
     make_project "$_project"

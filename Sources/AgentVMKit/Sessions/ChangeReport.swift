@@ -65,6 +65,8 @@ public struct ChangeReport: Codable, Sendable {
 
     public let session: String
     public let project: String
+    /// The snapshot folder: the project as it was when the session started, to compare with.
+    public let snapshotPath: String?
     public let startedAt: Date
     public let generatedAt: Date
     public let summary: Summary
@@ -303,7 +305,7 @@ enum ChangeScanner {
             }
         }
 
-        return ChangeReport(session: record.id, project: record.project, startedAt: record.startedAt, generatedAt: now,
+        return ChangeReport(session: record.id, project: record.project, snapshotPath: session.snapshotPath, startedAt: record.startedAt, generatedAt: now,
                             summary: summary, changes: changes, warnings: warnings)
     }
 
