@@ -188,7 +188,10 @@ extension ImageBuilder {
                 log("  \(line)")
             }
         } catch {
-            notice("  note: could not set up the desktop's wallpaper and widgets: \(error)")
+            // After a cancel the build stops at its next step; this is not worth a notice.
+            if cancellation?.isCanceled != true {
+                notice("  note: could not set up the desktop's wallpaper and widgets: \(error)")
+            }
         }
     }
 

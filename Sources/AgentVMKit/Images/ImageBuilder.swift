@@ -95,6 +95,12 @@ public final class ImageBuilder {
     let report: @MainActor (ProgressEvent) -> Void
     /// The image being built, updated or set up, named in every event.
     var subject: String?
+    /// Set by the caller to stop a build or guest update at the next safe point (SIGINT,
+    /// SIGTERM): the guest is shut down and the image recorded as canceled.
+    public var cancellation: BuildCancellation?
+
+    /// How long a canceled build waits for the guest to shut down before stopping it.
+    static let cancelShutdownTimeout: Duration = .seconds(30)
 
     /// How long the first boot may take to bring up SSH, and the shutdown to finish.
     static let provisionTimeout: Duration = .seconds(600)
@@ -118,6 +124,70 @@ public final class ImageBuilder {
     /// Something the user may need to act on; the build goes on.
     func notice(_ text: String) {
         report(ProgressEvent(.notice, text, image: subject))
+    }
+
+    /// Throws `canceled` once a cancel came in: called between steps.
+    func checkCanceled() throws {
+        if let signal = cancellation?.signal {
+            throw AgentVMError.canceled(signal: signal)
+        }
+    }
+
+    /// Whatever failed after a cancel failed because of it (a connection shut down, the
+    /// installer stopped): reported as the cancel.
+    func canceledError(_ error: Error) -> Error {
+        if let signal = cancellation?.signal {
+            return AgentVMError.canceled(signal: signal)
+        }
+        return error
+    }
+
+    /// Stops a guest that is still running after a failure. After a cancel, it is shut down
+    /// through its daemon: a guest still booting is given `cancelShutdownTimeout` for its
+    /// daemon to answer (`waitForDaemon`; not on the first boot, before the daemon is
+    /// installed), rather than losing power mid-boot, and then as long again to shut down.
+    /// Otherwise, and after any other failure, the VM is stopped at once. Returns whether the
+    /// guest shut down by itself (or was not running).
+    @discardableResult
+    func stopAfterFailure(_ machine: MacMachine, waitForDaemon: Bool = true) async -> Bool {
+        guard machine.isRunning else {
+            return true
+        }
+        if cancellation?.isCanceled == true {
+            progress("shutdown", "Canceled; shutting down")
+            let deadline = ContinuousClock.now + Self.cancelShutdownTimeout
+            var asked = false
+            while true {
+                asked = (try? await withGuest(machine, readTimeout: 10, cancellable: false) { try GuestClient.shutdown($0) }) != nil
+                if asked || !waitForDaemon || !machine.isRunning || ContinuousClock.now >= deadline {
+                    break
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
+            // A guest that stopped by itself while its daemon was awaited needs no plug pulled.
+            if asked || !machine.isRunning, await machine.waitUntilStopped(timeout: Self.cancelShutdownTimeout) {
+                return true
+            }
+            log("  The guest did not shut down; stopping it")
+        }
+        try? await machine.forceStop()
+        return false
+    }
+
+    /// Whether `error` is a cancel.
+    static func isCancel(_ error: Error) -> Bool {
+        if case AgentVMError.canceled = error {
+            return true
+        }
+        return false
+    }
+
+    /// The failure an image records for `error`.
+    static func failureReason(_ error: Error) -> String {
+        if case AgentVMError.canceled = error {
+            return BuildCancellation.failure
+        }
+        return "\(error)"
     }
 
     /// Builds the image; on failure the record says which step failed and the folder is kept
@@ -162,6 +232,9 @@ public final class ImageBuilder {
             cpuCount: cpuCount, memoryBytes: memoryBytes, diskBytes: options.diskBytes,
             macAddress: VZMACAddress.randomLocallyAdministered().string, userName: options.userName,
             installSeconds: nil, provisionSeconds: nil)
+        // A cancel while the restore image was read: nothing is created. Past this point no
+        // await comes before the installer starts, so its progress is never canceled early.
+        try checkCanceled()
         let created = try store.create(record)
         var image = created.0
         let lock = created.1
@@ -176,7 +249,9 @@ public final class ImageBuilder {
             image = try await provision(image, machine: machine, options: options)
             return image
         } catch {
-            let reason = "\(error)"
+            // Steps that a cancel interrupts report it as the cancel themselves, before they
+            // stop the guest: a signal during that stop must not relabel a real failure.
+            let reason = Self.failureReason(error)
             _ = try? store.update(image) { record in
                 record.state = .failed
                 record.failure = reason
@@ -292,6 +367,7 @@ public final class ImageBuilder {
             let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
             let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
             var replacedDaemon: (digest: String, replaced: Bool)?
+            try checkCanceled()
             progress("boot", "Booting")
             try await machine.start(provisioning: nil)
             do {
@@ -312,9 +388,8 @@ public final class ImageBuilder {
                 }
                 try await shutDown(machine)
             } catch {
-                if machine.isRunning {
-                    try? await machine.forceStop()
-                }
+                let error = canceledError(error)
+                await stopAfterFailure(machine)
                 throw error
             }
             if let replacedDaemon, replacedDaemon.replaced {
@@ -333,7 +408,7 @@ public final class ImageBuilder {
                 record.provisionSeconds = seconds
             }
         } catch {
-            let reason = "\(error)"
+            let reason = Self.failureReason(error)
             _ = try? store.update(image) { record in
                 record.state = .failed
                 record.failure = reason
@@ -363,13 +438,16 @@ public final class ImageBuilder {
 
         let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
         let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
+        try checkCanceled()
         progress("boot", "Booting \(image.name)")
         try await machine.start(provisioning: nil)
         let outcome: (digest: String, replaced: Bool)
+        // Once the replacement began, the image's daemon may be the new one, not yet checked.
+        var touched = false
         do {
             let hello = try await waitForDaemon(machine, attempts: 180)
             log("  agent-vm-guest \(hello.version ?? "?") answers (\((hello.features ?? []).joined(separator: ", ")))")
-            outcome = try await replaceGuestDaemon(guestDaemon, machine: machine)
+            outcome = try await replaceGuestDaemon(guestDaemon, machine: machine) { touched = true }
             if !outcome.replaced {
                 image = try store.update(image) { record in
                     record.guestFeatures = hello.features
@@ -380,8 +458,21 @@ public final class ImageBuilder {
             }
             try await shutDown(machine)
         } catch {
-            if machine.isRunning {
-                try? await machine.forceStop()
+            let error = canceledError(error)
+            await stopAfterFailure(machine)
+            guard Self.isCancel(error) else {
+                throw error
+            }
+            // A cancel before the daemon was touched leaves the image as it was: ready, with its
+            // old daemon (the VM is stopped as after any other failed update, which also keeps
+            // the image ready).
+            if touched {
+                _ = try? store.update(image) { record in
+                    record.state = .failed
+                    record.failure = BuildCancellation.failure
+                }
+            } else {
+                log("  \(image.name) is unchanged")
             }
             throw error
         }
@@ -391,7 +482,12 @@ public final class ImageBuilder {
         do {
             return try await checkGuestDaemon(image, digest: outcome.digest)
         } catch {
-            let reason = "the new agent-vm-guest did not start: \(error)"
+            let reason: String
+            if Self.isCancel(error) {
+                reason = BuildCancellation.failure
+            } else {
+                reason = "the new agent-vm-guest did not start: \(error)"
+            }
             _ = try? store.update(image) { record in
                 record.state = .failed
                 record.failure = reason
@@ -435,12 +531,20 @@ public final class ImageBuilder {
 
         progress("install", "Installing macOS (a few minutes)...", fraction: 0)
         var reported = -1
-        try await machine.install(from: restoreImage) { [self] fraction in
-            let percent = Int(fraction * 100)
-            if percent / 10 > reported / 10 {
-                reported = percent
-                progress("install", "  \(percent)%", fraction: Double(percent) / 100)
+        do {
+            try await machine.install(from: restoreImage, cancellation: cancellation) { [self] fraction in
+                let percent = Int(fraction * 100)
+                if percent / 10 > reported / 10 {
+                    reported = percent
+                    progress("install", "  \(percent)%", fraction: Double(percent) / 100)
+                }
             }
+        } catch {
+            let error = canceledError(error)
+            if machine.isRunning {
+                try? await machine.forceStop()
+            }
+            throw error
         }
         // The installer reports success while the machine is still running. Stopping it here
         // is what exiting the process after install does, and the first boot then works.
@@ -459,6 +563,7 @@ public final class ImageBuilder {
     private func provision(_ image: GoldenImage, machine: MacMachine, options: ImageBuildOptions) async throws -> GoldenImage {
         let clock = ContinuousClock()
         let began = clock.now
+        try checkCanceled()
         var current = try store.update(image) { $0.state = .provisioning }
         let password = try String(contentsOf: image.passwordURL, encoding: .utf8)
 
@@ -511,9 +616,9 @@ public final class ImageBuilder {
 
             try await shutDown(machine)
         } catch {
-            if machine.isRunning {
-                try? await machine.forceStop()
-            }
+            let error = canceledError(error)
+            // Before the daemon is installed nothing would answer a shutdown.
+            await stopAfterFailure(machine, waitForDaemon: false)
             throw error
         }
         let seconds = Self.seconds(clock.now - began)
@@ -584,7 +689,10 @@ public final class ImageBuilder {
     /// `requestStop()` leaves a logged-in guest running; the daemon shuts it down.
     func shutDown(_ machine: MacMachine) async throws {
         progress("shutdown", "Shutting down")
-        try await withGuest(machine) { descriptor in
+        // Checked once: the request itself is not cut short, or a guest already shutting down
+        // would lose power.
+        try checkCanceled()
+        try await withGuest(machine, cancellable: false) { descriptor in
             try GuestClient.shutdown(descriptor)
         }
         guard await machine.waitUntilStopped(timeout: Self.shutdownTimeout) else {
@@ -607,7 +715,8 @@ public final class ImageBuilder {
 
     /// Puts `executable` in the guest in place of its agent-vm-guest when the two differ (by
     /// SHA-256), through the running daemon; the new one runs from the next boot.
-    private func replaceGuestDaemon(_ executable: URL, machine: MacMachine) async throws -> (digest: String, replaced: Bool) {
+    /// `willReplace` is called just before the guest's daemon file is changed.
+    private func replaceGuestDaemon(_ executable: URL, machine: MacMachine, willReplace: () -> Void = {}) async throws -> (digest: String, replaced: Bool) {
         let digest = try Self.sha256(of: executable)
         let installed = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/shasum", "-a", "256", GuestDaemon.executablePath],
                                                                      cwd: "/", user: "root"))
@@ -617,6 +726,8 @@ public final class ImageBuilder {
         }
         progress("replace-guest-daemon", "Replacing agent-vm-guest with this agent-vm's")
         let data = try Data(contentsOf: executable)
+        try checkCanceled()
+        willReplace()
         let request = GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDaemon.replaceCommand(digest: digest)], cwd: "/", user: "root")
         let replaced = try await withGuest(machine, readTimeout: 120) { try GuestClient.capture($0, request, input: data) }
         guard replaced.report == ExitReport(status: 0), replaced.stdout.hasPrefix(digest + " ") else {
@@ -632,6 +743,7 @@ public final class ImageBuilder {
     private func checkGuestDaemon(_ image: GoldenImage, digest: String) async throws -> GoldenImage {
         let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
         let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
+        try checkCanceled()
         progress("check-guest-daemon", "Booting again to check the new agent-vm-guest")
         try await machine.start(provisioning: nil)
         do {
@@ -651,9 +763,8 @@ public final class ImageBuilder {
                 record.guestDigest = digest
             }
         } catch {
-            if machine.isRunning {
-                try? await machine.forceStop()
-            }
+            let error = canceledError(error)
+            await stopAfterFailure(machine)
             throw error
         }
     }
@@ -666,6 +777,7 @@ public final class ImageBuilder {
     func waitForDaemon(_ machine: MacMachine, attempts: Int = 30) async throws -> GuestResponse {
         var lastError: Error = AgentVMError.guestUnreachable("the guest daemon did not answer")
         for _ in 0..<attempts {
+            try checkCanceled()
             // A guest that stopped will not answer; say so now rather than after every attempt.
             guard machine.isRunning else {
                 throw AgentVMError.guestUnreachable("the guest stopped before its daemon answered\(machine.failure.map { ": \($0)" } ?? "")")
@@ -679,7 +791,7 @@ public final class ImageBuilder {
             } catch let error as AgentVMError {
                 // A daemon that answers but refuses, or speaks another protocol, will not change.
                 switch error {
-                case .guestRefused, .guestCommandFailed:
+                case .guestRefused, .guestCommandFailed, .canceled:
                     throw error
                 default:
                     lastError = error
@@ -909,15 +1021,37 @@ public final class ImageBuilder {
 
     /// Runs a blocking protocol exchange on a fresh vsock connection, off the main actor, with
     /// a read timeout (seconds without any frame) so a stuck guest cannot hang the build.
-    func withGuest<T: Sendable>(_ machine: MacMachine, readTimeout: Int = 60, _ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
+    /// `cancellable`: a cancel refuses the exchange, or ends it by shutting the connection
+    /// down (the guest daemon then stops the program); off for the shutdown after a cancel.
+    func withGuest<T: Sendable>(_ machine: MacMachine, readTimeout: Int = 60, cancellable: Bool = true,
+                                _ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
+        let cancellation = cancellable ? self.cancellation : nil
+        try checkCanceled(cancellation)
         let connection = try await machine.connect(toPort: GuestProtocol.port)
         defer { connection.close() }
         let descriptor = connection.descriptor
+        // Unregistered before the connection closes (defers run in reverse), so a cancel never
+        // shuts down a descriptor number already reused for something else.
+        if let cancellation, !cancellation.register(descriptor: descriptor) {
+            try checkCanceled(cancellation)
+        }
+        defer { cancellation?.unregister(descriptor: descriptor) }
         var timeout = timeval(tv_sec: readTimeout, tv_usec: 0)
         _ = setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        return try await Task.detached {
-            try body(descriptor)
-        }.value
+        do {
+            return try await Task.detached {
+                try body(descriptor)
+            }.value
+        } catch {
+            try checkCanceled(cancellation)
+            throw error
+        }
+    }
+
+    private func checkCanceled(_ cancellation: BuildCancellation?) throws {
+        if let signal = cancellation?.signal {
+            throw AgentVMError.canceled(signal: signal)
+        }
     }
 
     /// Waits for the guest's DHCP lease and for its SSH port to accept connections.
@@ -925,6 +1059,7 @@ public final class ImageBuilder {
         let deadline = ContinuousClock.now + Self.provisionTimeout
         var announced: String?
         while ContinuousClock.now < deadline {
+            try checkCanceled()
             guard machine.isRunning else {
                 throw AgentVMError.guestUnreachable("the guest stopped during its first boot\(machine.failure.map { ": \($0)" } ?? "")")
             }
@@ -949,6 +1084,7 @@ public final class ImageBuilder {
         let attempts = 10
         var lastError: Error = AgentVMError.guestUnreachable("no login attempt")
         for attempt in 1...attempts {
+            try checkCanceled()
             do {
                 let output = try await ssh.check("/usr/bin/id -un; /usr/bin/sw_vers -buildVersion; /usr/bin/stat -f %Su /dev/console")
                 let lines = output.split(whereSeparator: \.isNewline).map(String.init)

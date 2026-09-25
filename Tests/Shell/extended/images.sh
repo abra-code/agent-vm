@@ -68,6 +68,77 @@ test_a_failing_recipe_marks_the_image_failed() {
     assert_status 0 || return 1
 }
 
+# SIGINT during a recipe step: the step is stopped, the guest shut down through its daemon, the
+# image marked failed with "canceled", and agent-vm exits with 128 + 2.
+test_a_canceled_build_is_marked_canceled() {
+    require_image || return $(( $? == 1 ? 0 : 1 ))
+    local _image="shtest-cancel-$$"
+    "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
+    cleanup_on_exit image "$_image"
+    write_recipe "$SCRATCH/recipe" '{"version": 1, "steps": [{"name": "long", "run": "echo sleeping; sleep 300"}]}'
+    "$AGENT_VM" image create "$_image" --from "$TEST_IMAGE" --recipe "$SCRATCH/recipe/recipe.json" --json \
+        > "$SCRATCH/create.out" 2> "$SCRATCH/create.err" &
+    local _pid=$!
+    wait_for_text "$SCRATCH/create.err" '"message":"sleeping"' 180
+    local _reached=$?
+    kill -INT "$_pid"
+    local _began
+    _began="$(/bin/date +%s)"
+    wait "$_pid"
+    STATUS=$?
+    local _took=$(( $(/bin/date +%s) - _began ))
+    ERR="$(/bin/cat "$SCRATCH/create.err")"
+    printf '%s\n[status %s after %s s]\n' "$ERR" "$STATUS" "$_took"
+    [ "$_reached" -eq 0 ] || { fail "the recipe step did not start within 180 s"; return 1; }
+    assert_status 130 || return 1
+    assert_err_events || return 1
+    assert_err_contains '"message":"Canceled; shutting down","step":"shutdown"' || return 1
+    assert_err_contains "is marked failed (canceled): canceled by SIGINT" || return 1
+    assert_not_contains "$ERR" "did not shut down" "stderr" || return 1
+    [ "$_took" -lt 60 ] || { fail "the cancel took $_took s"; return 1; }
+    assert_eq "$(image_state "$_image")" "failed" "the image's state" || return 1
+    assert_eq "$(image_value "$_image" failure)" "canceled" "the image's failure" || return 1
+    [ ! -s "$SCRATCH/create.out" ] || { fail "stdout is not empty"; return 1; }
+    run_avm image delete "$_image"
+    assert_status 0 || return 1
+}
+
+# SIGTERM while a guest update boots, before the daemon is touched: the guest shuts down cleanly
+# once its daemon answers, the image stays ready, the images after it are skipped, and
+# agent-vm exits with 128 + 15.
+test_a_canceled_guest_update_leaves_the_image_ready() {
+    require_image || return $(( $? == 1 ? 0 : 1 ))
+    local _image="shtest-upd-$$"
+    "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
+    cleanup_on_exit image "$_image"
+    write_recipe "$SCRATCH/recipe" '{"version": 1, "steps": [{"name": "nothing", "run": "true"}]}'
+    run_avm image create "$_image" --from "$TEST_IMAGE" --recipe "$SCRATCH/recipe/recipe.json"
+    assert_status 0 || return 1
+
+    "$AGENT_VM" image update-guest "$_image" "$TEST_IMAGE" > "$SCRATCH/update.out" 2> "$SCRATCH/update.err" &
+    local _pid=$!
+    wait_for_text "$SCRATCH/update.out" "Booting $_image" 60
+    local _reached=$?
+    kill -TERM "$_pid"
+    wait "$_pid"
+    STATUS=$?
+    ERR="$(/bin/cat "$SCRATCH/update.err")"
+    printf '%s\n%s\n[status %s]\n' "$(/bin/cat "$SCRATCH/update.out")" "$ERR" "$STATUS"
+    [ "$_reached" -eq 0 ] || { fail "the update did not boot the image within 60 s"; return 1; }
+    assert_status 143 || return 1
+    # Canceled while booting: the guest is given the time to answer and shuts down cleanly.
+    local _out
+    _out="$(/bin/cat "$SCRATCH/update.out")"
+    assert_contains "$_out" "Canceled; shutting down" "stdout" || return 1
+    assert_not_contains "$_out" "did not shut down" "stdout" || return 1
+    assert_err_contains "Image $_image is unchanged: canceled by SIGTERM" || return 1
+    assert_err_contains "Canceled at image $_image; not updated: $TEST_IMAGE" || return 1
+    assert_eq "$(image_state "$_image")" "ready" "the image's state" || return 1
+    assert_eq "$(image_state "$TEST_IMAGE")" "ready" "the skipped image's state" || return 1
+    run_avm image delete "$_image"
+    assert_status 0 || return 1
+}
+
 test_full_install_from_a_restore_image() {
     if [ -z "${AGENT_VM_TEST_IPSW:-}" ]; then
         skip "set AGENT_VM_TEST_IPSW to a restore image to run it"

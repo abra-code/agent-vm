@@ -176,6 +176,12 @@ TEST_IMAGE="${AGENT_VM_TEST_IMAGE:-dev}"
 # image_state <name>: the image's state, or nothing when there is no such image. Returns 1
 # when agent-vm cannot list images (a failure, not a reason to skip).
 image_state() {
+    image_value "$1" state
+}
+
+# image_value <name> <key>: a value from the image's record in `image list --json`, or nothing
+# when there is no such image or key. Returns 1 when agent-vm cannot list images.
+image_value() {
     local _json
     _json="$("$AGENT_VM" image list --json 2>/dev/null)"
     local _listed=$?
@@ -188,11 +194,25 @@ image_state() {
         _status=$?
         [ "$_status" -eq 0 ] || return 0
         if [ "$_name" = "$1" ]; then
-            printf '%s' "$_json" | /usr/bin/plutil -extract "$_index.state" raw -o - - 2>/dev/null
+            printf '%s' "$_json" | /usr/bin/plutil -extract "$_index.$2" raw -o - - 2>/dev/null
             return 0
         fi
         _index=$((_index + 1))
     done
+}
+
+# wait_for_text <file> <text> <seconds>: waits until the file contains the text; returns 1
+# when it does not within the time.
+wait_for_text() {
+    local _waited=0
+    local _found
+    while [ "$_waited" -lt "$3" ]; do
+        _found="$(/usr/bin/grep -F -c -- "$2" "$1" 2>/dev/null)"
+        [ -n "$_found" ] && [ "$_found" -gt 0 ] && return 0
+        /bin/sleep 1
+        _waited=$((_waited + 1))
+    done
+    return 1
 }
 
 # start_file_box <name> [box create options...]: for file_setup - creates and starts a box from

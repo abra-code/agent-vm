@@ -60,6 +60,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case supervisorRefused(String)
     /// A command run in the guest failed.
     case guestCommandFailed(command: String, status: Int32, output: String)
+    /// An image build or guest update stopped by a signal (BuildCancellation).
+    case canceled(signal: Int32)
 
     public var description: String {
         switch self {
@@ -124,6 +126,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
         case let .guestCommandFailed(command, status, output):
             let detail = output.isEmpty ? "" : ": \(output)"
             return "`\(command)` failed in the guest (status \(status))\(detail)"
+        case let .canceled(signal):
+            return "canceled by \(signal == SIGINT ? "SIGINT" : signal == SIGTERM ? "SIGTERM" : "signal \(signal)")"
         }
     }
 }

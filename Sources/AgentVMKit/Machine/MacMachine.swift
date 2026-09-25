@@ -163,7 +163,10 @@ public final class MacMachine: NSObject, VZVirtualMachineDelegate {
     }
 
     /// Installs macOS from a local restore image onto the machine's (empty) disk.
-    public func install(from restoreImage: URL, progress: @escaping @MainActor (Double) -> Void) async throws {
+    /// With `cancellation`, a cancel stops the install (the installer's progress is canceled,
+    /// and the install fails).
+    public func install(from restoreImage: URL, cancellation: BuildCancellation? = nil,
+                        progress: @escaping @MainActor (Double) -> Void) async throws {
         let installer = VZMacOSInstaller(virtualMachine: machine, restoringFromImageAt: restoreImage)
         let observation = installer.progress.observe(\.fractionCompleted, options: [.new]) { observed, _ in
             let fraction = observed.fractionCompleted
@@ -172,6 +175,14 @@ public final class MacMachine: NSObject, VZVirtualMachineDelegate {
             }
         }
         defer { observation.invalidate() }
+        // Progress is thread-safe; canceling it is how an install is stopped.
+        let installProgress = UncheckedProgress(installer.progress)
+        let key = cancellation?.whenCanceled { installProgress.progress.cancel() }
+        defer {
+            if let key {
+                cancellation?.remove(key)
+            }
+        }
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             installer.install { result in
                 switch result {
@@ -318,6 +329,15 @@ private final class SocketAcceptor: NSObject, VZVirtioSocketListenerDelegate {
     func listener(_ listener: VZVirtioSocketListener, shouldAcceptNewConnection connection: VZVirtioSocketConnection, from socketDevice: VZVirtioSocketDevice) -> Bool {
         accept(GuestConnection(connection))
         return true
+    }
+}
+
+/// NSProgress is thread-safe, but not marked Sendable.
+private struct UncheckedProgress: @unchecked Sendable {
+    let progress: Progress
+
+    init(_ progress: Progress) {
+        self.progress = progress
     }
 }
 

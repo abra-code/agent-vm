@@ -28,7 +28,9 @@ struct ImageCommand: ParsableCommand {
             discussion: """
                 With --ipsw, macOS is installed and set up with no clicks (about 6 minutes). With \
                 --from, a ready image is cloned and the recipe applied to the clone (minutes, and \
-                one base image can carry several tool sets).
+                one base image can carry several tool sets). SIGINT or SIGTERM stops the build at \
+                the next safe point, shuts the guest down and marks the image failed (canceled); \
+                agent-vm then exits with 128 + the signal.
                 """)
 
         @Argument(help: "Name of the new image (lower-case letters, digits, \".\", \"_\", \"-\").")
@@ -105,6 +107,26 @@ struct ImageCommand: ParsableCommand {
             }
             // With --json, progress goes to stderr as JSON lines, so stdout holds only the record.
             let builder = ImageBuilder(store: options.imageStore, events: Events.handler(json: json))
+            // SIGINT or SIGTERM stops the build at the next safe point, with the guest shut down.
+            let signals = BuildCancellation.watchingSignals()
+            defer { signals.stop() }
+            builder.cancellation = signals.cancellation
+            let image: GoldenImage
+            do {
+                image = try await build(builder, recipe: loadedRecipe)
+            } catch let AgentVMError.canceled(signal) {
+                ImageCommand.reportCanceled(name, signal: signal, store: options.imageStore, json: json)
+                throw ExitCode(128 + signal)
+            }
+            if json {
+                try Output.json(image.record)
+                return
+            }
+            print("Image \(image.name) is ready: \(image.directory.path)")
+        }
+
+        @MainActor
+        private func build(_ builder: ImageBuilder, recipe loadedRecipe: ImageRecipe?) async throws -> GoldenImage {
             let image: GoldenImage
             if let from {
                 image = try await builder.derive(ImageDeriveOptions(
@@ -129,11 +151,7 @@ struct ImageCommand: ParsableCommand {
                     commandLineTools: commandLineTools ?? loadedRecipe?.commandLineTools ?? true,
                     recipe: loadedRecipe))
             }
-            if json {
-                try Output.json(image.record)
-                return
-            }
-            print("Image \(image.name) is ready: \(image.directory.path)")
+            return image
         }
 
         /// "name=value" pairs as a map; a name given twice is refused.
@@ -155,6 +173,24 @@ struct ImageCommand: ParsableCommand {
                 return URL(fileURLWithPath: (guestDaemon as NSString).expandingTildeInPath)
             }
             return try ImageCommand.localGuestDaemon()
+        }
+    }
+
+    /// Says what a cancel left behind: the image failed (to delete), or unchanged.
+    static func reportCanceled(_ name: String, signal: Int32, store: ImageStore, json: Bool) {
+        let cause = AgentVMError.canceled(signal: signal).description
+        let text: String
+        if let image = try? store.image(named: name), image.record.state == .ready {
+            text = "Image \(name) is unchanged: \(cause)"
+        } else if (try? store.image(named: name)) != nil {
+            text = "Image \(name) is marked failed (\(BuildCancellation.failure)): \(cause); delete it with `agent-vm image delete \(name)`"
+        } else {
+            text = "Image \(name) was not created: \(cause)"
+        }
+        if json {
+            Events.emit(ProgressEvent(.notice, text, image: name), json: true)
+        } else {
+            FileHandle.standardError.write(Data((text + "\n").utf8))
         }
     }
 
@@ -215,7 +251,9 @@ struct ImageCommand: ParsableCommand {
                 Several images are updated one after another, in the order given; every name is \
                 checked before the first boot, and the first failure stops the rest (a daemon \
                 that does not start marks its image failed, and would mark the next one too). \
-                With --json: the image's record, or an array of them for several names (on a failure, the images updated before it).
+                With --json: the image's record, or an array of them for several names (on a failure, the images updated before it). \
+                SIGINT or SIGTERM stops at the next safe point: the image is shut down, and stays \
+                ready unless its daemon was already being replaced; agent-vm exits with 128 + the signal.
                 """)
 
         @Argument(help: ArgumentHelp("The images to update.", valueName: "image"))
@@ -237,15 +275,26 @@ struct ImageCommand: ParsableCommand {
             for name in names {
                 _ = try builder.updatableImage(named: name)
             }
+            // SIGINT or SIGTERM stops at the next safe point: the image being updated is shut
+            // down cleanly (and left as it was when its daemon was not replaced yet), the rest
+            // are skipped.
+            let signals = BuildCancellation.watchingSignals()
+            defer { signals.stop() }
+            builder.cancellation = signals.cancellation
             var records: [ImageRecord] = []
             for (index, name) in names.enumerated() {
                 let image: GoldenImage
                 do {
                     image = try await builder.updateGuest(named: name, guestDaemon: guestDaemon)
                 } catch {
+                    var canceledBy: Int32?
+                    if case let AgentVMError.canceled(signal) = error {
+                        canceledBy = signal
+                        ImageCommand.reportCanceled(name, signal: signal, store: options.imageStore, json: json)
+                    }
                     let skipped = names[(index + 1)...]
                     if !skipped.isEmpty {
-                        let text = "Stopped at image \(name); not updated: \(skipped.joined(separator: ", "))"
+                        let text = "\(canceledBy == nil ? "Stopped" : "Canceled") at image \(name); not updated: \(skipped.joined(separator: ", "))"
                         if json {
                             Events.emit(ProgressEvent(.notice, text, image: name), json: true)
                         } else {
@@ -256,6 +305,9 @@ struct ImageCommand: ParsableCommand {
                     // list the store to learn which.
                     if json && names.count > 1 {
                         try Output.json(records)
+                    }
+                    if let canceledBy {
+                        throw ExitCode(128 + canceledBy)
                     }
                     throw error
                 }
