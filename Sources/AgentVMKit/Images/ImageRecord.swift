@@ -76,6 +76,28 @@ public struct ImageRecord: Codable, Equatable, Sendable {
         }
         return fullDiskAccess.granted
     }
+
+    /// What a ready image lacks, as `image list` names it; empty for other states and for
+    /// images that lack nothing.
+    public var needs: [ImageNeed] {
+        guard state == .ready else {
+            return []
+        }
+        var needs: [ImageNeed] = []
+        let missing = GuestFeature.all.filter { !(guestFeatures ?? []).contains($0) }
+        if !missing.isEmpty {
+            needs.append(ImageNeed(kind: .guestUpdate, missing: missing))
+        }
+        switch hasFullDiskAccess {
+        case true?:
+            break
+        case false?:
+            needs.append(ImageNeed(kind: .fullDiskAccess, reason: .notGranted))
+        case nil:
+            needs.append(ImageNeed(kind: .fullDiskAccess, reason: .notChecked))
+        }
+        return needs
+    }
     /// The Command Line Tools installed in the image (softwareupdate's label), if any.
     public var commandLineTools: String?
     /// The recipe applied to the image, if any (its text is kept as recipe.json next to it).
@@ -114,6 +136,36 @@ public struct ImageRecord: Codable, Equatable, Sendable {
         public var file: String
         public var bytes: Int64
         public var sha256: String
+    }
+}
+
+/// Something a ready image lacks, and the command that supplies it.
+public struct ImageNeed: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable {
+        /// Its agent-vm-guest lacks features of this agent-vm's: `image update-guest`.
+        case guestUpdate = "guest-update"
+        /// Its agent-vm-guest has no Full Disk Access, or it was not checked for this daemon:
+        /// `image setup`.
+        case fullDiskAccess = "full-disk-access"
+    }
+
+    public enum Reason: String, Codable, Sendable {
+        /// `image setup` found no grant for the current daemon.
+        case notGranted = "not-granted"
+        /// `image setup` never checked the current daemon.
+        case notChecked = "not-checked"
+    }
+
+    public var kind: Kind
+    /// guest-update: the features the daemon lacks (GuestFeature).
+    public var missing: [String]?
+    /// full-disk-access: whether it was refused or never checked.
+    public var reason: Reason?
+
+    public init(kind: Kind, missing: [String]? = nil, reason: Reason? = nil) {
+        self.kind = kind
+        self.missing = missing
+        self.reason = reason
     }
 }
 

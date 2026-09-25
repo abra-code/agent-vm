@@ -292,8 +292,8 @@ struct ImageCommand: ParsableCommand {
 
         @OptionGroup var options: StoreOptions
 
-        /// An image's record with its folder, space and growth over its base added as more
-        /// keys, so a program reading the records as before sees no change.
+        /// An image's record with its folder, space, growth over its base and what it lacks
+        /// added as more keys, so a program reading the records as before sees no change.
         struct Entry: Encodable {
             var record: ImageRecord
             var path: String
@@ -304,6 +304,7 @@ struct ImageCommand: ParsableCommand {
                 case path
                 case diskUsage
                 case addedOverBase
+                case needs
             }
 
             func encode(to encoder: Encoder) throws {
@@ -312,6 +313,7 @@ struct ImageCommand: ParsableCommand {
                 try container.encode(path, forKey: .path)
                 try container.encode(diskUsage, forKey: .diskUsage)
                 try container.encodeIfPresent(addedOverBase, forKey: .addedOverBase)
+                try container.encode(record.needs, forKey: .needs)
             }
         }
 
@@ -369,17 +371,13 @@ struct ImageCommand: ParsableCommand {
                 if let added = Self.added(image, among: images) {
                     print("    \(Output.size(added.bytes)) added over base \"\(added.image)\" image")
                 }
-                let missing = GuestFeature.all.filter { !(record.guestFeatures ?? []).contains($0) }
-                if record.state == .ready && !missing.isEmpty {
-                    print("    agent-vm-guest lacks \(missing.joined(separator: ", ")); `agent-vm image update-guest \(record.name)` adds it")
-                }
-                if record.state == .ready {
-                    switch record.hasFullDiskAccess {
-                    case true?:
-                        break
-                    case false?:
+                for need in record.needs {
+                    switch (need.kind, need.reason) {
+                    case (.guestUpdate, _):
+                        print("    agent-vm-guest lacks \((need.missing ?? []).joined(separator: ", ")); `agent-vm image update-guest \(record.name)` adds it")
+                    case (.fullDiskAccess, .notGranted?):
                         print("    agent-vm-guest has no Full Disk Access: programs in boxes that open Desktop, Documents or Downloads wait on a hidden prompt; `agent-vm image setup \(record.name)`")
-                    case nil:
+                    case (.fullDiskAccess, _):
                         print("    Full Disk Access for agent-vm-guest is not checked\(record.fullDiskAccess == nil ? "" : " for its current version"); `agent-vm image setup \(record.name)`")
                     }
                 }

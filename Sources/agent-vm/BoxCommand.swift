@@ -19,10 +19,11 @@ struct BoxCommand: ParsableCommand {
             Network modes: allowlist (default) - only listed hosts, through a proxy on this Mac \
             that logs every attempt; off - nothing; open - NAT to the internet and your local \
             network. See `box network`, `box netlog` and `box packs`. `box shell` opens a shell in \
-            the box on this terminal, `box view` shows its screen in a window, and `box execlog` \
-            shows what exec and shell ran there.
+            the box on this terminal, `box view` shows its screen in a window, `box execlog` \
+            shows what exec and shell ran there, and `box status` shows its state without \
+            starting anything.
             """,
-        subcommands: [Create.self, List.self, Start.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self,
+        subcommands: [Create.self, List.self, Status.self, Start.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self,
                       Packs.self, Serve.self]
     )
 
@@ -82,11 +83,78 @@ struct BoxCommand: ParsableCommand {
 
         @OptionGroup var options: StoreOptions
 
+        /// A box as `box list` and `box status` print it: the record, whether a supervisor
+        /// holds it, its folder and space, and the status fields (BoxStatus) as more keys.
         struct Entry: Encodable {
             var box: BoxRecord
             var running: Bool
             var path: String
             var diskUsage: DiskUsage
+            var status: BoxStatus
+
+            init(_ box: Box) {
+                self.status = BoxStatus.of(box)
+                self.box = box.record
+                // Held by a supervisor (or, briefly, by another command changing the box).
+                self.running = status.state != .stopped
+                self.path = box.directory.path
+                self.diskUsage = DiskUsage.of(box.directory)
+            }
+
+            private enum Keys: String, CodingKey {
+                case box
+                case running
+                case path
+                case diskUsage
+            }
+
+            func encode(to encoder: Encoder) throws {
+                try status.encode(to: encoder)
+                var container = encoder.container(keyedBy: Keys.self)
+                try container.encode(box, forKey: .box)
+                try container.encode(running, forKey: .running)
+                try container.encode(path, forKey: .path)
+                try container.encode(diskUsage, forKey: .diskUsage)
+            }
+
+            /// The entry for a person: a line with the essentials, then indented details.
+            var lines: [String] {
+                // padding(toLength:) truncates: "unresponsive" is longer than the column.
+                let name = status.state.rawValue
+                let state = name.padding(toLength: max(8, name.count), withPad: " ", startingAt: 0)
+                var lines = ["\(box.name)  \(state)  image \(box.image) (macOS \(box.macOSBuild))  \(box.cpuCount) CPUs  \(box.memoryBytes >> 30) GB  network \(box.effectiveNetwork.mode.rawValue)"]
+                if status.state != .stopped {
+                    if let pid = status.pid {
+                        var line = "    supervisor pid \(pid)"
+                        if let version = status.supervisorVersion {
+                            line += ", agent-vm \(version)"
+                        } else {
+                            line += ", an agent-vm older than 0.1.6"
+                        }
+                        if let startedAt = status.startedAt {
+                            line += ", started \(Output.time(startedAt))"
+                        }
+                        lines.append(line)
+                    }
+                    if let path = status.supervisorPath {
+                        lines.append("    \(path)")
+                    }
+                    if let error = status.statusError {
+                        lines.append("    no answer from its supervisor: \(error)")
+                    }
+                    if let version = status.guestVersion, status.state == .ready {
+                        let features = status.guestFeatures ?? []
+                        lines.append("    agent-vm-guest \(version)\(features.isEmpty ? "" : " (\(features.joined(separator: ", ")))")")
+                    }
+                    if let project = status.project {
+                        lines.append("    project \(project)\(status.projectReadOnly == true ? " (read only)" : "")")
+                    }
+                    if let execs = status.activeExecs, execs > 0 {
+                        lines.append("    \(execs) program\(execs == 1 ? "" : "s") running through exec or box shell")
+                    }
+                }
+                return lines + Output.placeLines(URL(fileURLWithPath: path), diskUsage, others: "its image or other boxes", delete: "box delete")
+            }
         }
 
         func run() throws {
@@ -94,23 +162,48 @@ struct BoxCommand: ParsableCommand {
             for problem in problems {
                 FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
             }
+            let entries = boxes.map { Entry($0) }
             if options.json {
-                try Output.json(boxes.map { box in
-                    Entry(box: box.record, running: box.isRunning, path: box.directory.path, diskUsage: DiskUsage.of(box.directory))
-                })
+                try Output.json(entries)
                 return
             }
-            if boxes.isEmpty {
+            if entries.isEmpty {
                 print("No boxes.")
                 return
             }
-            for box in boxes {
-                let record = box.record
-                let state = (box.isRunning ? "running" : "stopped").padding(toLength: 8, withPad: " ", startingAt: 0)
-                print("\(record.name)  \(state)  image \(record.image) (macOS \(record.macOSBuild))  \(record.cpuCount) CPUs  \(record.memoryBytes >> 30) GB  network \(record.effectiveNetwork.mode.rawValue)")
-                for line in Output.placeLines(box.directory, DiskUsage.of(box.directory), others: "its image or other boxes", delete: "box delete") {
+            for entry in entries {
+                for line in entry.lines {
                     print(line)
                 }
+            }
+        }
+    }
+
+    struct Status: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Show one box's state without starting or changing anything.",
+            discussion: """
+                A stopped box reports "stopped" and its record; a running one is asked through \
+                its supervisor: its state (starting, ready, stopping), the supervisor's process \
+                id, agent-vm version and path, when it started, the shared project, how many \
+                programs exec and box shell run in it now, and its guest daemon. "unresponsive" \
+                means something holds the box but its supervisor does not answer. With --json, \
+                the same entry as `box list --json`.
+                """)
+
+        @Argument(help: "The box name.")
+        var name: String
+
+        @OptionGroup var options: StoreOptions
+
+        func run() throws {
+            let entry = List.Entry(try options.boxStore.box(named: name))
+            if options.json {
+                try Output.json(entry)
+                return
+            }
+            for line in entry.lines {
+                print(line)
             }
         }
     }

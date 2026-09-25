@@ -201,3 +201,46 @@ test_box_view_needs_a_running_box() {
     assert_status 1 || return 1
     assert_err_contains "no box nosuch" || return 1
 }
+
+# box status never starts anything: a stopped box reports "stopped" with its record, in the
+# same shape as a box list entry.
+test_box_status_of_a_stopped_box() {
+    fake_image dev
+    run_avm box create b1 --image dev
+    assert_status 0 || return 1
+    run_avm box status b1 --json
+    assert_status 0 || return 1
+    assert_json state stopped || return 1
+    assert_json running false || return 1
+    assert_json box.name b1 || return 1
+    assert_json box.image dev || return 1
+    assert_out_contains '"diskUsage"' || return 1
+    assert_not_contains "$OUT" '"pid"' "stdout" || return 1
+    assert_missing "$AGENT_VM_HOME/Boxes/b1/supervisor.log" || return 1
+    run_avm box status b1
+    assert_status 0 || return 1
+    assert_out_contains "b1  stopped" || return 1
+    run_avm box list --json
+    assert_json 0.state stopped || return 1
+    run_avm box status nosuch
+    assert_status 1 || return 1
+    assert_err_contains "no box nosuch" || return 1
+}
+
+# image list --json carries what each ready image lacks, as the text output names it.
+test_image_list_names_what_an_image_needs() {
+    fake_image dev
+    fake_image broken failed
+    run_avm image list --json
+    assert_status 0 || return 1
+    assert_json 0.name broken || return 1
+    assert_json 0.needs 0 || return 1
+    assert_json 1.needs 2 || return 1
+    assert_json 1.needs.0.kind guest-update || return 1
+    assert_json 1.needs.0.missing.0 terminal || return 1
+    assert_json 1.needs.1.kind full-disk-access || return 1
+    assert_json 1.needs.1.reason not-checked || return 1
+    run_avm image list
+    assert_out_contains "agent-vm-guest lacks terminal" || return 1
+    assert_out_contains "Full Disk Access for agent-vm-guest is not checked" || return 1
+}

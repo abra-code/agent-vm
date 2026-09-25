@@ -9,7 +9,7 @@
 //                                                   terminal, drop privileges and exec
 //   agent-vm-guest wallpaper < PNG                   (internal) make the PNG the calling user's
 //                                                   wallpaper; run in their desktop session
-//   agent-vm-guest --version
+//   agent-vm-guest --version [--json]
 
 import AgentVMKit
 import Darwin
@@ -18,12 +18,22 @@ import Foundation
 let arguments = Array(CommandLine.arguments.dropFirst())
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("usage: agent-vm-guest serve [--port N] [--user NAME] | exec-as [--terminal] USER DIR EXECUTABLE -- ARGV... | wallpaper < PNG | --version\n".utf8))
+    FileHandle.standardError.write(Data("usage: agent-vm-guest serve [--port N] [--user NAME] | exec-as [--terminal] USER DIR EXECUTABLE -- ARGV... | wallpaper < PNG | --version [--json]\n".utf8))
     exit(64) // EX_USAGE
 }
 
 switch arguments.first {
 case "--version":
+    // With --json, for `agent-vm version`: what this daemon is, features included.
+    if arguments == ["--version", "--json"] {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(GuestDaemonInfo.current) else {
+            exit(1)
+        }
+        print(String(decoding: data, as: UTF8.self))
+        exit(0)
+    }
     print("agent-vm-guest \(AgentVM.version) (protocol \(AgentVM.guestProtocolVersion))")
     exit(0)
 

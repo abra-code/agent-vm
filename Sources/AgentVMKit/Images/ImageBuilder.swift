@@ -637,7 +637,7 @@ public final class ImageBuilder {
         }
     }
 
-    static func sha256(of url: URL) throws -> String {
+    nonisolated static func sha256(of url: URL) throws -> String {
         return SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
     }
 

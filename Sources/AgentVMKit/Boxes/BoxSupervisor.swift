@@ -100,7 +100,7 @@ public final class BoxSupervisor {
 
     /// Runs the box until it stops; returns when the VM is down and the socket is gone.
     public func run() async throws {
-        guard let lock = try FolderLock.tryAcquire(box.lockPath) else {
+        guard let lock = try FolderLock.tryAcquire(box.lockPath, patience: FolderLock.testPatience) else {
             throw AgentVMError.boxRunning(box.name)
         }
         defer { lock.release() }
@@ -407,6 +407,28 @@ final class SupervisorState: @unchecked Sendable {
     private var stopping = false
     private var shared: (path: String, readOnly: Bool)?
     private var claims = 0
+    private var execs = 0
+    /// When the supervisor started, in whole seconds (as the store's records keep dates).
+    let startedAt = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+
+    /// Guest connections lent to clients (exec, box shell) and not yet given back.
+    var activeExecs: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return execs
+    }
+
+    func execOpened() {
+        lock.lock()
+        execs += 1
+        lock.unlock()
+    }
+
+    func execClosed() {
+        lock.lock()
+        execs = max(0, execs - 1)
+        lock.unlock()
+    }
 
     /// Programs (execs) running on the shared project; while any do, it is not switched.
     var projectClaims: Int {
@@ -579,8 +601,14 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         let snapshot = state.snapshot
         let project = state.project
         return ControlResponse(ok: true, state: snapshot.state, guestVersion: snapshot.guestVersion, pid: getpid(),
-                               project: project?.path, projectReadOnly: project?.readOnly, guestFeatures: snapshot.guestFeatures)
+                               project: project?.path, projectReadOnly: project?.readOnly, guestFeatures: snapshot.guestFeatures,
+                               supervisorVersion: AgentVM.version, supervisorPath: Self.executablePath, startedAt: state.startedAt,
+                               activeExecs: state.activeExecs)
     }
+
+    /// This process's executable, as it was started (a rebuild renames a new file into place,
+    /// so the file at this path may since be a newer agent-vm).
+    static let executablePath = Bundle.main.executableURL?.resolvingSymlinksInPath().path
 
     /// Opens a vsock connection on the main actor and lends its descriptor. Blocks this
     /// control thread (never the main actor) for at most 30 seconds.
@@ -595,12 +623,14 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         let state = self.state
         do {
             let lent = try openConnection()
-            guard project != nil else {
-                return lent
-            }
+            state.execOpened()
+            let claimed = project != nil
             return LentConnection(descriptor: lent.descriptor, release: {
                 lent.release()
-                state.releaseProject()
+                state.execClosed()
+                if claimed {
+                    state.releaseProject()
+                }
             })
         } catch {
             if project != nil {
@@ -696,7 +726,8 @@ public enum BoxLauncher {
         posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT))
 
         var pid: pid_t = 0
-        let arguments = ["agent-vm", "box", "serve", box.name]
+        // The full path as argv[0], so a process list tells which binary runs the box.
+        let arguments = [executable, "box", "serve", box.name]
         let status = GuestServer.withCStrings(arguments) { argv in
             posix_spawn(&pid, executable, &actions, &attributes, argv, environ)
         }

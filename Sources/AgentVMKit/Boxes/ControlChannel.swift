@@ -67,9 +67,22 @@ public struct ControlResponse: Codable, Equatable, Sendable {
     public var projectReadOnly: Bool?
     /// What the guest daemon announced beyond protocol 1 (GuestFeature), once ready.
     public var guestFeatures: [String]?
+    /// The supervisor's agent-vm version and executable, and when it started; nil from
+    /// supervisors older than 0.1.6.
+    public var supervisorVersion: String?
+    public var supervisorPath: String?
+    public var startedAt: Date?
+    /// Guest connections lent with `open` and not yet given back: programs run by exec or box
+    /// shell, from any client.
+    public var activeExecs: Int?
 
     public init(ok: Bool, error: String? = nil, state: State? = nil, guestVersion: String? = nil, pid: Int32? = nil,
-                project: String? = nil, projectReadOnly: Bool? = nil, guestFeatures: [String]? = nil) {
+                project: String? = nil, projectReadOnly: Bool? = nil, guestFeatures: [String]? = nil,
+                supervisorVersion: String? = nil, supervisorPath: String? = nil, startedAt: Date? = nil, activeExecs: Int? = nil) {
+        self.supervisorVersion = supervisorVersion
+        self.supervisorPath = supervisorPath
+        self.startedAt = startedAt
+        self.activeExecs = activeExecs
         self.ok = ok
         self.error = error
         self.state = state

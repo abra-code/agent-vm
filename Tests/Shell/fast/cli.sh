@@ -95,3 +95,26 @@ test_box_view_types_one_thing() {
     assert_status 64 || return 1
     assert_err_contains "--type-password and --type do not go together" || return 1
 }
+
+# agent-vm version names the guest daemon next to it, with the digest images record.
+test_version_names_the_guest_daemon() {
+    run_avm --version
+    local _version="$OUT"
+    run_avm version --json
+    assert_status 0 || return 1
+    assert_json version "$_version" || return 1
+    assert_json controlProtocol 1 || return 1
+    assert_json guestProtocol 1 || return 1
+    assert_json guestDaemon.version "$_version" || return 1
+    assert_json guestDaemon.protocol 1 || return 1
+    assert_json guestDaemon.features.0 terminal || return 1
+    local _guest
+    _guest="$(/usr/bin/dirname "$AGENT_VM")/agent-vm-guest"
+    local _digest
+    _digest="$(/usr/bin/shasum -a 256 "$_guest" | /usr/bin/awk '{ print $1 }')"
+    assert_json guestDaemon.digest "$_digest" || return 1
+    run_avm version
+    assert_status 0 || return 1
+    assert_out_contains "agent-vm $_version (control protocol 1, guest protocol 1)" || return 1
+    assert_out_contains "sha256 $_digest" || return 1
+}

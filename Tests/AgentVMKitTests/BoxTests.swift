@@ -119,6 +119,22 @@ final class BoxScratch {
         first.release()
         #expect(!FolderLock.isHeld(path))
     }
+
+    /// A holder that lets go within the patience (an isHeld test) does not make a taker fail.
+    @Test func patienceOutlastsABriefHolder() throws {
+        let scratch = try Scratch()
+        let path = scratch.root.appendingPathComponent(".lock").path
+        let brief = try #require(try FolderLock.tryAcquire(path))
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            brief.release()
+        }
+        let taken = try #require(try FolderLock.tryAcquire(path, patience: .seconds(2)))
+        let clock = ContinuousClock()
+        let began = clock.now
+        #expect(try FolderLock.tryAcquire(path, patience: .milliseconds(100)) == nil)
+        #expect(clock.now - began >= .milliseconds(100))
+        taken.release()
+    }
 }
 
 /// A stand-in supervisor: lends one end of a socket pair per open.

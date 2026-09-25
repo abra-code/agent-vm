@@ -112,7 +112,7 @@ agent-vm box start work
 `image list` and `box list` show each one's folder and the space it takes, for example:
 
 ```
-try1  running   image dev (macOS 26A428)  4 CPUs  8 GB  network allowlist
+try1  stopped   image dev (macOS 26A428)  4 CPUs  8 GB  network allowlist
     /Users/you/Library/Application Support/agent-vm/Boxes/try1
     35.4 GB, of which 1.2 GB not shared with its image or other boxes (what box delete frees)
 ```
@@ -131,7 +131,7 @@ The second number changes as clones come and go: an image that a later image or 
 You don't: update the image (`image update-guest`), then delete the box and create it again. A box has no update command on purpose: a replaced daemon would lose the box's Full Disk Access, and only an image can be set up again to grant it.
 
 **How do I tell which guest daemon a box has?**
-Its `supervisor.log` says so at every start: `Ready in 20 s: agent-vm-guest 0.1.2`. The log is in `~/Library/Application Support/agent-vm/Boxes/<name>/`. `image list` shows what an image lacks; a box made from it before its update lacks at least that much.
+While it runs, `agent-vm box status <name>` shows it (`agent-vm-guest 0.1.6 (terminal, prompt-notices, wallpaper)`). Its `supervisor.log` also says so at every start: `Ready in 20 s: agent-vm-guest 0.1.2`. The log is in `~/Library/Application Support/agent-vm/Boxes/<name>/`. `image list` shows what an image lacks; a box made from it before its update lacks at least that much.
 
 **I updated the image, but my box still shows the old wallpaper and the desktop widgets. Why?**
 The box was made before the update and still runs the old daemon; its `supervisor.log` says "this agent-vm-guest predates wallpapers". Make the box again.

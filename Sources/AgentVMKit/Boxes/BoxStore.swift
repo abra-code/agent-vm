@@ -200,7 +200,7 @@ public struct BoxStore: Sendable {
         // check and the write.
         var lock: FolderLock?
         if network.mode != current.record.effectiveNetwork.mode {
-            lock = try FolderLock.tryAcquire(current.lockPath)
+            lock = try FolderLock.tryAcquire(current.lockPath, patience: FolderLock.testPatience)
             guard lock != nil else {
                 throw AgentVMError.boxRunning(name)
             }
@@ -222,7 +222,7 @@ public struct BoxStore: Sendable {
         guard FileSystem.exists(directory.path) else {
             throw AgentVMError.boxNotFound(name)
         }
-        guard let lock = try FolderLock.tryAcquire(directory.appendingPathComponent(Self.lockName).path) else {
+        guard let lock = try FolderLock.tryAcquire(directory.appendingPathComponent(Self.lockName).path, patience: FolderLock.testPatience) else {
             throw AgentVMError.boxRunning(name)
         }
         defer { lock.release() }

@@ -40,6 +40,27 @@ public final class FolderLock: @unchecked Sendable {
         return FolderLock(descriptor: descriptor)
     }
 
+    /// Takes the lock on `path`, trying again for up to `patience` while another open file
+    /// holds it. isHeld takes the lock for a moment to test it, so a caller that means to
+    /// hold the lock (a box's supervisor, delete) would otherwise fail as "in use" whenever it
+    /// meets a client polling status.
+    public static func tryAcquire(_ path: String, patience: Duration) throws -> FolderLock? {
+        let deadline = ContinuousClock.now + patience
+        while true {
+            if let lock = try tryAcquire(path) {
+                return lock
+            }
+            if ContinuousClock.now >= deadline {
+                return nil
+            }
+            usleep(20_000)
+        }
+    }
+
+    /// How long a lock held only by an isHeld test can stand in the way: microseconds, but a
+    /// busy Mac may deschedule the tester in between.
+    public static let testPatience: Duration = .milliseconds(200)
+
     /// Whether someone holds the lock on `path` right now (a missing lock file is free).
     public static func isHeld(_ path: String) -> Bool {
         guard FileSystem.exists(path) else {
