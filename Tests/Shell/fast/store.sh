@@ -73,6 +73,14 @@ test_network_rules_are_checked_and_changed() {
     assert_not_contains "$OUT" "example.com," || return 1
     run_avm box network b1 --disallow missing.example
     assert_status 64 || return 1
+    run_avm box network b1 --allow public:0
+    assert_status 1 || return 1
+    assert_err_contains "public or public:port" || return 1
+    run_avm box network b1 --allow public --allow public:8443
+    assert_status 0 || return 1
+    assert_out_contains "api.example.net:8443, public, public:8443" || return 1
+    run_avm box network b1 --disallow public --disallow public:8443
+    assert_status 0 || return 1
 
     run_avm box network b1 --net off
     assert_status 0 || return 1

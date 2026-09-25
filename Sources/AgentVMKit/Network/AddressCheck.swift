@@ -2,8 +2,10 @@
 //
 // Which resolved addresses the proxy may connect to. An allowed name that resolves to this Mac,
 // the local network or a link-local address (DNS rebinding, or a hostile /etc/hosts-style
-// answer) is refused: the box must never reach the host or the LAN through the proxy. The
-// proxy resolves names itself and connects to the address it checked, never re-resolving.
+// answer) is refused: the box must never reach the host or the LAN through the proxy. Besides
+// the private and reserved ranges, that means the networks of this Mac's own interfaces: with
+// IPv6 the Mac and its neighbors usually have global addresses, which look public. The proxy
+// resolves names itself and connects to the address it checked, never re-resolving.
 
 import Darwin
 import Foundation
@@ -62,6 +64,107 @@ public enum AddressCheck {
         return true
     }
 
+    /// A network one of this Mac's interfaces is on: its address and netmask, in network byte
+    /// order (4 bytes for IPv4, 16 for IPv6).
+    public struct LocalNetwork: Equatable, Sendable {
+        public var address: [UInt8]
+        public var mask: [UInt8]
+
+        public init(address: [UInt8], mask: [UInt8]) {
+            self.address = address
+            self.mask = mask
+        }
+
+        /// Shorter prefixes than these (a point-to-point link or a VPN with a very wide mask)
+        /// count as the interface's own address only, so they cannot shut out the internet.
+        static let shortestIPv4Prefix = 16
+        static let shortestIPv6Prefix = 48
+        /// An IPv6 network counts as at least this wide: providers usually give a home a /56,
+        /// and its other /64s (a guest or device network) are the same local network, though
+        /// the Mac sees only its own.
+        static let widestIPv6Prefix = 56
+
+        /// Whether `bytes` (of the same family) is this address or on this network.
+        public func contains(_ bytes: [UInt8]) -> Bool {
+            guard bytes.count == address.count, mask.count == address.count else {
+                return false
+            }
+            let prefix = mask.reduce(0) { $0 + $1.nonzeroBitCount }
+            let shortest = address.count == 4 ? Self.shortestIPv4Prefix : Self.shortestIPv6Prefix
+            if prefix < shortest {
+                return bytes == address
+            }
+            var effective = mask
+            if address.count == 16 && prefix > Self.widestIPv6Prefix {
+                effective = (0..<16).map { index in
+                    let bits = min(max(Self.widestIPv6Prefix - index * 8, 0), 8)
+                    return bits == 0 ? 0 : UInt8(truncatingIfNeeded: 0xff << (8 - bits))
+                }
+            }
+            return zip(zip(bytes, address), effective).allSatisfy { pair, mask in pair.0 & mask == pair.1 & mask }
+        }
+    }
+
+    /// The networks of this Mac's interfaces, up or not (an address stays this Mac's while its
+    /// interface is down), read fresh on every call: Wi-Fi networks and VPNs come and go. nil
+    /// when the interfaces cannot be read.
+    public static func localNetworks() -> [LocalNetwork]? {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else {
+            return nil
+        }
+        defer { freeifaddrs(list) }
+        var networks: [LocalNetwork] = []
+        var cursor: UnsafeMutablePointer<ifaddrs>? = first
+        while let entry = cursor {
+            cursor = entry.pointee.ifa_next
+            guard let address = entry.pointee.ifa_addr else {
+                continue
+            }
+            let family = Int32(address.pointee.sa_family)
+            guard family == AF_INET || family == AF_INET6, let bytes = addressBytes(address) else {
+                continue
+            }
+            // A missing netmask: the address alone.
+            let mask = entry.pointee.ifa_netmask.flatMap { addressBytes($0, family: family) } ?? [UInt8](repeating: 0xff, count: bytes.count)
+            networks.append(LocalNetwork(address: bytes, mask: mask))
+        }
+        return networks
+    }
+
+    /// The address bytes of an AF_INET or AF_INET6 sockaddr. A netmask's sockaddr may carry no
+    /// family of its own, so `family` can be given, and may be shorter than its structure (the
+    /// kernel drops trailing zero bytes), so only `sa_len` bytes are read.
+    static func addressBytes(_ address: UnsafePointer<sockaddr>, family: Int32? = nil) -> [UInt8]? {
+        var storage = sockaddr_storage()
+        let length = min(Int(address.pointee.sa_len), MemoryLayout<sockaddr_storage>.size)
+        withUnsafeMutableBytes(of: &storage) { $0.copyMemory(from: UnsafeRawBufferPointer(start: address, count: length)) }
+        switch family ?? Int32(address.pointee.sa_family) {
+        case AF_INET:
+            return withUnsafeBytes(of: &storage) { raw in
+                let offset = MemoryLayout<sockaddr_in>.offset(of: \sockaddr_in.sin_addr)!
+                return Array(raw[offset..<(offset + 4)])
+            }
+        case AF_INET6:
+            return withUnsafeBytes(of: &storage) { raw in
+                let offset = MemoryLayout<sockaddr_in6>.offset(of: \sockaddr_in6.sin6_addr)!
+                return Array(raw[offset..<(offset + 16)])
+            }
+        default:
+            return nil
+        }
+    }
+
+    /// Whether address `bytes` is on one of `networks`; IPv4-mapped and -compatible IPv6
+    /// addresses are judged as IPv4.
+    public static func isOnLocalNetwork(_ bytes: [UInt8], networks: [LocalNetwork]) -> Bool {
+        var candidate = bytes
+        if bytes.count == 16 && bytes[0..<10].allSatisfy({ $0 == 0 }) && ((bytes[10] == 0xff && bytes[11] == 0xff) || (bytes[10] == 0 && bytes[11] == 0)) {
+            candidate = Array(bytes[12..<16])
+        }
+        return networks.contains { $0.contains(candidate) }
+    }
+
     /// Whether `host` is an IP literal (v4, or v6 with or without brackets).
     public static func isIPLiteral(_ host: String) -> Bool {
         let name = AllowRule.normalized(host)
@@ -70,9 +173,10 @@ public enum AddressCheck {
         return inet_pton(AF_INET, name, &v4) == 1 || inet_pton(AF_INET6, name, &v6) == 1
     }
 
-    /// Resolves `host` and returns the addresses the proxy may use: public ones only, unless
+    /// Resolves `host` and returns the addresses the proxy may use: public ones not on this
+    /// Mac's networks (`localNetworks`, read from the interfaces when nil) only, unless
     /// `allowPrivate` (tests). Throws with the reason when there is none.
-    public static func resolve(_ host: String, port: UInt16, allowPrivate: Bool = false) throws -> [Resolved] {
+    public static func resolve(_ host: String, port: UInt16, allowPrivate: Bool = false, localNetworks networks: [LocalNetwork]? = nil) throws -> [Resolved] {
         var hints = addrinfo()
         hints.ai_socktype = SOCK_STREAM
         hints.ai_family = AF_UNSPEC
@@ -82,6 +186,10 @@ public enum AddressCheck {
             throw ProxyRefusal("cannot resolve \(host): \(String(cString: gai_strerror(status)))")
         }
         defer { freeaddrinfo(result) }
+        // Without the interfaces, nothing is known to be off this Mac's networks: refuse.
+        guard let local = allowPrivate ? [] : (networks ?? localNetworks()) else {
+            throw ProxyRefusal("cannot read this Mac's network interfaces")
+        }
         var usable: [Resolved] = []
         var refused: [String] = []
         var cursor: UnsafeMutablePointer<addrinfo>? = first
@@ -93,10 +201,11 @@ public enum AddressCheck {
             var storage = sockaddr_storage()
             memcpy(&storage, address, Int(entry.pointee.ai_addrlen))
             let (text, isPublicAddress) = describe(&storage)
-            if isPublicAddress || allowPrivate {
+            let onLocalNetwork = isPublicAddress && isOnLocalNetwork(addressBytes(address) ?? [], networks: local)
+            if allowPrivate || (isPublicAddress && !onLocalNetwork) {
                 usable.append(Resolved(storage: storage, length: entry.pointee.ai_addrlen, text: text))
             } else {
-                refused.append(text)
+                refused.append(onLocalNetwork ? "\(text) on this Mac's network" : text)
             }
         }
         guard !usable.isEmpty else {

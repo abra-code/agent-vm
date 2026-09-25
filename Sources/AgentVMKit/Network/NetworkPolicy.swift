@@ -7,10 +7,12 @@
 // - open: NAT through the host - the internet and the local network. No proxy, no log.
 //
 // Rules are host names ("github.com" matches only itself), wildcard suffixes ("*.github.com"
-// matches every subdomain, not github.com itself), optional ports ("example.com:8443"), and
-// packs ("pack:github") that expand to curated lists. Without a port, a rule allows HTTPS
-// tunnels to 443 and plain HTTP requests to 80 - not tunnels to 80, whose raw requests could
-// name any other site the allowed server hosts (the proxy rewrites Host only for plain HTTP).
+// matches every subdomain, not github.com itself), optional ports ("example.com:8443"), packs
+// ("pack:github") that expand to curated lists, and "public" (any public DNS name, never an IP
+// literal or a local name; the proxy still refuses every address that is not public or that is
+// on this Mac's own networks). Without a port, a rule allows HTTPS tunnels to 443 and plain
+// HTTP requests to 80 - not tunnels to 80, whose raw requests could name any other site the
+// allowed server hosts (the proxy rewrites Host only for plain HTTP).
 
 import Foundation
 
@@ -47,19 +49,33 @@ public struct AllowRule: Equatable, Sendable, CustomStringConvertible {
     public var subdomains: Bool
     /// nil means the default port for the kind of request: 443 for tunnels, 80 for plain HTTP.
     public var port: UInt16?
+    /// True for "public": any public DNS name (`isPublicHostName`); `host` is "public".
+    public var anyPublicHost = false
 
     public static let defaultTunnelPort: UInt16 = 443
     public static let defaultHTTPPort: UInt16 = 80
+    public static let publicKeyword = "public"
 
     public var description: String {
         return (subdomains ? "*." : "") + host + (port.map { ":\($0)" } ?? "")
     }
 
-    /// Parses "host", "*.host", "host:port" or "[v6]:port"; nil for anything else.
+    /// Parses "host", "*.host", "host:port", "[v6]:port", "public" or "public:port"; nil for
+    /// anything else.
     public static func parse(_ text: String) -> AllowRule? {
         var rest = text.trimmingCharacters(in: .whitespaces).lowercased()
         guard !rest.isEmpty else {
             return nil
+        }
+        if rest == publicKeyword || rest.hasPrefix(publicKeyword + ":") {
+            var port: UInt16?
+            if rest != publicKeyword {
+                guard let parsed = UInt16(rest.dropFirst(publicKeyword.count + 1)), parsed > 0 else {
+                    return nil
+                }
+                port = parsed
+            }
+            return AllowRule(host: publicKeyword, subdomains: false, port: port, anyPublicHost: true)
         }
         var port: UInt16?
         if rest.hasPrefix("[") {
@@ -104,7 +120,7 @@ public struct AllowRule: Equatable, Sendable, CustomStringConvertible {
     /// `tunnel`: a CONNECT request (else a plain HTTP request).
     public func matches(host candidate: String, port candidatePort: UInt16, tunnel: Bool) -> Bool {
         let name = Self.normalized(candidate)
-        let hostMatches = subdomains ? name.hasSuffix("." + host) : name == host
+        let hostMatches = anyPublicHost ? Self.isPublicHostName(name) : subdomains ? name.hasSuffix("." + host) : name == host
         guard hostMatches else {
             return false
         }
@@ -112,6 +128,24 @@ public struct AllowRule: Equatable, Sendable, CustomStringConvertible {
             return candidatePort == port
         }
         return candidatePort == (tunnel ? Self.defaultTunnelPort : Self.defaultHTTPPort)
+    }
+
+    /// Names that only a local resolver answers (mDNS, RFC 6762; RFC 6761; ICANN's private-use
+    /// "internal"; RFC 8375): never public, and looking them up could reach the local network.
+    static let localSuffixes = ["local", "localhost", "internal", "home.arpa"]
+
+    /// Whether `name` (normalized) can be a public DNS name, as the "public" rule requires: at
+    /// least two labels, a top-level label starting with a letter (so no IP literal in any
+    /// notation getaddrinfo accepts, such as "1.2.3.4", "0x7f.1" or "2130706433"), and not
+    /// under a local-only domain. Single-label names would go through the Mac's search domains,
+    /// which are the local network's.
+    static func isPublicHostName(_ name: String) -> Bool {
+        let labels = name.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2, labels.allSatisfy({ !$0.isEmpty && $0.count <= 63 && $0.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") } }),
+              let top = labels.last?.first, top.isLetter else {
+            return false
+        }
+        return !localSuffixes.contains { name == $0 || name.hasSuffix("." + $0) }
     }
 
     /// Lower case, without a trailing dot or IPv6 brackets.
@@ -173,18 +207,20 @@ public struct CompiledPolicy: Sendable {
                 continue
             }
             guard let rule = AllowRule.parse(text) else {
-                throw AgentVMError.invalidNetworkRule(text, reason: "expected a host name, *.domain, host:port or pack:<name>")
+                throw AgentVMError.invalidNetworkRule(text, reason: "expected a host name, *.domain, host:port, pack:<name>, public or public:port")
             }
             entries.append(Entry(rule: rule, source: rule.description))
         }
     }
 
     /// The source of the first rule allowing `host:port`, or nil when none does (or the
-    /// mode is `off`).
+    /// mode is `off`). Named rules come before "public", so the log shows which hosts a box
+    /// would need without it.
     public func allows(host: String, port: UInt16, tunnel: Bool) -> String? {
         guard mode == .allowlist else {
             return nil
         }
-        return entries.first { $0.rule.matches(host: host, port: port, tunnel: tunnel) }?.source
+        let named = entries.first { !$0.rule.anyPublicHost && $0.rule.matches(host: host, port: port, tunnel: tunnel) }
+        return (named ?? entries.first { $0.rule.anyPublicHost && $0.rule.matches(host: host, port: port, tunnel: tunnel) })?.source
     }
 }

@@ -55,12 +55,56 @@ import Testing
 
         #expect(throws: AgentVMError.self) { _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["pack:nope"])) }
         #expect(throws: AgentVMError.self) { _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["not a host"])) }
+        #expect(throws: AgentVMError.self) { _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["public:0"])) }
         // Every pack's hosts are valid rules.
         for (name, hosts) in NetworkPacks.all {
             for host in hosts {
                 #expect(AllowRule.parse(host) != nil, "pack \(name): \(host)")
             }
         }
+    }
+}
+
+@Suite struct PublicRuleTests {
+    @Test func parsing() {
+        #expect(AllowRule.parse("public") == AllowRule(host: "public", subdomains: false, port: nil, anyPublicHost: true))
+        #expect(AllowRule.parse(" Public:8443 ") == AllowRule(host: "public", subdomains: false, port: 8443, anyPublicHost: true))
+        #expect(AllowRule.parse("public:8443")?.description == "public:8443")
+        #expect(AllowRule.parse("public")?.description == "public")
+        // Only the keyword itself: a host under "public" stays a host.
+        #expect(AllowRule.parse("*.public")?.anyPublicHost == false)
+        #expect(AllowRule.parse("public.example.com")?.anyPublicHost == false)
+        for bad in ["public:", "public:0", "public:x", "public:99999"] {
+            #expect(AllowRule.parse(bad) == nil, "\(bad)")
+        }
+    }
+
+    @Test func matchesPublicNamesOnly() {
+        let rule = AllowRule.parse("public")!
+        #expect(rule.matches(host: "example.com", port: 443, tunnel: true))
+        #expect(rule.matches(host: "api.example.co.uk.", port: 80, tunnel: false))
+        #expect(rule.matches(host: "xn--80ak6aa92e.xn--p1ai", port: 443, tunnel: true))
+        #expect(!rule.matches(host: "example.com", port: 80, tunnel: true))
+        #expect(!rule.matches(host: "example.com", port: 22, tunnel: true))
+        // IP literals in every notation getaddrinfo takes, single-label and local-only names.
+        for host in ["1.1.1.1", "2606:4700::1111", "[::1]", "2130706433", "0x7f.1", "127.1", "1.2.3.4.", "localhost", "router",
+                     "printer.local", "foo.localhost", "db.internal", "nas.home.arpa", "home.arpa", "a..b", "-", "."] {
+            #expect(!rule.matches(host: host, port: 443, tunnel: true), "\(host)")
+        }
+        let port = AllowRule.parse("public:8443")!
+        #expect(port.matches(host: "example.com", port: 8443, tunnel: true))
+        #expect(!port.matches(host: "example.com", port: 443, tunnel: true))
+    }
+
+    /// Named rules come first, so the log names them; the rest is logged as "public".
+    @Test func namedRulesComeBeforePublic() throws {
+        let policy = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["public", "pack:npm", "example.com:8443"]))
+        #expect(policy.allows(host: "registry.npmjs.org", port: 443, tunnel: true) == "pack:npm")
+        #expect(policy.allows(host: "example.com", port: 8443, tunnel: true) == "example.com:8443")
+        #expect(policy.allows(host: "example.com", port: 443, tunnel: true) == "public")
+        #expect(policy.allows(host: "1.1.1.1", port: 443, tunnel: true) == nil)
+        #expect(try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["PUBLIC:8443"])).allows(host: "example.org", port: 8443, tunnel: true) == "public:8443")
+        #expect(try CompiledPolicy(BoxNetwork(mode: .off, allow: ["public"])).allows(host: "example.com", port: 443, tunnel: true) == nil)
     }
 }
 
@@ -98,6 +142,54 @@ import Testing
         #expect((try? AddressCheck.resolve("127.0.0.1", port: 443, allowPrivate: true))?.first?.text == "127.0.0.1")
         #expect(AddressCheck.isIPLiteral("[::1]"))
         #expect(!AddressCheck.isIPLiteral("example.com"))
+    }
+
+    @Test func localNetworksContainTheirAddresses() {
+        let lan = AddressCheck.LocalNetwork(address: [203, 0, 113, 7], mask: [255, 255, 255, 0])
+        #expect(lan.contains([203, 0, 113, 200]))
+        #expect(!lan.contains([203, 0, 114, 1]))
+        #expect(!lan.contains(v6("2001:db8::1")))
+        let v6lan = AddressCheck.LocalNetwork(address: v6("2a01:4f8:1:2::10"), mask: v6("ffff:ffff:ffff:ffff::"))
+        #expect(v6lan.contains(v6("2a01:4f8:1:2:aaaa::1")))
+        // A /64 counts as its /56: the home's other subnets.
+        #expect(v6lan.contains(v6("2a01:4f8:1:3::1")))
+        #expect(v6lan.contains(v6("2a01:4f8:1:ff::1")))
+        #expect(!v6lan.contains(v6("2a01:4f8:1:100::1")))
+        // A /50 stays a /50.
+        let v6wide = AddressCheck.LocalNetwork(address: v6("2a01:4f8:1:2::10"), mask: v6("ffff:ffff:ffff:c000::"))
+        #expect(v6wide.contains(v6("2a01:4f8:1:3fff::1")))
+        #expect(!v6wide.contains(v6("2a01:4f8:1:4000::1")))
+        // A mask wider than /16 or /48 counts as the address alone.
+        let wide = AddressCheck.LocalNetwork(address: [100, 71, 102, 28], mask: [255, 0, 0, 0])
+        #expect(wide.contains([100, 71, 102, 28]))
+        #expect(!wide.contains([100, 71, 102, 29]))
+        #expect(!AddressCheck.LocalNetwork(address: v6("2a01::1"), mask: v6("ffff::")).contains(v6("2a01::2")))
+        // IPv4-mapped IPv6 is judged as IPv4.
+        #expect(AddressCheck.isOnLocalNetwork(v6("::ffff:203.0.113.9"), networks: [lan]))
+        #expect(!AddressCheck.isOnLocalNetwork(v6("::ffff:198.51.100.9"), networks: [lan]))
+    }
+
+    /// Public addresses on this Mac's own networks (its IPv6 prefix, or a public IPv4 LAN) are
+    /// refused like private ones.
+    @Test func addressesOnThisMacsNetworksAreRefused() throws {
+        let lan = AddressCheck.LocalNetwork(address: [203, 0, 113, 7], mask: [255, 255, 255, 0])
+        #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("203.0.113.9", port: 443, localNetworks: [lan]) }
+        do {
+            _ = try AddressCheck.resolve("203.0.113.9", port: 443, localNetworks: [lan])
+        } catch let refusal as ProxyRefusal {
+            #expect(refusal.message.contains("203.0.113.9 on this Mac's network"))
+        }
+        #expect((try? AddressCheck.resolve("203.0.113.9", port: 443, localNetworks: []))?.first?.text == "203.0.113.9")
+        let v6lan = AddressCheck.LocalNetwork(address: v6("2a01:4f8:1:2::10"), mask: v6("ffff:ffff:ffff:ffff::"))
+        #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("2a01:4f8:1:2::99", port: 443, localNetworks: [v6lan]) }
+        #expect((try? AddressCheck.resolve("2a01:4f8:1:100::99", port: 443, localNetworks: [v6lan]))?.first?.text == "2a01:4f8:1:100::99")
+    }
+
+    /// The interfaces are read, netmasks included: the loopback's 127.0.0.1/8 is always there.
+    @Test func thisMacsNetworksAreRead() throws {
+        let networks = try #require(AddressCheck.localNetworks())
+        #expect(networks.contains(AddressCheck.LocalNetwork(address: [127, 0, 0, 1], mask: [255, 0, 0, 0])))
+        #expect(networks.contains { $0.address == v6("::1") && $0.mask == [UInt8](repeating: 0xff, count: 16) })
     }
 }
 
@@ -304,6 +396,16 @@ final class LocalServer: @unchecked Sendable {
         let answer = try exchange(proxy, "CONNECT localhost:9 HTTP/1.1\r\n\r\n")
         #expect(answer.hasPrefix("HTTP/1.1 502 Bad Gateway\r\n"))
         #expect(answer.contains("non-public"))
+    }
+
+    /// "public" matches no local name, even where the address check is off (as here).
+    @Test func thePublicRuleRefusesNamesThatAreNotPublic() throws {
+        let scratch = try Scratch()
+        let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
+        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["public"])), log: log, allowPrivate: true)
+        let answer = try exchange(proxy, "CONNECT localhost:443 HTTP/1.1\r\n\r\n")
+        #expect(answer.hasPrefix("HTTP/1.1 403 Forbidden\r\n"))
+        #expect(log.entries().first?.reason == "not in the allowlist")
     }
 
     @Test func connectionsBeyondTheCapAreRefusedAtOnce() throws {

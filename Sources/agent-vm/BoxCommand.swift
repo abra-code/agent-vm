@@ -16,9 +16,9 @@ struct BoxCommand: ParsableCommand {
             A box is an instant copy-on-write clone of a ready image with its own identity \
             (MAC address, machine identifier). `box start` runs it in the background under a \
             supervisor process; `agent-vm exec --box <name> -- <program>` runs programs in it.
-            Network modes: allowlist (default) - only listed hosts, through a proxy on this Mac \
-            that logs every attempt; off - nothing; open - NAT to the internet and your local \
-            network. See `box network`, `box netlog` and `box packs`. `box shell` opens a shell in \
+            Network modes: allowlist (default) - only listed hosts (or, with the rule public, any \
+            public host name), through a proxy on this Mac that logs every attempt; off - \
+            nothing; open - NAT to the internet and your local network. See `box network`, `box netlog` and `box packs`. `box shell` opens a shell in \
             the box on this terminal, `box view` shows its screen in a window, `box execlog` \
             shows what exec and shell ran there, and `box status` shows its state without \
             starting anything.
@@ -45,7 +45,7 @@ struct BoxCommand: ParsableCommand {
         @Option(name: .long, help: "Network mode: allowlist (default), off or open (NAT, reaches your local network).")
         var net: BoxNetwork.Mode = .allowlist
 
-        @Option(name: .long, help: "Allow a host (github.com), subdomains (*.example.com), host:port, or pack:<name> (repeatable).")
+        @Option(name: .long, help: "Allow a host (github.com), subdomains (*.example.com), host:port, pack:<name>, or public (any public host name, logged; public:port for another port) (repeatable).")
         var allow: [String] = []
 
         @Flag(name: .long, help: "A box for one session: once it stops, it is not started again, and `box gc` (run by box list, box start and doctor) deletes it.")
@@ -370,7 +370,11 @@ struct BoxCommand: ParsableCommand {
             abstract: "Show or change what a box may reach.",
             discussion: """
                 Rules can change while the box runs (the proxy rereads them at once); the mode \
-                decides the box's network card, so it changes only while the box is stopped.
+                decides the box's network card, so it changes only while the box is stopped. \
+                Rules: a host (github.com), subdomains (*.example.com), host:port, pack:<name>, or \
+                public - any public host name (not an IP address or a local name), still logged, \
+                and never an address on this Mac or your local network; public:port allows \
+                another port than 443 and 80.
                 """)
 
         @Argument(help: "The box name.")
@@ -403,6 +407,25 @@ struct BoxCommand: ParsableCommand {
             }
         }
 
+        /// The first supervisor that knows the public rule.
+        static let publicRuleVersion = "0.2.2"
+
+        /// An older supervisor reads "public" as a host of that name, which nothing is called:
+        /// refused, so the rule is not saved looking as if it worked.
+        static func checkSupervisorKnowsPublic(_ box: Box, adding rules: [String]) throws {
+            guard box.isRunning, rules.contains(where: { AllowRule.parse($0)?.anyPublicHost == true }) else {
+                return
+            }
+            let status = BoxStatus.of(box)
+            // Stopped since, or not answering: the reload below reports that.
+            guard status.state != .stopped && status.state != .unresponsive else {
+                return
+            }
+            guard let version = status.supervisorVersion, version.compare(publicRuleVersion, options: .numeric) != .orderedAscending else {
+                throw AgentVMError.supervisorRefused("box \(box.name) was started by an agent-vm older than \(publicRuleVersion), which does not know the public rule; stop it (`agent-vm box stop \(box.name)`), add the rule, then start it again")
+            }
+        }
+
         func run() throws {
             var box = try options.boxStore.box(named: name)
             let current = box.record.effectiveNetwork
@@ -423,6 +446,7 @@ struct BoxCommand: ParsableCommand {
                 for rule in allow where !updated.allow.contains(rule) {
                     updated.allow.append(rule)
                 }
+                try Self.checkSupervisorKnowsPublic(box, adding: allow)
                 box = try options.boxStore.updateNetwork(named: name, to: updated)
                 if box.isRunning {
                     let response = try ControlClient.request(.reload, path: box.controlSocketPath)
