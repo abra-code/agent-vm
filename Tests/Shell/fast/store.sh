@@ -90,6 +90,13 @@ test_packs_are_listed() {
     for _pack in anthropic apple-updates github homebrew npm openai pypi swiftpm; do
         assert_out_contains "pack:$_pack" || return 1
     done
+    # For programs: name and hosts, sorted by name, the names without "pack:".
+    run_avm box packs --json
+    assert_status 0 || return 1
+    assert_json 0.name anthropic || return 1
+    assert_json 2.name github || return 1
+    assert_json 2.hosts.0 github.com || return 1
+    assert_json 7.name swiftpm || return 1
 }
 
 test_a_stopped_box_refuses_exec_and_stop() {

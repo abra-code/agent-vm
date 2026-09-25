@@ -138,7 +138,7 @@ agent-vm box network dev1 --net open                                         # w
 - **Rules:**
   - `github.com` allows exactly that host, and `*.github.com` its subdomains, not the host itself.
   - A rule without a port allows HTTPS (`CONNECT` to 443) and plain HTTP (`http://` requests to 80), and `host:port` allows that port for both. There are no tunnels to port 80 without an explicit rule: raw requests through a tunnel could name any other site the allowed server hosts. For plain HTTP, the proxy writes the `Host` header from the URL itself.
-  - `pack:<name>` allows a curated list: `apple-updates`, `github`, `npm`, `pypi`, `swiftpm`, `homebrew`, `anthropic` and `openai` (`box packs` lists the hosts).
+  - `pack:<name>` allows a curated list: `apple-updates`, `github`, `npm`, `pypi`, `swiftpm`, `homebrew`, `anthropic` and `openai` (`box packs` lists the hosts; `box packs --json` gives `[{"name": "github", "hosts": [...]}, ...]`).
 - **Which tools follow the proxy** (measured): URLSession programs, `softwareupdate`, Python and pip use the system proxy; curl, git, SwiftPM and Node need the environment variables, which `exec` sets. git over SSH is not proxied; use HTTPS remotes.
 - **The log** (`Boxes/<name>/network.jsonl`, one JSON object per line) records the time, method, host and port, the decision and rule, the address connected to, and the bytes each way.
   - macOS's own background services (iCloud, software update checks) show up as refused connections unless allowed, about 2-4 a second from an idle guest.

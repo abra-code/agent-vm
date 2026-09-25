@@ -573,7 +573,19 @@ struct BoxCommand: ParsableCommand {
     struct Packs: ParsableCommand {
         static let configuration = CommandConfiguration(abstract: "List the host packs usable as --allow pack:<name>.")
 
+        @Flag(name: .long, help: "Print machine-readable JSON instead of text.")
+        var json = false
+
+        struct Entry: Encodable {
+            var name: String
+            var hosts: [String]
+        }
+
         func run() throws {
+            if json {
+                try Output.json(NetworkPacks.all.keys.sorted().map { Entry(name: $0, hosts: NetworkPacks.all[$0]!) })
+                return
+            }
             for name in NetworkPacks.all.keys.sorted() {
                 print("pack:\(name)")
                 print("    \(NetworkPacks.all[name]!.joined(separator: ", "))")
