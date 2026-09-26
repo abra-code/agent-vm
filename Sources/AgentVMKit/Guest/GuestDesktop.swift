@@ -27,6 +27,18 @@ enum GuestDesktop {
         return uid
     }
 
+    /// `defaults` for `user`, run in their desktop session (`launchctl asuser`) so it talks to
+    /// their own cfprefsd. Run as the user straight from the guest daemon, it reaches the system
+    /// cfprefsd, which during an image's first boot treats the account's preferences as
+    /// non-persistent and refuses the write ("Could not write domain"; measured on macOS 27,
+    /// apparently because it started before macOS created the account). The caller waits for
+    /// the desktop first.
+    @MainActor
+    static func defaults(_ arguments: [String], user: String, uid: String, run: Run) async throws -> (report: ExitReport, stdout: String, stderr: String) {
+        return try await run(GuestRequest(op: .exec, argv: ["/bin/launchctl", "asuser", uid, "/usr/bin/sudo", "-u", user, "/usr/bin/defaults"] + arguments,
+                                          cwd: "/", user: "root"), nil)
+    }
+
     /// Turns the screen saver, display sleep and screen lock off for `user`; nil when all of
     /// it took, else why not. The screen lock is changed in the user's desktop session (outside
     /// it, sysadminctl fails), so this first waits up to `desktopWait` seconds for the login.
@@ -37,8 +49,7 @@ enum GuestDesktop {
             return "\(user) is not logged in to the desktop; the screen lock stays as it is"
         }
         let sleep = try await run(GuestRequest(op: .exec, argv: ["/usr/bin/pmset", "-a", "displaysleep", "0"], cwd: "/", user: "root"), nil)
-        let saver = try await run(GuestRequest(op: .exec, argv: ["/usr/bin/defaults", "-currentHost", "write", "com.apple.screensaver",
-                                                                "idleTime", "-int", "0"], user: user), nil)
+        let saver = try await defaults(["-currentHost", "write", "com.apple.screensaver", "idleTime", "-int", "0"], user: user, uid: uid, run: run)
         // The password goes in on stdin, never in a command line outside the guest.
         let script = "IFS= read -r password; exec /bin/launchctl asuser \(uid) /usr/bin/sudo -u \(user) /usr/sbin/sysadminctl -screenLock off -password \"$password\""
         let lock = try await run(GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script], cwd: "/", user: "root"), Data((password + "\n").utf8))
@@ -78,11 +89,10 @@ enum GuestDesktop {
     /// NotificationCenter's container, which only a program with Full Disk Access may open, and
     /// a new image's daemon has none (macOS refuses silently, without a prompt; measured).
     @MainActor
-    static func hideWidgets(user: String, run: Run) async throws -> String? {
+    static func hideWidgets(user: String, uid: String, run: Run) async throws -> String? {
         var failures: [String] = []
         for key in ["StandardHideWidgets", "StageManagerHideWidgets"] {
-            let result = try await run(GuestRequest(op: .exec, argv: ["/usr/bin/defaults", "write", "com.apple.WindowManager", key, "-bool", "true"],
-                                                    user: user), nil)
+            let result = try await defaults(["write", "com.apple.WindowManager", key, "-bool", "true"], user: user, uid: uid, run: run)
             if result.report != ExitReport(status: 0) {
                 failures.append("\(key): \((result.stderr + result.stdout).trimmingCharacters(in: .whitespacesAndNewlines))")
             }
@@ -138,7 +148,7 @@ enum GuestDesktop {
             lines.append("note: this agent-vm-guest predates wallpapers; boxes made after `agent-vm image update-guest` on their image get one")
         }
         if !widgetsOnce || newWallpaper {
-            let widgets = try await hideWidgets(user: user, run: run)
+            let widgets = try await hideWidgets(user: user, uid: uid, run: run)
             lines.append(widgets.map { "note: \($0)" } ?? "Widgets hidden from the next login")
         }
         return lines
