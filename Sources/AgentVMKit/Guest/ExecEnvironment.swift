@@ -125,6 +125,27 @@ public enum ExecEnvironment {
         return FileSystem.exists("\(terminfo)/\(folder)/\(host)") ? host : fallback
     }
 
+    /// Variables that say which terminal this is, passed with a terminal (`exec --tty`, `box
+    /// shell`) as ssh's SendEnv would: programs choose 24-bit color, links, the enhanced
+    /// keyboard and synchronized output by them (measured with Claude Code, Codex and opencode).
+    /// Markers only: variables holding paths on the Mac (GHOSTTY_RESOURCES_DIR, TERMINFO) mean
+    /// nothing in the box.
+    public static let terminalIdentity = ["COLORTERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "LC_TERMINAL", "LC_TERMINAL_VERSION"]
+
+    /// A /bin/sh script for the guest that installs the terminfo entry on stdin (`infocmp -x`
+    /// output from the Mac) as `name` into the account's ~/.terminfo, unless it is there; nil
+    /// for a name that is not a plain terminal name (one that starts with "-" would be read as
+    /// an option by infocmp on the Mac).
+    public static func terminfoInstallScript(name: String) -> String? {
+        guard !name.isEmpty, name.count <= 64,
+              name.unicodeScalars.allSatisfy({ isASCIILetter($0) || ("0"..."9").contains($0) || "-_.+".unicodeScalars.contains($0) }),
+              name != ".", name != "..", let first = name.unicodeScalars.first, first != "-" else {
+            return nil
+        }
+        let folder = String(first.value, radix: 16)
+        return "[ -e \"$HOME/.terminfo/\(folder)/\(name)\" ] && exit 0; /bin/mkdir -p \"$HOME/.terminfo\" && /usr/bin/tic -x -o \"$HOME/.terminfo\" /dev/stdin"
+    }
+
     private static func isASCIILetter(_ scalar: Unicode.Scalar) -> Bool {
         ("a"..."z").contains(scalar) || ("A"..."Z").contains(scalar)
     }

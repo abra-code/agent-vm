@@ -303,7 +303,7 @@ public final class GuestServer: @unchecked Sendable {
                 }
             case .resize:
                 // Ignored without a terminal. Setting the size sends SIGWINCH to the foreground job.
-                if let terminal, var size = TerminalSize(bytes: frame.payload).map({ winsize(ws_row: $0.rows, ws_col: $0.columns, ws_xpixel: 0, ws_ypixel: 0) }) {
+                if let terminal, var size = TerminalSize(bytes: frame.payload).map(\.winsize) {
                     _ = ioctl(terminal, TIOCSWINSZ, &size)
                 }
             default:
@@ -559,7 +559,7 @@ public final class GuestServer: @unchecked Sendable {
             throw Refusal("cannot open \(name): \(String(cString: strerror(code)))")
         }
         defer { close(held) }
-        var cells = winsize(ws_row: size.rows, ws_col: size.columns, ws_xpixel: 0, ws_ypixel: 0)
+        var cells = size.winsize
         _ = ioctl(held, TIOCSWINSZ, &cells)
         if let owner, owner != geteuid() {
             _ = fchown(held, owner, gid_t(bitPattern: -1))

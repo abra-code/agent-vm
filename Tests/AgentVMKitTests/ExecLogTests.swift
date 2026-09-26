@@ -104,4 +104,15 @@ import Testing
         // This Mac's own database, which the guest shares.
         #expect(ExecEnvironment.terminalType(host: "vt100") == "vt100")
     }
+
+    @Test func aTerminalTheGuestLacksIsInstalledForTheAccount() {
+        let script = ExecEnvironment.terminfoInstallScript(name: "xterm-ghostty")
+        #expect(script == "[ -e \"$HOME/.terminfo/78/xterm-ghostty\" ] && exit 0; /bin/mkdir -p \"$HOME/.terminfo\" && /usr/bin/tic -x -o \"$HOME/.terminfo\" /dev/stdin")
+        for bad in ["", ".", "..", "a/b", "x y", "x;rm", "$(x)", "-A", String(repeating: "a", count: 65)] {
+            #expect(ExecEnvironment.terminfoInstallScript(name: bad) == nil, "\(bad)")
+        }
+        // Markers of which terminal this is, never paths on the Mac.
+        #expect(ExecEnvironment.terminalIdentity.contains("COLORTERM") && ExecEnvironment.terminalIdentity.contains("LC_TERMINAL"))
+        #expect(!ExecEnvironment.terminalIdentity.contains("TERMINFO"))
+    }
 }

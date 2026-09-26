@@ -21,6 +21,22 @@ import Testing
         return (report, String(decoding: output, as: UTF8.self))
     }
 
+    /// As `finish`, calling `act` once the program has printed "ready": a key or signal sent
+    /// then cannot come before the program runs, as one sent after a fixed wait could on a busy
+    /// Mac (the test then hung or failed).
+    func finish(_ session: ExecSession, whenReady act: () throws -> Void) throws -> (report: ExitReport, output: String) {
+        var output = Data()
+        var acted = false
+        let report = try session.run(stdout: { bytes in
+            output.append(contentsOf: bytes)
+            if !acted, String(decoding: output, as: UTF8.self).contains("ready") {
+                acted = true
+                try act()
+            }
+        }, stderr: { _ in })
+        return (report, String(decoding: output, as: UTF8.self))
+    }
+
     @Test func helloAnnouncesTheTerminal() throws {
         let pair = try GuestPair(helperPath: try GuestPair.builtHelper())
         #expect(try GuestClient.hello(pair.client).features?.contains(GuestFeature.terminal) == true)
@@ -46,27 +62,18 @@ import Testing
         let pair = try GuestPair(helperPath: try GuestPair.builtHelper())
         let script = "trap 'stty size; exit 0' WINCH; echo ready; while :; do /bin/sleep 0.1; done"
         let session = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script], terminal: size))
-        // Resized once the trap is set ("ready"), not after a fixed wait: on a busy Mac a
-        // resize before the trap was lost, and the loop never ended.
-        var output = Data()
-        var resized = false
-        let report = try session.run(stdout: { bytes in
-            output.append(contentsOf: bytes)
-            if !resized, String(decoding: output, as: UTF8.self).contains("ready") {
-                resized = true
-                try session.sendResize(TerminalSize(rows: 40, columns: 120))
-            }
-        }, stderr: { _ in })
+        // Resized once the trap is set: a resize before it was lost, and the loop never ended.
+        let (report, output) = try finish(session) { try session.sendResize(TerminalSize(rows: 40, columns: 120)) }
         #expect(report == ExitReport(status: 0))
-        #expect(String(decoding: output, as: UTF8.self).contains("40 120"))
+        #expect(output.contains("40 120"))
     }
 
     @Test func controlCInterruptsTheForegroundProgram() throws {
         let pair = try GuestPair(helperPath: try GuestPair.builtHelper())
-        let session = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["/bin/sleep", "30"], terminal: size))
-        Thread.sleep(forTimeInterval: 0.3)
-        try session.sendStdin([0x03])
-        let (report, _) = try finish(session)
+        // Control-C once the program runs ("ready", then sleep in its place): a key typed before
+        // it started was lost, and it slept 30 s.
+        let session = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["/bin/sh", "-c", "echo ready; exec /bin/sleep 30"], terminal: size))
+        let (report, _) = try finish(session) { try session.sendStdin([0x03]) }
         #expect(report == ExitReport(signal: SIGINT))
     }
 
@@ -95,11 +102,11 @@ import Testing
     /// must reach it, as Control-C would, not the shell.
     @Test func hostSignalsReachTheForegroundJob() throws {
         let pair = try GuestPair(helperPath: try GuestPair.builtHelper())
-        let script = "set -m; /bin/sleep 30; echo shell-carries-on"
+        // The job says "ready" itself, then becomes sleep: sent earlier, the signal reached the
+        // shell while it was still the foreground job, and it ended.
+        let script = "set -m; /bin/sh -c 'echo ready; exec /bin/sleep 30'; echo shell-carries-on"
         let session = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script], terminal: size))
-        Thread.sleep(forTimeInterval: 0.5)
-        try session.sendSignal(SIGINT)
-        let (report, output) = try finish(session)
+        let (report, output) = try finish(session) { try session.sendSignal(SIGINT) }
         #expect(output.contains("shell-carries-on"))
         #expect(report == ExitReport(status: 0))
     }
@@ -165,6 +172,18 @@ import Testing
     @Test func terminalSizesRoundTrip() {
         let size = TerminalSize(rows: 300, columns: 65535)
         #expect(TerminalSize(bytes: size.bytes) == size)
+        #expect(size.bytes.count == 4)
         #expect(TerminalSize(bytes: [1, 2, 3]) == nil)
+        // With pixels: 8 bytes, which a guest with terminal-pixels reads; older ones take 4 only.
+        let pixels = TerminalSize(rows: 50, columns: 160, xpixels: 1920, ypixels: 1200)
+        #expect(pixels.bytes.count == 8)
+        #expect(TerminalSize(bytes: pixels.bytes) == pixels)
+        #expect(pixels.winsize.ws_xpixel == 1920 && pixels.winsize.ws_ypixel == 1200 && pixels.winsize.ws_col == 160)
+        #expect(size.winsize.ws_xpixel == 0)
+        // A half-known size is sent as cells only.
+        #expect(TerminalSize(rows: 1, columns: 1, xpixels: 10).bytes.count == 4)
+        // In the exec request the pixels are optional keys, absent when unknown.
+        let json = String(decoding: try! JSONEncoder().encode(size), as: UTF8.self)
+        #expect(!json.contains("pixels"))
     }
 }

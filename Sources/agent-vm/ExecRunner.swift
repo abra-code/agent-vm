@@ -62,8 +62,13 @@ struct ExecRunner {
         // system proxy (curl, git, SwiftPM, Node). --env-file and --env override.
         var environment = box.record.effectiveNetwork.usesProxy ? GuestNetworkSetup.proxyEnvironment : [:]
         environment.merge(added) { _, new in new }
-        if terminal && environment["TERM"] == nil {
-            environment["TERM"] = ExecEnvironment.terminalType(host: ProcessInfo.processInfo.environment["TERM"])
+        if terminal {
+            // The terminal's identity, so programs in the box draw as they would here. TERM
+            // comes once the box is known to take a terminal (it may install a definition).
+            let host = ProcessInfo.processInfo.environment
+            for name in ExecEnvironment.terminalIdentity where environment[name] == nil {
+                environment[name] = host[name]
+            }
         }
 
         // The project appears in the box at the same absolute path, and the program starts
@@ -80,6 +85,8 @@ struct ExecRunner {
         // connection alive until it closes (and closes it if this process dies).
         let (control, guest, status) = try ControlClient.openGuest(path: box.controlSocketPath, project: projectPath, readOnly: readOnly)
         var size: TerminalSize?
+        // Whether the guest takes the size in pixels too (resize frames of 8 bytes).
+        let pixels = status.guestFeatures?.contains(GuestFeature.terminalPixels) == true
         if terminal {
             guard status.guestFeatures?.contains(GuestFeature.terminal) == true else {
                 close(guest)
@@ -90,7 +97,10 @@ struct ExecRunner {
                 }
                 throw AgentVMError.guestRefused("box \(box.name) was made from an image whose agent-vm-guest has no terminal support; update the image with `agent-vm image update-guest \(box.record.image)` and create the box again")
             }
-            size = Self.localTerminalSize()
+            size = Self.localTerminalSize(pixels: pixels)
+            if environment["TERM"] == nil {
+                environment["TERM"] = Self.terminalType(host: ProcessInfo.processInfo.environment["TERM"], box: box, user: user)
+            }
         }
 
         let log = ExecLog(url: box.execLogURL)
@@ -98,7 +108,7 @@ struct ExecRunner {
         log.append(ExecLog.Entry(id: id, event: .start, time: Date(), argv: argv, user: user ?? box.record.userName, cwd: directory,
                                  project: projectPath, readOnly: projectPath == nil ? nil : readOnly, terminal: terminal ? true : nil,
                                  hostPid: getpid()))
-        ExecExit.shared.record(log: log, id: id)
+        ExecExit.shared.record(log: log, id: id, box: box.name)
 
         let session: ExecSession
         do {
@@ -132,7 +142,7 @@ struct ExecRunner {
             signal(SIGWINCH, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: SIGWINCH, queue: .global())
             source.setEventHandler {
-                try? session.sendResize(Self.localTerminalSize())
+                try? session.sendResize(Self.localTerminalSize(pixels: pixels))
             }
             source.resume()
             sources.append(source)
@@ -213,11 +223,56 @@ struct ExecRunner {
         }
     }
 
+    /// The terminal type for the box: this Mac's when macOS itself knows it (the guest has the
+    /// same terminfo), or when this Mac's entry (`infocmp -x`, which finds a terminal's own,
+    /// such as Ghostty's or kitty's) could be installed in the account's ~/.terminfo in the box;
+    /// else xterm-256color.
+    static func terminalType(host: String?, box: Box, user: String?) -> String {
+        let known = ExecEnvironment.terminalType(host: host)
+        guard let host, known != host, let script = ExecEnvironment.terminfoInstallScript(name: host),
+              let entry = localTerminfo(host) else {
+            return known
+        }
+        do {
+            let (control, guest, _) = try ControlClient.openGuest(path: box.controlSocketPath)
+            defer {
+                close(guest)
+                close(control)
+            }
+            var timeout = timeval(tv_sec: 10, tv_usec: 0)
+            _ = setsockopt(guest, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            let installed = try GuestClient.capture(guest, GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script], user: user), input: entry)
+            return installed.report == ExitReport(status: 0) ? host : known
+        } catch {
+            return known
+        }
+    }
+
+    /// This Mac's terminfo entry for `name`, as source; nil when there is none.
+    static func localTerminfo(_ name: String) -> Data? {
+        let infocmp = Process()
+        infocmp.executableURL = URL(fileURLWithPath: "/usr/bin/infocmp")
+        infocmp.arguments = ["-x", name]
+        let output = Pipe()
+        infocmp.standardOutput = output
+        infocmp.standardError = FileHandle.nullDevice
+        do {
+            try infocmp.run()
+        } catch {
+            return nil
+        }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        infocmp.waitUntilExit()
+        return infocmp.terminationStatus == 0 && !data.isEmpty ? data : nil
+    }
+
     /// The local terminal's size (stdin's, else stdout's), 24 x 80 when neither is a terminal.
-    static func localTerminalSize() -> TerminalSize {
+    /// With `pixels`, its size in pixels too, when the terminal gives one.
+    static func localTerminalSize(pixels: Bool = false) -> TerminalSize {
         var cells = winsize()
         for descriptor in [STDIN_FILENO, STDOUT_FILENO] where ioctl(descriptor, TIOCGWINSZ, &cells) == 0 && cells.ws_row > 0 && cells.ws_col > 0 {
-            return TerminalSize(rows: cells.ws_row, columns: cells.ws_col)
+            let known = pixels && cells.ws_xpixel > 0 && cells.ws_ypixel > 0
+            return TerminalSize(rows: cells.ws_row, columns: cells.ws_col, xpixels: known ? cells.ws_xpixel : nil, ypixels: known ? cells.ws_ypixel : nil)
         }
         return TerminalSize(rows: 24, columns: 80)
     }
@@ -255,13 +310,15 @@ final class ExecExit: @unchecked Sendable {
     private var id: String?
     private var guestPid: Int32?
     private var prompts: [String] = []
+    private var box: String?
     private let began = ContinuousClock.now
 
-    func record(log: ExecLog, id: String) {
+    func record(log: ExecLog, id: String, box: String) {
         lock.lock()
         defer { lock.unlock() }
         self.log = log
         self.id = id
+        self.box = box
     }
 
     func started(guestPid: Int32) {
@@ -314,6 +371,14 @@ final class ExecExit: @unchecked Sendable {
         lock.lock()
         if var saved = savedTerminal {
             _ = tcsetattr(STDIN_FILENO, TCSADRAIN, &saved)
+            // A full-screen program may have drawn over the notices: say it again, now that the
+            // terminal is ours.
+            if !prompts.isEmpty {
+                // One plain write, errors ignored: writeAll would come back here on EPIPE and
+                // wait forever on the lock this thread holds.
+                let text = "agent-vm: while it ran, a program waited on \(prompts.joined(separator: ", ")) (see `agent-vm box execlog \(box ?? "<box>")`)\n"
+                _ = Array(text.utf8).withUnsafeBytes { write(STDERR_FILENO, $0.baseAddress!, $0.count) }
+            }
         }
         if let log, let id {
             let elapsed = (ContinuousClock.now - began).components

@@ -26,7 +26,8 @@ public enum FrameType: UInt8, Sendable {
     case stdin = 0x10
     case stdinEnd = 0x11
     case signal = 0x12
-    /// A new terminal size (exec with a terminal only): rows, then columns, 2 bytes each, big-endian.
+    /// A new terminal size (exec with a terminal only): rows, then columns, 2 bytes each, big-endian;
+    /// then, with feature `terminal-pixels`, the width and height in pixels, 2 bytes each.
     case resize = 0x13
     // Guest to host during exec.
     case stdout = 0x20
@@ -144,30 +145,52 @@ public enum GuestFeature {
     /// the desktop (Aqua) session once it is logged in, so the program shares the login
     /// Keychain with apps in the box; and Keychain dialogs are sent as notices.
     public static let userSession = "user-session"
+    /// The terminal's size in pixels too: in the exec request's `terminal`, and in 8-byte
+    /// `resize` frames (a guest without it reads only 4-byte ones).
+    public static let terminalPixels = "terminal-pixels"
     /// Everything this build's daemon supports.
-    public static let all = [terminal, promptNotices, wallpaper, timeSync, userSession]
+    public static let all = [terminal, promptNotices, wallpaper, timeSync, userSession, terminalPixels]
 }
 
 /// A terminal's size in character cells.
 public struct TerminalSize: Codable, Equatable, Sendable {
     public var rows: UInt16
     public var columns: UInt16
+    /// The window in pixels, when the terminal says (feature `terminal-pixels`); programs that
+    /// draw images size them by it.
+    public var xpixels: UInt16?
+    public var ypixels: UInt16?
 
-    public init(rows: UInt16, columns: UInt16) {
+    public init(rows: UInt16, columns: UInt16, xpixels: UInt16? = nil, ypixels: UInt16? = nil) {
         self.rows = rows
         self.columns = columns
+        self.xpixels = xpixels
+        self.ypixels = ypixels
     }
 
-    /// The resize frame's payload.
+    /// The resize frame's payload: rows and columns, then the pixels when known (8 bytes,
+    /// which only a guest with `terminal-pixels` reads).
     public var bytes: [UInt8] {
-        return [UInt8(rows >> 8), UInt8(rows & 0xff), UInt8(columns >> 8), UInt8(columns & 0xff)]
+        var bytes = [UInt8(rows >> 8), UInt8(rows & 0xff), UInt8(columns >> 8), UInt8(columns & 0xff)]
+        if let xpixels, let ypixels {
+            bytes += [UInt8(xpixels >> 8), UInt8(xpixels & 0xff), UInt8(ypixels >> 8), UInt8(ypixels & 0xff)]
+        }
+        return bytes
     }
 
     public init?(bytes: [UInt8]) {
-        guard bytes.count == 4 else {
+        guard bytes.count == 4 || bytes.count == 8 else {
             return nil
         }
-        self.init(rows: UInt16(bytes[0]) << 8 | UInt16(bytes[1]), columns: UInt16(bytes[2]) << 8 | UInt16(bytes[3]))
+        func value(_ at: Int) -> UInt16 {
+            return UInt16(bytes[at]) << 8 | UInt16(bytes[at + 1])
+        }
+        self.init(rows: value(0), columns: value(2), xpixels: bytes.count == 8 ? value(4) : nil, ypixels: bytes.count == 8 ? value(6) : nil)
+    }
+
+    /// For the guest's TIOCSWINSZ.
+    public var winsize: winsize {
+        return Darwin.winsize(ws_row: rows, ws_col: columns, ws_xpixel: xpixels ?? 0, ws_ypixel: ypixels ?? 0)
     }
 }
 

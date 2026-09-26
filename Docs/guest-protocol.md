@@ -27,7 +27,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 | 0x10 | stdin | host to guest | bytes for the program's standard input |
 | 0x11 | stdin-end | host to guest | empty; closes the program's standard input |
 | 0x12 | signal | host to guest | 4-byte big-endian signal number |
-| 0x13 | resize | host to guest | rows, then columns, 2 bytes each, big-endian (feature `terminal`; ignored without a terminal) |
+| 0x13 | resize | host to guest | rows, then columns, 2 bytes each, big-endian (feature `terminal`; ignored without a terminal); then, with feature `terminal-pixels`, the width and height in pixels, 2 bytes each (8 bytes in all) |
 | 0x20 | stdout | guest to host | bytes the program wrote to standard output |
 | 0x21 | stderr | guest to host | bytes the program wrote to standard error |
 | 0x22 | exit | guest to host | JSON, how the program ended; last frame |
@@ -42,7 +42,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - `v` (required): the protocol version. A daemon that speaks another version answers `ok: false`.
 - `op` (required): `hello`, `exec`, `shutdown`, or `time-sync` (feature `time-sync`).
 - `argv`, `env`, `cwd`, `user`: exec only; all but `argv` optional.
-- `terminal`: exec only, optional: `{"rows": 24, "columns": 80}` runs the program on a new terminal of that size (feature `terminal`, below).
+- `terminal`: exec only, optional: `{"rows": 24, "columns": 80}` runs the program on a new terminal of that size (feature `terminal`, below). With feature `terminal-pixels`, `xpixels` and `ypixels` may give the window's size in pixels (a guest without it ignores them).
 - `notices`: exec only, optional: `true` asks for notice frames (feature `prompt-notices`, below).
 
 ```json
@@ -51,7 +51,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 
 - `ok`: false with `error` (a message for a person) when the request is refused; the guest then closes the connection.
 - `version`, `osBuild`: hello only (agent-vm-guest's version, the guest's macOS build).
-- `features`: hello only, what the daemon supports beyond this document's base (see Versioning). Today: `terminal`, `prompt-notices`, `wallpaper`, `time-sync` and `user-session`.
+- `features`: hello only, what the daemon supports beyond this document's base (see Versioning). Today: `terminal`, `prompt-notices`, `wallpaper`, `time-sync`, `user-session` and `terminal-pixels`.
 - `pid`: exec only, the started process.
 - `status`: a refused exec only, the status a shell would give: 127 when the program is not found, 126 when it cannot be run (unknown account, missing folder).
 
