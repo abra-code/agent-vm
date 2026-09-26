@@ -65,7 +65,7 @@ public struct HostFacts: Sendable {
             osVersion: ProcessInfo.processInfo.operatingSystemVersion,
             isAppleSilicon: isArm64(),
             virtualizationSupported: VZVirtualMachine.isSupported,
-            hasVirtualizationEntitlement: entitlement(virtualizationEntitlement),
+            hasVirtualizationEntitlement: ownVirtualizationEntitlement(),
             signature: ownSignature(),
             cpuCount: ProcessInfo.processInfo.activeProcessorCount,
             memoryBytes: ProcessInfo.processInfo.physicalMemory,
@@ -83,6 +83,11 @@ public struct HostFacts: Sendable {
         // macOS guest either; report the architecture of this binary, which is what matters.
         return false
         #endif
+    }
+
+    /// Whether this process has the virtualization entitlement; nil if it cannot be read.
+    static func ownVirtualizationEntitlement() -> Bool? {
+        return entitlement(virtualizationEntitlement)
     }
 
     /// The kernel's view of one boolean entitlement of this process; nil if it cannot be read.
@@ -125,8 +130,9 @@ public struct HostFacts: Sendable {
     }
 
     /// Free space on the volume of `url`, or of its nearest existing ancestor (the store may
-    /// not exist yet).
-    private static func freeBytes(nearest url: URL) -> Int64? {
+    /// not exist yet). By default it counts purgeable space (caches macOS deletes when asked);
+    /// `includingPurgeable: false` counts only what is free now.
+    public static func freeBytes(nearest url: URL, includingPurgeable: Bool = true) -> Int64? {
         var candidate = url.standardizedFileURL
         while !FileManager.default.fileExists(atPath: candidate.path) {
             let parent = candidate.deletingLastPathComponent()
@@ -138,7 +144,7 @@ public struct HostFacts: Sendable {
         let values = try? candidate.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey, .volumeAvailableCapacityKey])
         // Inside a sandbox the important-usage figure comes back as 0 while the plain one is
         // right; fall back to the plain figure rather than report a full disk.
-        if let important = values?.volumeAvailableCapacityForImportantUsage, important > 0 {
+        if includingPurgeable, let important = values?.volumeAvailableCapacityForImportantUsage, important > 0 {
             return important
         }
         return values?.volumeAvailableCapacity.map { Int64($0) }

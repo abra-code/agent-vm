@@ -66,6 +66,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case guestCommandFailed(command: String, status: Int32, output: String)
     /// An image build or guest update stopped by a signal (BuildCancellation).
     case canceled(signal: Int32)
+    /// A download (the restore image) that failed or cannot start.
+    case download(url: String, reason: String)
     /// A disposable box that stopped: it is deleted, never started again.
     case boxDisposed(String)
     /// Secrets in the Keychain (SecretStore). Messages name a secret, never its value.
@@ -153,6 +155,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "box \(name) is disposable and has stopped, so it is not started again (box gc deletes it, and box list, box start and doctor run box gc); create a new box"
         case let .canceled(signal):
             return "canceled by \(signal == SIGINT ? "SIGINT" : signal == SIGTERM ? "SIGTERM" : "signal \(signal)")"
+        case let .download(url, reason):
+            return "cannot download \(url): \(reason)"
         }
     }
 }

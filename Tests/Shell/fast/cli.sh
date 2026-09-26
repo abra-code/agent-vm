@@ -168,3 +168,52 @@ test_secrets_are_stored_listed_used_and_deleted() {
     assert_status 1 || return 1
     assert_err_contains "no secret SHTEST_KEY" || return 1
 }
+
+# image fetch-ipsw against a local file server (AGENT_VM_IPSW_URL): what --check reports, the
+# refusals, and a complete download that is not a restore image, which must not stay.
+test_fetch_ipsw_checks_and_refuses() {
+    local _served="$SCRATCH/served"
+    /bin/mkdir -p "$_served"
+    /bin/dd if=/dev/zero of="$_served/UniversalMac_99.0_99A1_Restore.ipsw" bs=1024 count=512 2>/dev/null
+    local _port=$(( 30000 + $$ % 20000 ))
+    /usr/bin/python3 -m http.server --bind 127.0.0.1 --directory "$_served" "$_port" > /dev/null 2>&1 &
+    local _server=$!
+    local _tries=0
+    local _up=1
+    while [ "$_tries" -lt 50 ]; do
+        # Our file, so another server on the same port is not mistaken for this one.
+        /usr/bin/curl -sf -o /dev/null -I "http://127.0.0.1:$_port/UniversalMac_99.0_99A1_Restore.ipsw"
+        _up=$?
+        [ "$_up" -eq 0 ] && break
+        _tries=$(( _tries + 1 ))
+        /bin/sleep 0.1
+    done
+    if [ "$_up" -ne 0 ]; then
+        kill "$_server"
+        fail "the local file server did not start on port $_port"
+        return 1
+    fi
+
+    local _url="http://127.0.0.1:$_port/UniversalMac_99.0_99A1_Restore.ipsw"
+    local _cached="$AGENT_VM_HOME/Cache/ipsw/UniversalMac_99.0_99A1_Restore.ipsw"
+    AGENT_VM_IPSW_URL="$_url" run_avm image fetch-ipsw --check --json
+    assert_status 0 || { kill "$_server"; return 1; }
+    assert_json state missing || { kill "$_server"; return 1; }
+    assert_json totalBytes 524288 || { kill "$_server"; return 1; }
+    assert_json path "$_cached" || { kill "$_server"; return 1; }
+
+    # Downloaded in full, but not a restore image: refused and deleted.
+    AGENT_VM_IPSW_URL="$_url" run_avm image fetch-ipsw
+    assert_status 1 || { kill "$_server"; return 1; }
+    assert_err_contains "not a restore image this Mac can use" || { kill "$_server"; return 1; }
+    assert_missing "$_cached" || { kill "$_server"; return 1; }
+    kill "$_server"
+
+    AGENT_VM_IPSW_URL="http://127.0.0.1:$_port/notes.txt" run_avm image fetch-ipsw --check
+    assert_status 1 || return 1
+    assert_err_contains "not a restore image (.ipsw) file name" || return 1
+    # Nothing listens now.
+    AGENT_VM_IPSW_URL="$_url" run_avm image fetch-ipsw --check
+    assert_status 1 || return 1
+    assert_err_contains "cannot download $_url" || return 1
+}

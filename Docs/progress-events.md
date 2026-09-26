@@ -67,6 +67,8 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 
 `box stop`: `shutdown`.
 
+`image fetch-ipsw`: `resolve` (asking Apple for the latest restore image), `download` with `fraction` at every whole percent (its first event says whether the download starts or resumes), then `check` (Virtualization loads the file). An image already downloaded reports a `log` line and no `download`. SIGINT or SIGTERM ends the download with a `notice` (what was downloaded is kept for the next run) and exit status 128 + the signal.
+
 ## Canceling
 
 SIGINT or SIGTERM during `image create` or `image update-guest` stops the command at the next safe point. When the guest was running, a `shutdown` step with the message `Canceled; shutting down` follows while it shuts down (a guest still booting is given up to 30 seconds for its daemon to answer, then as long to shut down, before it is stopped); then a `notice` says what became of the image (`Image dev-node is marked failed (canceled): canceled by SIGTERM; ...`, or `Image dev is unchanged: ...` for an update canceled before the daemon was replaced), and the command exits with 128 + the signal (143 for SIGTERM) without printing a result on standard output. The image record's `failure` is `canceled`.

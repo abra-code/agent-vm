@@ -395,7 +395,7 @@ public enum RestoreImage {
         }
     }
 
-    private static func info(from image: VZMacOSRestoreImage, url: URL) throws -> Info {
+    static func info(from image: VZMacOSRestoreImage, url: URL) throws -> Info {
         guard let requirements = image.mostFeaturefulSupportedConfiguration, requirements.hardwareModel.isSupported else {
             throw AgentVMError.virtualMachine(operation: "read restore image \(url.path)", message: "this Mac cannot run macOS \(image.buildVersion) as a guest")
         }

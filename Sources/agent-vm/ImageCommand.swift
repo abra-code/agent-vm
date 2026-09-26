@@ -19,7 +19,7 @@ struct ImageCommand: ParsableCommand {
             off again and shuts the guest down. Starting virtual machines needs the binaries \
             built by Scripts/build.sh (see `agent-vm doctor`).
             """,
-        subcommands: [Create.self, List.self, Delete.self, Setup.self, UpdateGuest.self]
+        subcommands: [Create.self, List.self, Delete.self, Setup.self, UpdateGuest.self, FetchIPSW.self]
     )
 
     struct Create: AsyncParsableCommand {
