@@ -650,3 +650,78 @@ final class LocalServer: @unchecked Sendable {
         #expect(Set(hosts).count == hosts.count)
     }
 }
+
+@Suite struct NAT64Tests {
+    func v6(_ text: String) -> [UInt8] {
+        var address = in6_addr()
+        #expect(inet_pton(AF_INET6, text, &address) == 1)
+        return withUnsafeBytes(of: &address) { Array($0) }
+    }
+
+    /// RFC 6052's own examples: 192.0.2.33 after a prefix of each allowed length.
+    @Test func theIPv4AddressIsFoundAfterEachPrefixLength() {
+        let examples: [(String, Int, String)] = [
+            ("2001:db8::", 32, "2001:db8:c000:221::"),
+            ("2001:db8:100::", 40, "2001:db8:1c0:2:21::"),
+            ("2001:db8:122::", 48, "2001:db8:122:c000:2:2100::"),
+            ("2001:db8:122:300::", 56, "2001:db8:122:3c0:0:221::"),
+            ("2001:db8:122:344::", 64, "2001:db8:122:344:c0:2:2100:0"),
+            ("2001:db8:122:344::", 96, "2001:db8:122:344::c000:221"),
+        ]
+        for (prefix, length, address) in examples {
+            let nat64 = NAT64.Prefix(bytes: v6(prefix), length: length)
+            #expect(nat64.embeddedIPv4(v6(address)) == [192, 0, 2, 33], "/\(length)")
+        }
+        // Not under the prefix, or a nonzero byte 8 below /96.
+        #expect(NAT64.Prefix(bytes: v6("2001:db8::"), length: 32).embeddedIPv4(v6("2001:db9:c000:221::")) == nil)
+        #expect(NAT64.Prefix(bytes: v6("2001:db8::"), length: 32).embeddedIPv4(v6("2001:db8:c000:221:100::")) == nil)
+        #expect(NAT64.Prefix.wellKnown.embeddedIPv4(v6("64:ff9b::a00:1")) == [10, 0, 0, 1])
+    }
+
+    /// The network's prefix, from its answers for ipv4only.arpa (measured on a T-Mobile hotspot).
+    @Test func theNetworksPrefixIsDiscovered() {
+        let answers = [v6("2607:7700:0:33:0:1:c000:aa"), v6("2607:7700:0:33:0:1:c000:ab")]
+        #expect(NAT64.prefixes(fromDiscovery: answers) == [NAT64.Prefix(bytes: v6("2607:7700:0:33:0:1::"), length: 96)])
+        #expect(NAT64.prefixes(fromDiscovery: [v6("2001:db8::1")]).isEmpty)
+        #expect(NAT64.prefixes(fromDiscovery: []).isEmpty)
+    }
+
+    /// A NAT64 address is judged as the IPv4 address it stands for: a public-looking prefix
+    /// must not carry a private address, or one on this Mac's network, past the proxy.
+    @Test func translatedAddressesAreJudgedAsIPv4() throws {
+        let prefix = NAT64.Prefix(bytes: v6("2607:7700:0:33:0:1::"), length: 96)
+        do {
+            _ = try AddressCheck.resolve("2607:7700:0:33:0:1:a00:1", port: 443, localNetworks: [], nat64: [prefix])
+            Issue.record("a NAT64 address for 10.0.0.1 was allowed")
+        } catch let refusal as ProxyRefusal {
+            #expect(refusal.message.contains("NAT64 for 10.0.0.1"), "\(refusal.message)")
+        }
+        #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("2607:7700:0:33:0:1:7f00:1", port: 443, localNetworks: [], nat64: [prefix]) }
+        #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("64:ff9b::c0a8:105", port: 443, localNetworks: [], nat64: [.wellKnown]) }
+        let lan = AddressCheck.LocalNetwork(address: [203, 0, 113, 7], mask: [255, 255, 255, 0])
+        #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("2607:7700:0:33:0:1:cb00:7109", port: 443, localNetworks: [lan], nat64: [prefix]) }
+        // A public IPv4 address behind the prefix is fine, and the log gets the plain address.
+        let allowed = try AddressCheck.resolve("2607:7700:0:33:0:1:cb00:7109", port: 443, localNetworks: [], nat64: [prefix])
+        #expect(allowed.map(\.text) == ["2607:7700:0:33:0:1:cb00:7109"])
+    }
+
+    /// A prefix from a hostile ipv4only.arpa answer can only refuse more: outside the space
+    /// reserved for translation, the address must pass the IPv6 checks too.
+    @Test func aHostilePrefixOpensNothing() throws {
+        let ula = NAT64.prefixes(fromDiscovery: [v6("fd00::c000:aa")])
+        #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("fd00::808:808", port: 443, localNetworks: [], nat64: ula) }
+        let subnet = AddressCheck.LocalNetwork(address: v6("2a01:4f8:1:2::10"), mask: v6("ffff:ffff:ffff:ffff::"))
+        let own = NAT64.prefixes(fromDiscovery: [v6("2a01:4f8:1:2::c000:aa")])
+        #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("2a01:4f8:1:2::808:808", port: 443, localNetworks: [subnet], nat64: own) }
+        // The reserved space (64:ff9b::/96, and 64:ff9b:1::/48 for local use) is judged as IPv4 alone.
+        #expect(try AddressCheck.resolve("64:ff9b::808:808", port: 443, localNetworks: [], nat64: [.wellKnown]).count == 1)
+        let localUse = NAT64.prefixes(fromDiscovery: [v6("64:ff9b:1::c000:aa")])
+        #expect(try AddressCheck.resolve("64:ff9b:1::808:808", port: 443, localNetworks: [], nat64: localUse).count == 1)
+    }
+
+    /// An IP address given as the host is used as given, never translated.
+    @Test func addressesStayAsGiven() throws {
+        #expect(try AddressCheck.resolve("203.0.113.9", port: 443, localNetworks: [], nat64: []).map(\.text) == ["203.0.113.9"])
+        #expect(try AddressCheck.resolve("[2001:4860::1]", port: 443, localNetworks: [], nat64: []).map(\.text) == ["2001:4860::1"])
+    }
+}

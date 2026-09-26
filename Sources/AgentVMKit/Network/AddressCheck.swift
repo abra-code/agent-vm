@@ -175,13 +175,29 @@ public enum AddressCheck {
 
     /// Resolves `host` and returns the addresses the proxy may use: public ones not on this
     /// Mac's networks (`localNetworks`, read from the interfaces when nil) only, unless
-    /// `allowPrivate` (tests). Throws with the reason when there is none.
-    public static func resolve(_ host: String, port: UInt16, allowPrivate: Bool = false, localNetworks networks: [LocalNetwork]? = nil) throws -> [Resolved] {
+    /// `allowPrivate` (tests). An IPv6 address under a NAT64 prefix (`nat64`, the ones in use
+    /// now when nil) is judged as the IPv4 address it stands for. Throws with the reason when
+    /// there is none.
+    public static func resolve(_ host: String, port: UInt16, allowPrivate: Bool = false, localNetworks networks: [LocalNetwork]? = nil,
+                               nat64: [NAT64.Prefix]? = nil) throws -> [Resolved] {
+        let name = AllowRule.normalized(host)
         var hints = addrinfo()
         hints.ai_socktype = SOCK_STREAM
         hints.ai_family = AF_UNSPEC
+        // An address stays that address: on an IPv6-only network macOS would otherwise turn an
+        // IPv4 one into a NAT64 address (measured), which reaches the carrier's side of the
+        // gateway instead of the address given.
+        var v4 = in_addr()
+        var v6 = in6_addr()
+        if inet_pton(AF_INET, name, &v4) == 1 {
+            hints.ai_family = AF_INET
+            hints.ai_flags = AI_NUMERICHOST
+        } else if inet_pton(AF_INET6, name, &v6) == 1 {
+            hints.ai_family = AF_INET6
+            hints.ai_flags = AI_NUMERICHOST
+        }
         var result: UnsafeMutablePointer<addrinfo>?
-        let status = getaddrinfo(AllowRule.normalized(host), String(port), &hints, &result)
+        let status = getaddrinfo(name, String(port), &hints, &result)
         guard status == 0, let first = result else {
             throw ProxyRefusal("cannot resolve \(host): \(String(cString: gai_strerror(status)))")
         }
@@ -190,6 +206,7 @@ public enum AddressCheck {
         guard let local = allowPrivate ? [] : (networks ?? localNetworks()) else {
             throw ProxyRefusal("cannot read this Mac's network interfaces")
         }
+        let prefixes = allowPrivate ? [] : (nat64 ?? NAT64.current(networks: local))
         var usable: [Resolved] = []
         var refused: [String] = []
         var cursor: UnsafeMutablePointer<addrinfo>? = first
@@ -200,12 +217,23 @@ public enum AddressCheck {
             }
             var storage = sockaddr_storage()
             memcpy(&storage, address, Int(entry.pointee.ai_addrlen))
-            let (text, isPublicAddress) = describe(&storage)
-            let onLocalNetwork = isPublicAddress && isOnLocalNetwork(addressBytes(address) ?? [], networks: local)
+            let (text, judged) = describe(&storage)
+            var isPublicAddress = judged
+            var shown = text
+            let bytes = addressBytes(address) ?? []
+            let v4 = NAT64.embeddedIPv4(bytes, prefixes: prefixes)
+            if let v4 {
+                // Where the gateway connects: judged as that IPv4 address too, named in refusals.
+                // Outside the space reserved for translation the IPv6 checks stay, so a prefix
+                // from a hostile ipv4only.arpa answer (a ULA, this Mac's subnet) only refuses more.
+                isPublicAddress = (judged || NAT64.isReservedForTranslation(bytes)) && isPublic(ipv4: v4.reduce(0) { $0 << 8 | UInt32($1) })
+                shown += " (NAT64 for \(v4.map(String.init).joined(separator: ".")))"
+            }
+            let onLocalNetwork = isPublicAddress && (isOnLocalNetwork(bytes, networks: local) || v4.map { isOnLocalNetwork($0, networks: local) } == true)
             if allowPrivate || (isPublicAddress && !onLocalNetwork) {
                 usable.append(Resolved(storage: storage, length: entry.pointee.ai_addrlen, text: text))
             } else {
-                refused.append(onLocalNetwork ? "\(text) on this Mac's network" : text)
+                refused.append(onLocalNetwork ? "\(shown) on this Mac's network" : shown)
             }
         }
         guard !usable.isEmpty else {
