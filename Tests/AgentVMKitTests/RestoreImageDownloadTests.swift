@@ -299,6 +299,55 @@ final class RangeServer: @unchecked Sendable {
             #expect(throws: AgentVMError.self) { try cache.file(for: URL(string: "https://example.com/\(name.replacingOccurrences(of: " ", with: "%20"))")!) }
         }
     }
+
+    @Test func downloadedImagesAreListedNewestFirst() {
+        func image(_ name: String, _ version: String?, _ build: String = "") -> CachedRestoreImage {
+            let info = version.map { RestoreImage.Info(version: $0, build: build, minimumCPUCount: 2, minimumMemoryBytes: 4 << 30, hardwareModel: Data()) }
+            return CachedRestoreImage(path: URL(fileURLWithPath: "/cache/\(name)"), bytes: 1, info: info, problem: info == nil ? "not a restore image" : nil)
+        }
+        let sorted = RestoreImageCache.newestFirst([
+            image("broken.ipsw", nil), image("a.ipsw", "27.0", "26A428"), image("b.ipsw", "27.10", "26J1"),
+            image("c.ipsw", "27.9", "26H5"), image("d.ipsw", "27.0", "26A1000"), image("e.ipsw", "27.0.1", "26A500"),
+            image("beta.ipsw", "27.0", "26A5288a"), image("beta2.ipsw", "27.0", "26A5301b"), image("next-beta.ipsw", "27.1", "26B5010a"),
+        ])
+        // Of one version, the release comes before its betas; a later version's beta is newer.
+        #expect(sorted.map { $0.path.lastPathComponent } == ["b.ipsw", "c.ipsw", "next-beta.ipsw", "e.ipsw", "d.ipsw", "a.ipsw", "beta2.ipsw", "beta.ipsw", "broken.ipsw"])
+    }
+
+    @Test func anIPSWValueIsResolved() async throws {
+        let scratch = try Scratch()
+        let cache = RestoreImageCache(root: scratch.root)
+        let here = scratch.root.appendingPathComponent("here", isDirectory: true)
+        try FileSystem.makeDirectories(here.path)
+        try FileSystem.makeDirectories(cache.directory.appendingPathComponent("folder.ipsw").path)
+        let name = "UniversalMac_99.0_99A1_Restore.ipsw"
+        let cached = cache.directory.appendingPathComponent(name)
+        try Data("not a restore image".utf8).write(to: cached)
+        try Data().write(to: cache.directory.appendingPathComponent("UniversalMac_98.0_98A1_Restore.ipsw.part"))
+        let real = cached.resolvingSymlinksInPath().path
+
+        // Only complete files are listed; this one is no restore image, so it says why.
+        let listed = await cache.images()
+        #expect(listed.map { $0.path.lastPathComponent } == [name])
+        #expect(listed.first?.info == nil && listed.first?.problem != nil)
+
+        // A bare name found only in the cache.
+        #expect(try await cache.resolve(name, currentDirectory: here).path == real)
+        // A symbolic link, by path or by name, becomes its target: Virtualization does not follow links.
+        let link = here.appendingPathComponent("link.ipsw")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: cached)
+        #expect(try await cache.resolve(link.path, currentDirectory: here).path == real)
+        #expect(try await cache.resolve("link.ipsw", currentDirectory: here).path == real)
+        // The same name in the current directory comes first: it was a relative path before.
+        let local = here.appendingPathComponent(name)
+        try Data("local".utf8).write(to: local)
+        #expect(try await cache.resolve(name, currentDirectory: here).path == local.resolvingSymlinksInPath().path)
+
+        // Unknown names, and latest with no usable image.
+        for value in ["nosuch.ipsw", "", "folder", "latest"] {
+            await #expect(throws: AgentVMError.self, "\(value)") { try await cache.resolve(value, currentDirectory: here) }
+        }
+    }
 }
 
 /// Progress seen by a download.

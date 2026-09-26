@@ -46,6 +46,101 @@ public struct RestoreImageCache: Sendable {
     var lockPath: String {
         return directory.appendingPathComponent(".lock").path
     }
+
+    /// The complete restore images here, each read by Virtualization (about a second each):
+    /// newest macOS first, and those it cannot use last. Partial downloads are left out.
+    public func images() async -> [CachedRestoreImage] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        var images: [CachedRestoreImage] = []
+        for name in names where name.hasSuffix(".ipsw") && !name.hasPrefix(".") {
+            let path = directory.appendingPathComponent(name)
+            // A symbolic link to a restore image elsewhere counts, and Virtualization does not
+            // follow links.
+            let target = path.resolvingSymlinksInPath()
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: target.path),
+                  attributes[.type] as? FileAttributeType == .typeRegular else {
+                continue
+            }
+            var image = CachedRestoreImage(path: path, bytes: (attributes[.size] as? Int64) ?? 0)
+            switch await RestoreImageDownload.verify(target) {
+            case let .usable(info):
+                image.info = info
+            case let .notARestoreImage(reason), let .unchecked(reason):
+                image.problem = reason
+            }
+            images.append(image)
+        }
+        return Self.newestFirst(images)
+    }
+
+    static func newestFirst(_ images: [CachedRestoreImage]) -> [CachedRestoreImage] {
+        return images.sorted { a, b in
+            switch (a.info, b.info) {
+            case let (x?, y?) where x.version != y.version:
+                return x.version.compare(y.version, options: .numeric) == .orderedDescending
+            case let (x?, y?) where x.build != y.build:
+                // A beta's build ends in a letter (26A5288a) and its number is larger than the
+                // release's (26A428): of one version, the release comes first.
+                let xBeta = x.build.last?.isLetter == true
+                let yBeta = y.build.last?.isLetter == true
+                if xBeta != yBeta {
+                    return yBeta
+                }
+                // Numeric, so 26A1000 is newer than 26A999.
+                return x.build.compare(y.build, options: .numeric) == .orderedDescending
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            default:
+                return a.path.lastPathComponent < b.path.lastPathComponent
+            }
+        }
+    }
+
+    /// The restore image `image create --ipsw` names: `latest` (the newest usable one here), a
+    /// path (with a "/", or starting with "~"), or a file name, looked for in the current
+    /// directory and then here. Symbolic links are resolved: Virtualization does not follow them.
+    public func resolve(_ value: String, currentDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)) async throws -> URL {
+        return try await unresolvedFile(value, currentDirectory: currentDirectory).resolvingSymlinksInPath()
+    }
+
+    private func unresolvedFile(_ value: String, currentDirectory: URL) async throws -> URL {
+        if value == "latest" {
+            guard let newest = await images().first(where: { $0.info != nil }) else {
+                throw AgentVMError.virtualMachine(operation: "read restore image", message: "no usable restore image is downloaded in \(directory.path); `agent-vm image fetch-ipsw` downloads the latest, and `agent-vm image fetch-ipsw --list` shows what is there")
+            }
+            return newest.path
+        }
+        if value.contains("/") || value.hasPrefix("~") {
+            return URL(fileURLWithPath: (value as NSString).expandingTildeInPath, relativeTo: currentDirectory).absoluteURL
+        }
+        let local = currentDirectory.appendingPathComponent(value)
+        if !value.isEmpty, FileSystem.exists(local.path) {
+            return local
+        }
+        let cached = directory.appendingPathComponent(value)
+        if value.hasSuffix(".ipsw"), !value.hasPrefix("."), FileSystem.exists(cached.path) {
+            return cached
+        }
+        throw AgentVMError.virtualMachine(operation: "read restore image", message: "\"\(value)\" is neither a file in the current directory nor a restore image downloaded in \(directory.path); `agent-vm image fetch-ipsw --list` shows the downloaded ones")
+    }
+}
+
+/// A restore image downloaded into the cache.
+public struct CachedRestoreImage: Sendable {
+    public var path: URL
+    public var bytes: Int64
+    /// What Virtualization read from the file; nil when it cannot use it, and `problem` says why.
+    public var info: RestoreImage.Info?
+    public var problem: String?
+
+    public init(path: URL, bytes: Int64, info: RestoreImage.Info? = nil, problem: String? = nil) {
+        self.path = path
+        self.bytes = bytes
+        self.info = info
+        self.problem = problem
+    }
 }
 
 /// The latest restore image Apple offers for this Mac.

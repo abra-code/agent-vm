@@ -1,7 +1,8 @@
 // Sources/agent-vm/FetchIPSWCommand.swift
 //
 // `agent-vm image fetch-ipsw`: downloads the latest restore image this Mac supports into the
-// store's Cache/ipsw/, resuming an earlier partial download (RestoreImageDownload).
+// store's Cache/ipsw/, resuming an earlier partial download (RestoreImageDownload). --list
+// shows the restore images already downloaded, which `image create --ipsw` can name.
 
 import AgentVMKit
 import ArgumentParser
@@ -15,18 +16,28 @@ extension ImageCommand {
             abstract: "Download the latest macOS restore image this Mac supports, for `image create --ipsw`.",
             discussion: """
                 Asks Apple (through Virtualization) for the newest restore image this Mac can \
-                run, and downloads it into Cache/ipsw/ in the store, about 20 GB. An interrupted \
-                download (SIGINT, SIGTERM, a lost connection) keeps what it got, and the next run \
-                resumes it. It refuses to start when less than 10 GB would stay free. The file \
-                is checked to be a restore image Virtualization can load before it is put in \
-                place. --check only says what would be downloaded, and whether it fits. With \
+                run, and downloads it into Cache/ipsw/ in the store (about 27 GB). An \
+                interrupted download (SIGINT, SIGTERM, a lost connection) keeps what it got, \
+                and the next run resumes it. It refuses to start when less than 10 GB would \
+                stay free. The file is checked to be a restore image Virtualization can load before it is put in \
+                place. --check only says what would be downloaded, and whether it fits. --list \
+                shows the restore images already downloaded, for `image create --ipsw`. With \
                 --json, progress events go to stderr (step download) and the result to stdout.
                 """)
 
         @Flag(name: .long, help: "Only show the restore image, what is already downloaded, and whether it fits; download nothing.")
         var check = false
 
+        @Flag(name: .long, help: "Only list the restore images already downloaded, newest first, and which one `image create --ipsw latest` uses; no network.")
+        var list = false
+
         @OptionGroup var options: StoreOptions
+
+        func validate() throws {
+            if list && check {
+                throw ValidationError("give --list or --check, not both")
+            }
+        }
 
         struct Report: Encodable {
             var url: String
@@ -52,6 +63,10 @@ extension ImageCommand {
             let json = options.json
             let emit: @Sendable (ProgressEvent) -> Void = { Events.emit($0, json: json) }
             let cache = RestoreImageCache(root: SessionStore.defaultRoot())
+            if list {
+                try await ImageCommand.listIPSWs(cache, json: json)
+                return
+            }
             // Tests point this at a local server; the version is then read from the file.
             var latest: LatestRestoreImage
             if let override = ProcessInfo.processInfo.environment["AGENT_VM_IPSW_URL"], !override.isEmpty, let url = URL(string: override) {
@@ -139,7 +154,51 @@ extension ImageCommand {
                 return
             }
             print("Restore image ready: \(file.path)")
-            print("  create an image with: agent-vm image create <name> --ipsw \"\(file.path)\"")
+            print("  create an image with: agent-vm image create <name> --ipsw \(file.lastPathComponent)")
+        }
+    }
+
+    /// One entry of `fetch-ipsw --list --json`.
+    struct CachedIPSW: Encodable {
+        var name: String
+        var path: String
+        var bytes: Int64
+        var macOSVersion: String?
+        var macOSBuild: String?
+        /// The one `image create --ipsw latest` uses.
+        var latest: Bool
+        /// Why Virtualization cannot use the file.
+        var problem: String?
+    }
+
+    @MainActor
+    static func listIPSWs(_ cache: RestoreImageCache, json: Bool) async throws {
+        let images = await cache.images()
+        // Newest first, so the first usable one is what `--ipsw latest` picks.
+        let latest = images.first(where: { $0.info != nil })?.path
+        if json {
+            try Output.json(images.map {
+                CachedIPSW(name: $0.path.lastPathComponent, path: $0.path.path, bytes: $0.bytes, macOSVersion: $0.info?.version,
+                       macOSBuild: $0.info?.build, latest: $0.path == latest, problem: $0.problem)
+            })
+            return
+        }
+        if images.isEmpty {
+            print("No restore image is downloaded in \(cache.directory.path); `agent-vm image fetch-ipsw` downloads the latest.")
+            return
+        }
+        print("Restore images in \(cache.directory.path), newest first:")
+        for image in images {
+            let name = image.path.lastPathComponent
+            if let info = image.info {
+                let size = String(format: "%.1f GB", Double(image.bytes) / 1_000_000_000)
+                print("  \(name): macOS \(info.version) (\(info.build)), \(size)\(image.path == latest ? ", latest" : "")")
+            } else {
+                print("  \(name): cannot be used: \(image.problem ?? "unknown reason")")
+            }
+        }
+        if latest != nil {
+            print("Create an image with: agent-vm image create <name> --ipsw latest (or one of the names above)")
         }
     }
 

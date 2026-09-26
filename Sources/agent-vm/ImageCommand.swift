@@ -36,7 +36,7 @@ struct ImageCommand: ParsableCommand {
         @Argument(help: "Name of the new image (lower-case letters, digits, \".\", \"_\", \"-\").")
         var name: String
 
-        @Option(name: .long, help: "The macOS restore image (.ipsw) to install.")
+        @Option(name: .long, help: ArgumentHelp("The macOS restore image (.ipsw) to install: a path, the file name of one `image fetch-ipsw` downloaded (see `image fetch-ipsw --list`), or latest for the newest of those. A bare name is looked for in the current directory first.", valueName: "path|name|latest"))
         var ipsw: String?
 
         @Option(name: .long, help: "A ready image to start from instead of a restore image.")
@@ -141,7 +141,7 @@ struct ImageCommand: ParsableCommand {
             } else {
                 image = try await builder.build(ImageBuildOptions(
                     name: name,
-                    restoreImage: URL(fileURLWithPath: ((ipsw ?? "") as NSString).expandingTildeInPath),
+                    restoreImage: try await RestoreImageCache(root: SessionStore.defaultRoot()).resolve(ipsw ?? ""),
                     cpuCount: cpus ?? ImageBuildOptions.defaultCPUCount,
                     memoryBytes: memoryGB.map { UInt64($0) << 30 } ?? ImageBuildOptions.defaultMemoryBytes,
                     diskBytes: diskGB.map { UInt64($0) << 30 } ?? ImageBuildOptions.defaultDiskBytes,

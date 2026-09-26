@@ -1,4 +1,4 @@
-# agent-vm
+# AgentVM
 
 Run AI agents and their tools inside disposable macOS virtual machines, so a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac.
 
@@ -25,7 +25,8 @@ It builds on Apple's Virtualization framework and the zero-click macOS guest set
 ## Usage
 
 ```sh
-agent-vm image create macos-dev --ipsw <restore image>   # install macOS and set it up - no clicks
+agent-vm image fetch-ipsw                                # the latest macOS restore image (about 27 GB)
+agent-vm image create macos-dev --ipsw latest            # install macOS and set it up - no clicks
 agent-vm box create dev --image macos-dev --allow pack:npm --allow pack:github --allow pack:anthropic
 agent-vm box start dev
 agent-vm session start --project ~/src/myapp             # snapshot, prints the session id
@@ -196,12 +197,13 @@ agent-vm session start --project ~/src/myapp                      # snapshot fir
 
 ## Images: macOS installed and set up with no clicks (works today)
 
-A golden image is the macOS guest boxes will be cloned from. `image fetch-ipsw` downloads the latest restore image this Mac supports into the store's `Cache/ipsw/`. An interrupted download is resumed by the next run, and one whose file changed on Apple's server starts over (the file's ETag is compared). It refuses to start when less than 10 GB would stay free, counting only space that is free now, not purgeable space. The file is put in place only once Virtualization can load it. `--check` shows the image, its size, what is already downloaded and whether it fits, and downloads nothing; `--json` gives the result: `url`, `macOSVersion` and `macOSBuild` (as image records name them), `totalBytes`, `path`, and `state` (`ready`, `partial` or `missing`); with `--check` also `partialBytes`, `freeBytes` (free now) and `fits`, and without it `downloaded` (whether this run downloaded anything). A file already downloaded is checked again on every run. A finished file that Virtualization says is not a restore image is deleted; one it cannot check for another reason is kept. When the server sends no ETag, a partial download is resumed if the URL and length match. `image create` installs macOS from a restore image (`.ipsw`) and sets it up without a single click, using the guest provisioning added to Virtualization in macOS 27: the first boot creates an administrator account, logs it in automatically and turns on Remote Login. agent-vm then copies its guest daemon in over SSH, checks that it answers over vsock and runs programs as the account, turns Remote Login off again, and shuts the guest down through the daemon.
+A golden image is the macOS guest boxes will be cloned from. `image fetch-ipsw` downloads the latest restore image this Mac supports into the store's `Cache/ipsw/`. An interrupted download is resumed by the next run, and one whose file changed on Apple's server starts over (the file's ETag is compared). It refuses to start when less than 10 GB would stay free, counting only space that is free now, not purgeable space. The file is put in place only once Virtualization can load it. `--check` shows the image, its size, what is already downloaded and whether it fits, and downloads nothing; `--json` gives the result: `url`, `macOSVersion` and `macOSBuild` (as image records name them), `totalBytes`, `path`, and `state` (`ready`, `partial` or `missing`); with `--check` also `partialBytes`, `freeBytes` (free now) and `fits`, and without it `downloaded` (whether this run downloaded anything). A file already downloaded is checked again on every run. A finished file that Virtualization says is not a restore image is deleted; one it cannot check for another reason is kept. When the server sends no ETag, a partial download is resumed if the URL and length match. `image fetch-ipsw --list` shows the restore images already downloaded, newest first, and which one is the latest usable; it needs no network. With `--json` it gives an array of `name`, `path`, `bytes`, `macOSVersion`, `macOSBuild`, `latest`, and `problem` for a file Virtualization cannot use. `image create --ipsw` takes a path, the file name of a downloaded restore image, or `latest` for the newest usable one; a bare name is looked for in the current directory first (`./latest` names a file called latest). `image create` installs macOS from a restore image (`.ipsw`) and sets it up without a single click, using the guest provisioning added to Virtualization in macOS 27: the first boot creates an administrator account, logs it in automatically and turns on Remote Login. agent-vm then copies its guest daemon in over SSH, checks that it answers over vsock and runs programs as the account, turns Remote Login off again, and shuts the guest down through the daemon.
 
 ```sh
 Scripts/build.sh                                    # signed agent-vm and agent-vm-guest
-agent-vm image fetch-ipsw                           # the latest restore image this Mac supports (about 26 GB; resumes)
-.build/signed/release/agent-vm image create dev --ipsw ~/Downloads/UniversalMac_27.0_26A428_Restore.ipsw --recipe my-tools.json
+agent-vm image fetch-ipsw                           # the latest restore image this Mac supports (about 27 GB; resumes)
+agent-vm image fetch-ipsw --list                    # the restore images downloaded, newest first
+.build/signed/release/agent-vm image create dev --ipsw latest --recipe my-tools.json
 agent-vm image list
 agent-vm image setup dev                            # once: Full Disk Access for the guest daemon, in a window
 agent-vm image delete dev

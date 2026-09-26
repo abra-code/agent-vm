@@ -217,3 +217,30 @@ test_fetch_ipsw_checks_and_refuses() {
     assert_status 1 || return 1
     assert_err_contains "cannot download $_url" || return 1
 }
+
+test_fetch_ipsw_lists_and_create_finds_by_name() {
+    run_avm image fetch-ipsw --list
+    assert_status 0 || return 1
+    assert_out_contains "No restore image is downloaded" || return 1
+    run_avm image fetch-ipsw --list --check
+    assert_status 64 || return 1
+
+    # Listed, but Virtualization cannot use it, so it is not the latest.
+    local _dir="$AGENT_VM_HOME/Cache/ipsw"
+    /bin/mkdir -p "$_dir"
+    printf 'not a restore image' > "$_dir/UniversalMac_99.0_99A1_Restore.ipsw"
+    run_avm image fetch-ipsw --list --json
+    assert_status 0 || return 1
+    assert_json 0.name UniversalMac_99.0_99A1_Restore.ipsw || return 1
+    assert_json 0.bytes 19 || return 1
+    assert_json 0.latest false || return 1
+    local _problem="$(json_value 0.problem)"
+    [ -n "$_problem" ] || { fail "no problem reported for a file that is not a restore image"; return 1; }
+
+    run_avm image create x --ipsw latest
+    assert_status 1 || return 1
+    assert_err_contains "no usable restore image is downloaded" || return 1
+    run_avm image create x --ipsw nosuch.ipsw
+    assert_status 1 || return 1
+    assert_err_contains "is neither a file in the current directory nor a restore image downloaded" || return 1
+}

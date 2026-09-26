@@ -62,7 +62,8 @@ Because the box keeps everything, it also keeps whatever an agent left behind. T
 
 ```sh
 Scripts/build.sh                                           # agent-vm and agent-vm-guest, signed
-agent-vm image create dev --ipsw <restore image>           # about 6 minutes, no clicks
+agent-vm image fetch-ipsw                                  # the latest macOS restore image (about 27 GB; resumes)
+agent-vm image create dev --ipsw latest                    # about 6 minutes, no clicks
 agent-vm image setup dev                                   # once: Full Disk Access for the guest daemon
 agent-vm box create work --image dev --allow pack:github
 agent-vm box start work
