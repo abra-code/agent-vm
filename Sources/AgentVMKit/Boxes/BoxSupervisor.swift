@@ -120,11 +120,14 @@ public final class BoxSupervisor {
         guard !box.isTombstoned else {
             throw AgentVMError.boxDisposed(box.name)
         }
-        // However it stops (asked, its owner gone, a failed boot), a disposable box leaves a
-        // tombstone for `box gc`, written before the lock is released. The folder stays: the
-        // lock, the socket and this log live in it.
+        // However it stops once its VM ran (asked, its owner gone, a failed boot), a disposable
+        // box leaves a tombstone for `box gc`, written before the lock is released. The folder
+        // stays: the lock, the socket and this log live in it. A VM that never started (no free
+        // VM slot) changed nothing, so the box can be started again; box gc still collects it
+        // once it is old enough.
+        var ran = false
         defer {
-            if box.record.disposable == true {
+            if box.record.disposable == true && ran {
                 let text = "stopped \(ISO8601DateFormatter().string(from: Date()))\n"
                 if (try? Data(text.utf8).write(to: box.tombstoneURL)) == nil {
                     log("Could not leave the tombstone of this disposable box at \(box.tombstoneURL.path)")
@@ -189,6 +192,7 @@ public final class BoxSupervisor {
 
         log("Starting box \(box.name) (\(box.record.cpuCount) CPUs, \(box.record.memoryBytes >> 30) GB, image \(box.record.image), network \(network.mode.rawValue))")
         try await machine.start(provisioning: nil)
+        ran = true
         if network.usesProxy {
             // Each proxied connection holds two descriptors; the soft limit a shell hands down
             // is often 256, which the proxy's connection cap alone would exhaust.
@@ -923,6 +927,9 @@ public enum BoxLauncher {
                     let status = GuestServer.report(exitStatus).shellStatus
                     if status == 0 {
                         throw AgentVMError.guestUnreachable("box \(box.name) was stopped before it became ready")
+                    }
+                    if status == AgentVMError.noFreeVMSlotStatus {
+                        throw AgentVMError.noFreeVMSlot(operation: "start box \(box.name)")
                     }
                     throw AgentVMError.guestUnreachable("the supervisor exited (status \(status)); see \(box.logURL.path)")
                 }

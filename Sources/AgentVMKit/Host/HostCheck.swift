@@ -190,6 +190,10 @@ public struct HostCheck: Sendable, Equatable, Codable {
     public var name: String
     public var status: Status
     public var detail: String
+    /// The "running VMs" check only: how many run, and how many macOS guests may, as data (the
+    /// detail says it in words). `count` is left out when the processes could not be listed.
+    public var count: Int? = nil
+    public var limit: Int? = nil
 }
 
 public struct HostReport: Sendable, Equatable, Codable {
@@ -260,12 +264,13 @@ public struct HostReport: Sendable, Equatable, Codable {
         if let running = facts.runningVirtualMachines {
             let text = "\(running) virtual machine\(running == 1 ? "" : "s") running on this Mac (any application)"
             if running >= macOSGuestLimit {
-                checks.append(HostCheck(name: "running VMs", status: .warning, detail: "\(text); macOS runs at most \(macOSGuestLimit) macOS guests at once, so a box will not start while those are macOS guests"))
+                checks.append(HostCheck(name: "running VMs", status: .warning, detail: "\(text); macOS runs at most \(macOSGuestLimit) macOS guests at once, so a box will not start while those are macOS guests",
+                                        count: running, limit: macOSGuestLimit))
             } else {
-                checks.append(HostCheck(name: "running VMs", status: .ok, detail: text))
+                checks.append(HostCheck(name: "running VMs", status: .ok, detail: text, count: running, limit: macOSGuestLimit))
             }
         } else {
-            checks.append(HostCheck(name: "running VMs", status: .info, detail: "could not list processes (sandboxed?); at most \(macOSGuestLimit) macOS guests can run at once"))
+            checks.append(HostCheck(name: "running VMs", status: .info, detail: "could not list processes (sandboxed?); at most \(macOSGuestLimit) macOS guests can run at once", limit: macOSGuestLimit))
         }
         return HostReport(checks: checks)
     }

@@ -178,13 +178,13 @@ public struct BoxStore: Sendable {
         do {
             record = try SessionStore.decoder.decode(BoxRecord.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
         } catch {
-            throw AgentVMError.corruptImageRecord(path: path, reason: error.localizedDescription)
+            throw AgentVMError.corruptBoxRecord(path: path, reason: error.localizedDescription)
         }
         guard record.name == name else {
-            throw AgentVMError.corruptImageRecord(path: path, reason: "it names box \(record.name)")
+            throw AgentVMError.corruptBoxRecord(path: path, reason: "it names box \(record.name)")
         }
         guard record.formatVersion <= BoxRecord.currentFormatVersion else {
-            throw AgentVMError.corruptImageRecord(path: path, reason: "written by a newer agent-vm (format \(record.formatVersion))")
+            throw AgentVMError.corruptBoxRecord(path: path, reason: "written by a newer agent-vm (format \(record.formatVersion))")
         }
         return Box(record: record, directory: directory)
     }
@@ -306,7 +306,7 @@ public struct BoxStore: Sendable {
         do {
             try SessionStore.encoder.encode(box.record).write(to: path, options: .atomic)
         } catch {
-            throw AgentVMError.corruptImageRecord(path: path.path, reason: "cannot write: \(error.localizedDescription)")
+            throw AgentVMError.corruptBoxRecord(path: path.path, reason: "cannot write: \(error.localizedDescription)")
         }
     }
 

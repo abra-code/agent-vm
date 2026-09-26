@@ -190,6 +190,20 @@ public final class ImageBuilder {
         return "\(error)"
     }
 
+    /// Removes a new image whose VM never ran because no VM slot was free (its lock, held by
+    /// the caller, goes with the folder, as in `ImageStore.delete`).
+    private func removeNeverRun(_ image: GoldenImage, refusal: Error) {
+        do {
+            try FileSystem.removeTree(image.directory.path)
+            log("  \(image.name) was not kept: its VM never ran")
+        } catch {
+            _ = try? store.update(image) { record in
+                record.state = .failed
+                record.failure = Self.failureReason(refusal)
+            }
+        }
+    }
+
     /// Builds the image; on failure the record says which step failed and the folder is kept
     /// for inspection (`agent-vm image delete` removes it).
     public func build(_ options: ImageBuildOptions) async throws -> GoldenImage {
@@ -249,6 +263,12 @@ public final class ImageBuilder {
             image = try await provision(image, machine: machine, options: options)
             return image
         } catch {
+            // No VM slot for the installer: nothing was installed, so the name is left free for
+            // another try rather than taken by a failed image.
+            if case AgentVMError.noFreeVMSlot = error, image.record.state == .installing {
+                removeNeverRun(image, refusal: error)
+                throw error
+            }
             // Steps that a cancel interrupts report it as the cancel themselves, before they
             // stop the guest: a signal during that stop must not relabel a real failure.
             let reason = Self.failureReason(error)
@@ -345,6 +365,7 @@ public final class ImageBuilder {
 
         let clock = ContinuousClock()
         let began = clock.now
+        var booted = false
         do {
             progress("clone", "Cloning \(base.name) (macOS \(base.record.macOSBuild)\(base.record.recipe.map { ", recipe \($0.description ?? String($0.digest.prefix(12)))" } ?? ""))")
             do {
@@ -370,6 +391,7 @@ public final class ImageBuilder {
             try checkCanceled()
             progress("boot", "Booting")
             try await machine.start(provisioning: nil)
+            booted = true
             do {
                 // A clone boots like any box: the daemon answers once macOS is up.
                 let hello = try await waitForDaemon(machine, attempts: 180)
@@ -410,6 +432,11 @@ public final class ImageBuilder {
                 record.provisionSeconds = seconds
             }
         } catch {
+            // No VM slot to boot the clone: the name is left free for another try.
+            if case AgentVMError.noFreeVMSlot = error, !booted {
+                removeNeverRun(image, refusal: error)
+                throw error
+            }
             let reason = Self.failureReason(error)
             _ = try? store.update(image) { record in
                 record.state = .failed

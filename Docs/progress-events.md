@@ -31,7 +31,7 @@ agent-vm image create dev-node --from dev --recipe Recipes/homebrew-node/recipe.
 | `box` | box commands | The box the event is about. |
 | `output` | some `log` | `true` for a line printed by a program in the guest (a recipe step's output), cut to 200 characters; its `message` is the line as printed, without the indentation and bar the text form puts before it. |
 
-Keys are written in sorted order, and a key is left out when it has no value. A program should ignore keys it does not know: new ones may be added. A failed command ends with a plain-text message on standard error, which is not JSON, and a non-zero exit status: it begins with `Error: ` and may run over several lines (a failed recipe step adds the end of its output), so a program should treat everything from that line on as the error.
+Keys are written in sorted order, and a key is left out when it has no value. A program should ignore keys it does not know: new ones may be added. A failed command ends with a plain-text message on standard error, which is not JSON, and a non-zero exit status: it begins with `Error: ` and may run over several lines (a failed recipe step adds the end of its output), so a program should treat everything from that line on as the error. A command refused because macOS already runs as many macOS virtual machines as it allows exits with status 75, and its message starts with `Error: no free VM slot`.
 
 ## Steps
 

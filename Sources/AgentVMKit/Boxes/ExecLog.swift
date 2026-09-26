@@ -100,13 +100,18 @@ public final class ExecLog: @unchecked Sendable {
         self.maxBytes = maxBytes
     }
 
-    /// Appends one line; a failure to write is ignored (the program still runs).
-    public func append(_ entry: Entry) {
+    /// Appends one line. A failure to write does not stop the program: it returns why, for the
+    /// caller to report (nil when the line was written).
+    @discardableResult
+    public func append(_ entry: Entry) -> String? {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        guard var line = try? encoder.encode(entry) else {
-            return
+        var line: Data
+        do {
+            line = try encoder.encode(entry)
+        } catch {
+            return error.localizedDescription
         }
         line.append(10)
         var info = stat()
@@ -115,11 +120,16 @@ public final class ExecLog: @unchecked Sendable {
         }
         let descriptor = open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else {
-            return
+            return String(cString: strerror(errno))
         }
         defer { close(descriptor) }
         // One write per line: several exec clients may append at once.
-        try? FrameChannel.writeAll(descriptor, Array(line))
+        do {
+            try FrameChannel.writeAll(descriptor, Array(line))
+        } catch {
+            return "\(error)"
+        }
+        return nil
     }
 
     /// The last `count` programs (all when nil), oldest first; unreadable lines are skipped.

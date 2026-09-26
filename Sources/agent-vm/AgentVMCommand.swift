@@ -26,14 +26,37 @@ enum Main {
             let application = NSApplication.shared
             application.setActivationPolicy(.prohibited)
             Task { @MainActor in
-                await AgentVMCommand.main()
+                await run()
                 exit(0)
             }
             application.run()
             // run() returns only after NSApp.stop, which nothing calls; the command must not run twice.
             return
         }
-        await AgentVMCommand.main()
+        await run()
+    }
+
+    /// AgentVMCommand.main(), except that a refusal for want of a free VM slot exits with its
+    /// own status (AgentVMError.noFreeVMSlotStatus), so a program such as Cadabra tells it from
+    /// other failures without reading the message.
+    @MainActor
+    static func run() async {
+        do {
+            var command = try await AgentVMCommand.asyncParseAsRoot()
+            if var asyncCommand = command as? AsyncParsableCommand {
+                try await asyncCommand.run()
+            } else {
+                try command.run()
+            }
+        } catch let error as AgentVMError {
+            guard case .noFreeVMSlot = error else {
+                AgentVMCommand.exit(withError: error)
+            }
+            FileHandle.standardError.write(Data("Error: \(error)\n".utf8))
+            exit(AgentVMError.noFreeVMSlotStatus)
+        } catch {
+            AgentVMCommand.exit(withError: error)
+        }
     }
 }
 

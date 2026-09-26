@@ -9,6 +9,37 @@ import Testing
 @testable import AgentVMKit
 
 @Suite struct DisposableBoxTests {
+    /// Owners are started and reaped with posix_spawn and waitpid, not Foundation's Process:
+    /// its waitUntilExit in an async test once never returned although the child was reaped
+    /// (the whole test run hung).
+    static func spawn(_ argv: [String]) throws -> pid_t {
+        // Default signal handling and no blocked signals: other tests ignore SIGTERM in this
+        // process, which a spawned child would inherit (then SIGTERM would not end it).
+        var attributes: posix_spawnattr_t?
+        posix_spawnattr_init(&attributes)
+        defer { posix_spawnattr_destroy(&attributes) }
+        var all = sigset_t()
+        sigfillset(&all)
+        var none = sigset_t()
+        sigemptyset(&none)
+        posix_spawnattr_setsigdefault(&attributes, &all)
+        posix_spawnattr_setsigmask(&attributes, &none)
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
+        var pid: pid_t = 0
+        let status = GuestServer.withCStrings(argv) { arguments in
+            posix_spawn(&pid, argv[0], nil, &attributes, arguments, environ)
+        }
+        guard status == 0 else {
+            throw AgentVMError.system(operation: "start \(argv[0])", code: status)
+        }
+        return pid
+    }
+
+    static func reap(_ pid: pid_t) {
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+    }
+
     @Test func theRecordSaysDisposable() throws {
         let fixture = try BoxScratch()
         let kept = try fixture.boxes.create(name: "kept", from: fixture.image, imageStore: fixture.images)
@@ -54,16 +85,13 @@ import Testing
     }
 
     @Test func theOwnerWatchFiresWhenTheOwnerExits() async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
-        process.arguments = ["30"]
-        try process.run()
+        let pid = try Self.spawn(["/bin/sleep", "30"])
         let fired = Flag()
-        let watch = OwnerWatch(pid: process.processIdentifier, queue: .global()) { fired.set() }
+        let watch = OwnerWatch(pid: pid, queue: .global()) { fired.set() }
         try await Task.sleep(for: .milliseconds(200))
         #expect(!fired.value)
-        process.terminate()
-        process.waitUntilExit()
+        kill(pid, SIGTERM)
+        Self.reap(pid)
         for _ in 0..<50 where !fired.value {
             try await Task.sleep(for: .milliseconds(20))
         }
@@ -73,12 +101,10 @@ import Testing
 
     /// An owner already gone: the watch fires at once.
     @Test func anOwnerAlreadyGoneFiresAtOnce() async throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/true")
-        try process.run()
-        process.waitUntilExit()
+        let pid = try Self.spawn(["/usr/bin/true"])
+        Self.reap(pid)
         let fired = Flag()
-        let watch = OwnerWatch(pid: process.processIdentifier, queue: .global()) { fired.set() }
+        let watch = OwnerWatch(pid: pid, queue: .global()) { fired.set() }
         for _ in 0..<50 where !fired.value {
             try await Task.sleep(for: .milliseconds(20))
         }

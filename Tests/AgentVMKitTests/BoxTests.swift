@@ -106,6 +106,20 @@ final class BoxScratch {
         #expect(boxes.map(\.name) == ["aa", "zz"])
         #expect(problems.count == 1)
     }
+
+    /// A damaged box.json is named as a box record, not an image record.
+    @Test func aDamagedRecordIsABoxRecord() throws {
+        let fixture = try BoxScratch()
+        let box = try fixture.boxes.create(name: "dmg", from: fixture.image, imageStore: fixture.images)
+        try Data("{".utf8).write(to: box.directory.appendingPathComponent(BoxStore.recordName))
+        do {
+            _ = try fixture.boxes.box(named: "dmg")
+            Issue.record("a damaged record was read")
+        } catch {
+            #expect("\(error)".hasPrefix("box record "), "\(error)")
+            #expect("\(error)".contains("box.json is unusable"), "\(error)")
+        }
+    }
 }
 
 @Suite struct FolderLockTests {

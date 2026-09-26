@@ -512,7 +512,11 @@ final class LocalServer: @unchecked Sendable {
         #expect(read(guest, &reply, reply.count) == 42)
         let other = [UInt8](repeating: 0, count: 60)
         _ = other.withUnsafeBytes { write(guest, $0.baseAddress, $0.count) }
-        Thread.sleep(forTimeInterval: 0.2)
+        // Until the frame is counted, not a fixed wait: 0.2 s was too short with every suite
+        // running at once.
+        for _ in 0..<250 where link.counts.dropped == 0 {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
         #expect(link.counts.answered == 1)
         #expect(link.counts.dropped == 1)
     }

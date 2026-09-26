@@ -80,6 +80,16 @@ import Testing
         #expect(size <= 300)
     }
 
+    /// A line that cannot be written says why, so exec can warn that the run goes unrecorded.
+    @Test func anUnwritableLogSaysWhy() throws {
+        let scratch = try Scratch()
+        let written = ExecLog(url: scratch.root.appendingPathComponent("exec.jsonl"))
+        #expect(written.append(ExecLog.Entry(id: "a", event: .start, time: t0, argv: ["true"])) == nil)
+        let missing = ExecLog(url: scratch.root.appendingPathComponent("gone/exec.jsonl"))
+        let failure = missing.append(ExecLog.Entry(id: "a", event: .start, time: t0, argv: ["true"]))
+        #expect(failure == "No such file or directory")
+    }
+
     @Test func noLogIsNoRecords() {
         #expect(ExecLog(url: URL(fileURLWithPath: "/nonexistent/exec.jsonl")).records().isEmpty)
     }

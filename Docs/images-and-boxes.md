@@ -163,7 +163,7 @@ Not after creation. For a box, make it again with `box create --cpus N --memory-
 Not supported yet. Build a new image from a newer restore image (`image create --ipsw`), then build the derived images again from their recipes.
 
 **How many boxes can I have?**
-As many as your disk holds: a stopped box costs only the space it wrote. At most two can run at once, because macOS runs at most two macOS virtual machines at a time, counting image builds and updates and other apps' virtual machines (`agent-vm doctor` shows how many are running).
+As many as your disk holds: a stopped box costs only the space it wrote. At most two can run at once, because macOS runs at most two macOS virtual machines at a time, counting image builds and updates and other apps' virtual machines (`agent-vm doctor` shows how many are running). A start or build with no free slot fails with exit status 75 ("no free VM slot"); try again when a VM has stopped. A box, or a new image, that was refused before its first boot is left as it was, so the same command can simply run again.
 
 **Can I update an image while boxes made from it are running?**
 Yes. Running boxes use their own disks, not the image's. The update does need one of the two virtual machine slots. While another agent-vm command uses an image (building or updating it, or building a derived image from it), `box create` from it is refused as busy; try again when that command ends.

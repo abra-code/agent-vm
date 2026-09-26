@@ -4,6 +4,8 @@
 // they say what was refused or what failed, and what to do about it where there is an answer.
 
 import Darwin
+import Foundation
+import Virtualization
 
 public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     /// A system call failed; `operation` names what was being attempted.
@@ -56,8 +58,14 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     /// The box's supervisor runs; stop the box first.
     case boxRunning(String)
     case boxNotRunning(String)
+    /// A box record on disk could not be read or written.
+    case corruptBoxRecord(path: String, reason: String)
     /// Virtualization refused or failed an operation; `message` is its explanation.
     case virtualMachine(operation: String, message: String)
+    /// Virtualization refused to start another VM: macOS runs at most two macOS guests at once,
+    /// whichever applications run them. `operation` names what needed the VM. The command
+    /// exits with `noFreeVMSlotStatus`, and the message starts with "no free VM slot".
+    case noFreeVMSlot(operation: String)
     /// The guest did not become reachable, or stopped answering.
     case guestUnreachable(String)
     /// The guest daemon turned a request down (unknown account, program not found, ...).
@@ -77,6 +85,27 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case secretNotFound(String)
     case secretUnreadable(name: String, reason: String)
     case keychain(operation: String, message: String)
+
+    /// The exit status of a command refused for want of a VM slot: EX_TEMPFAIL of sysexits(3)
+    /// ("try again later"), so a program tells that refusal from other failures without
+    /// reading the message. A box supervisor exits with it too, which is how box start knows.
+    public static let noFreeVMSlotStatus: Int32 = 75
+
+    /// Maps Virtualization's refusal to start another VM to `noFreeVMSlot`, any other error to
+    /// `virtualMachine`. The installer wraps the refusal in an installation error, so the
+    /// underlying errors are looked through too.
+    static func virtualMachine(operation: String, error: Error) -> AgentVMError {
+        var pending = [error as NSError]
+        var seen = 0
+        while let next = pending.popLast(), seen < 16 {
+            seen += 1
+            if next.domain == VZErrorDomain && next.code == VZError.Code.virtualMachineLimitExceeded.rawValue {
+                return .noFreeVMSlot(operation: operation)
+            }
+            pending += next.underlyingErrors.map { $0 as NSError }
+        }
+        return .virtualMachine(operation: operation, message: error.localizedDescription)
+    }
 
     public var description: String {
         switch self {
@@ -136,8 +165,12 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "box \(name) is running; stop it first with `agent-vm box stop \(name)`"
         case let .boxNotRunning(name):
             return "box \(name) is not running; start it with `agent-vm box start \(name)`"
+        case let .corruptBoxRecord(path, reason):
+            return "box record \(path) is unusable: \(reason)"
         case let .virtualMachine(operation, message):
             return "\(operation) failed: \(message)"
+        case let .noFreeVMSlot(operation):
+            return "no free VM slot: cannot \(operation), because macOS runs at most \(HostReport.macOSGuestLimit) macOS virtual machines at once and that many are running; stop a box (`agent-vm box list` shows the running ones) or a VM in another application, then try again"
         case let .guestUnreachable(reason):
             return "the guest is unreachable: \(reason)"
         case let .guestRefused(reason):

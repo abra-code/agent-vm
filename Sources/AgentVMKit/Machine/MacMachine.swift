@@ -189,7 +189,7 @@ public final class MacMachine: NSObject, VZVirtualMachineDelegate {
                 case .success:
                     continuation.resume()
                 case let .failure(error):
-                    continuation.resume(throwing: AgentVMError.virtualMachine(operation: "install macOS", message: error.localizedDescription))
+                    continuation.resume(throwing: AgentVMError.virtualMachine(operation: "install macOS", error: error))
                 }
             }
         }
@@ -211,7 +211,7 @@ public final class MacMachine: NSObject, VZVirtualMachineDelegate {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             machine.start(options: options) { error in
                 if let error {
-                    continuation.resume(throwing: AgentVMError.virtualMachine(operation: "start the guest", message: error.localizedDescription))
+                    continuation.resume(throwing: AgentVMError.virtualMachine(operation: "start the guest", error: error))
                 } else {
                     continuation.resume()
                 }

@@ -5,6 +5,7 @@
 
 import Foundation
 import Testing
+import Virtualization
 @testable import AgentVMKit
 
 @Suite struct HostCheckTests {
@@ -96,6 +97,37 @@ import Testing
         let report = HostReport.evaluate(facts)
         #expect(status(report, "running VMs") == .warning)
         #expect(report.canRunBoxes)
+    }
+
+    /// The count and the limit as data, for a program that checks before it starts a VM.
+    @Test func runningVMsAreCountedAsData() throws {
+        var facts = Self.goodFacts()
+        facts.runningVirtualMachines = 1
+        var check = try #require(HostReport.evaluate(facts).checks.first { $0.name == "running VMs" })
+        #expect(check.count == 1 && check.limit == 2)
+        let json = String(decoding: try JSONEncoder().encode(check), as: UTF8.self)
+        #expect(json.contains("\"count\":1") && json.contains("\"limit\":2"))
+        facts.runningVirtualMachines = nil
+        check = try #require(HostReport.evaluate(facts).checks.first { $0.name == "running VMs" })
+        #expect(check.count == nil && check.limit == 2)
+        // Only that check carries them.
+        let others = HostReport.evaluate(facts).checks.filter { $0.name != "running VMs" }
+        #expect(others.allSatisfy { $0.count == nil && $0.limit == nil })
+    }
+
+    /// Virtualization's refusal to run another VM becomes its own error, with a stable phrase
+    /// and exit status; its other errors stay as they were.
+    @Test func theVMLimitIsItsOwnRefusal() {
+        let limit = NSError(domain: VZErrorDomain, code: VZError.Code.virtualMachineLimitExceeded.rawValue)
+        let refusal = AgentVMError.virtualMachine(operation: "start the guest", error: limit)
+        #expect(refusal == .noFreeVMSlot(operation: "start the guest"))
+        #expect(refusal.description.hasPrefix("no free VM slot: cannot start the guest"))
+        #expect(AgentVMError.noFreeVMSlotStatus == 75)
+        // As the installer reports it: wrapped in its own installation error (measured).
+        let wrapped = NSError(domain: VZErrorDomain, code: VZError.Code.installationFailed.rawValue, userInfo: [NSUnderlyingErrorKey: limit])
+        #expect(AgentVMError.virtualMachine(operation: "install macOS", error: wrapped) == .noFreeVMSlot(operation: "install macOS"))
+        let other = NSError(domain: VZErrorDomain, code: VZError.Code.internalError.rawValue, userInfo: [NSLocalizedDescriptionKey: "it broke"])
+        #expect(AgentVMError.virtualMachine(operation: "start the guest", error: other) == .virtualMachine(operation: "start the guest", message: "it broke"))
     }
 
     /// The live facts are gathered without crashing, whatever the test runner's signature.

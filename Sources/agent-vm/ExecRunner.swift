@@ -105,9 +105,14 @@ struct ExecRunner {
 
         let log = ExecLog(url: box.execLogURL)
         let id = ExecLog.newID()
-        log.append(ExecLog.Entry(id: id, event: .start, time: Date(), argv: argv, user: user ?? box.record.userName, cwd: directory,
-                                 project: projectPath, readOnly: projectPath == nil ? nil : readOnly, terminal: terminal ? true : nil,
-                                 hostPid: getpid()))
+        let failure = log.append(ExecLog.Entry(id: id, event: .start, time: Date(), argv: argv, user: user ?? box.record.userName, cwd: directory,
+                                               project: projectPath, readOnly: projectPath == nil ? nil : readOnly, terminal: terminal ? true : nil,
+                                               hostPid: getpid()))
+        if let failure {
+            // The program still runs, but its audit trail is missing (for example under a
+            // sandbox profile that does not let agent-vm write the box's folder): say so.
+            FileHandle.standardError.write(Data("agent-vm: warning: cannot write the exec log \(log.url.path) (\(failure)); this run is not recorded in box execlog\n".utf8))
+        }
         ExecExit.shared.record(log: log, id: id, box: box.name)
 
         let session: ExecSession
