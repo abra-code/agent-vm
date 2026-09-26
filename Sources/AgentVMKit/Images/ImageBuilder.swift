@@ -366,7 +366,7 @@ public final class ImageBuilder {
 
             let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
             let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
-            var replacedDaemon: (digest: String, replaced: Bool)?
+            var replacedDaemon: (digest: String, requirement: String?, replaced: Bool)?
             try checkCanceled()
             progress("boot", "Booting")
             try await machine.start(provisioning: nil)
@@ -393,12 +393,14 @@ public final class ImageBuilder {
                 throw error
             }
             if let replacedDaemon, replacedDaemon.replaced {
-                image = try await checkGuestDaemon(image, digest: replacedDaemon.digest)
+                image = try await checkGuestDaemon(image, digest: replacedDaemon.digest, requirement: replacedDaemon.requirement)
             } else if let replacedDaemon {
                 image = try store.update(image) { record in
                     record.guestDigest = replacedDaemon.digest
+                    record.guestRequirement = replacedDaemon.requirement
                     // Probed in configure, under this same daemon (the base may not have had its digest).
                     record.fullDiskAccess?.guestDigest = replacedDaemon.digest
+                    record.fullDiskAccess?.guestRequirement = replacedDaemon.requirement
                 }
             }
             let seconds = Self.seconds(clock.now - began)
@@ -441,7 +443,7 @@ public final class ImageBuilder {
         try checkCanceled()
         progress("boot", "Booting \(image.name)")
         try await machine.start(provisioning: nil)
-        let outcome: (digest: String, replaced: Bool)
+        let outcome: (digest: String, requirement: String?, replaced: Bool)
         // Once the replacement began, the image's daemon may be the new one, not yet checked.
         var touched = false
         do {
@@ -452,9 +454,10 @@ public final class ImageBuilder {
                 image = try store.update(image) { record in
                     record.guestFeatures = hello.features
                     record.guestDigest = outcome.digest
+                    record.guestRequirement = outcome.requirement
                 }
                 await prepareDesktop(image, machine: machine, features: hello.features)
-                image = try await recordFullDiskAccess(image, machine: machine, digest: outcome.digest)
+                image = try await recordFullDiskAccess(image, machine: machine, digest: outcome.digest, requirement: outcome.requirement)
             }
             try await shutDown(machine)
         } catch {
@@ -480,7 +483,7 @@ public final class ImageBuilder {
             return image
         }
         do {
-            return try await checkGuestDaemon(image, digest: outcome.digest)
+            return try await checkGuestDaemon(image, digest: outcome.digest, requirement: outcome.requirement)
         } catch {
             let reason: String
             if Self.isCancel(error) {
@@ -598,6 +601,7 @@ public final class ImageBuilder {
                 record.guestProtocol = hello.v
                 record.guestFeatures = hello.features
                 record.guestDigest = try? Self.sha256(of: options.guestDaemon)
+                record.guestRequirement = CodeSignature.designatedRequirement(of: options.guestDaemon)
             }
 
             current = try await configure(current, machine: machine, commandLineTools: options.commandLineTools, recipe: options.recipe)
@@ -683,7 +687,7 @@ public final class ImageBuilder {
             }
         }
         // Checked, so image list says whether boxes can open protected folders (image setup).
-        return try await recordFullDiskAccess(current, machine: machine, digest: current.record.guestDigest)
+        return try await recordFullDiskAccess(current, machine: machine, digest: current.record.guestDigest, requirement: current.record.guestRequirement)
     }
 
     /// `requestStop()` leaves a logged-in guest running; the daemon shuts it down.
@@ -716,13 +720,14 @@ public final class ImageBuilder {
     /// Puts `executable` in the guest in place of its agent-vm-guest when the two differ (by
     /// SHA-256), through the running daemon; the new one runs from the next boot.
     /// `willReplace` is called just before the guest's daemon file is changed.
-    private func replaceGuestDaemon(_ executable: URL, machine: MacMachine, willReplace: () -> Void = {}) async throws -> (digest: String, replaced: Bool) {
+    private func replaceGuestDaemon(_ executable: URL, machine: MacMachine, willReplace: () -> Void = {}) async throws -> (digest: String, requirement: String?, replaced: Bool) {
         let digest = try Self.sha256(of: executable)
+        let requirement = CodeSignature.designatedRequirement(of: executable)
         let installed = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/shasum", "-a", "256", GuestDaemon.executablePath],
                                                                      cwd: "/", user: "root"))
         if installed.report == ExitReport(status: 0), installed.stdout.hasPrefix(digest + " ") {
             log("  agent-vm-guest is already this agent-vm's")
-            return (digest, false)
+            return (digest, requirement, false)
         }
         progress("replace-guest-daemon", "Replacing agent-vm-guest with this agent-vm's")
         let data = try Data(contentsOf: executable)
@@ -734,13 +739,13 @@ public final class ImageBuilder {
             throw AgentVMError.guestCommandFailed(command: "replace agent-vm-guest", status: replaced.report.shellStatus,
                                                   output: (replaced.stderr + replaced.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        return (digest, true)
+        return (digest, requirement, true)
     }
 
     /// Boots `image` once more, checks that its new agent-vm-guest answers with every feature
     /// this agent-vm knows, brings the desktop up to date (wallpaper, widgets), records it, and
     /// shuts down.
-    private func checkGuestDaemon(_ image: GoldenImage, digest: String) async throws -> GoldenImage {
+    private func checkGuestDaemon(_ image: GoldenImage, digest: String, requirement: String?) async throws -> GoldenImage {
         let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
         let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
         try checkCanceled()
@@ -754,13 +759,14 @@ public final class ImageBuilder {
             }
             log("  agent-vm-guest \(hello.version ?? "?") answers (\((hello.features ?? []).joined(separator: ", ")))")
             await prepareDesktop(image, machine: machine, features: hello.features)
-            let checked = try await recordFullDiskAccess(image, machine: machine, digest: digest)
+            let checked = try await recordFullDiskAccess(image, machine: machine, digest: digest, requirement: requirement)
             try await shutDown(machine)
             return try store.update(checked) { record in
                 record.guestVersion = hello.version
                 record.guestProtocol = hello.v
                 record.guestFeatures = hello.features
                 record.guestDigest = digest
+                record.guestRequirement = requirement
             }
         } catch {
             let error = canceledError(error)

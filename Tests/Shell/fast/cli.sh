@@ -113,10 +113,16 @@ test_version_names_the_guest_daemon() {
     local _digest
     _digest="$(/usr/bin/shasum -a 256 "$_guest" | /usr/bin/awk '{ print $1 }')"
     assert_json guestDaemon.digest "$_digest" || return 1
+    # The designated requirement, as codesign states it.
+    local _requirement
+    _requirement="$(/usr/bin/codesign -d -r- "$_guest" 2>/dev/null | /usr/bin/sed -n 's/^[# ]*designated => //p')"
+    [ -n "$_requirement" ] || { fail "codesign -d -r- named no designated requirement for $_guest"; return 1; }
+    assert_json guestDaemon.requirement "$_requirement" || return 1
     run_avm version
     assert_status 0 || return 1
     assert_out_contains "agent-vm $_version (control protocol 1, guest protocol 1)" || return 1
     assert_out_contains "sha256 $_digest" || return 1
+    assert_out_contains "signature: $_requirement" || return 1
 }
 
 # Secrets in the Keychain, through the signed binary only: every item is stored, read and

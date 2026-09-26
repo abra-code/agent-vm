@@ -143,6 +143,57 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
         #expect(record(features: GuestFeature.all, access: stale).needs == [ImageNeed(kind: .fullDiskAccess, reason: .notChecked)])
     }
 
+    static let developerID = #"identifier "com.abracode.agent-vm-guest" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = T9NM2ZLDTY"#
+
+    /// A grant recorded for another build carries over when both name the same signer (a
+    /// Developer ID), never for ad hoc builds, whose requirement is one build's hash.
+    @Test func fullDiskAccessCarriesOverBetweenBuildsOfOneSigner() {
+        var image = record(features: GuestFeature.all, access: ImageRecord.FullDiskAccess(granted: true, guestDigest: "d0", guestRequirement: Self.developerID, checkedAt: Date()))
+        image.guestRequirement = Self.developerID
+        #expect(image.hasFullDiskAccess == true)
+        #expect(image.needs == [])
+        image.fullDiskAccess?.granted = false
+        #expect(image.hasFullDiskAccess == false)
+
+        image.fullDiskAccess?.granted = true
+        image.guestRequirement = Self.developerID.replacingOccurrences(of: "T9NM2ZLDTY", with: "OTHERTEAM1")
+        #expect(image.hasFullDiskAccess == nil)
+        image.guestRequirement = nil
+        #expect(image.hasFullDiskAccess == nil)
+
+        let adHoc = #"cdhash H"fad47e2c930b7246cffa3aac62fda48c459ef597""#
+        image.guestRequirement = adHoc
+        image.fullDiskAccess?.guestRequirement = adHoc
+        #expect(image.hasFullDiskAccess == nil)
+        // The same executable: known whatever its signature.
+        image.guestDigest = "d0"
+        #expect(image.hasFullDiskAccess == true)
+    }
+
+    @Test func requirementsNamingASigner() throws {
+        #expect(CodeSignature.namesASigner(Self.developerID))
+        #expect(!CodeSignature.namesASigner(#"cdhash H"fad47e2c930b7246cffa3aac62fda48c459ef597""#))
+        #expect(CodeSignature.namesASigner(#"identifier "com.example.tool" and certificate root = H"0123456789abcdef0123456789abcdef01234567""#))
+        // Apple's own tools name a signer; a script names none.
+        let ls = try #require(CodeSignature.designatedRequirement(of: URL(fileURLWithPath: "/bin/ls")))
+        #expect(CodeSignature.namesASigner(ls), "\(ls)")
+        let scratch = try Scratch()
+        let script = scratch.root.appendingPathComponent("tool")
+        try Data("#!/bin/sh\n".utf8).write(to: script)
+        #expect(CodeSignature.designatedRequirement(of: script) == nil)
+    }
+
+    /// Records written before the requirement was recorded still read.
+    @Test func recordsWithoutARequirementStillRead() throws {
+        let json = #"{"granted":true,"guestDigest":"d1","checkedAt":"2026-09-01T00:00:00Z"}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let access = try decoder.decode(ImageRecord.FullDiskAccess.self, from: Data(json.utf8))
+        #expect(access.guestRequirement == nil)
+        #expect(access.applies(toDigest: "d1", requirement: Self.developerID))
+        #expect(!access.applies(toDigest: "d2", requirement: Self.developerID))
+    }
+
     @Test func onlyReadyImagesNeedAnything() {
         var failed = record(features: nil, access: nil)
         failed.state = .failed
@@ -178,6 +229,7 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
         #expect(daemon.protocol == 1)
         #expect(daemon.features == nil)
         #expect(daemon.digest == (try ImageBuilder.sha256(of: url)))
+        #expect(daemon.requirement == nil)
     }
 
     @Test func reportsAMissingOrSilentDaemon() throws {

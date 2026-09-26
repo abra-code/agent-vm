@@ -50,28 +50,49 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     /// its executable; nil in images built before they were recorded.
     public var guestFeatures: [String]?
     public var guestDigest: String?
+    /// That executable's designated code requirement (CodeSignature); nil in images built
+    /// before it was recorded, or for an unsigned daemon.
+    public var guestRequirement: String?
     /// What `image setup` last found; nil when it never ran on this image (or its base).
     public var fullDiskAccess: FullDiskAccess?
 
     /// Full Disk Access for agent-vm-guest inside the image. macOS ties the grant to the
-    /// daemon's code signature, so it is recorded with the daemon it was checked for.
+    /// daemon's designated code requirement, so it is recorded with the daemon it was checked
+    /// for: its digest, and its requirement.
     public struct FullDiskAccess: Codable, Equatable, Sendable {
         public var granted: Bool
         /// SHA-256 of the agent-vm-guest that was checked.
         public var guestDigest: String?
+        /// Its designated code requirement.
+        public var guestRequirement: String?
         public var checkedAt: Date
 
-        public init(granted: Bool, guestDigest: String?, checkedAt: Date) {
+        public init(granted: Bool, guestDigest: String?, guestRequirement: String? = nil, checkedAt: Date) {
             self.granted = granted
             self.guestDigest = guestDigest
+            self.guestRequirement = guestRequirement
             self.checkedAt = checkedAt
+        }
+
+        /// Whether this finding holds for a daemon with `digest` and `requirement`: the same
+        /// executable, or one with the same requirement naming a signer (a Developer ID build;
+        /// macOS keeps the grant for it, measured). An ad hoc requirement is one build's hash,
+        /// which the digest already covers.
+        public func applies(toDigest digest: String?, requirement: String?) -> Bool {
+            if guestDigest == digest {
+                return true
+            }
+            guard let guestRequirement, guestRequirement == requirement else {
+                return false
+            }
+            return CodeSignature.namesASigner(guestRequirement)
         }
     }
 
     /// Whether programs in boxes of this image can open protected folders without a prompt:
     /// true or false when known for the current daemon, nil when unknown.
     public var hasFullDiskAccess: Bool? {
-        guard let fullDiskAccess, fullDiskAccess.guestDigest == guestDigest else {
+        guard let fullDiskAccess, fullDiskAccess.applies(toDigest: guestDigest, requirement: guestRequirement) else {
             return nil
         }
         return fullDiskAccess.granted

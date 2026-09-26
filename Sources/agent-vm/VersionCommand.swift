@@ -14,7 +14,10 @@ struct VersionCommand: ParsableCommand {
         abstract: "Show this agent-vm's version and protocols, and the guest daemon it would install.",
         discussion: """
             The guest daemon is the agent-vm-guest next to agent-vm, which `image create` and \
-            `image update-guest` install; its digest is what images record as guestDigest. \
+            `image update-guest` install; its digest is what images record as guestDigest, and \
+            its designated code requirement what they record as guestRequirement (Full Disk \
+            Access carries over to a daemon with the same requirement when it names a signer, \
+            as a Developer ID signature does). \
             Supervisors of running boxes may be other builds: `box status` names theirs.
             """)
 
@@ -54,6 +57,11 @@ struct VersionCommand: ParsableCommand {
         print("    \(daemon.path)")
         if let digest = daemon.digest {
             print("    sha256 \(digest)")
+        }
+        if let requirement = daemon.requirement {
+            let note = CodeSignature.namesASigner(requirement) ? "Full Disk Access carries over between builds signed this way" : "no signing identity (ad hoc): Full Disk Access is lost with every new build"
+            print("    signature: \(requirement)")
+            print("    (\(note))")
         }
     }
 }

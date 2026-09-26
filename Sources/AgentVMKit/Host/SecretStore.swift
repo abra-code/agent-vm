@@ -186,15 +186,7 @@ public struct SecretStore: Sendable {
         guard SecCodeCopyStaticCode(code, [], &staticCode) == errSecSuccess, let staticCode else {
             return nil
         }
-        var requirement: SecRequirement?
-        guard SecCodeCopyDesignatedRequirement(staticCode, [], &requirement) == errSecSuccess, let requirement else {
-            return nil
-        }
-        var text: CFString?
-        guard SecRequirementCopyString(requirement, [], &text) == errSecSuccess, let text else {
-            return nil
-        }
-        return text as String
+        return CodeSignature.designatedRequirement(of: staticCode)
     }()
 
     private func baseQuery(_ name: String) -> [String: Any] {

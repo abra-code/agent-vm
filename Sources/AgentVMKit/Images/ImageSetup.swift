@@ -91,7 +91,7 @@ extension ImageBuilder {
             throw error
         }
         image = try store.update(image) { record in
-            record.fullDiskAccess = ImageRecord.FullDiskAccess(granted: granted, guestDigest: record.guestDigest,
+            record.fullDiskAccess = ImageRecord.FullDiskAccess(granted: granted, guestDigest: record.guestDigest, guestRequirement: record.guestRequirement,
                                                               checkedAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)))
         }
         return image
@@ -144,15 +144,17 @@ extension ImageBuilder {
         return granted
     }
 
-    /// Probes Full Disk Access for the running daemon and records it for `digest` (the daemon's).
-    /// A grant lost to a new daemon is said so: macOS ties it to the daemon's code signature.
-    func recordFullDiskAccess(_ image: GoldenImage, machine: MacMachine, digest: String?) async throws -> GoldenImage {
+    /// Probes Full Disk Access for the running daemon and records it for `digest` and
+    /// `requirement` (the daemon's). A grant lost to a new daemon is said so: macOS ties it to
+    /// the daemon's designated code requirement, which only a Developer ID keeps across builds.
+    func recordFullDiskAccess(_ image: GoldenImage, machine: MacMachine, digest: String?, requirement: String?) async throws -> GoldenImage {
         let granted = try await hasFullDiskAccess(machine)
         if !granted, let previous = image.record.fullDiskAccess, previous.granted, previous.guestDigest != digest {
-            notice("  note: Full Disk Access was granted to the previous agent-vm-guest, not to this one (macOS ties it to the daemon's signature); run `agent-vm image setup \(image.name)` to grant it again")
+            let keep = requirement.map(CodeSignature.namesASigner) == true ? "" : "; a daemon signed with a Developer ID (Scripts/build.sh --identity) keeps it across updates"
+            notice("  note: Full Disk Access was granted to the previous agent-vm-guest, not to this one (macOS ties it to the daemon's code signature); run `agent-vm image setup \(image.name)` to grant it again\(keep)")
         }
         return try store.update(image) { record in
-            record.fullDiskAccess = ImageRecord.FullDiskAccess(granted: granted, guestDigest: digest,
+            record.fullDiskAccess = ImageRecord.FullDiskAccess(granted: granted, guestDigest: digest, guestRequirement: requirement,
                                                               checkedAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)))
         }
     }

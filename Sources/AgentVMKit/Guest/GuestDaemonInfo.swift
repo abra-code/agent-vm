@@ -51,6 +51,9 @@ public struct LocalGuestDaemon: Encodable, Equatable, Sendable {
     public var features: [String]?
     /// SHA-256 of the executable, as images record it (`guestDigest`).
     public var digest: String?
+    /// Its designated code requirement, as images record it (`guestRequirement`); Full Disk
+    /// Access granted to a daemon with the same requirement naming a signer carries over.
+    public var requirement: String?
     /// Why the rest is missing: no such file, or it did not describe itself.
     public var error: String?
 
@@ -63,6 +66,7 @@ public struct LocalGuestDaemon: Encodable, Equatable, Sendable {
             return result
         }
         result.digest = try? ImageBuilder.sha256(of: url)
+        result.requirement = CodeSignature.designatedRequirement(of: url)
         let process = Process()
         process.executableURL = url
         process.arguments = ["--version", "--json"]
