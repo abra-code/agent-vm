@@ -253,8 +253,17 @@ struct BoxCommand: ParsableCommand {
             }
             let clock = ContinuousClock()
             let began = clock.now
-            let response = try BoxLauncher.start(box, executable: try AskpassEntry.executablePath(), ownerPid: ownerPid) { state in
-                Events.emit(ProgressEvent(.progress, "  \(state)", step: state, box: box.name), json: options.json)
+            let response: ControlResponse
+            do {
+                response = try BoxLauncher.start(box, executable: try AskpassEntry.executablePath(), ownerPid: ownerPid) { state in
+                    // A box that was stopping is waited for, then started again.
+                    let text = state == ControlResponse.State.stopping.rawValue ? "  waiting for the box to stop" : "  \(state)"
+                    Events.emit(ProgressEvent(.progress, text, step: state, box: box.name), json: options.json)
+                }
+            } catch AgentVMError.boxDisposed(let name) {
+                // A disposable box that was stopping has stopped for good.
+                GC.collect(options.boxStore)
+                throw AgentVMError.boxDisposed(name)
             }
             if options.json {
                 try Output.json(response)

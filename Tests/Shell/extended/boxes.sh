@@ -128,3 +128,46 @@ test_an_owner_exit_stops_a_disposable_box() {
     assert_err_contains "deleted disposable box $_box" || return 1
     assert_missing "$_folder" || return 1
 }
+
+# box start on a box that is stopping waits for the stop, then starts it again with its own
+# --owner-pid; the box stop that was under way still succeeds.
+test_a_start_while_stopping_starts_again() {
+    require_image || return $(( $? == 1 ? 0 : 1 ))
+    local _box="shtest-restart-$$"
+    "$AGENT_VM" box delete "$_box" > /dev/null 2>&1
+    cleanup_on_exit box "$_box"
+    run_avm box create "$_box" --image "$TEST_IMAGE"
+    assert_status 0 || return 1
+    run_avm box start "$_box" --json
+    assert_status 0 || return 1
+    local _old
+    _old="$(json_value pid)"
+
+    "$AGENT_VM" box stop "$_box" > /dev/null 2>&1 &
+    local _stop=$!
+    local _waited=0
+    local _state=""
+    while [ "$_waited" -lt 50 ]; do
+        run_avm box status "$_box" --json
+        _state="$(json_value state)"
+        [ "$_state" = "stopping" ] && break
+        /bin/sleep 0.1
+        _waited=$((_waited + 1))
+    done
+    assert_eq "$_state" "stopping" "the box's state after box stop began" || { wait "$_stop"; return 1; }
+    /bin/sleep 600 &
+    local _owner=$!
+    run_avm box start "$_box" --owner-pid "$_owner" --json
+    local _started=$STATUS
+    wait "$_stop"
+    local _stopped=$?
+    kill "$_owner"
+    wait "$_owner" 2>/dev/null
+    assert_eq "$_started" 0 "box start's status" || return 1
+    assert_eq "$_stopped" 0 "box stop's status" || return 1
+    assert_err_contains '"message":"waiting for the box to stop","step":"stopping"' || return 1
+    assert_json state ready || return 1
+    assert_json ownerPid "$_owner" || return 1
+    [ "$(json_value pid)" != "$_old" ] || { fail "the old supervisor still runs the box"; return 1; }
+    # The owner is gone, so the box is stopping again; cleanup_on_exit waits for it.
+}

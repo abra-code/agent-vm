@@ -874,15 +874,36 @@ private final class OpenResult: @unchecked Sendable {
 
 /// Starts a box's supervisor as a detached process and waits until the box is ready.
 public enum BoxLauncher {
+    /// The least time a supervisor gets to bring its box up, even when waiting for a stopping
+    /// box used most of the call's limit (a boot takes 10 to 30 seconds).
+    static let minimumBootWait: Duration = .seconds(60)
+
     /// Spawns `executable box serve <name>` in its own session, output appended to the box's
-    /// supervisor.log, and waits (up to `timeout`) until it reports ready. Returns its status.
+    /// supervisor.log, and waits (up to `timeout`, or `minimumBootWait` after a long wait for a stopping box) until it reports ready. Returns its status.
     /// `ownerPid`: the process whose exit stops the box; ignored when the box already runs
-    /// (its status names the owner it has).
+    /// (its status names the owner it has). A box that is stopping is waited for and started
+    /// again, with `ownerPid`.
     public static func start(_ box: Box, executable: String, ownerPid: Int32? = nil, timeout: Duration = .seconds(200),
                              progress: (String) -> Void) throws -> ControlResponse {
+        // One limit for the whole call, a wait for a stopping box included.
+        let deadline = ContinuousClock.now + timeout
         if box.isRunning {
-            // Another start is under way (or done): wait for it rather than fail.
-            return try waitUntilReady(box, supervisor: nil, timeout: timeout, progress: progress)
+            // Another start is under way (or done): wait for it rather than fail. A box that is
+            // stopping (or whose other start failed) is started here once it has stopped, so
+            // one call covers every state.
+            if let response = try waitForOtherSupervisor(box, timeout: timeout, progress: progress) {
+                return response
+            }
+            // Checked once the old supervisor is gone: it leaves a disposable box's tombstone
+            // before it releases the lock.
+            guard !box.isTombstoned else {
+                throw AgentVMError.boxDisposed(box.name)
+            }
+            // Deleted once it stopped: a disposable one by another client's `box gc`, which
+            // also takes the tombstone.
+            guard FileSystem.exists(box.directory.appendingPathComponent(BoxStore.recordName).path) else {
+                throw box.record.disposable == true ? AgentVMError.boxDisposed(box.name) : AgentVMError.boxNotFound(box.name)
+            }
         }
         let logDescriptor = open(box.logURL.path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard logDescriptor >= 0 else {
@@ -911,30 +932,31 @@ public enum BoxLauncher {
             throw AgentVMError.system(operation: "start the supervisor \(executable)", code: status)
         }
 
-        return try waitUntilReady(box, supervisor: pid, timeout: timeout, progress: progress)
+        // A box that took long to stop still gets time to boot.
+        return try waitUntilReady(box, supervisor: pid, timeout: max(deadline - ContinuousClock.now, minimumBootWait), progress: progress)
     }
 
-    /// Polls the supervisor until the box is ready. With `supervisor` (our own child), its
-    /// exit ends the wait; without, a released lock does.
-    private static func waitUntilReady(_ box: Box, supervisor pid: pid_t?, timeout: Duration,
+    /// Polls our own supervisor until the box is ready; its exit ends the wait.
+    private static func waitUntilReady(_ box: Box, supervisor pid: pid_t, timeout: Duration,
                                        progress: (String) -> Void) throws -> ControlResponse {
         let deadline = ContinuousClock.now + timeout
         var lastState: ControlResponse.State?
         while ContinuousClock.now < deadline {
-            if let pid {
-                var exitStatus: Int32 = 0
-                if waitpid(pid, &exitStatus, WNOHANG) == pid {
-                    let status = GuestServer.report(exitStatus).shellStatus
-                    if status == 0 {
-                        throw AgentVMError.guestUnreachable("box \(box.name) was stopped before it became ready")
-                    }
-                    if status == AgentVMError.noFreeVMSlotStatus {
-                        throw AgentVMError.noFreeVMSlot(operation: "start box \(box.name)")
-                    }
-                    throw AgentVMError.guestUnreachable("the supervisor exited (status \(status)); see \(box.logURL.path)")
+            var exitStatus: Int32 = 0
+            if waitpid(pid, &exitStatus, WNOHANG) == pid {
+                let status = GuestServer.report(exitStatus).shellStatus
+                if status == 0 {
+                    throw AgentVMError.guestUnreachable("box \(box.name) was stopped before it became ready")
                 }
-            } else if !box.isRunning {
-                throw AgentVMError.guestUnreachable("box \(box.name) stopped before it became ready; see \(box.logURL.path)")
+                if status == AgentVMError.noFreeVMSlotStatus {
+                    throw AgentVMError.noFreeVMSlot(operation: "start box \(box.name)")
+                }
+                // Another start took the box between our check and our supervisor (which then
+                // found the lock held): that start is the one to wait for.
+                if box.isRunning, let response = try waitForOtherSupervisor(box, timeout: max(deadline - ContinuousClock.now, minimumBootWait), progress: progress) {
+                    return response
+                }
+                throw AgentVMError.guestUnreachable("the supervisor exited (status \(status)); see \(box.logURL.path)")
             }
             if let response = try? ControlClient.request(.status, path: box.controlSocketPath), response.ok {
                 if response.state != lastState, let state = response.state {
@@ -950,15 +972,45 @@ public enum BoxLauncher {
         throw AgentVMError.guestUnreachable("the box did not become ready within \(timeout); see \(box.logURL.path)")
     }
 
+    /// Polls a supervisor another process started: the box's status once it is ready, nil once
+    /// the box has stopped (it was stopping, or that start failed). Its states are reported as
+    /// they change, so a wait for a stop shows as `stopping`.
+    private static func waitForOtherSupervisor(_ box: Box, timeout: Duration, progress: (String) -> Void) throws -> ControlResponse? {
+        let deadline = ContinuousClock.now + timeout
+        var lastState: ControlResponse.State?
+        while ContinuousClock.now < deadline {
+            guard box.isRunning else {
+                return nil
+            }
+            if let response = try? ControlClient.request(.status, path: box.controlSocketPath), response.ok {
+                if response.state != lastState, let state = response.state {
+                    lastState = state
+                    progress(state.rawValue)
+                }
+                if response.state == .ready {
+                    return response
+                }
+            }
+            usleep(500_000)
+        }
+        throw AgentVMError.guestUnreachable("box \(box.name) did not become ready or stop within \(timeout); see \(box.logURL.path)")
+    }
+
     /// Asks the supervisor to stop and waits until it has released the box.
     public static func stop(_ box: Box, timeout: Duration = .seconds(120)) throws {
         guard box.isRunning else {
             throw AgentVMError.boxNotRunning(box.name)
         }
+        // The supervisor asked to stop: once it has exited the stop is done, even when a
+        // `box start` waiting on it has already started the box again (the box never looks free).
+        let supervisor = (try? ControlClient.request(.status, path: box.controlSocketPath))?.pid
         _ = try ControlClient.request(.stop, path: box.controlSocketPath)
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
             if !box.isRunning {
+                return
+            }
+            if let supervisor, kill(supervisor, 0) != 0 && errno == ESRCH {
                 return
             }
             usleep(250_000)
