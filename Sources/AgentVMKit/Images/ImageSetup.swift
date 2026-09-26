@@ -200,7 +200,7 @@ extension ImageBuilder {
     /// Guest requests on this machine, with stdin, for GuestDesktop.
     func guestRunner(_ machine: MacMachine) -> GuestDesktop.Run {
         return { [self] request, input in
-            try await withGuest(machine) { descriptor in
+            try await withGuest(machine, Self.describe(request)) { descriptor in
                 try GuestClient.capture(descriptor, request, input: input)
             }
         }

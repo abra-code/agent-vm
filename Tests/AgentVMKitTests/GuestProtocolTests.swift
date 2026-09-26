@@ -66,6 +66,18 @@ private final class BundleMarker {}
         #expect(try b.receive() == nil)
     }
 
+    @Test func aRequestThePeerClosedFirstIsNotDelivered() throws {
+        var pair: [Int32] = [-1, -1]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+        defer { close(pair[0]) }
+        // Made before the guest closes its end, as a real connection is.
+        let channel = FrameChannel(descriptor: pair[0])
+        close(pair[1])
+        #expect(throws: GuestProtocolError.notDelivered(code: EPIPE)) { try channel.sendRequest(GuestRequest(op: .hello)) }
+        // Other frames keep the plain write error: the request may have run by then.
+        #expect(throws: GuestProtocolError.io(operation: "write", code: EPIPE)) { try channel.send(Frame(.stdinEnd)) }
+    }
+
     @Test func badFramesAreRejected() throws {
         var pair: [Int32] = [-1, -1]
         #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)

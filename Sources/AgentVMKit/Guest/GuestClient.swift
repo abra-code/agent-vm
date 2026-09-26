@@ -11,7 +11,7 @@ public enum GuestClient {
     /// Version and health check.
     public static func hello(_ descriptor: Int32) throws -> GuestResponse {
         let channel = FrameChannel(descriptor: descriptor)
-        try channel.send(.request, json: GuestRequest(op: .hello))
+        try channel.sendRequest(GuestRequest(op: .hello))
         let response = try channel.receive(.response, as: GuestResponse.self)
         guard response.ok else {
             throw AgentVMError.guestRefused(response.error ?? "no reason given")
@@ -23,7 +23,7 @@ public enum GuestClient {
     /// was behind, in seconds (negative: ahead). The time is taken just before sending.
     public static func syncTime(_ descriptor: Int32) throws -> Double {
         let channel = FrameChannel(descriptor: descriptor)
-        try channel.send(.request, json: GuestRequest(op: .timeSync, epoch: Date().timeIntervalSince1970))
+        try channel.sendRequest(GuestRequest(op: .timeSync, epoch: Date().timeIntervalSince1970))
         let response = try channel.receive(.response, as: GuestResponse.self)
         guard response.ok, let offset = response.offset else {
             throw AgentVMError.guestRefused(response.error ?? "no offset in the answer")
@@ -34,7 +34,7 @@ public enum GuestClient {
     /// Asks the guest to shut down; returns once the guest accepted.
     public static func shutdown(_ descriptor: Int32) throws {
         let channel = FrameChannel(descriptor: descriptor)
-        try channel.send(.request, json: GuestRequest(op: .shutdown))
+        try channel.sendRequest(GuestRequest(op: .shutdown))
         let response = try channel.receive(.response, as: GuestResponse.self)
         guard response.ok else {
             throw AgentVMError.guestRefused(response.error ?? "no reason given")
@@ -69,7 +69,7 @@ public final class ExecSession: @unchecked Sendable {
     /// bad working directory).
     public init(descriptor: Int32, request: GuestRequest) throws {
         channel = FrameChannel(descriptor: descriptor)
-        try channel.send(.request, json: request)
+        try channel.sendRequest(request)
         let response = try channel.receive(.response, as: GuestResponse.self)
         guard response.ok, let pid = response.pid else {
             throw ExecRefusal(message: response.error ?? "no reason given", status: response.status ?? 126)

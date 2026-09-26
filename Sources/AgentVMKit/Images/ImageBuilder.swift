@@ -158,7 +158,7 @@ public final class ImageBuilder {
             let deadline = ContinuousClock.now + Self.cancelShutdownTimeout
             var asked = false
             while true {
-                asked = (try? await withGuest(machine, readTimeout: 10, cancellable: false) { try GuestClient.shutdown($0) }) != nil
+                asked = (try? await withGuest(machine, "shutdown", readTimeout: 10, cancellable: false) { try GuestClient.shutdown($0) }) != nil
                 if asked || !waitForDaemon || !machine.isRunning || ContinuousClock.now >= deadline {
                     break
                 }
@@ -696,7 +696,7 @@ public final class ImageBuilder {
         // Checked once: the request itself is not cut short, or a guest already shutting down
         // would lose power.
         try checkCanceled()
-        try await withGuest(machine, cancellable: false) { descriptor in
+        try await withGuest(machine, "shutdown", cancellable: false) { descriptor in
             try GuestClient.shutdown(descriptor)
         }
         guard await machine.waitUntilStopped(timeout: Self.shutdownTimeout) else {
@@ -734,7 +734,7 @@ public final class ImageBuilder {
         try checkCanceled()
         willReplace()
         let request = GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDaemon.replaceCommand(digest: digest)], cwd: "/", user: "root")
-        let replaced = try await withGuest(machine, readTimeout: 120) { try GuestClient.capture($0, request, input: data) }
+        let replaced = try await withGuest(machine, "replace agent-vm-guest", readTimeout: 120) { try GuestClient.capture($0, request, input: data) }
         guard replaced.report == ExitReport(status: 0), replaced.stdout.hasPrefix(digest + " ") else {
             throw AgentVMError.guestCommandFailed(command: "replace agent-vm-guest", status: replaced.report.shellStatus,
                                                   output: (replaced.stderr + replaced.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
@@ -789,9 +789,15 @@ public final class ImageBuilder {
                 throw AgentVMError.guestUnreachable("the guest stopped before its daemon answered\(machine.failure.map { ": \($0)" } ?? "")")
             }
             do {
-                let hello = try await withGuest(machine) { try GuestClient.hello($0) }
+                // Not sent again inside: this loop tries every second anyway.
+                let hello = try await withGuest(machine, "hello", redeliver: false) { try GuestClient.hello($0) }
                 guard hello.v == AgentVM.guestProtocolVersion else {
                     throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the guest daemon speaks protocol \(hello.v ?? 0), agent-vm \(AgentVM.guestProtocolVersion)")
+                }
+                // No supervisor keeps an image's clock: set it at each boot, so what the guest
+                // logs lines up with the Mac's time.
+                if (hello.features ?? []).contains(GuestFeature.timeSync) {
+                    try await syncClock(machine)
                 }
                 return hello
             } catch let error as AgentVMError {
@@ -808,6 +814,21 @@ public final class ImageBuilder {
             try await Task.sleep(for: .seconds(1))
         }
         throw lastError
+    }
+
+    /// Sets the guest's clock to the Mac's. A failure is a note (a cancel is not): the build
+    /// does not need the right time.
+    private func syncClock(_ machine: MacMachine) async throws {
+        do {
+            let offset = try await withGuest(machine, "time-sync", readTimeout: 10) { try GuestClient.syncTime($0) }
+            if abs(offset) >= 1 {
+                log(String(format: "  Guest clock set (it was %.1f s %@)", abs(offset), offset >= 0 ? "behind" : "ahead"))
+            }
+        } catch AgentVMError.canceled(let signal) {
+            throw AgentVMError.canceled(signal: signal)
+        } catch {
+            notice("  note: could not set the guest's clock: \(error)")
+        }
     }
 
     /// Installs the Command Line Tools through softwareupdate (over the image build's NAT) and
@@ -894,7 +915,7 @@ public final class ImageBuilder {
             // Output comes only at the end, when the guest has the whole file; the read timeout
             // covers the wait for it. A guest program that exits early drops the rest of the
             // input, so sending cannot block on it.
-            let info = try await withGuest(machine, readTimeout: 600) { descriptor in
+            let info = try await withGuest(machine, "input \(name)", readTimeout: 600) { descriptor in
                 try Self.streamInput(file, name: name, to: path, descriptor: descriptor)
             }
             log("      \(info.bytes >> 20) MB sent in \(Int(Self.seconds(clock.now - began))) s, SHA-256 \(info.sha256.prefix(16))...")
@@ -963,7 +984,7 @@ public final class ImageBuilder {
             let emit = LineEmitter(report: report, image: subject)
             let ended: ExitReport
             do {
-                ended = try await runStreaming(machine, request, input: input, readTimeout: step.timeoutSeconds, emit: emit)
+                ended = try await runStreaming(machine, label, request, input: input, readTimeout: step.timeoutSeconds, emit: emit)
             } catch {
                 emit.flush()
                 throw Self.recipeFailure(label, error, timeoutSeconds: step.timeoutSeconds, output: emit.tail)
@@ -1001,6 +1022,9 @@ public final class ImageBuilder {
             return AgentVMError.guestCommandFailed(command: label, status: 124, output: "no output for \(timeoutSeconds) s, stopped\(last)")
         case let refusal as ExecRefusal:
             return AgentVMError.guestCommandFailed(command: label, status: refusal.status, output: refusal.message)
+        case let AgentVMError.guestUnreachable(reason) where reason.hasPrefix(label):
+            // withGuest named the request already.
+            return AgentVMError.guestUnreachable("\(reason)\(last)")
         default:
             return AgentVMError.guestUnreachable("during \(label): \(error)\(last)")
         }
@@ -1008,8 +1032,8 @@ public final class ImageBuilder {
 
     /// Runs one request with its output shown line by line in the build log (indented) through
     /// `emit`, and `input` as its standard input; returns how it ended.
-    private func runStreaming(_ machine: MacMachine, _ request: GuestRequest, input: Data?, readTimeout: Int, emit: LineEmitter) async throws -> ExitReport {
-        return try await withGuest(machine, readTimeout: readTimeout) { descriptor in
+    private func runStreaming(_ machine: MacMachine, _ what: String, _ request: GuestRequest, input: Data?, readTimeout: Int, emit: LineEmitter) async throws -> ExitReport {
+        return try await withGuest(machine, what, readTimeout: readTimeout) { descriptor in
             let session = try ExecSession(descriptor: descriptor, request: request)
             if let input {
                 try session.sendStdin(Array(input))
@@ -1022,18 +1046,107 @@ public final class ImageBuilder {
     }
 
     func guestCapture(_ machine: MacMachine, _ request: GuestRequest, readTimeout: Int = 60) async throws -> (report: ExitReport, stdout: String, stderr: String) {
-        return try await withGuest(machine, readTimeout: readTimeout) { try GuestClient.capture($0, request) }
+        return try await withGuest(machine, Self.describe(request), readTimeout: readTimeout) { try GuestClient.capture($0, request) }
+    }
+
+    /// A request as errors and notes name it: its command line (shortened), or its operation.
+    nonisolated static func describe(_ request: GuestRequest) -> String {
+        guard request.op == .exec, let argv = request.argv, !argv.isEmpty else {
+            return request.op.rawValue
+        }
+        let line = argv.map { argument in
+            argument.contains(where: \.isWhitespace) ? "'" + argument.split(whereSeparator: \.isNewline).joined(separator: " ") + "'" : argument
+        }.joined(separator: " ")
+        return line.count > 100 ? String(line.prefix(97)) + "..." : line
     }
 
     /// Runs a blocking protocol exchange on a fresh vsock connection, off the main actor, with
     /// a read timeout (seconds without any frame) so a stuck guest cannot hang the build.
+    /// `what` names the request in errors and notes. A request the guest refused before it had
+    /// it (the connection closed first, so nothing ran) is sent again on a new connection for up
+    /// to `redeliveryWindow`, with a note in the log. Other protocol errors come back as
+    /// guestUnreachable naming `what`, except the read timeout, which callers tell apart.
     /// `cancellable`: a cancel refuses the exchange, or ends it by shutting the connection
     /// down (the guest daemon then stops the program); off for the shutdown after a cancel.
-    func withGuest<T: Sendable>(_ machine: MacMachine, readTimeout: Int = 60, cancellable: Bool = true,
-                                _ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
+    func withGuest<T: Sendable>(_ machine: MacMachine, _ what: String, readTimeout: Int = 60, cancellable: Bool = true,
+                                redeliver: Bool = true, _ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
         let cancellation = cancellable ? self.cancellation : nil
+        do {
+            let (value, redelivery) = try await Self.redelivering(what, window: redeliver ? Self.redeliveryWindow : .zero, pause: .seconds(1), check: { [self] in
+                try checkCanceled(cancellation)
+            }) { [self] in
+                try await exchange(machine, readTimeout: readTimeout, cancellation: cancellation, body)
+            }
+            if let redelivery {
+                notice("  note: \(redelivery.note(what))")
+            }
+            return value
+        } catch let failure as ConnectFailure {
+            throw failure.error
+        } catch let error as GuestProtocolError where error != .io(operation: "read", code: EAGAIN) {
+            throw AgentVMError.guestUnreachable("\(what): \(error)")
+        }
+    }
+
+    /// A daemon that launchd restarts listens again within about 10 s (its throttle).
+    nonisolated static let redeliveryWindow: Duration = .seconds(15)
+
+    /// How a request the guest first refused went through in the end.
+    struct Redelivery: Equatable {
+        var attempts: Int
+        var seconds: Double
+        var refusal: GuestProtocolError
+
+        func note(_ what: String) -> String {
+            return String(format: "%@: %@; sent again, it went through on attempt %d, %.1f s later", what, refusal.description, attempts, seconds)
+        }
+    }
+
+    /// The connection itself could not be made (no daemon listening).
+    struct ConnectFailure: Error {
+        var error: Error
+    }
+
+    /// Runs `attempt`, and again while it fails with GuestProtocolError.notDelivered, pausing
+    /// `pause` in between, for up to `window`. Once a request was refused, a failure to connect
+    /// is tried again too: the daemon may be restarting. Returns the value and, when it took
+    /// more than one attempt, how it went.
+    static func redelivering<T>(_ what: String, window: Duration, pause: Duration, check: () throws -> Void,
+                                            _ attempt: () async throws -> T) async throws -> (T, Redelivery?) {
+        let clock = ContinuousClock()
+        let began = clock.now
+        var attempts = 0
+        var refusal: GuestProtocolError?
+        while true {
+            attempts += 1
+            do {
+                let value = try await attempt()
+                return (value, refusal.map { Redelivery(attempts: attempts, seconds: seconds(clock.now - began), refusal: $0) })
+            } catch let GuestProtocolError.notDelivered(code) {
+                refusal = refusal ?? .notDelivered(code: code)
+            } catch is ConnectFailure where refusal != nil {
+                // The daemon may be restarting; any other error was thrown as it is.
+            }
+            try check()
+            let elapsed = clock.now - began
+            guard elapsed + pause <= window else {
+                let tries = attempts == 1 ? "tried once" : String(format: "tried %d times over %.0f s", attempts, seconds(elapsed))
+                throw AgentVMError.guestUnreachable("\(what): \(refusal?.description ?? ""); \(tries)")
+            }
+            try await Task.sleep(for: pause)
+        }
+    }
+
+    /// One connection and one exchange; see withGuest.
+    private func exchange<T: Sendable>(_ machine: MacMachine, readTimeout: Int, cancellation: BuildCancellation?,
+                                       _ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
         try checkCanceled(cancellation)
-        let connection = try await machine.connect(toPort: GuestProtocol.port)
+        let connection: GuestConnection
+        do {
+            connection = try await machine.connect(toPort: GuestProtocol.port)
+        } catch {
+            throw ConnectFailure(error: error)
+        }
         defer { connection.close() }
         let descriptor = connection.descriptor
         // Unregistered before the connection closes (defers run in reverse), so a cancel never

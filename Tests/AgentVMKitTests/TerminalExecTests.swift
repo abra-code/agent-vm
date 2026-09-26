@@ -35,8 +35,9 @@ import Testing
         #expect(output.contains("/dev/ttys"))
         #expect(output.contains("24 80"))
         #expect(output.contains("all-three"))
-        // A session leader in the terminal's foreground group ("+").
-        #expect(output.contains("Ss+"))
+        // A session leader ("s") in the terminal's foreground group ("+"). Other flags may come
+        // between: "SNs+" when the tests run at a lower priority (zsh lowers background jobs).
+        #expect(output.range(of: #"(?m)^[A-Z]\S*s\S*\+"#, options: .regularExpression) != nil, "\(output)")
         // Both streams arrive through the terminal, with its line endings.
         #expect(output.contains("to-stderr\r\n"))
     }
@@ -45,11 +46,19 @@ import Testing
         let pair = try GuestPair(helperPath: try GuestPair.builtHelper())
         let script = "trap 'stty size; exit 0' WINCH; echo ready; while :; do /bin/sleep 0.1; done"
         let session = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script], terminal: size))
-        Thread.sleep(forTimeInterval: 0.5)
-        try session.sendResize(TerminalSize(rows: 40, columns: 120))
-        let (report, output) = try finish(session)
+        // Resized once the trap is set ("ready"), not after a fixed wait: on a busy Mac a
+        // resize before the trap was lost, and the loop never ended.
+        var output = Data()
+        var resized = false
+        let report = try session.run(stdout: { bytes in
+            output.append(contentsOf: bytes)
+            if !resized, String(decoding: output, as: UTF8.self).contains("ready") {
+                resized = true
+                try session.sendResize(TerminalSize(rows: 40, columns: 120))
+            }
+        }, stderr: { _ in })
         #expect(report == ExitReport(status: 0))
-        #expect(output.contains("40 120"))
+        #expect(String(decoding: output, as: UTF8.self).contains("40 120"))
     }
 
     @Test func controlCInterruptsTheForegroundProgram() throws {

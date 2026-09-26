@@ -119,6 +119,8 @@ public final class GuestServer: @unchecked Sendable {
             }
             request = try JSONDecoder().decode(GuestRequest.self, from: Data(frame.payload))
         } catch {
+            // Rare: the host always sends a request first.
+            Self.log("a connection brought no readable request: \(error)")
             try? channel.send(.response, json: GuestResponse.failure("unreadable request: \(error)"))
             return
         }
@@ -132,7 +134,15 @@ public final class GuestServer: @unchecked Sendable {
             Self.log("shutdown requested by the host")
             var pid: pid_t = 0
             let argv = ["/sbin/shutdown", "-h", "now"]
-            let status = Self.withCStrings(argv) { posix_spawn(&pid, "/sbin/shutdown", nil, nil, $0, environ) }
+            // Signals back to their defaults: an ignored one (logStopSignals) stays ignored across exec.
+            var attributes: posix_spawnattr_t?
+            posix_spawnattr_init(&attributes)
+            defer { posix_spawnattr_destroy(&attributes) }
+            var defaults = sigset_t()
+            sigfillset(&defaults)
+            posix_spawnattr_setsigdefault(&attributes, &defaults)
+            posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSIGDEF))
+            let status = Self.withCStrings(argv) { posix_spawn(&pid, "/sbin/shutdown", nil, &attributes, $0, environ) }
             if status != 0 {
                 Self.log("cannot run /sbin/shutdown: \(String(cString: strerror(status)))")
             }
@@ -704,7 +714,44 @@ public final class GuestServer: @unchecked Sendable {
     }
 
     static func log(_ message: String) {
-        FileHandle.standardError.write(Data("agent-vm-guest: \(message)\n".utf8))
+        logLine("agent-vm-guest: \(message)")
+    }
+
+    /// Logs the signal that stops the daemon, then ends by it as before: launchd sends SIGTERM
+    /// at shutdown, and a SIGKILL leaves no line, which tells the two apart. The handlers run on
+    /// a global queue (the main thread stays in accept()), so they are set up here, outside the
+    /// main actor's top-level code: a handler inheriting its isolation traps there (measured).
+    public static func logStopSignals() {
+        for stopSignal in [SIGTERM, SIGHUP, SIGINT] {
+            signal(stopSignal, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: stopSignal, queue: .global())
+            source.setEventHandler {
+                // The signal raised below can reach this handler once more before the end.
+                stopLock.lock()
+                let first = !stopLogged
+                stopLogged = true
+                stopLock.unlock()
+                if first {
+                    logLine("agent-vm-guest: stopping on \(String(cString: strsignal(stopSignal)))")
+                }
+                signal(stopSignal, SIG_DFL)
+                raise(stopSignal)
+            }
+            source.resume()
+            stopSources.append(source)
+        }
+    }
+
+    /// Kept for the life of the process; set once, at startup, before any handler can run.
+    nonisolated(unsafe) private static var stopSources: [DispatchSourceSignal] = []
+    private static let stopLock = NSLock()
+    nonisolated(unsafe) private static var stopLogged = false
+
+    /// One line in the daemon's log (its stderr, a file launchd opens), written through to disk
+    /// at once: a guest that loses power (a forced stop) keeps what came before.
+    public static func logLine(_ line: String) {
+        FileHandle.standardError.write(Data((line + "\n").utf8))
+        fsync(STDERR_FILENO)
     }
 }
 

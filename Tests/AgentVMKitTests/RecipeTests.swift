@@ -112,6 +112,9 @@ import Testing
         #expect(refused as? AgentVMError == .guestCommandFailed(command: "recipe step 1 (y)", status: 126, output: "no such user"))
         let lost = ImageBuilder.recipeFailure("recipe step 3 (z)", GuestProtocolError.disconnected, timeoutSeconds: 60, output: "")
         #expect("\(lost)".contains("recipe step 3 (z)"))
+        // withGuest named the step already: not named twice, and the output is kept.
+        let named = ImageBuilder.recipeFailure("recipe step 4 (w)", AgentVMError.guestUnreachable("recipe step 4 (w): write failed: Broken pipe"), timeoutSeconds: 60, output: "tail")
+        #expect(named as? AgentVMError == .guestUnreachable("recipe step 4 (w): write failed: Broken pipe; last output:\ntail"))
     }
 
     @Test func mistakesAreExplained() throws {

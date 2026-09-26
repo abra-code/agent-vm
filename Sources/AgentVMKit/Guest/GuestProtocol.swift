@@ -192,6 +192,9 @@ public enum GuestProtocolError: Error, Equatable, CustomStringConvertible {
     /// The connection ended in the middle of a frame or before the expected message.
     case disconnected
     case io(operation: String, code: Int32)
+    /// The guest closed the connection before the request that opens it was sent in full, so
+    /// nothing of it ran and it may be sent again (FrameChannel.sendRequest).
+    case notDelivered(code: Int32)
 
     public var description: String {
         switch self {
@@ -201,6 +204,8 @@ public enum GuestProtocolError: Error, Equatable, CustomStringConvertible {
             return "the connection to the guest ended unexpectedly"
         case let .io(operation, code):
             return "\(operation) failed: \(String(cString: strerror(code)))"
+        case let .notDelivered(code):
+            return "the guest closed the connection before the request was sent (\(String(cString: strerror(code))))"
         }
     }
 }
@@ -214,9 +219,12 @@ public final class FrameChannel: @unchecked Sendable {
 
     public init(descriptor: Int32) {
         self.descriptor = descriptor
-        // A peer that goes away must produce EPIPE, never a process-killing SIGPIPE.
+        // A peer that goes away must produce EPIPE, never a process-killing SIGPIPE. The socket
+        // option is not enough on a socket pair whose other end is closed (measured); the
+        // descriptor flag is.
         var one: Int32 = 1
         _ = setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+        _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
     }
 
     public func send(_ frame: Frame) throws {
@@ -237,6 +245,16 @@ public final class FrameChannel: @unchecked Sendable {
     public func send(_ type: FrameType, json value: some Encodable) throws {
         let data = try JSONEncoder().encode(value)
         try send(Frame(type, Array(data)))
+    }
+
+    /// Sends the request that opens a connection. A write the peer refused because it closed
+    /// first is `notDelivered`: the guest cannot act on a request it did not get in full.
+    public func sendRequest(_ request: some Encodable) throws {
+        do {
+            try send(.request, json: request)
+        } catch let GuestProtocolError.io(operation, code) where operation == "write" && [EPIPE, ECONNRESET, ENOTCONN].contains(code) {
+            throw GuestProtocolError.notDelivered(code: code)
+        }
     }
 
     /// The next frame, or nil when the peer closed the connection between frames.

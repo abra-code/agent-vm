@@ -169,7 +169,12 @@ final class PromptWatcher: @unchecked Sendable {
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT))
+        // Signals back to their defaults: the daemon ignores its stop signals (logStopSignals),
+        // and an ignored signal stays ignored across exec, so this child would outlive a SIGTERM.
+        var defaults = sigset_t()
+        sigfillset(&defaults)
+        posix_spawnattr_setsigdefault(&attributes, &defaults)
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF))
         let arguments = ["/usr/bin/log", "stream", "--style", "ndjson", "--predicate", Self.predicate]
         var pid: pid_t = 0
         let status = GuestServer.withCStrings(arguments) { argv in

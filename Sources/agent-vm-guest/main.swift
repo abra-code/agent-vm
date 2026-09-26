@@ -87,7 +87,8 @@ case "serve":
         FileHandle.standardError.write(Data("agent-vm-guest: \(error)\n".utf8))
         exit(1)
     }
-    FileHandle.standardError.write(Data("agent-vm-guest \(AgentVM.version): listening on vsock port \(port), default user \(user ?? "(self)")\n".utf8))
+    GuestServer.logStopSignals()
+    GuestServer.logLine("agent-vm-guest \(AgentVM.version): listening on vsock port \(port), default user \(user ?? "(self)"), pid \(getpid())")
     GuestServer(defaultUser: user, helperPath: helper).run(listener: listener)
 
 default:

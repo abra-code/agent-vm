@@ -174,16 +174,17 @@ final class RangeServer: @unchecked Sendable {
         let (_, server, cache, file) = try fixture()
         server.set { $0.cutAfter = 100_000 }
         await #expect(throws: AgentVMError.self) { try await download(server, file, cache) }
-        let part = cache.partialFile(for: file)
-        #expect(try Data(contentsOf: part) == body.prefix(100_000))
+        // What arrived before the cut: usually all 100 000 bytes, fewer when the error came first.
+        let kept = try Data(contentsOf: cache.partialFile(for: file))
+        #expect(!kept.isEmpty && kept.count <= 100_000 && kept == body.prefix(kept.count))
         let remote = try await RestoreImageDownload.remote(server.url)
-        #expect(RestoreImageDownload.resumableBytes(file, url: server.url, remote: remote, cache: cache) == 100_000)
+        #expect(RestoreImageDownload.resumableBytes(file, url: server.url, remote: remote, cache: cache) == Int64(kept.count))
 
         server.set { $0.cutAfter = nil }
         try await download(server, file, cache)
         #expect(try Data(contentsOf: file) == body)
         let resumed = try #require(server.requests.last)
-        #expect(resumed.contains("Range: bytes=100000-"))
+        #expect(resumed.contains("Range: bytes=\(kept.count)-"))
         #expect(resumed.contains("If-Range: \"v1\""))
     }
 
@@ -208,13 +209,15 @@ final class RangeServer: @unchecked Sendable {
         let (_, server, cache, file) = try fixture()
         server.set { $0.cutAfter = 50_000 }
         await #expect(throws: AgentVMError.self) { try await download(server, file, cache) }
+        let kept = try Data(contentsOf: cache.partialFile(for: file)).count
+        #expect(kept > 0)
         server.set {
             $0.cutAfter = nil
             $0.ignoreRanges = true
         }
         try await download(server, file, cache)
         #expect(try Data(contentsOf: file) == body)
-        #expect((server.requests.last ?? "").contains("Range: bytes=50000-"))
+        #expect((server.requests.last ?? "").contains("Range: bytes=\(kept)-"))
     }
 
     /// A signal that came before the transfer started: the task is canceled before it is
