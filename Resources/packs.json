@@ -14,8 +14,8 @@
       "hosts": ["swscan.apple.com", "swcdn.apple.com", "swdist.apple.com", "mesu.apple.com", "gdmf.apple.com", "updates.cdn-apple.com"]
     },
     "github": {
-      "description": "Reading from and pushing to GitHub over HTTPS (git over SSH is not proxied).",
-      "hosts": ["github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "*.githubusercontent.com", "ghcr.io", "pkg-containers.githubusercontent.com"]
+      "description": "Reading from and pushing to GitHub, over HTTPS or SSH (git@github.com: port 22 goes through the box proxy).",
+      "hosts": ["github.com", "github.com:22", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "*.githubusercontent.com", "ghcr.io", "pkg-containers.githubusercontent.com"]
     },
     "homebrew": {
       "description": "Homebrew formulae and bottles.",

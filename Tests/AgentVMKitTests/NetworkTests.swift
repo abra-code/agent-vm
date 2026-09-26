@@ -366,7 +366,7 @@ final class LocalServer: @unchecked Sendable {
         let proxy = ProxyServer(policy: policy, log: log, allowPrivate: true)
 
         let tunneled = try exchange(proxy, "CONNECT 127.0.0.1:\(server.port) HTTP/1.1\r\n\r\nping")
-        #expect(tunneled == "HTTP/1.1 200 Connection established\r\n\r\npong")
+        #expect(tunneled == "HTTP/1.0 200 Connection established\r\n\r\npong")
         #expect(server.requests.first == "ping")
 
         let plain = try exchange(proxy, "GET http://127.0.0.1:\(server.port)/x HTTP/1.1\r\nHost: 127.0.0.1\r\nProxy-Connection: keep-alive\r\n\r\n")
@@ -475,7 +475,7 @@ final class LocalServer: @unchecked Sendable {
         #expect(try exchange(proxy, "CONNECT 127.0.0.1:\(server.port) HTTP/1.1\r\n\r\n").hasPrefix("HTTP/1.1 403"))
         proxy.update(try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["127.0.0.1:\(server.port)"]), packs: TestPacks.builtIn))
         // The server answers after the first bytes arrive, so the tunnel carries a payload.
-        #expect(try exchange(proxy, "CONNECT 127.0.0.1:\(server.port) HTTP/1.1\r\n\r\nping").hasPrefix("HTTP/1.1 200"))
+        #expect(try exchange(proxy, "CONNECT 127.0.0.1:\(server.port) HTTP/1.1\r\n\r\nping").hasPrefix("HTTP/1.0 200"))
     }
 }
 
@@ -556,5 +556,20 @@ final class LocalServer: @unchecked Sendable {
         #expect(open.contains("ipconfig waitall"))
         #expect(!open.contains("-setwebproxy \""))
         #expect(GuestNetworkSetup.proxyEnvironment["HTTPS_PROXY"] == "http://127.0.0.1:3128")
+        // ssh through the proxy: the system config file, written in proxied modes, gone in open.
+        #expect(proxied.contains("> /etc/ssh/ssh_config.d/agent-vm.conf || exit 1"))
+        #expect(proxied.contains("ProxyCommand /usr/bin/nc -X connect -x 127.0.0.1:3128 %h %p"))
+        #expect(open.contains("/bin/rm -f /etc/ssh/ssh_config.d/agent-vm.conf || exit 1"))
+        // The lines go in single quotes.
+        #expect(GuestNetworkSetup.sshConfigLines.allSatisfy { !$0.contains("'") })
+        // Both commands are valid sh.
+        for command in [proxied, open] {
+            let check = Process()
+            check.executableURL = URL(fileURLWithPath: "/bin/sh")
+            check.arguments = ["-n", "-c", command]
+            #expect((try? check.run()) != nil)
+            check.waitUntilExit()
+            #expect(check.terminationStatus == 0, "\(command)")
+        }
     }
 }

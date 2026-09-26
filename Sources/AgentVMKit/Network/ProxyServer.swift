@@ -134,7 +134,9 @@ public final class ProxyServer: @unchecked Sendable {
 
         do {
             if request.tunnel {
-                try FrameChannel.writeAll(client, Array("HTTP/1.1 200 Connection established\r\n\r\n".utf8))
+                // HTTP/1.0, which every client takes: macOS's nc (an ssh ProxyCommand) refuses
+                // an HTTP/1.1 reply ("Proxy error"; measured).
+                try FrameChannel.writeAll(client, Array("HTTP/1.0 200 Connection established\r\n\r\n".utf8))
             } else {
                 try FrameChannel.writeAll(upstream, Array(request.upstreamHead.utf8))
             }
