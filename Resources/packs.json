@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "packs": {
+    "anthropic": {
+      "description": "Claude Code and the Anthropic API: sign-in and its token exchange (platform.claude.com), the API, the console.",
+      "hosts": ["api.anthropic.com", "claude.ai", "platform.claude.com", "console.anthropic.com", "statsig.anthropic.com"]
+    },
+    "anthropic-connectors": {
+      "description": "The claude.ai connectors (Gmail, Drive and others) for Claude Code in the box. It gives the agent the data you connected, so it is a pack of its own, never part of pack:anthropic.",
+      "hosts": ["mcp-proxy.anthropic.com"]
+    },
+    "apple-updates": {
+      "description": "Apple software update and the Command Line Tools download.",
+      "hosts": ["swscan.apple.com", "swcdn.apple.com", "swdist.apple.com", "mesu.apple.com", "gdmf.apple.com", "updates.cdn-apple.com"]
+    },
+    "github": {
+      "description": "Reading from and pushing to GitHub over HTTPS (git over SSH is not proxied).",
+      "hosts": ["github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "*.githubusercontent.com", "ghcr.io", "pkg-containers.githubusercontent.com"]
+    },
+    "homebrew": {
+      "description": "Homebrew formulae and bottles.",
+      "hosts": ["formulae.brew.sh", "ghcr.io", "pkg-containers.githubusercontent.com", "github.com", "objects.githubusercontent.com"]
+    },
+    "npm": {
+      "description": "The npm and Yarn registries.",
+      "hosts": ["registry.npmjs.org", "registry.yarnpkg.com"]
+    },
+    "openai": {
+      "description": "The OpenAI API and ChatGPT sign-in (Codex).",
+      "hosts": ["api.openai.com", "chatgpt.com", "auth.openai.com"]
+    },
+    "pypi": {
+      "description": "The Python Package Index.",
+      "hosts": ["pypi.org", "files.pythonhosted.org"]
+    },
+    "swiftpm": {
+      "description": "Swift packages from GitHub, the Swift Package Index and swift.org downloads.",
+      "hosts": ["github.com", "codeload.github.com", "objects.githubusercontent.com", "swiftpackageindex.com", "download.swift.org"]
+    }
+  }
+}

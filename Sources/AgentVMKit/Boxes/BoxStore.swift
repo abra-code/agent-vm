@@ -103,9 +103,12 @@ public struct BoxStore: Sendable {
     public static let unstartedDisposableAge: TimeInterval = 600
 
     public let root: URL
+    /// The built-in host packs file (NetworkPacks): next to the executable unless given.
+    public let builtInPacks: URL?
 
-    public init(root: URL) {
+    public init(root: URL, builtInPacks: URL? = NetworkPacks.builtInURL()) {
         self.root = FileSystem.canonicalRoot(root)
+        self.builtInPacks = builtInPacks
     }
 
     public var boxesDirectory: URL {
@@ -121,7 +124,7 @@ public struct BoxStore: Sendable {
             throw AgentVMError.invalidBoxName(name)
         }
         // Reject bad rules and unknown packs before anything is created.
-        _ = try CompiledPolicy(network)
+        _ = try CompiledPolicy(network, packs: try NetworkPacks.needed(for: network, store: root, builtIn: builtInPacks))
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "create a box from")
         }
@@ -214,7 +217,7 @@ public struct BoxStore: Sendable {
     /// them on the control socket's `reload`).
     @discardableResult
     public func updateNetwork(named name: String, to network: BoxNetwork) throws -> Box {
-        _ = try CompiledPolicy(network)
+        _ = try CompiledPolicy(network, packs: try NetworkPacks.needed(for: network, store: root, builtIn: builtInPacks))
         let current = try box(named: name)
         // A mode change holds the box lock while saving, so no start can slip in between the
         // check and the write.

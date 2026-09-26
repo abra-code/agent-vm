@@ -625,24 +625,58 @@ struct BoxCommand: ParsableCommand {
     }
 
     struct Packs: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "List the host packs usable as --allow pack:<name>.")
+        static let configuration = CommandConfiguration(
+            abstract: "List the host packs usable as --allow pack:<name>.",
+            discussion: """
+                The built-in packs come from packs.json next to agent-vm. Your own are \
+                Packs/<name>.json in the store, each {"description": "...", "hosts": \
+                ["example.com", "*.example.org", "example.net:8443"]}; one named like a built-in \
+                pack replaces it. Boxes name packs, so an edited pack applies when a box starts \
+                or its rules change (box network). A pack file that cannot be used is listed with \
+                why, and boxes naming it are refused.
+                """)
 
         @Flag(name: .long, help: "Print machine-readable JSON instead of text.")
         var json = false
 
         struct Entry: Encodable {
             var name: String
-            var hosts: [String]
+            /// Absent for a pack file that cannot be used (see `problem`).
+            var hosts: [String]?
+            var description: String?
+            /// built-in or user.
+            var source: String
+            var path: String
+            /// A user pack named like a built-in one, which it replaces.
+            var replacesBuiltIn: Bool?
+            var problem: String?
         }
 
         func run() throws {
+            let packs = try NetworkPacks.load(store: SessionStore.defaultRoot())
+            var entries = packs.packs.values.map {
+                Entry(name: $0.name, hosts: $0.hosts, description: $0.description, source: $0.source.rawValue, path: $0.path,
+                      replacesBuiltIn: $0.replacesBuiltIn ? true : nil)
+            }
+            entries += packs.problems.map { Entry(name: $0.key, source: NetworkPack.Source.user.rawValue, path: $0.value.path, problem: $0.value.reason) }
+            entries.sort { $0.name < $1.name }
             if json {
-                try Output.json(NetworkPacks.all.keys.sorted().map { Entry(name: $0, hosts: NetworkPacks.all[$0]!) })
+                try Output.json(entries)
                 return
             }
-            for name in NetworkPacks.all.keys.sorted() {
-                print("pack:\(name)")
-                print("    \(NetworkPacks.all[name]!.joined(separator: ", "))")
+            for entry in entries {
+                let origin = entry.source == NetworkPack.Source.user.rawValue
+                    ? "yours, \(entry.path)\(entry.replacesBuiltIn == true ? ", replaces the built-in one" : "")"
+                    : "built-in"
+                print("pack:\(entry.name)  (\(origin))")
+                if let problem = entry.problem {
+                    print("    cannot be used: \(problem)")
+                    continue
+                }
+                if let description = entry.description {
+                    print("    \(description)")
+                }
+                print("    \((entry.hosts ?? []).joined(separator: ", "))")
             }
         }
     }

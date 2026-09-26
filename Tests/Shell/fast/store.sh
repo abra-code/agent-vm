@@ -95,16 +95,33 @@ test_packs_are_listed() {
     run_avm box packs
     assert_status 0 || return 1
     local _pack
-    for _pack in anthropic apple-updates github homebrew npm openai pypi swiftpm; do
+    for _pack in anthropic anthropic-connectors apple-updates github homebrew npm openai pypi swiftpm; do
         assert_out_contains "pack:$_pack" || return 1
     done
-    # For programs: name and hosts, sorted by name, the names without "pack:".
+    # For programs: name and hosts, sorted by name, the names without "pack:", and where each came from.
     run_avm box packs --json
     assert_status 0 || return 1
     assert_json 0.name anthropic || return 1
-    assert_json 2.name github || return 1
-    assert_json 2.hosts.0 github.com || return 1
-    assert_json 7.name swiftpm || return 1
+    assert_json 3.name github || return 1
+    assert_json 3.hosts.0 github.com || return 1
+    assert_json 3.source built-in || return 1
+    assert_json 8.name swiftpm || return 1
+
+    # A user pack replaces the built-in one of its name; a broken one is listed with why.
+    /bin/mkdir -p "$AGENT_VM_HOME/Packs"
+    printf '%s\n' '{"description": "Our mirror", "hosts": ["npm.example.com"]}' > "$AGENT_VM_HOME/Packs/npm.json"
+    printf '%s\n' '{"hosts": ["public"]}' > "$AGENT_VM_HOME/Packs/wide.json"
+    run_avm box packs --json
+    assert_status 0 || return 1
+    assert_json 5.name npm || return 1
+    assert_json 5.source user || return 1
+    assert_json 5.replacesBuiltIn true || return 1
+    assert_json 5.hosts.0 npm.example.com || return 1
+    assert_json 9.name wide || return 1
+    local _problem="$(json_value 9.problem)"
+    assert_contains "$_problem" "public is not a host name" "the broken pack's problem" || return 1
+    run_avm box packs
+    assert_out_contains "pack:npm  (yours, $AGENT_VM_HOME/Packs/npm.json, replaces the built-in one)" || return 1
 }
 
 test_a_stopped_box_refuses_exec_and_stop() {

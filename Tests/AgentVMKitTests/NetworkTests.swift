@@ -8,6 +8,17 @@ import Foundation
 import Testing
 @testable import AgentVMKit
 
+/// The repository's built-in packs (Resources/packs.json), without any user packs.
+enum TestPacks {
+    static let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().appendingPathComponent("Resources/packs.json")
+    static let builtIn: NetworkPacks = {
+        // A store with no Packs folder.
+        let empty = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("agent-vm-no-user-packs")
+        return try! NetworkPacks.load(store: empty, builtIn: repository)
+    }()
+}
+
 @Suite struct AllowRuleTests {
     @Test func parsing() {
         #expect(AllowRule.parse("GitHub.com") == AllowRule(host: "github.com", subdomains: false, port: nil))
@@ -44,24 +55,21 @@ import Testing
     }
 
     @Test func policiesExpandPacksAndRespectTheMode() throws {
-        let policy = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["pack:npm", "example.com"]))
+        let policy = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["pack:npm", "example.com"]), packs: TestPacks.builtIn)
         #expect(policy.allows(host: "registry.npmjs.org", port: 443, tunnel: true) == "pack:npm")
         #expect(policy.allows(host: "example.com", port: 443, tunnel: true) == "example.com")
         #expect(policy.allows(host: "example.com", port: 80, tunnel: false) == "example.com")
         #expect(policy.allows(host: "pypi.org", port: 443, tunnel: true) == nil)
 
-        let off = try CompiledPolicy(BoxNetwork(mode: .off, allow: ["example.com"]))
+        let off = try CompiledPolicy(BoxNetwork(mode: .off, allow: ["example.com"]), packs: TestPacks.builtIn)
         #expect(off.allows(host: "example.com", port: 443, tunnel: true) == nil)
 
-        #expect(throws: AgentVMError.self) { _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["pack:nope"])) }
-        #expect(throws: AgentVMError.self) { _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["not a host"])) }
-        #expect(throws: AgentVMError.self) { _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["public:0"])) }
-        // Every pack's hosts are valid rules.
-        for (name, hosts) in NetworkPacks.all {
-            for host in hosts {
-                #expect(AllowRule.parse(host) != nil, "pack \(name): \(host)")
-            }
-        }
+        #expect(throws: AgentVMError.self) { _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["pack:nope"]), packs: TestPacks.builtIn) }
+        #expect(throws: AgentVMError.self) { _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["not a host"]), packs: TestPacks.builtIn) }
+        #expect(throws: AgentVMError.self) { _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["public:0"]), packs: TestPacks.builtIn) }
+        // The repository's packs file loads (every host a valid rule, none "public").
+        #expect(TestPacks.builtIn.packs["anthropic"]?.hosts.contains("platform.claude.com") == true)
+        #expect(TestPacks.builtIn.packs["anthropic-connectors"]?.hosts == ["mcp-proxy.anthropic.com"])
     }
 }
 
@@ -98,13 +106,13 @@ import Testing
 
     /// Named rules come first, so the log names them; the rest is logged as "public".
     @Test func namedRulesComeBeforePublic() throws {
-        let policy = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["public", "pack:npm", "example.com:8443"]))
+        let policy = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["public", "pack:npm", "example.com:8443"]), packs: TestPacks.builtIn)
         #expect(policy.allows(host: "registry.npmjs.org", port: 443, tunnel: true) == "pack:npm")
         #expect(policy.allows(host: "example.com", port: 8443, tunnel: true) == "example.com:8443")
         #expect(policy.allows(host: "example.com", port: 443, tunnel: true) == "public")
         #expect(policy.allows(host: "1.1.1.1", port: 443, tunnel: true) == nil)
-        #expect(try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["PUBLIC:8443"])).allows(host: "example.org", port: 8443, tunnel: true) == "public:8443")
-        #expect(try CompiledPolicy(BoxNetwork(mode: .off, allow: ["public"])).allows(host: "example.com", port: 443, tunnel: true) == nil)
+        #expect(try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["PUBLIC:8443"]), packs: TestPacks.builtIn).allows(host: "example.org", port: 8443, tunnel: true) == "public:8443")
+        #expect(try CompiledPolicy(BoxNetwork(mode: .off, allow: ["public"]), packs: TestPacks.builtIn).allows(host: "example.com", port: 443, tunnel: true) == nil)
     }
 }
 
@@ -354,7 +362,7 @@ final class LocalServer: @unchecked Sendable {
         let scratch = try Scratch()
         let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
         let server = try LocalServer(reply: "pong")
-        let policy = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["127.0.0.1:\(server.port)"]))
+        let policy = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["127.0.0.1:\(server.port)"]), packs: TestPacks.builtIn)
         let proxy = ProxyServer(policy: policy, log: log, allowPrivate: true)
 
         let tunneled = try exchange(proxy, "CONNECT 127.0.0.1:\(server.port) HTTP/1.1\r\n\r\nping")
@@ -376,7 +384,7 @@ final class LocalServer: @unchecked Sendable {
         let scratch = try Scratch()
         let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
         let server = try LocalServer(reply: "pong")
-        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["example.com"])), log: log, allowPrivate: true)
+        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["example.com"]), packs: TestPacks.builtIn), log: log, allowPrivate: true)
 
         let denied = try exchange(proxy, "CONNECT 127.0.0.1:\(server.port) HTTP/1.1\r\n\r\n")
         #expect(denied.hasPrefix("HTTP/1.1 403 Forbidden\r\n"))
@@ -392,7 +400,7 @@ final class LocalServer: @unchecked Sendable {
     }
 
     @Test func privateAddressesAreRefusedEvenWhenAllowedByName() throws {
-        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["localhost:9"])), log: nil)
+        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["localhost:9"]), packs: TestPacks.builtIn), log: nil)
         let answer = try exchange(proxy, "CONNECT localhost:9 HTTP/1.1\r\n\r\n")
         #expect(answer.hasPrefix("HTTP/1.1 502 Bad Gateway\r\n"))
         #expect(answer.contains("non-public"))
@@ -402,14 +410,14 @@ final class LocalServer: @unchecked Sendable {
     @Test func thePublicRuleRefusesNamesThatAreNotPublic() throws {
         let scratch = try Scratch()
         let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
-        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["public"])), log: log, allowPrivate: true)
+        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["public"]), packs: TestPacks.builtIn), log: log, allowPrivate: true)
         let answer = try exchange(proxy, "CONNECT localhost:443 HTTP/1.1\r\n\r\n")
         #expect(answer.hasPrefix("HTTP/1.1 403 Forbidden\r\n"))
         #expect(log.entries().first?.reason == "not in the allowlist")
     }
 
     @Test func connectionsBeyondTheCapAreRefusedAtOnce() throws {
-        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .off)), log: nil, maxConnections: 1)
+        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .off), packs: TestPacks.builtIn), log: nil, maxConnections: 1)
         var first: [Int32] = [-1, -1]
         var second: [Int32] = [-1, -1]
         #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &first) == 0)
@@ -438,7 +446,7 @@ final class LocalServer: @unchecked Sendable {
     @Test func logFieldsAreClipped() throws {
         let scratch = try Scratch()
         let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
-        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .off)), log: log)
+        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .off), packs: TestPacks.builtIn), log: log)
         let long = String(repeating: "a", count: 10_000)
         _ = try exchange(proxy, "CONNECT \(long).com:443 HTTP/1.1\r\n\r\n")
         let entry = try #require(log.entries().first)
@@ -463,9 +471,9 @@ final class LocalServer: @unchecked Sendable {
 
     @Test func policyUpdatesApplyToNewConnections() throws {
         let server = try LocalServer(reply: "pong")
-        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .off)), log: nil, allowPrivate: true)
+        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .off), packs: TestPacks.builtIn), log: nil, allowPrivate: true)
         #expect(try exchange(proxy, "CONNECT 127.0.0.1:\(server.port) HTTP/1.1\r\n\r\n").hasPrefix("HTTP/1.1 403"))
-        proxy.update(try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["127.0.0.1:\(server.port)"])))
+        proxy.update(try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["127.0.0.1:\(server.port)"]), packs: TestPacks.builtIn))
         // The server answers after the first bytes arrive, so the tunnel carries a payload.
         #expect(try exchange(proxy, "CONNECT 127.0.0.1:\(server.port) HTTP/1.1\r\n\r\nping").hasPrefix("HTTP/1.1 200"))
     }

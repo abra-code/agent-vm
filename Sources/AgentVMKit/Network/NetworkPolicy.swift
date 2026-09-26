@@ -161,22 +161,6 @@ public struct AllowRule: Equatable, Sendable, CustomStringConvertible {
     }
 }
 
-/// Curated host lists, so a box can be opened for a purpose without spelling out every host.
-public enum NetworkPacks {
-    public static let all: [String: [String]] = [
-        // Apple software update and the Command Line Tools download.
-        "apple-updates": ["swscan.apple.com", "swcdn.apple.com", "swdist.apple.com", "mesu.apple.com", "gdmf.apple.com", "updates.cdn-apple.com"],
-        // Reading from and pushing to GitHub over HTTPS (git over SSH is not proxied).
-        "github": ["github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com", "raw.githubusercontent.com", "*.githubusercontent.com", "ghcr.io", "pkg-containers.githubusercontent.com"],
-        "npm": ["registry.npmjs.org", "registry.yarnpkg.com"],
-        "pypi": ["pypi.org", "files.pythonhosted.org"],
-        "swiftpm": ["github.com", "codeload.github.com", "objects.githubusercontent.com", "swiftpackageindex.com", "download.swift.org"],
-        "homebrew": ["formulae.brew.sh", "ghcr.io", "pkg-containers.githubusercontent.com", "github.com", "objects.githubusercontent.com"],
-        "anthropic": ["api.anthropic.com", "claude.ai", "console.anthropic.com", "statsig.anthropic.com"],
-        "openai": ["api.openai.com", "chatgpt.com", "auth.openai.com"],
-    ]
-}
-
 /// The rules of a policy, expanded and parsed.
 public struct CompiledPolicy: Sendable {
     public struct Entry: Sendable {
@@ -188,16 +172,15 @@ public struct CompiledPolicy: Sendable {
     public var mode: BoxNetwork.Mode
     public var entries: [Entry]
 
-    /// Expands packs and parses every rule; throws on an unknown pack or a malformed rule.
-    public init(_ network: BoxNetwork) throws {
+    /// Expands packs (from `packs`) and parses every rule; throws on an unknown or unusable
+    /// pack, or a malformed rule.
+    public init(_ network: BoxNetwork, packs: NetworkPacks) throws {
         mode = network.mode
         entries = []
         for text in network.allow {
             if text.lowercased().hasPrefix("pack:") {
                 let name = String(text.dropFirst("pack:".count)).lowercased()
-                guard let hosts = NetworkPacks.all[name] else {
-                    throw AgentVMError.invalidNetworkRule(text, reason: "unknown pack; known: \(NetworkPacks.all.keys.sorted().joined(separator: ", "))")
-                }
+                let hosts = try packs.hosts(of: name)
                 for host in hosts {
                     guard let rule = AllowRule.parse(host) else {
                         continue

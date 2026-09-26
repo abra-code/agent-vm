@@ -133,7 +133,8 @@ public final class BoxSupervisor {
         }
 
         let network = box.record.effectiveNetwork
-        let proxy = ProxyServer(policy: try CompiledPolicy(network), log: NetworkLog(url: box.networkLogURL))
+        let packs = try NetworkPacks.needed(for: network, store: box.directory.deletingLastPathComponent().deletingLastPathComponent())
+        let proxy = ProxyServer(policy: try CompiledPolicy(network, packs: packs), log: NetworkLog(url: box.networkLogURL))
         let attachment: MacMachineSpec.Network
         if network.usesProxy {
             let link = try DeadEndLink()
@@ -733,14 +734,20 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         }
     }
 
+    /// The store the box is in (Boxes/<name> under it).
+    private var storeRoot: URL {
+        return box.directory.deletingLastPathComponent().deletingLastPathComponent()
+    }
+
     /// Rereads the network rules from box.json; a mode change needs a restart.
     func controlReload() throws {
-        let fresh = try BoxStore(root: box.directory.deletingLastPathComponent().deletingLastPathComponent()).box(named: box.name)
+        let fresh = try BoxStore(root: storeRoot).box(named: box.name)
         let network = fresh.record.effectiveNetwork
         guard network.mode == box.record.effectiveNetwork.mode else {
             throw AgentVMError.boxRunning(box.name)
         }
-        proxy.update(try CompiledPolicy(network))
+        // The packs are read again too, so an edited pack applies with the rules.
+        proxy.update(try CompiledPolicy(network, packs: try NetworkPacks.needed(for: network, store: storeRoot)))
     }
 
     func controlStatus() -> ControlResponse {

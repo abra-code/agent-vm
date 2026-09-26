@@ -20,7 +20,7 @@ final class BoxScratch {
         scratch = try Scratch()
         let root = scratch.root.appendingPathComponent("store", isDirectory: true)
         images = ImageStore(root: root)
-        boxes = BoxStore(root: root)
+        boxes = BoxStore(root: root, builtInPacks: TestPacks.repository)
         let (created, lock) = try images.create(ImageStoreTests.record("dev", state: state))
         lock.release()
         for (url, text) in [(created.diskURL, "disk"), (created.auxiliaryStorageURL, "aux"),
