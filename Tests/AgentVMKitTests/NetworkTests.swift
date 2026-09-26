@@ -577,3 +577,76 @@ final class LocalServer: @unchecked Sendable {
         }
     }
 }
+
+@Suite struct NetworkLogFollowerTests {
+    func entry(_ host: String, _ decision: NetworkLog.Decision = .allowed) -> NetworkLog.Entry {
+        return NetworkLog.Entry(time: Date(timeIntervalSince1970: 1_790_000_000), method: "CONNECT", host: host, port: 443, decision: decision)
+    }
+
+    func append(_ text: String, to url: URL) throws {
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(text.utf8))
+        try handle.close()
+    }
+
+    @Test func newEntriesArriveOnceEach() throws {
+        let scratch = try Scratch()
+        let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
+        let follower = NetworkLogFollower(url: log.url)
+        // No log yet: nothing, and no error.
+        #expect(follower.read().isEmpty)
+        log.append(entry("a.example"))
+        log.append(entry("b.example", .denied))
+        #expect(follower.read().map(\.host) == ["a.example", "b.example"])
+        #expect(follower.read().isEmpty)
+        log.append(entry("c.example"))
+        #expect(follower.read().map(\.host) == ["c.example"])
+    }
+
+    /// A line still being written waits for its end; an unreadable one is skipped.
+    @Test func partAndBadLinesAreHandled() throws {
+        let scratch = try Scratch()
+        let url = scratch.root.appendingPathComponent("network.jsonl")
+        let log = NetworkLog(url: url)
+        log.append(entry("a.example"))
+        let follower = NetworkLogFollower(url: url)
+        #expect(follower.read().count == 1)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let line = String(decoding: try encoder.encode(entry("b.example")), as: UTF8.self)
+        let middle = line.index(line.startIndex, offsetBy: line.count / 2)
+        try append("not json\n" + String(line[..<middle]), to: url)
+        #expect(follower.read().isEmpty)
+        try append(String(line[middle...]) + "\n", to: url)
+        #expect(follower.read().map(\.host) == ["b.example"])
+    }
+
+    /// The proxy moves a full log to .1 and starts a new one: the follower reads the end of the
+    /// old file, then the new one from its start.
+    @Test func aRotatedLogIsFollowed() throws {
+        let scratch = try Scratch()
+        let url = scratch.root.appendingPathComponent("network.jsonl")
+        let log = NetworkLog(url: url, maxBytes: 400)
+        let follower = NetworkLogFollower(url: url)
+        log.append(entry("a.example"))
+        #expect(follower.read().map(\.host) == ["a.example"])
+        var hosts: [String] = []
+        for index in 0..<8 {
+            log.append(entry("h\(index).example"))
+            if index == 2 {
+                hosts += follower.read().map(\.host)
+            }
+        }
+        #expect(FileManager.default.fileExists(atPath: url.path + ".1"))
+        hosts += follower.read().map(\.host)
+        // Rotated more than once here, and a file moved away twice is gone: what the follower
+        // reads is in order, each once, and ends with the last entry.
+        #expect(hosts.last == "h7.example")
+        #expect(hosts == hosts.sorted { Int($0.dropFirst().prefix(while: \.isNumber))! < Int($1.dropFirst().prefix(while: \.isNumber))! })
+        #expect(Set(hosts).count == hosts.count)
+    }
+}

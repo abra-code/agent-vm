@@ -157,6 +157,7 @@ agent-vm box create dev1 --image dev --allow pack:github --allow '*.example.com'
 agent-vm box network dev1 --allow pypi.org --allow files.pythonhosted.org   # takes effect at once
 agent-vm box network dev1 --disallow pypi.org
 agent-vm box netlog dev1 --denied --last 20                                  # what was refused, and why
+agent-vm box netlog dev1 --follow                                            # watch connections as they happen
 agent-vm box packs                                                           # the host lists: built-in and your own
 agent-vm box network dev1 --net open                                         # while the box is stopped
 ```
@@ -174,6 +175,7 @@ agent-vm box network dev1 --net open                                         # w
 - **The log** (`Boxes/<name>/network.jsonl`, one JSON object per line) records the time, method, host and port, the decision and rule, the address connected to, and the bytes each way.
   - macOS's own background services (iCloud, software update checks) show up as refused connections unless allowed, about 2-4 a second from an idle guest.
   - At 64 MB the log moves to `network.jsonl.1`, replacing the previous one.
+  - `box netlog <name> --follow` (`-f`) prints the last 10 entries (or `--last N`), then each connection as the proxy logs it, until the box stops (Control-C ends it sooner); it carries on across the move to `.1`. With `--json` it prints one JSON object per line instead of an array, and `--denied` applies to it too.
 - **Limits against a hostile guest:**
   - at most 256 proxied connections at once (the next get 503);
   - 30 seconds to send a complete request head of at most 16 KB;

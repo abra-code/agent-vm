@@ -582,7 +582,13 @@ struct BoxCommand: ParsableCommand {
         @Flag(name: .long, help: "Only refused and failed connections.")
         var denied = false
 
+        @Flag(name: .shortAndLong, help: "Keep printing connections as they are logged (after the last 10, or --last N), until the box stops. With --json, one JSON object per line.")
+        var follow = false
+
         @OptionGroup var options: StoreOptions
+
+        /// How often --follow looks for new lines and checks that the box still runs.
+        static let followInterval: useconds_t = 250_000
 
         func validate() throws {
             if let last, last < 0 {
@@ -592,6 +598,10 @@ struct BoxCommand: ParsableCommand {
 
         func run() throws {
             let box = try options.boxStore.box(named: name)
+            if follow {
+                try runFollowing(box)
+                return
+            }
             var entries = NetworkLog(url: box.networkLogURL).entries()
             if denied {
                 entries = entries.filter { $0.decision != .allowed }
@@ -608,19 +618,56 @@ struct BoxCommand: ParsableCommand {
                 return
             }
             for entry in entries {
-                let decision = entry.decision.rawValue.padding(toLength: 7, withPad: " ", startingAt: 0)
-                var line = "\(Output.time(entry.time))  \(decision)  \(entry.method) \(entry.host):\(entry.port)"
-                if let rule = entry.rule {
-                    line += "  [\(rule)]"
-                }
-                if let reason = entry.reason {
-                    line += "  \(reason)"
-                }
-                if let up = entry.bytesUp, let down = entry.bytesDown {
-                    line += "  \(up) up, \(down) down"
-                }
-                print(line)
+                print(Self.text(entry))
             }
+        }
+
+        /// --follow: what is logged (its end), then each new entry as it comes, until the box
+        /// stops. The box is checked before each read, so the lines a stopping box logged last
+        /// are printed before the command ends.
+        private func runFollowing(_ box: Box) throws {
+            let follower = NetworkLogFollower(url: box.networkLogURL)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            var first = true
+            while true {
+                let running = box.isRunning
+                var entries = follower.read()
+                if denied {
+                    entries = entries.filter { $0.decision != .allowed }
+                }
+                if first {
+                    entries = Array(entries.suffix(last ?? 10))
+                    first = false
+                }
+                for entry in entries {
+                    if options.json {
+                        print(String(decoding: try encoder.encode(entry), as: UTF8.self))
+                    } else {
+                        print(Self.text(entry))
+                    }
+                }
+                guard running else {
+                    return
+                }
+                usleep(Self.followInterval)
+            }
+        }
+
+        static func text(_ entry: NetworkLog.Entry) -> String {
+            let decision = entry.decision.rawValue.padding(toLength: 7, withPad: " ", startingAt: 0)
+            var line = "\(Output.time(entry.time))  \(decision)  \(entry.method) \(entry.host):\(entry.port)"
+            if let rule = entry.rule {
+                line += "  [\(rule)]"
+            }
+            if let reason = entry.reason {
+                line += "  \(reason)"
+            }
+            if let up = entry.bytesUp, let down = entry.bytesDown {
+                line += "  \(up) up, \(down) down"
+            }
+            return line
         }
     }
 
