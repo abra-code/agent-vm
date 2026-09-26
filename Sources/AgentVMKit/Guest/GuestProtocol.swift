@@ -140,8 +140,12 @@ public enum GuestFeature {
     public static let wallpaper = "wallpaper"
     /// The `time-sync` request.
     public static let timeSync = "time-sync"
+    /// exec runs a program for an account in that account's login session (`launchctl asuser`):
+    /// the desktop (Aqua) session once it is logged in, so the program shares the login
+    /// Keychain with apps in the box; and Keychain dialogs are sent as notices.
+    public static let userSession = "user-session"
     /// Everything this build's daemon supports.
-    public static let all = [terminal, promptNotices, wallpaper, timeSync]
+    public static let all = [terminal, promptNotices, wallpaper, timeSync, userSession]
 }
 
 /// A terminal's size in character cells.

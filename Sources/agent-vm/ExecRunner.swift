@@ -163,7 +163,7 @@ struct ExecRunner {
     /// `.stop`, stops the waiting program (only it: the exec'd program sees it fail, as if
     /// access had been refused). On a terminal in raw mode, lines need a carriage return.
     static func report(_ notice: GuestNotice, box: Box, terminal: Bool, prompts: PromptPolicy) {
-        guard notice.kind == .permissionPrompt else {
+        guard notice.kind == .permissionPrompt || notice.kind == .keychainPrompt else {
             return
         }
         // Process ids 0 and 1 (and negative ones, process groups) are never the program's.
@@ -171,7 +171,11 @@ struct ExecRunner {
         ExecExit.shared.prompted(notice, stopped: stopping)
         let program = notice.program.map { ($0 as NSString).lastPathComponent } ?? "the program"
         let end = terminal ? "\r\n" : "\n"
-        let setup = "give the image Full Disk Access with `agent-vm image setup \(box.record.image)` (boxes made afterwards inherit it)"
+        // A Keychain dialog is answered in the box (Always Allow keeps the answer); a privacy
+        // prompt is better avoided with Full Disk Access.
+        let setup = notice.kind == .keychainPrompt
+            ? "log in with the program itself (`agent-vm box shell \(box.name)`), so the Keychain item is its own and it is not asked"
+            : "give the image Full Disk Access with `agent-vm image setup \(box.record.image)` (boxes made afterwards inherit it)"
         if stopping, let pid = notice.pid {
             let message = "agent-vm: \(program) was waiting for permission to use \(notice.serviceDescription), which macOS asks on the box's screen where nobody sees it, so agent-vm stopped it. "
                 + "To answer such prompts instead, run exec with `--prompts wait` and use `agent-vm box view \(box.name) --interactive`; or \(setup).\(end)"

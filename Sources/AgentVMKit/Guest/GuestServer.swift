@@ -8,7 +8,8 @@
 // default signal handling and no inherited descriptors except stdin, stdout and stderr. When
 // the host goes away mid-run, the group gets SIGHUP, then SIGKILL 3 seconds later - like
 // closing a terminal. Running as another account goes through `agent-vm-guest exec-as`, which
-// drops privileges in a fresh single-threaded process before exec.
+// drops privileges in a fresh single-threaded process before exec; for an account other than
+// root, `launchctl asuser` comes first, so the program runs in that account's login session.
 
 import Darwin
 import Foundation
@@ -471,9 +472,20 @@ public final class GuestServer: @unchecked Sendable {
             guard let helperPath else {
                 throw Refusal("cannot run \(request.terminal == nil ? "as \(account.name)" : "on a terminal"): the guest daemon has no exec-as helper")
             }
-            spawnPath = helperPath
-            spawnArguments = Self.execAsArguments(user: account.name, directory: directory, executable: executable, argv: argv,
-                                                  terminal: request.terminal != nil)
+            let execAs = Self.execAsArguments(user: account.name, directory: directory, executable: executable, argv: argv,
+                                              terminal: request.terminal != nil)
+            if geteuid() == 0 && account.uid != 0 {
+                // In the account's login session: its desktop (Aqua) once it is logged in, else
+                // its background one. Started by a root daemon, a program is outside it, so the
+                // login Keychain refuses it. launchctl execs in place (same pid, so the session,
+                // the terminal and the exit status stay), and the daemon stays the responsible
+                // process, so Full Disk Access given to agent-vm-guest still applies (measured).
+                spawnPath = Self.launchctlPath
+                spawnArguments = ["launchctl", "asuser", String(account.uid), helperPath] + execAs.dropFirst()
+            } else {
+                spawnPath = helperPath
+                spawnArguments = execAs
+            }
         }
         return try Self.spawn(spawnPath, arguments: spawnArguments, environment: environment,
                               directory: direct ? directory : nil,
@@ -661,6 +673,8 @@ public final class GuestServer: @unchecked Sendable {
         }
         return (arguments[0], arguments[1], arguments[2], Array(arguments[4...]), terminal)
     }
+
+    static let launchctlPath = "/bin/launchctl"
 
     /// The helper's arguments for running `executable` with `argv` as `user` in `directory`.
     static func execAsArguments(user: String, directory: String, executable: String, argv: [String], terminal: Bool = false) -> [String] {

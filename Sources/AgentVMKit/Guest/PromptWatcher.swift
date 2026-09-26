@@ -5,8 +5,10 @@
 // guest's screen, where nobody sees it: the program just waits (for the Downloads folder, for
 // one, until the image has Full Disk Access). The privacy service (tccd) logs each request:
 // an AUTHREQ_ATTRIBUTION line names the program that tried the access, and an AUTHREQ_PROMPTING
-// line with the same message id says a prompt went up (measured on macOS 27). The watcher reads
-// them from `log stream`, finds the exec the program belongs to (its session: exec starts every
+// line with the same message id says a prompt went up (measured on macOS 27). A Keychain dialog
+// is logged by securityd ("displaying keychain prompt for <program>(<pid>)"). The watcher reads
+// them from `log stream`, only as logged by tccd and securityd themselves (any process may log
+// under their subsystems), finds the exec the program belongs to (its session: exec starts every
 // program in a new one), and sends that exec a notice frame.
 
 import Darwin
@@ -17,10 +19,13 @@ public struct GuestNotice: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         /// The program waits on a privacy prompt on the guest's screen.
         case permissionPrompt = "permission-prompt"
+        /// The program waits on a Keychain dialog on the guest's screen (access to an item, for
+        /// one, that another program made); `service` is "keychain".
+        case keychainPrompt = "keychain-prompt"
     }
 
     public var kind: Kind
-    /// The privacy service asked about (kTCCService...).
+    /// The privacy service asked about (kTCCService...), or `keychainService`.
     public var service: String?
     /// The program that tried the access.
     public var program: String?
@@ -33,12 +38,16 @@ public struct GuestNotice: Codable, Equatable, Sendable {
         self.pid = pid
     }
 
+    /// The `service` of a Keychain dialog: not a privacy service, a Keychain item.
+    public static let keychainService = "keychain"
+
     /// The service in words: "the Downloads folder".
     public var serviceDescription: String {
         guard let service else {
             return "something macOS protects"
         }
         let names: [String: String] = [
+            Self.keychainService: "a Keychain item",
             "kTCCServiceSystemPolicyDownloadsFolder": "the Downloads folder",
             "kTCCServiceSystemPolicyDocumentsFolder": "the Documents folder",
             "kTCCServiceSystemPolicyDesktopFolder": "the Desktop folder",
@@ -69,6 +78,8 @@ final class PromptWatcher: @unchecked Sendable {
         case attribution(messageID: String, pid: Int32, program: String?)
         /// Request `messageID` put a prompt on the screen.
         case prompting(messageID: String, service: String)
+        /// securityd put a Keychain dialog on the screen for program `pid`.
+        case keychainPrompt(pid: Int32, program: String)
     }
 
     /// One exec that asked for notices. Its lock orders a notice against `unregister`, so none
@@ -110,7 +121,17 @@ final class PromptWatcher: @unchecked Sendable {
     private var started = false
 
     static let shared = PromptWatcher()
-    static let predicate = "subsystem == \"com.apple.TCC\" AND (eventMessage BEGINSWITH \"AUTHREQ_ATTRIBUTION\" OR eventMessage BEGINSWITH \"AUTHREQ_PROMPTING\")"
+    /// Any process may log under any subsystem, so each line must also come from the service's
+    /// own executable (SIP-protected): a program in the box must not fake a prompt that gets
+    /// another exec's program stopped.
+    static let predicate = "(subsystem == \"com.apple.TCC\" AND processImagePath == \"/System/Library/PrivateFrameworks/TCC.framework/Support/tccd\""
+        + " AND (eventMessage BEGINSWITH \"AUTHREQ_ATTRIBUTION\" OR eventMessage BEGINSWITH \"AUTHREQ_PROMPTING\"))"
+        + " OR (subsystem == \"com.apple.securityd\" AND processImagePath == \"/usr/sbin/securityd\" AND category == \"kcacl\""
+        + " AND eventMessage BEGINSWITH \"\(keychainPromptPrefix)\")"
+    /// securityd, for a dialog asking whether a program may use a Keychain item (measured on
+    /// macOS 27): "displaying keychain prompt for /usr/bin/security(806); ACL: ...". A dialog to
+    /// unlock a locked keychain names no program, so it cannot be told apart per exec.
+    static let keychainPromptPrefix = "displaying keychain prompt for "
 
     /// Watches the privacy log from now on, once: the daemon starts it before serving, since a
     /// program meets its prompt within milliseconds, sooner than `log stream` attaches.
@@ -236,24 +257,47 @@ final class PromptWatcher: @unchecked Sendable {
             guard let attribution else {
                 return
             }
-            // The exec whose session the program is in; programs it started are in it too.
-            let session = getsid(attribution.pid)
-            lock.lock()
-            let registration = session > 0 ? sessions[session] : nil
-            lock.unlock()
-            guard let registration else {
+            notify(GuestNotice(kind: .permissionPrompt, service: service, program: attribution.program, pid: attribution.pid))
+        case let .keychainPrompt(pid, program):
+            // The path is the program's own, so it may hold "(<pid>); ACL: " and name another
+            // pid: only a pid running that very program counts (securityd logs the kernel's path).
+            guard Self.isRunning(program, pid: pid) else {
                 return
             }
-            // Off this thread: a host that stops reading must not stall the log for every exec.
-            let notice = GuestNotice(kind: .permissionPrompt, service: service, program: attribution.program, pid: attribution.pid)
-            DispatchQueue.global().async {
-                registration.send(notice)
-            }
+            notify(GuestNotice(kind: .keychainPrompt, service: GuestNotice.keychainService, program: program, pid: pid))
+        }
+    }
+
+    /// Sends `notice` to the exec whose session its program is in (programs an exec started are
+    /// in its session too), if that exec asked for notices.
+    private func notify(_ notice: GuestNotice) {
+        let session = getsid(notice.pid ?? 0)
+        lock.lock()
+        let registration = session > 0 ? sessions[session] : nil
+        lock.unlock()
+        guard let registration else {
+            return
+        }
+        // Off this thread: a host that stops reading must not stall the log for every exec.
+        DispatchQueue.global().async {
+            registration.send(notice)
         }
     }
 
     /// The event in one privacy-service message, or nil for any other message.
     static func parse(_ message: String) -> Event? {
+        if message.hasPrefix(keychainPromptPrefix) {
+            // "<path>(<pid>); ACL: ..." (format "%s(%d); ACL: %@"): the pid in the last
+            // parentheses before the first "; ACL: ", so a path may hold "; " and parentheses.
+            let named = message.dropFirst(keychainPromptPrefix.count)
+            let head = named[..<(named.range(of: "; ACL: ")?.lowerBound ?? named.endIndex)]
+            guard head.hasSuffix(")"), let open = head.lastIndex(of: "("),
+                  let pid = Int32(head[head.index(after: open)..<head.index(before: head.endIndex)]), pid > 0 else {
+                return nil
+            }
+            let program = String(head[..<open])
+            return program.isEmpty ? nil : .keychainPrompt(pid: pid, program: program)
+        }
         guard let messageID = field("msgID=", in: message, until: ",") else {
             return nil
         }
@@ -277,6 +321,15 @@ final class PromptWatcher: @unchecked Sendable {
             return .prompting(messageID: messageID, service: service)
         }
         return nil
+    }
+
+    /// Whether process `pid` runs the executable at `path` (the kernel's path for it).
+    static func isRunning(_ path: String, pid: Int32) -> Bool {
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else {
+            return false
+        }
+        return strcmp(buffer, path) == 0
     }
 
     /// The text after `name` up to `end` (or the end of `text`).

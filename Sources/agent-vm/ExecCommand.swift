@@ -32,7 +32,7 @@ struct ExecCommand: ParsableCommand {
             go to it as typed, and SIGHUP or SIGTERM to agent-vm end the session. Each \
             run is recorded in the box's exec log (`box execlog`): the command, account, \
             folders, times and status, never the environment. A program that waits on a \
-            permission prompt on the box's screen, where nobody sees it, is reported on stderr \
+            permission prompt or a Keychain dialog on the box's screen, where nobody sees it, is reported on stderr \
             and in the exec log at once; with --prompts stop (the default when stdin is not a \
             terminal) agent-vm stops that program, so the caller is not left hanging.
             """
