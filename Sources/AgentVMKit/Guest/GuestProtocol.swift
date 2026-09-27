@@ -204,6 +204,17 @@ public struct ExitReport: Codable, Equatable, Sendable {
         self.signal = signal
     }
 
+    /// How a process ended, from waitpid's status (WIFEXITED, WEXITSTATUS and WTERMSIG are
+    /// macros Swift does not import).
+    public init(waitStatus: Int32) {
+        let low = waitStatus & 0x7f
+        if low == 0 {
+            self.init(status: (waitStatus >> 8) & 0xff)
+        } else {
+            self.init(signal: low)
+        }
+    }
+
     /// The conventional shell status: the exit status, or 128 + the signal number.
     public var shellStatus: Int32 {
         if let status {

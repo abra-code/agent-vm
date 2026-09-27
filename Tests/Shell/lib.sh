@@ -54,6 +54,29 @@ run_avm_input() {
     printf '$ printf ... | agent-vm %s\n%s\n%s\n[status %s]\n' "$*" "$OUT" "$ERR" "$STATUS"
 }
 
+# avm_link: makes $SCRATCH/avm, a symlink to $AGENT_VM (started under that name, agent-vm is
+# `agent-vm connect`). run_avm_link [arguments...]: runs it with run_cmd.
+avm_link() {
+    [ -L "$SCRATCH/avm" ] || /bin/ln -s "$AGENT_VM" "$SCRATCH/avm"
+}
+
+run_avm_link() {
+    avm_link || return 1
+    run_cmd "$SCRATCH/avm" "$@"
+}
+
+# on_terminal <input script> <command...>: runs the command on a new local terminal (script),
+# feeding it the output of the input script (a shell snippet run with sh -c); OUT, STATUS.
+on_terminal() {
+    local _input="$1"
+    shift
+    # PIPESTATUS must be read inside the substitution: outside it describes the assignment.
+    OUT="$( { /bin/sh -c "$_input" | /usr/bin/script -q /dev/null "$@" 2>&1; printf '%s' "${PIPESTATUS[1]}" > "$SCRATCH/.terminal-status"; } \
+        | /usr/bin/tr -d '\r')"
+    STATUS="$(/bin/cat "$SCRATCH/.terminal-status")"
+    printf '$ (on a terminal) %s\n%s\n[status %s]\n' "$*" "$OUT" "$STATUS"
+}
+
 assert_status() {
     [ "$STATUS" -eq "$1" ] || fail "expected status $1, got $STATUS"
 }

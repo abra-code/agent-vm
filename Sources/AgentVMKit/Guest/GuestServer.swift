@@ -357,12 +357,7 @@ public final class GuestServer: @unchecked Sendable {
     }
 
     static func report(_ status: Int32) -> ExitReport {
-        // WIFEXITED / WEXITSTATUS / WTERMSIG are macros Swift does not import.
-        let low = status & 0x7f
-        if low == 0 {
-            return ExitReport(status: (status >> 8) & 0xff)
-        }
-        return ExitReport(signal: low)
+        return ExitReport(waitStatus: status)
     }
 
     // MARK: - Starting a process

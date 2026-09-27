@@ -2,7 +2,7 @@
 
 Run AI agents and their tools inside disposable macOS virtual machines, so a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac.
 
-> **Status:** early development. Working today: sessions (snapshot, change report and undo, with or without a virtual machine), golden images (`image create`, macOS installed and set up with no clicks), boxes with `agent-vm exec`, the allowlist network with host packs and a connection log, projects shared at the same path, and `doctor`. The rest of this README describes the intended tool: packs for tools installed in images, disposable per-session boxes and the Cadabra integration are not built yet.
+> **Status:** early development. Working today: sessions (snapshot, change report and undo, with or without a virtual machine), golden images (`image create`, macOS installed and set up with no clicks), boxes with `agent-vm exec`, `avm` (a login shell or a command in a box on your terminal, with your folder shared), the allowlist network with host packs and a connection log, projects shared at the same path, and `doctor`. The rest of this README describes the intended tool: packs for tools installed in images, disposable per-session boxes and the Cadabra integration are not built yet.
 
 ## What it does
 
@@ -132,6 +132,39 @@ agent-vm box start s1 --owner-pid $$               # stops when this shell exits
 - **macOS runs at most two macOS guests at once**, whichever applications started them (`agent-vm status` and `agent-vm doctor` count them; with `--json`, `status` has `runningVMs` and doctor's "running VMs" check has `count` and `limit`). A command that needs a VM when none is free (`box start`, `image create`, `image update-guest`, `image setup`) fails with exit status 75 and a message that starts with "no free VM slot". A refusal before the first VM starts leaves nothing behind: a new image whose VM never ran is removed, so its name stays free, an image being updated stays as it was, and a disposable box can be started again. A build or update boots more than once, and if another application takes the slot between two boots, the image is marked failed, as after any other failure; delete it (or update it again) and retry.
 - **Socket paths:** the control socket's full path must stay under 104 bytes, which a very long `AGENT_VM_HOME` can exceed.
 
+## Terminal sessions: avm (works today)
+
+`avm` is the short way into a box from a terminal. Run it in a project folder: it lists your boxes, starts the one you choose when it is stopped, shares the folder into it at the same path, and opens a login shell there. Exit the shell to come back.
+
+```sh
+cd ~/src/app
+avm                        # choose a box from the list, then a login shell in ~/src/app
+avm dev1                   # that box
+avm dev1 -- make test      # a command instead of the shell; its exit status is avm's
+avm dev1 --no-project      # share no folder (the shell starts in the box user's home)
+avm list                   # the boxes avm offers, and the choice remembered for this folder
+avm dev1 --dry-run         # print the steps instead of taking them
+```
+
+```
+$ avm
+Box dev1
+Starting box dev1
+Box dev1 is running (14 s)
+Sharing ~/src/app (read-write)
+Login shell in box dev1; exit it to come back here
+...
+Box dev1 keeps running; stop it with: agent-vm box stop dev1
+```
+
+- **The list:** running boxes first (with the folder each one shares and how many programs run in it), then stopped ones. Arrows (or Control-P and Control-N) move, typing filters, Enter chooses, Escape clears the filter and then quits. The box chosen for a folder is remembered (`connect.json` in the store) and preselected next time. A temporary box that is not running is never offered, and an unresponsive one is shown but cannot be chosen.
+- **One folder per box:** a box shares one folder at a time, and a box whose programs use another folder refuses to switch. avm says so and shows the list again.
+- **Your home folder cannot be shared** (nor `~/Library`, a hidden folder in it, or the agent-vm store). Started there, avm offers to connect without a folder; `--project <folder>` shares another one.
+- **A box avm started keeps running** afterwards; stop it with `agent-vm box stop <box>`. avm never stops or deletes a box.
+- **Exit status:** the program's; 1 when avm could not connect (no such box, a box that did not start, a refused folder); 64 for options that do not go together, or when there is no terminal (from a script, use `agent-vm exec`); 75 when no VM slot is free; 130 when you quit the list.
+- **Installing:** `avm` is a symlink to `agent-vm`, made by `Scripts/build.sh` next to it; link it into a folder on your `PATH` (`ln -s <repository>/.build/signed/release/avm ~/bin/avm`), or run `agent-vm connect`, which is the same command.
+- `NO_COLOR=1` turns off bold and reverse video; with `TERM=dumb` (or no `TERM`) the list is a numbered menu. Everything else: [Docs/avm.md](Docs/avm.md).
+
 ## Secrets in the Keychain (works today)
 
 ```sh
@@ -248,13 +281,13 @@ Scripts/build.sh --identity <Developer ID Application identity or team ID>
 .build/signed/release/agent-vm version    # versions, protocols, and the guest daemon next to it
 ```
 
-Virtualization refuses every virtual machine from a process without the `com.apple.security.virtualization` entitlement (`Resources/agent-vm.entitlements`). Any developer can use it without Apple's approval, but a plain `swift build` does not sign it in, so `session` commands work from `.build/debug/agent-vm` while anything that starts a virtual machine needs the output of `Scripts/build.sh`. The script builds `agent-vm` and `agent-vm-guest`, signs copies in a staging folder and renames them into `.build/signed/<configuration>/` (so running boxes survive a rebuild: macOS stops a process whose signed file is rewritten under it) with the hardened runtime (ad hoc by default, or with a Developer ID and a secure timestamp; `AGENT_VM_SIGN_IDENTITY` sets the default), verifies the signatures and runs `agent-vm doctor` with the result.
+Virtualization refuses every virtual machine from a process without the `com.apple.security.virtualization` entitlement (`Resources/agent-vm.entitlements`). Any developer can use it without Apple's approval, but a plain `swift build` does not sign it in, so `session` commands work from `.build/debug/agent-vm` while anything that starts a virtual machine needs the output of `Scripts/build.sh`. The script builds `agent-vm` and `agent-vm-guest`, signs copies in a staging folder and renames them into `.build/signed/<configuration>/` (so running boxes survive a rebuild: macOS stops a process whose signed file is rewritten under it) with the hardened runtime (ad hoc by default, or with a Developer ID and a secure timestamp; `AGENT_VM_SIGN_IDENTITY` sets the default), verifies the signatures, makes `avm` next to them (a symlink to `agent-vm`) and runs `agent-vm doctor` with the result.
 
 `agent-vm doctor` checks the macOS version, Apple silicon, the binary's entitlement and signature, free space for the store, and how many virtual machines already run (macOS runs at most two macOS guests at once, whichever applications started them). It exits 1 when something prevents running boxes; `--json` prints the checks for programs.
 
 ## Testing
 
-`swift test` runs the unit tests. `Tests/Shell/run.sh` runs out-of-process tests: shell scripts that drive the signed binary from `Scripts/build.sh` the way a user or a program would, and check its output, exit statuses and files.
+`swift test` runs the unit tests: `AgentVMKitTests` (the library, and `agent-vm connect` on a pseudo-terminal) and `TerminalUITests` (the list and prompts avm draws, on pseudo-terminals). `Tests/Shell/run.sh` runs out-of-process tests: shell scripts that drive the signed binary from `Scripts/build.sh` the way a user or a program would, and check its output, exit statuses and files.
 
 ```sh
 Tests/Shell/run.sh fast                   # seconds, no virtual machine, a private store per test
@@ -262,8 +295,8 @@ Tests/Shell/run.sh extended               # minutes, real boxes from the image "
 Tests/Shell/run.sh all --filter network   # both tiers, only tests whose name contains "network"
 ```
 
-- **fast** covers the CLI, sessions (report, undo, refusals), the image and box stores, network rules and recipe checks. Each test gets its own `AGENT_VM_HOME` in a scratch folder, so it never touches your images or boxes.
-- **extended** starts real boxes: their life cycle, exec (streams, exit statuses, signals, a killed client), terminals, `box shell` and the exec log, `box view` (a window appears briefly), the allowlist network (it needs the internet), project shares, and derived images built from recipes. It uses your store (or `$AGENT_VM_TEST_HOME`) and needs a ready image named `dev` (or `$AGENT_VM_TEST_IMAGE`); without one those tests are skipped. It creates boxes and images named `shtest-*` and deletes them. A full install from a restore image runs only when `$AGENT_VM_TEST_IPSW` names one. The tier takes about 7 minutes, and macOS runs at most two virtual machines at once, so stop other boxes first.
+- **fast** covers the CLI (`avm` and `agent-vm connect` included), sessions (report, undo, refusals), the image and box stores, network rules and recipe checks. Each test gets its own `AGENT_VM_HOME` in a scratch folder, so it never touches your images or boxes.
+- **extended** starts real boxes: their life cycle, exec (streams, exit statuses, signals, a killed client), terminals, `box shell`, `avm` and the exec log, `box view` (a window appears briefly), the allowlist network (it needs the internet), project shares, and derived images built from recipes. It uses your store (or `$AGENT_VM_TEST_HOME`) and needs a ready image named `dev` (or `$AGENT_VM_TEST_IMAGE`); without one those tests are skipped. It creates boxes and images named `shtest-*` and deletes them. A full install from a restore image runs only when `$AGENT_VM_TEST_IPSW` names one. The tier takes about 7 minutes, and macOS runs at most two virtual machines at once, so stop other boxes first.
 
 A test that fails keeps its scratch folder, with the commands it ran and their output, and the last lines are printed. `--keep` keeps every folder, and `--agent-vm <path>` tests another binary.
 

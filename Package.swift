@@ -25,11 +25,13 @@ let package = Package(
         // network policy, sessions with project snapshots and change reports.
         .target(name: "AgentVMKit"),
 
-        // The command-line tool; `agent-vm serve --box <name>` also runs the per-box supervisor.
+        // The command-line tool; `agent-vm serve --box <name>` also runs the per-box supervisor,
+        // and started as `avm` (a symlink) it is `agent-vm connect`.
         .executableTarget(
             name: "agent-vm",
             dependencies: [
                 "AgentVMKit",
+                "TerminalUI",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),

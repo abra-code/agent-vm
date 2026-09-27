@@ -31,18 +31,6 @@ file_teardown() {
     "$AGENT_VM" image delete "$(/bin/cat "$FILE_SCRATCH/image")"
 }
 
-# on_terminal <input script> <command...>: runs the command on a new local terminal (script),
-# feeding it the output of the input script (a shell snippet run with sh -c); OUT, STATUS.
-on_terminal() {
-    local _input="$1"
-    shift
-    # PIPESTATUS must be read inside the substitution: outside it describes the assignment.
-    OUT="$( { /bin/sh -c "$_input" | /usr/bin/script -q /dev/null "$@" 2>&1; printf '%s' "${PIPESTATUS[1]}" > "$SCRATCH/.terminal-status"; } \
-        | /usr/bin/tr -d '\r')"
-    STATUS="$(/bin/cat "$SCRATCH/.terminal-status")"
-    printf '$ (on a terminal) %s\n%s\n[status %s]\n' "$*" "$OUT" "$STATUS"
-}
-
 test_the_program_gets_a_terminal_of_this_size() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     on_terminal ':' /bin/sh -c "stty rows 30 cols 100; \"$AGENT_VM\" exec -t --box $BOX -- /bin/sh -c 'tty; stty size; echo TERM=\$TERM'"

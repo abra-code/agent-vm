@@ -2,7 +2,8 @@
 //
 // Entry point of the agent-vm command-line tool. Every subcommand is a thin layer over
 // AgentVMKit: parse arguments, call the library, print for a person or (with --json) for a
-// program such as Cadabra.
+// program such as Cadabra. Started under the name avm (a symlink), the tool is `agent-vm
+// connect` (AVMCommand).
 
 import AgentVMKit
 import AppKit
@@ -21,7 +22,7 @@ enum Main {
         // box's screen. The loop is entered here, in main itself: entered inside a main-actor
         // job (as a command's run() is), it would never drain the main queue again, and the
         // supervisor, which runs on the main actor, would never start (measured).
-        if BoxCommand.Serve.shouldRunAppKit(CommandLine.arguments) || ImageCommand.Setup.shouldRunAppKit(CommandLine.arguments) {
+        if !isAVM && (BoxCommand.Serve.shouldRunAppKit(CommandLine.arguments) || ImageCommand.Setup.shouldRunAppKit(CommandLine.arguments)) {
             BoxCommand.Serve.runsAppKit = true
             let application = NSApplication.shared
             application.setActivationPolicy(.prohibited)
@@ -36,13 +37,38 @@ enum Main {
         await run()
     }
 
-    /// AgentVMCommand.main(), except that a refusal for want of a free VM slot exits with its
-    /// own status (AgentVMError.noFreeVMSlotStatus), so a program such as Cadabra tells it from
-    /// other failures without reading the message.
+    /// Started as avm: the last component of argv[0], so a symlink named avm anywhere (or a
+    /// symlink to one) is avm, and any other name is agent-vm. The supervisor and the session
+    /// child are started with the resolved path, never as avm.
+    static var isAVM: Bool {
+        guard let first = CommandLine.arguments.first else {
+            return false
+        }
+        return (first as NSString).lastPathComponent == "avm"
+    }
+
+    /// How connect names itself in messages and hints.
+    static var invokedName: String {
+        return isAVM ? "avm" : "agent-vm connect"
+    }
+
     @MainActor
     static func run() async {
+        if isAVM {
+            await run(AVMCommand.self)
+        } else {
+            await run(AgentVMCommand.self)
+        }
+    }
+
+    /// Root.main(), except that a refusal for want of a free VM slot exits with its own status
+    /// (AgentVMError.noFreeVMSlotStatus), so a program such as Cadabra tells it from other
+    /// failures without reading the message. Errors exit through the root that was parsed, so
+    /// usage lines name avm when started as avm.
+    @MainActor
+    static func run<Root: AsyncParsableCommand>(_ root: Root.Type) async {
         do {
-            var command = try await AgentVMCommand.asyncParseAsRoot()
+            var command = try await Root.asyncParseAsRoot()
             if var asyncCommand = command as? AsyncParsableCommand {
                 try await asyncCommand.run()
             } else {
@@ -50,12 +76,12 @@ enum Main {
             }
         } catch let error as AgentVMError {
             guard case .noFreeVMSlot = error else {
-                AgentVMCommand.exit(withError: error)
+                Root.exit(withError: error)
             }
             FileHandle.standardError.write(Data("Error: \(error)\n".utf8))
             exit(AgentVMError.noFreeVMSlotStatus)
         } catch {
-            AgentVMCommand.exit(withError: error)
+            Root.exit(withError: error)
         }
     }
 }
@@ -65,7 +91,7 @@ struct AgentVMCommand: AsyncParsableCommand {
         commandName: "agent-vm",
         abstract: "Run AI agents inside disposable macOS virtual machines, and undo what they did.",
         version: AgentVM.version,
-        subcommands: [ExecCommand.self, StatusCommand.self, BoxCommand.self, ImageCommand.self, SessionCommand.self, SecretCommand.self, DoctorCommand.self, VersionCommand.self]
+        subcommands: [ExecCommand.self, ConnectCommand.self, StatusCommand.self, BoxCommand.self, ImageCommand.self, SessionCommand.self, SecretCommand.self, DoctorCommand.self, VersionCommand.self]
     )
 }
 

@@ -15,8 +15,10 @@
 #
 # Both binaries are signed with the hardened runtime. The guest daemon gets no entitlements:
 # it never starts virtual machines. The built-in host packs (Resources/packs.json) go next to
-# them. After signing, the script verifies both signatures, checks that `agent-vm box packs`
-# reads the packs, and runs `agent-vm doctor` with the signed binary as the end-to-end check.
+# them, and so does avm, a symlink to agent-vm (started under that name it is `agent-vm
+# connect`). After signing, the script verifies both signatures, checks that `agent-vm box packs`
+# reads the packs and that avm answers as agent-vm, and runs `agent-vm doctor` with the signed
+# binary as the end-to-end check.
 #
 # Notarization of a distributable archive is not done here yet.
 
@@ -147,11 +149,21 @@ for product in packs.json agent-vm agent-vm-guest; do
 done
 /bin/rm -rf "$STAGE"
 
+# avm, after the signed files are in place: a relative link, so the folder can be moved.
+/bin/ln -sfn agent-vm "$OUTPUT/avm"
+status=$?
+[ "$status" -eq 0 ] || die "cannot link $OUTPUT/avm to agent-vm"
+
 printf '\nSigned binaries in %s\n\n' "$OUTPUT"
 # Without $AGENT_VM_PACKS_FILE, so the check reads the packs.json just put there.
 AGENT_VM_PACKS_FILE="" "$OUTPUT/agent-vm" box packs > /dev/null
 status=$?
 [ "$status" -eq 0 ] || die "agent-vm cannot read $OUTPUT/packs.json (status $status); run \"$OUTPUT/agent-vm box packs\" to see why"
+agent_vm_version="$("$OUTPUT/agent-vm" --version)"
+avm_version="$("$OUTPUT/avm" --version)"
+status=$?
+[ "$status" -eq 0 ] && [ -n "$avm_version" ] && [ "$avm_version" = "$agent_vm_version" ] \
+    || die "$OUTPUT/avm does not answer as agent-vm ($avm_version, expected $agent_vm_version)"
 "$OUTPUT/agent-vm" doctor
 status=$?
 if [ "$status" -ne 0 ]; then
