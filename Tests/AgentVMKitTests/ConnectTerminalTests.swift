@@ -307,9 +307,12 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
         let program = try connect(store, ["c1", "--agent", "claude"], environment: environment)
         #expect(program.waitFor("signs in with one of these"))
         program.type("\r")
-        #expect(program.waitFor("Value of CLAUDE_CODE_OAUTH_TOKEN: "))
+        #expect(program.waitFor("Paste or type CLAUDE_CODE_OAUTH_TOKEN (not shown), then Enter: "))
+        // Pasted as a terminal with bracketed paste on sends it: the markers are dropped, and
+        // the count of characters stored says so.
         let value = "sk-ant-oat-test-\(UUID().uuidString)"
-        program.type(value + "\r")
+        program.type("\u{1B}[200~" + value + "\u{1B}[201~\r")
+        #expect(program.waitFor("(\(value.count) characters)"))
         #expect(program.waitFor("Stored secret CLAUDE_CODE_OAUTH_TOKEN in the Keychain"))
         // Then the start, which the debug build cannot do (no virtualization entitlement).
         #expect(program.exitStatus(seconds: 60) != nil)
@@ -346,5 +349,43 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
         // Then the start, which the debug build cannot do.
         #expect(program.exitStatus(seconds: 60) != nil)
         #expect(try agentVM(["box", "network", "c2"]).contains("github.com, opencode.ai, models.opencode.ai"))
+    }
+
+    @Test func aSecretAnotherBuildStoredIsUsedWithEnter() throws {
+        let store = try ConnectScratch()
+        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        var environment = store.environment
+        environment["AGENT_VM_SECRET_SERVICE"] = "agent-vm-test-\(UUID().uuidString)"
+        environment["AGENT_VM_AGENTS_FILE"] = repository.appendingPathComponent("Resources/agents.json").path
+        environment["AGENT_VM_PACKS_FILE"] = repository.appendingPathComponent("Resources/packs.json").path
+        // Stored by this test process, so for the agent-vm under test it is another program's
+        // (and this process can delete it without macOS asking). It is never read: the debug
+        // build cannot start the box, so no session reads it.
+        let secrets = SecretStore(service: environment["AGENT_VM_SECRET_SERVICE"]!)
+        try secrets.set("CLAUDE_CODE_OAUTH_TOKEN", value: Data("test-\(UUID().uuidString)".utf8))
+        defer { try? secrets.delete("CLAUDE_CODE_OAUTH_TOKEN") }
+        let create = Process()
+        create.executableURL = URL(fileURLWithPath: store.agentVM)
+        create.arguments = ["box", "create", "c1", "--image", "img", "--allow", "pack:anthropic"]
+        create.environment = environment
+        create.standardOutput = FileHandle.nullDevice
+        try create.run()
+        create.waitUntilExit()
+        #expect(create.terminationStatus == 0)
+
+        // Enter: use it.
+        let use = try connect(store, ["c1", "--agent", "claude"], environment: environment)
+        #expect(use.waitFor("CLAUDE_CODE_OAUTH_TOKEN is in the Keychain"))
+        use.type("\r")
+        #expect(use.waitFor("Using CLAUDE_CODE_OAUTH_TOKEN from the Keychain; if macOS asks to allow access to it, choose Always Allow"))
+        #expect(use.waitFor("Starting box c1"))
+        #expect(use.exitStatus(seconds: 60) != nil)
+        // Down and Enter: go on without it.
+        let without = try connect(store, ["c1", "--agent", "claude"], environment: environment)
+        #expect(without.waitFor("CLAUDE_CODE_OAUTH_TOKEN is in the Keychain"))
+        without.type("\u{1B}[B\r")
+        #expect(without.waitFor("Going on without CLAUDE_CODE_OAUTH_TOKEN"))
+        #expect(without.waitFor("Starting box c1"))
+        #expect(without.exitStatus(seconds: 60) != nil)
     }
 }

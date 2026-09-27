@@ -114,15 +114,43 @@ extension ConnectRunner {
             }
         }
         // The secret that will be passed, when another build of agent-vm stored it: macOS asks
-        // on this Mac's screen before exec reads it, which nobody sees over SSH.
+        // on this Mac's screen before exec reads it, which nobody sees over SSH. Use it (Enter),
+        // go on without it, or set a new value.
         if answered.secretsListed, let secret = agent.secrets.first(where: { answered.setSecrets.contains($0.name) }),
            !stored.contains(secret.name), secretEntries.first(where: { $0.name == secret.name })?.readable == false {
-            print("\(secret.name) was found in the Keychain. If macOS asks to allow access to it, choose Always Allow.")
-            if try Confirm("Replace it in the Keychain with a new value?", defaultAnswer: false).run(on: terminal) {
-                _ = try storeSecret(secret.name, terminal: terminal)
+            if !(try useFoundSecret(secret.name, agent: agent, terminal: terminal)) {
+                // None of the agent's secrets, not the next one set either.
+                answered.setSecrets.removeAll { name in agent.secrets.contains { $0.name == name } }
             }
         }
         return answered
+    }
+
+    /// The choice for a secret found in the Keychain that another build of agent-vm stored:
+    /// use it (the default), go on without it, or set a new value. False: go on without it.
+    private func useFoundSecret(_ name: String, agent: AgentEntry, terminal: Terminal) throws -> Bool {
+        let rows = [PickerRow(id: "use", columns: ["Use the value in the Keychain"], note: "if macOS asks to allow access, choose Always Allow"),
+                    PickerRow(id: "without", columns: ["Go on without it"], note: agent.login == nil ? nil : "log in inside the box"),
+                    PickerRow(id: "new", columns: ["Set a new value"])]
+        let picker = Picker(title: "\(name) is in the Keychain", sections: [PickerSection(title: nil, rows: rows)], selected: "use")
+        while true {
+            switch try picker.run(on: terminal) {
+            case "without":
+                print("Going on without \(name)")
+                if let login = agent.login {
+                    print(login)
+                }
+                return false
+            case "new":
+                if try storeSecret(name, terminal: terminal) {
+                    return true
+                }
+            default:
+                // Said again after the list is gone: the question from macOS comes later.
+                print("Using \(name) from the Keychain; if macOS asks to allow access to it, choose Always Allow")
+                return true
+            }
+        }
     }
 
     /// The offer when none of the agent's secrets is set: set one now, or go on without. The
@@ -153,7 +181,8 @@ extension ConnectRunner {
         while true {
             var bytes: [UInt8]
             do {
-                bytes = try LineInput.secret(prompt: "Value of \(name): ", maxBytes: SecretStore.maxValueBytes, on: terminal)
+                bytes = try LineInput.secret(prompt: "Paste or type \(name) (not shown), then Enter: ", maxBytes: SecretStore.maxValueBytes,
+                                             on: terminal)
             } catch TerminalUIError.canceled {
                 return false
             }
