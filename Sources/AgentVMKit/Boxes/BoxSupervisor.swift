@@ -337,7 +337,7 @@ public final class BoxSupervisor {
             throw AgentVMError.supervisorRefused("box \(box.name) is not ready")
         }
         guard state.snapshot.guestFeatures.contains(GuestFeature.timeSync) else {
-            throw AgentVMError.supervisorRefused("the agent-vm-guest of box \(box.name) cannot set its clock; update its image with `agent-vm image update-guest \(box.record.image)` and create the box again")
+            throw AgentVMError.supervisorRefused("the agent-vm-guest of box \(box.name) cannot set its clock; update its image with `agent-vm image update-guest \(box.record.image)`, then `agent-vm box recreate \(box.name)`")
         }
         do {
             let connection = try await machine.connect(toPort: GuestProtocol.port)

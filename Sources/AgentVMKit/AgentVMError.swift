@@ -80,6 +80,10 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case download(url: String, reason: String)
     /// A disposable box that stopped: it is deleted, never started again.
     case boxDisposed(String)
+    /// Another agent-vm command is changing the box folder now (`reason`); nothing was done.
+    case boxBusy(String, reason: String)
+    /// `box recreate` deleted the box, and creating it again failed; `command` makes it by hand.
+    case boxNotRecreated(name: String, reason: String, command: String)
     /// Secrets in the Keychain (SecretStore). Messages name a secret, never its value.
     case invalidSecret(name: String, reason: String)
     case secretNotFound(String)
@@ -188,6 +192,10 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "secret \(name) cannot be read from the Keychain (\(reason)); allow agent-vm when macOS asks, or store it again with `agent-vm secret set \(name)`"
         case let .keychain(operation, message):
             return "\(operation) failed: \(message)"
+        case let .boxBusy(name, reason):
+            return "box \(name) was left as it was: \(reason); try again in a moment"
+        case let .boxNotRecreated(name, reason, command):
+            return "box \(name) was deleted, but creating it again failed: \(reason); create it with: \(command)"
         case let .boxDisposed(name):
             return "box \(name) is disposable and has stopped, so it is not started again (box gc deletes it, and box list, box start and doctor run box gc); create a new box"
         case let .canceled(signal):

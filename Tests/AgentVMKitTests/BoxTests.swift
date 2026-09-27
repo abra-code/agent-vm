@@ -107,6 +107,71 @@ final class BoxScratch {
         #expect(problems.count == 1)
     }
 
+    /// box recreate: a fresh clone and identity with the box's own settings; the log goes.
+    @Test func recreateKeepsTheSettingsAndStartsAfresh() throws {
+        let fixture = try BoxScratch()
+        let network = BoxNetwork(mode: .allowlist, allow: ["*.example.com", "pack:github"])
+        let old = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images, cpuCount: 2,
+                                           memoryBytes: 3 << 30, network: network, disposable: true)
+        try Data("written in the box".utf8).write(to: old.diskURL)
+        try Data("{}\n".utf8).write(to: old.execLogURL)
+        let identity = try Data(contentsOf: old.machineIdentifierURL)
+        let box = try fixture.boxes.recreate(name: "b1", from: fixture.image, imageStore: fixture.images)
+        #expect(box.record.cpuCount == 2 && box.record.memoryBytes == 3 << 30)
+        #expect(box.record.network == network && box.record.disposable == true)
+        #expect(box.record.macAddress != old.record.macAddress)
+        #expect(try Data(contentsOf: box.machineIdentifierURL) != identity)
+        #expect(try String(contentsOf: box.diskURL, encoding: .utf8) == "disk")
+        #expect(!FileManager.default.fileExists(atPath: box.execLogURL.path))
+        #expect(try fixture.boxes.box(named: "b1").record == box.record)
+    }
+
+    /// Refusals come before the delete and leave the box as it was.
+    @Test func recreateRefusesBeforeDeleting() throws {
+        let fixture = try BoxScratch()
+        let box = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images)
+        let lock = try #require(try FolderLock.tryAcquire(box.lockPath))
+        #expect(throws: AgentVMError.boxRunning("b1")) {
+            _ = try fixture.boxes.recreate(name: "b1", from: fixture.image, imageStore: fixture.images)
+        }
+        lock.release()
+        let busy = try #require(try fixture.images.tryLock(fixture.image))
+        #expect(throws: AgentVMError.imageBusy("dev")) {
+            _ = try fixture.boxes.recreate(name: "b1", from: fixture.image, imageStore: fixture.images)
+        }
+        busy.release()
+        let unfinished = try fixture.images.update(fixture.image) { $0.state = .provisioning }
+        #expect(throws: AgentVMError.self) {
+            _ = try fixture.boxes.recreate(name: "b1", from: unfinished, imageStore: fixture.images)
+        }
+        #expect(try fixture.boxes.box(named: "b1").record == box.record)
+    }
+
+    /// A disposable box is not recreated while a collection runs: it could take the new box
+    /// for the old one's garbage.
+    @Test func recreateWaitsForACollection() throws {
+        let fixture = try BoxScratch()
+        let box = try fixture.boxes.create(name: "d1", from: fixture.image, imageStore: fixture.images, disposable: true)
+        let collecting = try #require(try FolderLock.tryAcquire(fixture.boxes.boxesDirectory.appendingPathComponent(BoxStore.gcLockName).path))
+        #expect(throws: AgentVMError.self) {
+            _ = try fixture.boxes.recreate(name: "d1", from: fixture.image, imageStore: fixture.images, collectionPatience: .milliseconds(100))
+        }
+        #expect(try fixture.boxes.box(named: "d1").record == box.record)
+        collecting.release()
+        let recreated = try fixture.boxes.recreate(name: "d1", from: fixture.image, imageStore: fixture.images)
+        #expect(recreated.record.disposable == true)
+    }
+
+    /// The command given when the box was deleted but could not be created again.
+    @Test func theCreateCommandReadsBackInAShell() {
+        let record = BoxRecord(formatVersion: 1, name: "b1", image: "dev", macOSVersion: "27.0", macOSBuild: "26A428", guestProtocol: 1,
+                               createdAt: Date(), cpuCount: 4, memoryBytes: 8 << 30, macAddress: "", userName: "agent",
+                               network: nil, disposable: true)
+        let network = BoxNetwork(mode: .allowlist, allow: ["*.example.com", "github.com:22", "it's"])
+        #expect(BoxStore.createCommand(name: "b1", image: "dev", record: record, network: network)
+                == "agent-vm box create b1 --image dev --cpus 4 --memory-gb 8 --net allowlist --allow '*.example.com' --allow github.com:22 --allow 'it'\\''s' --disposable")
+    }
+
     /// A damaged box.json is named as a box record, not an image record.
     @Test func aDamagedRecordIsABoxRecord() throws {
         let fixture = try BoxScratch()

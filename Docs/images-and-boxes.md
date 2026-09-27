@@ -15,7 +15,7 @@ restore image (.ipsw)
       |  (minutes)                          v
       v                                   box "work"  -- start / exec / stop, as often as you like
     image "dev-node"                        |
-      |  box create                         |  box delete  (when done, or to refresh it)
+      |  box create                         |  box delete  (when done; box recreate refreshes it)
       v                                     v
     box "web"                             gone; your project folder is untouched
 ```
@@ -129,7 +129,7 @@ The second number changes as clones come and go: an image that a later image or 
 ## Questions and answers
 
 **How do I update a box's guest daemon?**
-You don't: update the image (`image update-guest`), then delete the box and create it again. A box has no update command on purpose: a replaced daemon would lose the box's Full Disk Access, and only an image can be set up again to grant it.
+You don't: update the image (`image update-guest`), then make the box again from it with `box recreate <box>`, which keeps the box's CPUs, memory, network rules and disposable flag (everything written in the old box is gone). A box has no update command on purpose: a replaced daemon would lose the box's Full Disk Access, and only an image can be set up again to grant it.
 
 **How do I tell which guest daemon a box has?**
 While it runs, `agent-vm box status <name>` shows it (`agent-vm-guest 0.1.6 (terminal, prompt-notices, wallpaper)`). Its `supervisor.log` also says so at every start: `Ready in 20 s: agent-vm-guest 0.1.2`. The log is in `~/Library/Application Support/agent-vm/Boxes/<name>/`. `image list` shows what an image lacks; a box made from it before its update lacks at least that much.

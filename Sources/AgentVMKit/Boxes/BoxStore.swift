@@ -236,6 +236,68 @@ public struct BoxStore: Sendable {
         return updated
     }
 
+    /// Deletes box `name` and creates it again from `image` with the same CPUs, memory,
+    /// network rules and disposable flag: a fresh clone of the image, with a new identity and
+    /// empty logs. It checks first what it can (the box stopped, the image ready and free, the
+    /// rules and packs usable), so a refusal leaves the box as it was; a create that still fails
+    /// after the delete says how to create the box by hand.
+    public func recreate(name: String, from image: GoldenImage, imageStore: ImageStore, collectionPatience: Duration = .seconds(30)) throws -> Box {
+        let old = try box(named: name)
+        guard !old.isRunning else {
+            throw AgentVMError.boxRunning(name)
+        }
+        let network = old.record.network ?? .legacy
+        let disposable = old.record.disposable == true
+        _ = try CompiledPolicy(network, packs: try NetworkPacks.needed(for: network, store: root, builtIn: builtInPacks))
+        guard image.record.state == .ready else {
+            throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "create a box from")
+        }
+        guard let imageLock = try imageStore.tryLock(image) else {
+            throw AgentVMError.imageBusy(image.name)
+        }
+        imageLock.release()
+        // A collection lists disposable boxes, then deletes them by name: one running now could
+        // take the new box for the old one's garbage. The same lock keeps it out until the new
+        // box exists.
+        var collecting: FolderLock?
+        if disposable {
+            collecting = try FolderLock.tryAcquire(boxesDirectory.appendingPathComponent(Self.gcLockName).path, patience: collectionPatience)
+            guard collecting != nil else {
+                throw AgentVMError.boxBusy(name, reason: "box gc is deleting stopped disposable boxes")
+            }
+        }
+        defer { collecting?.release() }
+        try delete(named: name)
+        do {
+            return try create(name: name, from: image, imageStore: imageStore, cpuCount: old.record.cpuCount,
+                              memoryBytes: old.record.memoryBytes, network: network, disposable: disposable)
+        } catch {
+            throw AgentVMError.boxNotRecreated(name: name, reason: "\(error)",
+                                               command: Self.createCommand(name: name, image: image.name, record: old.record, network: network))
+        }
+    }
+
+    /// The `box create` command that makes a box like `record`, for a person to run.
+    static func createCommand(name: String, image: String, record: BoxRecord, network: BoxNetwork) -> String {
+        var words = ["agent-vm", "box", "create", name, "--image", image, "--cpus", String(record.cpuCount),
+                     "--memory-gb", String(max(1, (record.memoryBytes + (1 << 30) - 1) >> 30)), "--net", network.mode.rawValue]
+        for rule in network.allow {
+            words += ["--allow", rule]
+        }
+        if record.disposable == true {
+            words.append("--disposable")
+        }
+        return words.map(shellQuoted).joined(separator: " ")
+    }
+
+    /// `word` as a shell would read it back: as is when plain, else in single quotes.
+    static func shellQuoted(_ word: String) -> String {
+        let plain = !word.isEmpty && word.unicodeScalars.allSatisfy { scalar in
+            scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || "-_.:/=@+".unicodeScalars.contains(scalar))
+        }
+        return plain ? word : "'" + word.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     /// Deletes a box and its disk; refused while its supervisor runs.
     public func delete(named name: String) throws {
         guard ImageStore.isValidName(name) else {

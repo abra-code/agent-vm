@@ -324,3 +324,39 @@ test_sync_clock_needs_a_running_box() {
     assert_status 1 || return 1
     assert_err_contains "box b1 is not running" || return 1
 }
+
+# box recreate: a fresh clone with the box's settings; refusals leave the box as it was.
+test_recreate_keeps_the_settings() {
+    fake_image dev
+    fake_image other
+    fake_image half provisioning
+    run_avm box create b1 --image dev --cpus 2 --memory-gb 3 --allow '*.example.com' --json
+    assert_status 0 || return 1
+    local _mac
+    _mac="$(json_value macAddress)"
+    local _box="$AGENT_VM_HOME/Boxes/b1"
+    printf 'written in the box' > "$_box/Disk.img"
+
+    run_avm box recreate b1 --image half
+    assert_status 1 || return 1
+    assert_eq "$(/bin/cat "$_box/Disk.img")" "written in the box" "the disk after a refused recreate" || return 1
+    run_avm box recreate b1 --image nosuch
+    assert_status 1 || return 1
+    assert_err_contains "no image nosuch" || return 1
+
+    run_avm box recreate b1 --json
+    assert_status 0 || return 1
+    assert_json image dev || return 1
+    assert_json cpuCount 2 || return 1
+    assert_json memoryBytes 3221225472 || return 1
+    assert_json network.allow.0 '*.example.com' || return 1
+    [ "$(json_value macAddress)" != "$_mac" ] || { fail "the recreated box kept its MAC address"; return 1; }
+    assert_eq "$(/bin/cat "$_box/Disk.img")" "disk" "the disk after recreate" || return 1
+
+    run_avm box recreate b1 --image other
+    assert_status 0 || return 1
+    assert_out_contains "Recreated box b1 from image other" || return 1
+    run_avm box recreate nosuch
+    assert_status 1 || return 1
+    assert_err_contains "no box nosuch" || return 1
+}

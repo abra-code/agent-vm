@@ -23,7 +23,7 @@ struct BoxCommand: ParsableCommand {
             shows what exec and shell ran there, and `box status` shows its state without \
             starting anything.
             """,
-        subcommands: [Create.self, List.self, Status.self, Start.self, GC.self, SyncClock.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self,
+        subcommands: [Create.self, Recreate.self, List.self, Status.self, Start.self, GC.self, SyncClock.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self,
                       Packs.self, Serve.self]
     )
 
@@ -76,6 +76,38 @@ struct BoxCommand: ParsableCommand {
                 return
             }
             print("Created \(disposable ? "disposable " : "")box \(box.name) from image \(image.name): \(box.directory.path)")
+            print("  network: \(Network.describe(box.record.effectiveNetwork))")
+            print("  start it with: agent-vm box start \(box.name)")
+        }
+    }
+
+    struct Recreate: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Delete a stopped box and create it again with the same settings.",
+            discussion: """
+                The new box is a fresh clone of the image (its current state: after `image \
+                update-guest`, with the new agent-vm-guest), with the box's CPUs, memory, network \
+                rules and disposable flag, a new identity, and empty logs. Everything written in \
+                the old box is gone. --image switches to another image.
+                """)
+
+        @Argument(help: "The box name.")
+        var name: String
+
+        @Option(name: .long, help: "The image to clone (default: the box's own).")
+        var image: String?
+
+        @OptionGroup var options: StoreOptions
+
+        func run() throws {
+            let old = try options.boxStore.box(named: name)
+            let image = try options.imageStore.image(named: image ?? old.record.image)
+            let box = try options.boxStore.recreate(name: name, from: image, imageStore: options.imageStore)
+            if options.json {
+                try Output.json(box.record)
+                return
+            }
+            print("Recreated \(box.record.disposable == true ? "disposable " : "")box \(box.name) from image \(image.name): \(box.directory.path)")
             print("  network: \(Network.describe(box.record.effectiveNetwork))")
             print("  start it with: agent-vm box start \(box.name)")
         }
