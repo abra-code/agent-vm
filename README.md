@@ -134,7 +134,7 @@ agent-vm box start s1 --owner-pid $$               # stops when this shell exits
 
 ## Terminal sessions: avm (works today)
 
-`avm` is the short way into a box from a terminal. Run it in a project folder: it lists your boxes, starts the one you choose when it is stopped, shares the folder into it at the same path, and opens a login shell there. Exit the shell to come back.
+`avm` is the short way into a box from a terminal. Run it in a project folder: it lists your boxes, starts the one you choose when it is stopped, shares the folder into it at the same path, snapshots it, and opens a login shell there. Exit the shell to come back: avm reports what changed in the folder, and you keep the changes or undo them.
 
 ```sh
 cd ~/src/app
@@ -142,6 +142,8 @@ avm                        # choose a box from the list, then a login shell in ~
 avm dev1                   # that box
 avm dev1 -- make test      # a command instead of the shell; its exit status is avm's
 avm dev1 --no-project      # share no folder (the shell starts in the box user's home)
+avm dev1 --read-only       # share the folder read only (nothing to snapshot)
+avm dev1 --no-snapshot     # share it read-write without a snapshot (nothing to undo)
 avm list                   # the boxes avm offers, and the choice remembered for this folder
 avm dev1 --dry-run         # print the steps instead of taking them
 ```
@@ -152,16 +154,23 @@ Box dev1
 Starting box dev1
 Box dev1 is running (14 s)
 Sharing ~/src/app (read-write)
+Snapshot of ~/src/app taken (session 20260926-101500-7c1e)
 Login shell in box dev1; exit it to come back here
 ...
+Session 20260926-101500-7c1e: 3 added, 5 modified in ~/src/app; review first: 1 high
+HIGH   A .git/hooks/pre-commit
+         git hook: runs automatically on the next git operation
+k) keep the changes  r) show every change  u) undo them all [K/r/u] keep the changes
+Kept. Undo later with: agent-vm session undo 20260926-101500-7c1e
 Box dev1 keeps running; stop it with: agent-vm box stop dev1
 ```
 
 - **The list:** running boxes first (with the folder each one shares and how many programs run in it), then stopped ones. Arrows (or Control-P and Control-N) move, typing filters, Enter chooses, Escape clears the filter and then quits. The box chosen for a folder is remembered (`connect.json` in the store) and preselected next time. A temporary box that is not running is never offered, and an unresponsive one is shown but cannot be chosen.
+- **Snapshot, report, keep or undo:** a folder shared read-write is snapshotted before the session (a session, as in [Sessions](#sessions-snapshot-report-and-undo-works-today)). Afterwards avm lists what changed, flagging files that run code later on this Mac, and asks: `k` keeps the changes (the snapshot stays, so `agent-vm session undo <id>` still works later), `r` shows every change, `u` undoes them all. Escape keeps them. With no changes, the snapshot is discarded. The box keeps running, so stop what the agent left running in the background before you undo; avm asks first when other programs (another terminal or application) use the box. Kept snapshots take space as the folder changes: `agent-vm session discard --older-than 7` frees those older than a week.
 - **One folder per box:** a box shares one folder at a time, and a box whose programs use another folder refuses to switch. avm says so and shows the list again.
 - **Your home folder cannot be shared** (nor `~/Library`, a hidden folder in it, or the agent-vm store). Started there, avm offers to connect without a folder; `--project <folder>` shares another one.
 - **A box avm started keeps running** afterwards; stop it with `agent-vm box stop <box>`. avm never stops or deletes a box.
-- **Exit status:** the program's; 1 when avm could not connect (no such box, a box that did not start, a refused folder); 64 for options that do not go together, or when there is no terminal (from a script, use `agent-vm exec`); 75 when no VM slot is free; 130 when you quit the list.
+- **Exit status:** the program's; 1 when avm could not connect (no such box, a box that did not start, a refused folder, no snapshot and you chose not to go on); 64 for options that do not go together, or when there is no terminal (from a script, use `agent-vm exec`); 75 when no VM slot is free; 130 when you quit the list.
 - **Installing:** `avm` is a symlink to `agent-vm`, made by `Scripts/build.sh` next to it; link it into a folder on your `PATH` (`ln -s <repository>/.build/signed/release/avm ~/bin/avm`), or run `agent-vm connect`, which is the same command.
 - `NO_COLOR=1` turns off bold and reverse video; with `TERM=dumb` (or no `TERM`) the list is a numbered menu. Everything else: [Docs/avm.md](Docs/avm.md).
 

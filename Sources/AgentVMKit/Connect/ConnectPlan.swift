@@ -1,10 +1,10 @@
 // Sources/AgentVMKit/Connect/ConnectPlan.swift
 //
 // What `agent-vm connect` (avm) does once the choices are made, as data: the steps in order
-// (start the box, share the folder, run the session), so `--dry-run` prints exactly what a run
-// performs, and tests check the steps without a box. The session itself is `agent-vm exec --tty`
-// run as a child; the program goes through the account's login shell, so ~/.zprofile applies as
-// it does in `box shell`.
+// (start the box, share the folder, snapshot it, run the session, report what changed), so
+// `--dry-run` prints exactly what a run performs, and tests check the steps without a box. The
+// session itself is `agent-vm exec --tty` run as a child; the program goes through the
+// account's login shell, so ~/.zprofile applies as it does in `box shell`.
 
 import Foundation
 
@@ -29,17 +29,21 @@ public struct ConnectRequest: Equatable, Sendable {
     /// The canonical folder to share; nil: none (--no-project).
     public var project: String?
     public var readOnly: Bool
+    /// Snapshot the folder before the session and report on it afterwards; only for a folder
+    /// shared read-write.
+    public var snapshot: Bool
     /// The person's --secret specs, passed on to exec.
     public var secrets: [String]
     /// The person's --env specs, passed on to exec.
     public var env: [String]
 
-    public init(target: ConnectTarget, launch: ConnectLaunch, project: String?, readOnly: Bool = false,
+    public init(target: ConnectTarget, launch: ConnectLaunch, project: String?, readOnly: Bool = false, snapshot: Bool = false,
                 secrets: [String] = [], env: [String] = []) {
         self.target = target
         self.launch = launch
         self.project = project
         self.readOnly = readOnly
+        self.snapshot = snapshot
         self.secrets = secrets
         self.env = env
     }
@@ -64,8 +68,12 @@ public enum ConnectStep: Equatable, Sendable {
     case start(box: String, ownerPid: Int32?)
     /// Share the folder into the running box.
     case share(box: String, project: String, readOnly: Bool)
+    /// Snapshot the folder (a session in the store), so what the session changes can be undone.
+    case snapshot(project: String)
     /// Run the session: agent-vm with these arguments, on this terminal.
     case run(arguments: [String])
+    /// Report what changed in the folder since the snapshot, then keep it or undo it.
+    case report(project: String)
 
     /// The step for a person (the lines of --dry-run).
     public var text: String {
@@ -77,8 +85,12 @@ public enum ConnectStep: Equatable, Sendable {
             return "start box \(box)"
         case let .share(_, project, readOnly):
             return "share \(project) (\(readOnly ? "read only" : "read-write"))"
+        case let .snapshot(project):
+            return "snapshot \(project)"
         case let .run(arguments):
             return "run: agent-vm \(ConnectPlanner.shellQuoted(arguments))"
+        case let .report(project):
+            return "report what changed in \(project), then keep or undo it"
         }
     }
 }
@@ -98,11 +110,19 @@ public enum ConnectPlanner {
                 // would lose it when this connect exits.
                 steps.append(.start(box: name, ownerPid: nil))
             }
+            // A folder shared read only cannot change, so it gets no snapshot.
+            let snapshot = request.snapshot && !request.readOnly ? request.project : nil
             if let project = request.project {
                 steps.append(.share(box: name, project: project, readOnly: request.readOnly))
             }
+            if let snapshot {
+                steps.append(.snapshot(project: snapshot))
+            }
             steps.append(.run(arguments: childArguments(box: name, project: request.project, readOnly: request.readOnly,
                                                         secrets: request.secrets, env: request.env, argv: launchArgv(request.launch))))
+            if let snapshot {
+                steps.append(.report(project: snapshot))
+            }
             return steps
         }
     }

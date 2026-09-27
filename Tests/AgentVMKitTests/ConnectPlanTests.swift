@@ -1,7 +1,8 @@
 // Tests/AgentVMKitTests/ConnectPlanTests.swift
 //
-// What `agent-vm connect` plans for a choice: the steps, the session child's arguments, how
-// programs are launched through the login shell, and the --dry-run lines.
+// What `agent-vm connect` plans for a choice: the steps, the snapshot and report around a
+// read-write share, the session child's arguments, how programs are launched through the login
+// shell, and the --dry-run lines.
 
 import Foundation
 import Testing
@@ -39,6 +40,42 @@ import Testing
             return
         }
         #expect(!arguments.contains("--project"))
+    }
+
+    @Test func aReadWriteShareIsSnapshotted() {
+        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", snapshot: true),
+                                         facts: ConnectFacts(boxRunning: true, ownPid: pid))
+        #expect(steps.count == 4)
+        #expect(steps[0] == .share(box: "b1", project: "/p", readOnly: false))
+        #expect(steps[1] == .snapshot(project: "/p"))
+        guard case .run = steps[2] else {
+            Issue.record("the third step is not the run: \(steps)")
+            return
+        }
+        #expect(steps[3] == .report(project: "/p"))
+    }
+
+    @Test func readOnlyTakesNoSnapshot() {
+        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", readOnly: true, snapshot: true),
+                                         facts: ConnectFacts(boxRunning: true, ownPid: pid))
+        #expect(steps.count == 2)
+        #expect(steps[0] == .share(box: "b1", project: "/p", readOnly: true))
+        guard case .run(let arguments) = steps[1] else {
+            Issue.record("not a run: \(steps)")
+            return
+        }
+        #expect(arguments.starts(with: ["exec", "--tty", "--box", "b1", "--project", "/p", "--read-only", "--"]))
+    }
+
+    @Test func noSnapshotMeansNoReport() {
+        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", snapshot: false),
+                                         facts: ConnectFacts(boxRunning: false, ownPid: pid))
+        #expect(!steps.contains(.snapshot(project: "/p")))
+        #expect(!steps.contains(.report(project: "/p")))
+        // No folder, nothing to snapshot.
+        let none = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: nil, snapshot: true),
+                                        facts: ConnectFacts(boxRunning: true, ownPid: pid))
+        #expect(none.count == 1)
     }
 
     @Test func childArgumentsInOrder() {
@@ -84,6 +121,8 @@ import Testing
         #expect(ConnectStep.start(box: "t", ownerPid: 42).text == "start box t, stopping it when process 42 exits")
         #expect(ConnectStep.share(box: "b1", project: "/Users/me/src/app", readOnly: false).text == "share /Users/me/src/app (read-write)")
         #expect(ConnectStep.share(box: "b1", project: "/p", readOnly: true).text == "share /p (read only)")
+        #expect(ConnectStep.snapshot(project: "/p").text == "snapshot /p")
+        #expect(ConnectStep.report(project: "/p").text == "report what changed in /p, then keep or undo it")
         let run = ConnectStep.run(arguments: ConnectPlanner.childArguments(box: "b1", project: "/my app", readOnly: false, secrets: [],
                                                                           env: [], argv: ConnectPlanner.launchArgv(.command(["claude"]))))
         #expect(run.text == #"run: agent-vm exec --tty --box b1 --project '/my app' -- /bin/sh -c 'exec "$SHELL" -l -c '\''exec "$0" "$@"'\'' "$@"' sh claude"#)

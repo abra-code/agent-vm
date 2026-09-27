@@ -161,32 +161,36 @@ enum Output {
             return
         }
         print("")
-        let marks: [ChangeKind: String] = [.added: "A", .deleted: "D", .modified: "M", .typeChanged: "T", .metadata: "P"]
         for change in report.changes {
-            let severity: String
-            switch change.highestSeverity {
-            case .high?: severity = "HIGH  "
-            case .medium?: severity = "medium"
-            default: severity = "      "
-            }
-            var line = "\(severity) \(marks[change.kind] ?? "?") \(change.path)"
-            if change.type == .directory, change.kind != .metadata {
-                line += "/"
-            }
-            if let inside = change.entriesInside, inside > 0 {
-                line += " (\(inside) entries inside)"
-            }
-            if let target = change.symlinkTarget {
-                line += " -> \(target)"
-            }
-            if change.coveredByAncestor {
-                line += " (inside a changed folder)"
-            }
-            print(line)
-            for flag in change.flags where flag.severity != .info {
-                print("         \(flag.reason)")
+            for line in changeLines(change) {
+                print(line)
             }
         }
+    }
+
+    /// One change as the report lists it: its line, then a line for each flag's reason.
+    static func changeLines(_ change: Change) -> [String] {
+        let marks: [ChangeKind: String] = [.added: "A", .deleted: "D", .modified: "M", .typeChanged: "T", .metadata: "P"]
+        let severity: String
+        switch change.highestSeverity {
+        case .high?: severity = "HIGH  "
+        case .medium?: severity = "medium"
+        default: severity = "      "
+        }
+        var line = "\(severity) \(marks[change.kind] ?? "?") \(change.path)"
+        if change.type == .directory, change.kind != .metadata {
+            line += "/"
+        }
+        if let inside = change.entriesInside, inside > 0 {
+            line += " (\(inside) entries inside)"
+        }
+        if let target = change.symlinkTarget {
+            line += " -> \(target)"
+        }
+        if change.coveredByAncestor {
+            line += " (inside a changed folder)"
+        }
+        return [line] + change.flags.filter { $0.severity != .info }.map { "         \($0.reason)" }
     }
 
     /// Bytes for a person, in decimal units as Finder shows them: "36.1 GB", "310 MB".

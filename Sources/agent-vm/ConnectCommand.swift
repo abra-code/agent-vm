@@ -41,6 +41,12 @@ enum ConnectHelp {
             (or a command, after --). Exit the shell to come back. A box that was started \
             keeps running afterwards; stop it with agent-vm box stop <box>.
 
+            A folder shared read-write is snapshotted first. Afterwards \(name) reports what \
+            changed, flagging files that run code later on this Mac, and asks: keep the \
+            changes, show every change, or undo them all. --read-only shares the folder read \
+            only (nothing can change, so no snapshot); --no-snapshot shares it read-write \
+            without one (nothing to undo then).
+
             Forms:
               \(name)                    choose a box, then a login shell
               \(name) <box>              that box
@@ -69,6 +75,12 @@ struct ConnectOptions: ParsableArguments {
     @Flag(name: .customLong("no-project"), help: "Share no folder; the program starts in the box user's home folder.")
     var noProject = false
 
+    @Flag(name: .customLong("read-only"), help: "Share the folder read only (no snapshot is taken then).")
+    var readOnly = false
+
+    @Flag(name: .customLong("no-snapshot"), help: "Do not snapshot a folder shared read-write, so there is nothing to undo afterwards.")
+    var noSnapshot = false
+
     @Option(name: .customLong("secret"), parsing: .singleValue, help: SecretOptions.help)
     var secrets: [String] = []
 
@@ -88,6 +100,9 @@ struct ConnectOptions: ParsableArguments {
         }
         if project != nil && noProject {
             throw ValidationError("--project and --no-project do not go together")
+        }
+        if readOnly && noProject {
+            throw ValidationError("--read-only and --no-project do not go together: --read-only shares a folder read only")
         }
         try SecretOptions.validate(secrets)
         do {

@@ -133,6 +133,36 @@ test_connect_dry_run_names_every_step() {
     assert_missing "$AGENT_VM_HOME/connect.json" || return 1
 }
 
+test_connect_dry_run_snapshots_read_write_shares() {
+    make_boxes || return 1
+    local _project
+    _project="$(cd "$SCRATCH/project" && /bin/pwd -P)"
+    run_avm_link b1 --shell --dry-run --project "$SCRATCH/project"
+    assert_status 0 || return 1
+    assert_out_contains "  snapshot $_project" || return 1
+    assert_out_contains "  report what changed in $_project, then keep or undo it" || return 1
+    # Read only: nothing can change, so no snapshot, and exec shares it read only.
+    run_avm_link b1 --shell --dry-run --read-only --project "$SCRATCH/project"
+    assert_status 0 || return 1
+    assert_out_contains "  share $_project (read only)" || return 1
+    assert_out_contains "--project $_project --read-only --" || return 1
+    assert_not_contains "$OUT" "  snapshot " "the steps" || return 1
+    assert_not_contains "$OUT" "report what changed" "the steps" || return 1
+    run_avm_link b1 --shell --dry-run --no-snapshot --project "$SCRATCH/project"
+    assert_status 0 || return 1
+    assert_out_contains "  share $_project (read-write)" || return 1
+    assert_not_contains "$OUT" "  snapshot " "the steps" || return 1
+    # A dry run takes no snapshot.
+    run_avm session list
+    assert_out_contains "No sessions." || return 1
+}
+
+test_read_only_needs_a_folder() {
+    run_avm_link b1 --read-only --no-project
+    assert_status 64 || return 1
+    assert_err_contains "--read-only and --no-project do not go together" || return 1
+}
+
 test_connect_refuses_the_home_folder() {
     make_boxes || return 1
     avm_link || return 1

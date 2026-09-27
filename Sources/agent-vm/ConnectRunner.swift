@@ -4,8 +4,9 @@
 // always gives the same status: the options (ArgumentParser, 64), then what the command line
 // names (the box), then the folder, then what there is to offer, then the terminal. Then the
 // box is chosen (or taken), the steps planned (ConnectPlanner), and each performed with a line
-// saying so: start the box when it is not running, share the folder, run the session as a
-// child `agent-vm exec --tty` (SessionChild). connect never stops or deletes a box.
+// saying so: start the box when it is not running, share the folder, snapshot it when shared
+// read-write, run the session as a child `agent-vm exec --tty` (SessionChild), then report what
+// changed and keep or undo it (ConnectReport). connect never stops or deletes a box.
 
 import AgentVMKit
 import Darwin
@@ -25,7 +26,9 @@ enum ConnectError: Error, CustomStringConvertible {
     /// The folder cannot be shared.
     case unsuitableFolder(AgentVMError)
     /// The box's supervisor refused the share (another folder is in use there).
-    case shareRefused(String)
+    case shareRefused(message: String, box: String)
+    /// No snapshot could be taken, and the person did not go on without one.
+    case noSnapshot(project: String)
     /// Escape or Control-C in a picker or a question.
     case canceled
     /// A signal ended a picker or a question.
@@ -46,8 +49,12 @@ enum ConnectError: Error, CustomStringConvertible {
             return "box \(box) is a temporary box that is not running, so it is not started again; choose another box (\(name) list shows them)"
         case let .unsuitableFolder(error):
             return "\(error); share another folder with --project, or none with --no-project"
-        case let .shareRefused(message):
-            return message
+        case let .shareRefused(message, box):
+            // A second line: a session left running (a terminal window closed without ending
+            // it, for example) is found in the exec log.
+            return "\(message)\nprograms with no end recorded in agent-vm box execlog \(box) may still be running"
+        case let .noSnapshot(project):
+            return "nothing was run: no snapshot of \(ConnectRunner.tilde(project)); --no-snapshot runs without one"
         case .canceled, .interrupted:
             return ""
         case let .failed(error):
@@ -179,8 +186,8 @@ struct ConnectRunner {
                 throw ConnectError.sessionNeedsTerminal
             }
 
-            let request = ConnectRequest(target: .box(box.name), launch: options.launch, project: project,
-                                         secrets: options.secrets, env: options.env)
+            let request = ConnectRequest(target: .box(box.name), launch: options.launch, project: project, readOnly: options.readOnly,
+                                         snapshot: !options.noSnapshot, secrets: options.secrets, env: options.env)
             let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: status.state == .running, ownPid: getpid()))
             if options.dryRun {
                 print("\(invokedAs) would:")
@@ -240,6 +247,9 @@ struct ConnectRunner {
     }
 
     private func perform(_ steps: [ConnectStep], box: Box, request: ConnectRequest, remembered: ConnectChoice?, terminal: Terminal) throws -> Int32 {
+        let sessions = SessionStore(root: root)
+        var session: Session?
+        var outcome: SessionChild.Outcome?
         for step in steps {
             switch step {
             case let .start(name, ownerPid):
@@ -268,11 +278,17 @@ struct ConnectRunner {
                     throw ConnectError.failed(error)
                 }
                 guard response.ok else {
-                    throw ConnectError.shareRefused(response.error ?? "box \(box.name) did not share \(project)")
+                    throw ConnectError.shareRefused(message: response.error ?? "box \(box.name) did not share \(project)", box: box.name)
+                }
+            case let .snapshot(project):
+                let (taken, signal) = try snapshot(project, store: sessions, terminal: terminal)
+                session = taken
+                if let signal {
+                    return 128 + signal
                 }
             case let .run(arguments):
                 if let project = request.project {
-                    remember(box: box.name, launch: request.launch, project: project, previous: remembered)
+                    remember(box: box.name, launch: request.launch, project: project, readOnly: request.readOnly, previous: remembered)
                 }
                 switch request.launch {
                 case .shell:
@@ -280,44 +296,96 @@ struct ConnectRunner {
                 case .command(let words):
                     print("Running \(ConnectPlanner.shellQuoted(words)) in box \(box.name)")
                 }
-                let outcome: SessionChild.Outcome
+                let ended: SessionChild.Outcome
                 do {
-                    outcome = try SessionChild.run(executable: try AskpassEntry.executablePath(), arguments: arguments)
+                    ended = try SessionChild.run(executable: try AskpassEntry.executablePath(), arguments: arguments)
                 } catch {
+                    if let session {
+                        ConnectReport.end(session, store: sessions, warn: warn)
+                    }
                     throw ConnectError.failed(error)
                 }
-                return afterSession(outcome, box: box, terminal: terminal)
+                restoreTerminal(after: ended, terminal: terminal)
+                if let signal = ended.signal {
+                    // The terminal closed or the session was ended from outside: no one to talk
+                    // to. The session is ended, kept for undo.
+                    if let session {
+                        ConnectReport.end(session, store: sessions, warn: warn)
+                    }
+                    return 128 + signal
+                }
+                outcome = ended
+            case .report:
+                guard let session else {
+                    // The person went on without a snapshot.
+                    continue
+                }
+                if let signal = ConnectReport.run(session: session, store: sessions, box: box, terminal: terminal, warn: warn) {
+                    return 128 + signal
+                }
             }
-        }
-        return 0
-    }
-
-    /// The terminal as it was (SessionChild put its settings back); the kept box's reminder.
-    private func afterSession(_ outcome: SessionChild.Outcome, box: Box, terminal: Terminal) -> Int32 {
-        if terminal.style.cursorControl {
-            // Attributes off, the cursor shown. When the child did not end normally, also the
-            // modes a full-screen program may have left on: mouse reports, bracketed paste,
-            // kitty keyboard flags. Never "leave the alternate screen": when not in it, some
-            // terminals move the cursor.
-            var text = "\u{1B}[0m\u{1B}[?25h"
-            if outcome.status == ExecRunner.ownFailureStatus || outcome.status >= 128 {
-                text += "\u{1B}[?1000l\u{1B}[?1002l\u{1B}[?1003l\u{1B}[?1006l\u{1B}[?2004l\u{1B}[<u"
-            }
-            terminal.write(text)
-        }
-        if let signal = outcome.signal {
-            // The terminal closed or the session was ended from outside: no one to talk to.
-            return 128 + signal
         }
         if box.record.disposable != true {
             print("Box \(box.name) keeps running; stop it with: agent-vm box stop \(box.name)")
         }
-        return outcome.status
+        return outcome?.status ?? 0
+    }
+
+    /// Takes the snapshot, with signals held. When it cannot be taken, says why and asks
+    /// whether to go on without one (the session is nil then); no is `noSnapshot`. A signal
+    /// during the step comes back with it, the session already ended.
+    private func snapshot(_ project: String, store: SessionStore, terminal: Terminal) throws -> (Session?, Int32?) {
+        let (result, signal) = SignalHold.around { try store.start(project: project) }
+        switch result {
+        case .success(let session):
+            print("Snapshot of \(Self.tilde(project)) taken (session \(session.id))")
+            if let signal {
+                ConnectReport.end(session, store: store, warn: warn)
+                return (session, signal)
+            }
+            return (session, nil)
+        case .failure(let error):
+            if let signal {
+                return (nil, signal)
+            }
+            let question: Confirm
+            switch error {
+            case AgentVMError.sessionAlreadyActive(_, let id):
+                print("Session \(id) is already active for \(Self.tilde(project)) (another avm, or an application using agent-vm); its snapshot covers this run too.")
+                question = Confirm("Go on without a new snapshot?", defaultAnswer: true)
+            case AgentVMError.differentVolume:
+                print("\(Self.tilde(project)) is on another volume than the agent-vm store, so no snapshot can be taken and nothing can be undone.")
+                question = Confirm("Go on without a snapshot?", defaultAnswer: false)
+            default:
+                print("No snapshot: \(error).")
+                question = Confirm("Go on without a snapshot?", defaultAnswer: false)
+            }
+            guard try question.run(on: terminal) else {
+                throw ConnectError.noSnapshot(project: project)
+            }
+            return (nil, nil)
+        }
+    }
+
+    /// The terminal as it was (SessionChild put its settings back).
+    private func restoreTerminal(after outcome: SessionChild.Outcome, terminal: Terminal) {
+        guard terminal.style.cursorControl else {
+            return
+        }
+        // Attributes off, the cursor shown. When the child did not end normally, also the
+        // modes a full-screen program may have left on: mouse reports, bracketed paste, kitty
+        // keyboard flags. Never "leave the alternate screen": when not in it, some terminals
+        // move the cursor.
+        var text = "\u{1B}[0m\u{1B}[?25h"
+        if outcome.status == ExecRunner.ownFailureStatus || outcome.status >= 128 {
+            text += "\u{1B}[?1000l\u{1B}[?1002l\u{1B}[?1003l\u{1B}[?1006l\u{1B}[?2004l\u{1B}[<u"
+        }
+        terminal.write(text)
     }
 
     /// Right before the session, so one that ends with a closed terminal is remembered too. A
     /// command run leaves the remembered launch as it was.
-    private func remember(box: String, launch: ConnectLaunch, project: String, previous: ConnectChoice?) {
+    private func remember(box: String, launch: ConnectLaunch, project: String, readOnly: Bool, previous: ConnectChoice?) {
         let launchID: String?
         switch launch {
         case .shell:
@@ -326,7 +394,7 @@ struct ConnectRunner {
             launchID = previous?.launch
         }
         do {
-            try ConnectChoices(store: root).remember(ConnectChoice(target: .box, box: box, launch: launchID, readOnly: false), for: project)
+            try ConnectChoices(store: root).remember(ConnectChoice(target: .box, box: box, launch: launchID, readOnly: readOnly), for: project)
         } catch {
             warn("cannot remember this choice: \(error)")
         }
@@ -343,10 +411,12 @@ struct ConnectRunner {
         }
     }
 
+    /// Each line of the error's text, prefixed with the name connect was started as.
     private func say(_ error: ConnectError) {
         let text = error.description
         if !text.isEmpty {
-            FileHandle.standardError.write(Data("\(invokedAs): \(text)\n".utf8))
+            let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { "\(invokedAs): \($0)\n" }
+            FileHandle.standardError.write(Data(lines.joined().utf8))
         }
     }
 

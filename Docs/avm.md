@@ -1,12 +1,12 @@
 # avm and agent-vm connect
 
-`avm` runs a login shell or a command in an agent-vm box, on your terminal, with the current folder shared into the box at the same path. `avm` is a symlink to `agent-vm`: started under that name, agent-vm is `agent-vm connect`, and every form below works with either name (`avm dev1` is `agent-vm connect dev1`).
+`avm` runs a login shell or a command in an agent-vm box, on your terminal, with the current folder shared into the box at the same path. A folder shared read-write is snapshotted first, and afterwards avm reports what changed and lets you keep the changes or undo them. `avm` is a symlink to `agent-vm`: started under that name, agent-vm is `agent-vm connect`, and every form below works with either name (`avm dev1` is `agent-vm connect dev1`).
 
 ## Forms
 
 ```
 avm [to] [<box>] [--box <box>] [--shell | -- <command> ...] [--project <folder> | --no-project]
-    [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
+    [--read-only] [--no-snapshot] [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
 avm list [--json] [--project <folder>]
 ```
 
@@ -14,6 +14,7 @@ avm list [--json] [--project <folder>]
 - **`to`** is the default subcommand, so `avm dev1` is `avm to dev1`. A box named `list`, `to` or `help` is reached with `--box`: `avm --box list`.
 - **What runs:** the account's login shell (`--shell`, the default), or the command after `--`. A command runs through the login shell as well (`$SHELL -l -c`), so `~/.zprofile` applies as it does in `agent-vm box shell`, with its words passed unchanged.
 - **`--project <folder>`** shares that folder instead of the current one; **`--no-project`** shares none, and the program starts in the box user's home folder.
+- **`--read-only`** shares the folder read only: programs in the box cannot change it, so no snapshot is taken. **`--no-snapshot`** shares it read-write without a snapshot, so there is nothing to report or undo afterwards.
 - **`--secret`** and **`--env`** are passed on to `agent-vm exec` (see the README's Boxes and exec section): `--secret NAME` takes a value from your Keychain, `--env NAME=VALUE` or `--env NAME` sets a variable.
 - **`--dry-run`** prints the steps instead of taking them, and exits 0. It creates, starts, shares and remembers nothing, and needs a terminal only to show the list.
 - **`avm --version`** and **`avm help <subcommand>`** work as for agent-vm. `avm --help` lists the subcommands; the options are under `avm to --help`.
@@ -24,9 +25,12 @@ avm list [--json] [--project <folder>]
 2. **The box:** the one named, or the one you choose in the list (below). Disposable boxes that have stopped are deleted first, as `box list` does (`box gc`).
 3. **Start:** a stopped box is started (`Starting box dev1`, then `Box dev1 is running (14 s)`). A box that is stopping is waited for, then started again. avm never makes itself the box's owner, so the box keeps running after avm exits.
 4. **Share:** the folder is shared into the box at the same path (`Sharing ~/src/app (read-write)`). A box shares one folder at a time. When programs in the box still use another folder, the box refuses: avm says so and, when you chose the box in the list, shows the list again.
-5. **Remember:** the choice is recorded for the folder (below).
-6. **The session:** `agent-vm exec --tty` runs as avm's child on your terminal. Your terminal is in raw mode, so keys such as Control-C go to the program, and the window size follows. Exit the shell (or let the command end) to come back.
-7. **After:** the terminal's settings are put back, the cursor is shown and text attributes are reset, even if the session was killed. When it did not end normally, mouse reporting, bracketed paste and the kitty keyboard mode are turned off too. A kept box is left running: `Box dev1 keeps running; stop it with: agent-vm box stop dev1`.
+5. **Snapshot:** a folder shared read-write is snapshotted (`Snapshot of ~/src/app taken (session 20260926-101500-7c1e)`), unless `--no-snapshot`; see [Snapshot and report](#snapshot-and-report).
+6. **Remember:** the choice is recorded for the folder (below).
+7. **The session:** `agent-vm exec --tty` runs as avm's child on your terminal. Your terminal is in raw mode, so keys such as Control-C go to the program, and the window size follows. Exit the shell (or let the command end) to come back.
+8. **After:** the terminal's settings are put back, the cursor is shown and text attributes are reset, even if the session was killed. When it did not end normally, mouse reporting, bracketed paste and the kitty keyboard mode are turned off too.
+9. **The report**, when a snapshot was taken: what changed, then keep or undo (below).
+10. A kept box is left running: `Box dev1 keeps running; stop it with: agent-vm box stop dev1`.
 
 avm never stops or deletes a box.
 
@@ -36,8 +40,37 @@ avm never stops or deletes a box.
 avm would:
   start box dev1
   share /Users/me/src/app (read-write)
+  snapshot /Users/me/src/app
   run: agent-vm exec --tty --box dev1 --project /Users/me/src/app -- /bin/sh -c 'exec "$SHELL" -l'
+  report what changed in /Users/me/src/app, then keep or undo it
 ```
+
+## Snapshot and report
+
+Before the session, avm snapshots a folder it shares read-write: an instant copy-on-write copy in the agent-vm store, recorded as a session (see the README's Sessions section; `agent-vm session list` shows them). The folder must be on the same volume as the store.
+
+After the session, avm reports what changed since the snapshot:
+
+```
+Session 20260926-101500-7c1e: 13 added in ~/src/app; review first: 1 high, 12 medium
+HIGH   A .git/hooks/pre-commit
+         git hook: runs automatically on the next git operation
+medium A hook1
+         executable file added or changed: ...
+... and 3 more flagged; r shows every change
+k) keep the changes  r) show every change  u) undo them all [K/r/u]
+```
+
+- **Flagged** changes are the ones that run code later on this Mac (git hooks and configuration, agent configuration, build scripts, package manifests, executables, links leaving the folder). The first 10 are listed; `r` lists every change.
+- **`k`** (or Enter, or Escape) keeps the changes. The session is ended and its snapshot kept, so the run can still be undone later: `Kept. Undo later with: agent-vm session undo <id>`.
+- **`u`** undoes them all: what changed is put back from the snapshot, and what the agent left is kept in the session's folder, never deleted (`agent-vm session undo` without options). If something cannot be put back, avm lists it and says how to retry.
+- **No changes:** `No changes in ~/src/app.`, and the snapshot is discarded. When something in the folder could not be examined, the report says so and the snapshot is kept, since a change may have been missed.
+- **The box keeps running** with the folder shared. A program the agent started in the background can still change files, and avm cannot see it: stop it before you undo. What avm can see is other programs that run in the box through `agent-vm exec` (another terminal or an application); when there are any, it asks before undoing.
+- **When no snapshot can be taken**, avm says why and asks:
+  - another session is already active for the folder (another avm, or an application): its snapshot covers this run too, so going on is the default;
+  - the folder is on another volume than the store, or the snapshot failed: going on means nothing can be undone, so stopping is the default.
+- **A session that ends with a signal** (the terminal closed, `kill`): nothing is asked; the session is ended, kept for undo, and avm exits with 128 + the signal. A Control-C while the snapshot is taken, the report is made or the undo runs takes effect after that step, never halfway.
+- **Kept snapshots take space** as the folder changes: `agent-vm session discard --older-than 7` frees those that ended more than a week ago.
 
 ## The list
 
@@ -99,7 +132,7 @@ The box chosen for each folder is kept in `connect.json` in the agent-vm store (
 |---|---|
 | the program's | a session ran: what `agent-vm exec --tty` returned (the program's, 128 + a signal, 125 when exec itself failed, 126 or 127 when the program could not start) |
 | 0 | `list`, `--dry-run` |
-| 1 | avm could not connect: no such box, a temporary box that is not running, a folder that cannot be shared, a box that did not start, a refused share |
+| 1 | avm could not connect: no such box, a temporary box that is not running, a folder that cannot be shared, a box that did not start, a refused share, no snapshot and you chose not to go on |
 | 64 | options that do not go together, a bad `--secret` or `--env`, or no terminal for the list or the session |
 | 75 | no free VM slot (macOS runs at most two macOS virtual machines at once) |
 | 130 | the list was quit (Escape, Control-C) |
@@ -115,6 +148,7 @@ Errors go to stderr, prefixed with the name avm was started as (`avm:` or `agent
   - Enter chooses the preselected row;
   - other text filters the rows, which keep their numbers;
   - `q` or the end of input quits.
+- **A window closed without ending its programs:** a terminal can close a window and keep its programs running (seen once with Ghostty 1.3.1, until the application quit). The session then goes on unseen and the box keeps its folder, so avm refuses another folder there and points to the exec log: `agent-vm box execlog <box> --json` gives the session's `hostPid`; `kill` on that process id ends it.
 - **If avm is killed** with SIGKILL while its list is showing, nothing can put the terminal back; type `reset`. The same goes for a killed session (`kill -9` on avm): the program in the box keeps running, and its `agent-vm exec` is left without a terminal. `agent-vm box execlog <box> --json` gives that exec's process id (`hostPid`).
 
 ## For applications

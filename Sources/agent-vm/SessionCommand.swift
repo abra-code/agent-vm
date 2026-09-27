@@ -167,28 +167,40 @@ struct SessionCommand: ParsableCommand {
                 } else {
                     print("  the rest of the session can still be undone: agent-vm session undo \(session.id)")
                 }
-            } else if outcome.isComplete {
-                print("Restored \(session.record.project) to its state at \(Output.time(session.record.startedAt)).")
-                if let restore = outcome.restore {
-                    print("  \(restore.restored.count) changed entries put back")
-                } else {
-                    print("  editors or shells with the project open should reopen it")
+            } else {
+                for line in Self.lines(outcome) {
+                    print(line)
                 }
-                if let replaced = session.replacedTreePath {
-                    print("  what the agent left is kept at: \(replaced)")
-                }
-                print("  delete the snapshot and kept files with: agent-vm session discard \(session.id)")
-            } else if let restore = outcome.restore {
-                print("Could not restore everything in \(session.record.project):")
-                for (path, reason) in restore.failed.sorted(by: { $0.key < $1.key }) {
-                    print("  \(path): \(reason)")
-                }
-                print("  \(restore.remaining) changes remain; the session can still be undone.")
-                print("  Retry, or swap the whole folder: agent-vm session undo \(session.id) --whole-tree")
             }
             if !outcome.isComplete {
                 throw ExitCode(1)
             }
+        }
+
+        /// What an undo of the whole session did, for a person (connect prints the same).
+        static func lines(_ outcome: SessionStore.UndoOutcome) -> [String] {
+            let session = outcome.session
+            var lines: [String] = []
+            if outcome.isComplete {
+                lines.append("Restored \(session.record.project) to its state at \(Output.time(session.record.startedAt)).")
+                if let restore = outcome.restore {
+                    lines.append("  \(restore.restored.count) changed entries put back")
+                } else {
+                    lines.append("  editors or shells with the project open should reopen it")
+                }
+                if let replaced = session.replacedTreePath {
+                    lines.append("  what the agent left is kept at: \(replaced)")
+                }
+                lines.append("  delete the snapshot and kept files with: agent-vm session discard \(session.id)")
+            } else if let restore = outcome.restore {
+                lines.append("Could not restore everything in \(session.record.project):")
+                for (path, reason) in restore.failed.sorted(by: { $0.key < $1.key }) {
+                    lines.append("  \(path): \(reason)")
+                }
+                lines.append("  \(restore.remaining) changes remain; the session can still be undone.")
+                lines.append("  Retry, or swap the whole folder: agent-vm session undo \(session.id) --whole-tree")
+            }
+            return lines
         }
 
         struct UndoJSON: Encodable {
