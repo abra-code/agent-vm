@@ -91,11 +91,10 @@ import Testing
 
     @Test func signalsFromTheHostReachTheProgram() throws {
         let pair = try GuestPair(helperPath: try GuestPair.builtHelper())
-        let session = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["/bin/sh", "-c", "/bin/sleep 30"], terminal: size))
-        Thread.sleep(forTimeInterval: 0.3)
-        try session.sendSignal(SIGTERM)
-        let (report, _) = try finish(session)
-        #expect(report == ExitReport(signal: SIGTERM))
+        // Signaled once the program runs, not after a fixed wait (failed once on a busy Mac).
+        let session = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["/bin/sh", "-c", "echo ready; exec /bin/sleep 30"], terminal: size))
+        let (report, output) = try finish(session) { try session.sendSignal(SIGTERM) }
+        #expect(report == ExitReport(signal: SIGTERM), "\(report), output \(output)")
     }
 
     /// With job control the foreground job has its own process group: a signal from the host

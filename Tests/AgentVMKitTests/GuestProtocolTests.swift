@@ -194,14 +194,21 @@ private final class BundleMarker {}
     @Test func signalsReachTheProcessGroup() throws {
         let pair = try GuestPair()
         // The shell waits on a background child: only a group-wide signal ends both promptly.
-        let session = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["/bin/sh", "-c", "/bin/sleep 30 & wait"]))
-        Thread.sleep(forTimeInterval: 0.3)
-        try session.sendSignal(SIGSEGV) // not allowed: ignored
-        try session.sendSignal(SIGTERM)
+        // Signaled once the shell says "ready", not after a fixed wait, which raced on a busy Mac.
+        let session = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["/bin/sh", "-c", "/bin/sleep 30 & echo ready; wait"]))
         let clock = ContinuousClock()
-        let began = clock.now
-        let report = try session.run(stdout: { _ in }, stderr: { _ in })
-        #expect(report == ExitReport(signal: SIGTERM))
+        var began = clock.now
+        var output = ""
+        let report = try session.run(stdout: { bytes in
+            let wasReady = output.contains("ready")
+            output += String(decoding: bytes, as: UTF8.self)
+            if !wasReady && output.contains("ready") {
+                try session.sendSignal(SIGSEGV) // not allowed: ignored
+                try session.sendSignal(SIGTERM)
+                began = clock.now
+            }
+        }, stderr: { _ in })
+        #expect(report == ExitReport(signal: SIGTERM), "\(report), output \(output)")
         #expect(clock.now - began < .seconds(5))
     }
 
