@@ -34,6 +34,14 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
         return (Box(record: created.record, directory: URL(fileURLWithPath: folder.path, isDirectory: true)), fixture)
     }
 
+    @Test func aSupervisorsReadyIsABoxThatIsRunning() throws {
+        // The control channel keeps "ready"; what box status, box list and status print is "running".
+        let status = BoxStatus.from(ControlResponse(ok: true, state: .ready, guestVersion: "0.2.18"))
+        #expect(status.state == .running)
+        let json = String(decoding: try JSONEncoder().encode(status.state), as: UTF8.self)
+        #expect(json == "\"running\"")
+    }
+
     @Test func aStoppedBoxIsReadFromItsFolder() throws {
         let folder = try ShortFolder()
         let (box, _) = try shortBox(folder)
@@ -50,7 +58,7 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
             ok: true, state: .ready, guestVersion: "0.1.6", pid: 4242, project: "/Users/me/src/app", projectReadOnly: true,
             guestFeatures: ["terminal"], supervisorVersion: "0.1.6", supervisorPath: "/opt/agent-vm", startedAt: started, activeExecs: 2)))
         defer { server.close() }
-        #expect(BoxStatus.of(box) == BoxStatus(state: .ready, pid: 4242, supervisorVersion: "0.1.6", supervisorPath: "/opt/agent-vm",
+        #expect(BoxStatus.of(box) == BoxStatus(state: .running, pid: 4242, supervisorVersion: "0.1.6", supervisorPath: "/opt/agent-vm",
                                                startedAt: started, project: "/Users/me/src/app", projectReadOnly: true, activeExecs: 2,
                                                guestVersion: "0.1.6", guestFeatures: ["terminal"]))
     }
@@ -97,8 +105,8 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
         encoder.outputFormatting = [.sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         #expect(String(decoding: try encoder.encode(BoxStatus.stopped), as: UTF8.self) == #"{"state":"stopped"}"#)
-        let running = BoxStatus(state: .ready, pid: 1, startedAt: Date(timeIntervalSince1970: 1_800_000_000), activeExecs: 0)
-        #expect(String(decoding: try encoder.encode(running), as: UTF8.self) == #"{"activeExecs":0,"pid":1,"startedAt":"2027-01-15T08:00:00Z","state":"ready"}"#)
+        let running = BoxStatus(state: .running, pid: 1, startedAt: Date(timeIntervalSince1970: 1_800_000_000), activeExecs: 0)
+        #expect(String(decoding: try encoder.encode(running), as: UTF8.self) == #"{"activeExecs":0,"pid":1,"startedAt":"2027-01-15T08:00:00Z","state":"running"}"#)
     }
 
     @Test func supervisorStateCountsLentConnections() {

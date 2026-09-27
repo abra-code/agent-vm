@@ -194,27 +194,81 @@ test_update_guest_checks_every_name_first() {
     assert_err_contains "Missing expected argument '<image> ...'" || return 1
 }
 
-# Both lists name each folder and the space it takes, in text and in JSON (two added keys).
-test_lists_show_folder_and_space() {
+# The lists name each folder and measure nothing; image info and box info add the space it takes,
+# in text and in JSON (diskUsage). A list of every image must stay quick, and measuring is not.
+test_lists_show_folders_and_info_shows_space() {
     fake_image dev
     run_avm box create b1 --image dev
     assert_status 0 || return 1
     run_avm image list
     assert_status 0 || return 1
     assert_out_contains "/Images/dev" || return 1
-    assert_out_contains "not shared with other images or boxes (what image delete frees)" || return 1
+    assert_not_contains "$OUT" "not shared" "image list" || return 1
     run_avm box list
     assert_status 0 || return 1
     assert_out_contains "/Boxes/b1" || return 1
-    assert_out_contains "not shared with its image or other boxes (what box delete frees)" || return 1
+    assert_not_contains "$OUT" "not shared" "box list" || return 1
     run_avm image list --json
     assert_status 0 || return 1
-    assert_out_contains '"unsharedBytes"' || return 1
     assert_out_contains '"macOSBuild"' || return 1
+    assert_not_contains "$OUT" '"diskUsage"' "image list --json" || return 1
     run_avm box list --json
     assert_status 0 || return 1
-    assert_out_contains '"diskUsage"' || return 1
     assert_out_contains 'Boxes\/b1"' || return 1
+    assert_not_contains "$OUT" '"diskUsage"' "box list --json" || return 1
+
+    run_avm image info dev
+    assert_status 0 || return 1
+    assert_out_contains "/Images/dev" || return 1
+    assert_out_contains "not shared with other images or boxes (what image delete frees)" || return 1
+    run_avm image info dev --json
+    assert_status 0 || return 1
+    assert_json name dev || return 1
+    assert_out_contains '"unsharedBytes"' || return 1
+    run_avm box info b1
+    assert_status 0 || return 1
+    assert_out_contains "not shared with its image or other boxes (what box delete frees)" || return 1
+    run_avm box info b1 --json
+    assert_status 0 || return 1
+    assert_json box.name b1 || return 1
+    assert_json state stopped || return 1
+    assert_out_contains '"diskUsage"' || return 1
+    run_avm image info nosuch
+    assert_status 1 || return 1
+    assert_err_contains "no image nosuch" || return 1
+    run_avm box info nosuch
+    assert_status 1 || return 1
+    assert_err_contains "no box nosuch" || return 1
+}
+
+# status: one line per image and box, and the virtual machine count; it measures nothing and,
+# unlike box list, deletes nothing.
+test_status_summarizes_without_measuring_or_collecting() {
+    fake_image dev
+    fake_image broken failed
+    run_avm box create b1 --image dev
+    run_avm box create d1 --image dev --disposable
+    assert_status 0 || return 1
+    # A stopped disposable box that box list's gc would delete (its tombstone).
+    : > "$AGENT_VM_HOME/Boxes/d1/tombstone"
+    run_avm status
+    assert_status 0 || return 1
+    assert_out_contains "Images:" || return 1
+    assert_out_contains "broken" || return 1
+    assert_out_contains "failed" || return 1
+    assert_out_contains "Boxes:" || return 1
+    assert_out_contains "disposable" || return 1
+    assert_out_contains "Virtual machines running on this Mac" || return 1
+    assert_not_contains "$OUT" "not shared" "status" || return 1
+    assert_exists "$AGENT_VM_HOME/Boxes/d1" || return 1
+    run_avm status --json
+    assert_status 0 || return 1
+    assert_json images.0.name broken || return 1
+    assert_json images.1.name dev || return 1
+    assert_json boxes.0.box.name b1 || return 1
+    assert_json boxes.0.state stopped || return 1
+    assert_json runningVMs.limit 2 || return 1
+    assert_not_contains "$OUT" '"diskUsage"' "status --json" || return 1
 }
 
 test_box_execlog_needs_a_box() {
@@ -246,7 +300,7 @@ test_box_status_of_a_stopped_box() {
     assert_json running false || return 1
     assert_json box.name b1 || return 1
     assert_json box.image dev || return 1
-    assert_out_contains '"diskUsage"' || return 1
+    assert_not_contains "$OUT" '"diskUsage"' "box status --json" || return 1
     assert_not_contains "$OUT" '"pid"' "stdout" || return 1
     assert_missing "$AGENT_VM_HOME/Boxes/b1/supervisor.log" || return 1
     run_avm box status b1

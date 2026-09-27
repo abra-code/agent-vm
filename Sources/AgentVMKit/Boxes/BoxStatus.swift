@@ -13,8 +13,10 @@ public struct BoxStatus: Encodable, Equatable, Sendable {
         case stopped
         /// The supervisor runs; the guest daemon has not answered yet.
         case starting
-        /// The guest daemon answers; exec works.
-        case ready
+        /// The VM runs and its guest daemon answers; exec works. (An image's "ready" means
+        /// something else, built and usable, so a box says "running". The control channel
+        /// between supervisor and client still says "ready"; see `from(_:)`.)
+        case running
         /// Shutting down.
         case stopping
         /// Something holds the box's lock but does not answer on the control socket: a
@@ -105,20 +107,20 @@ public struct BoxStatus: Encodable, Equatable, Sendable {
     }
 
     /// A supervisor's answer as a status.
-    static func from(_ response: ControlResponse) -> BoxStatus {
+    public static func from(_ response: ControlResponse) -> BoxStatus {
         guard response.ok, let state = response.state else {
             return BoxStatus(state: .unresponsive, pid: response.pid, statusError: response.error ?? "the supervisor sent no state")
         }
         let mapped: State
         switch state {
         case .starting: mapped = .starting
-        case .ready: mapped = .ready
+        case .ready: mapped = .running
         case .stopping: mapped = .stopping
         }
         return BoxStatus(state: mapped, pid: response.pid, supervisorVersion: response.supervisorVersion, supervisorPath: response.supervisorPath,
                          startedAt: response.startedAt, project: response.project, projectReadOnly: response.projectReadOnly,
                          activeExecs: response.activeExecs, guestVersion: response.guestVersion,
-                         guestFeatures: mapped == .ready ? response.guestFeatures : nil, ownerPid: response.ownerPid)
+                         guestFeatures: mapped == .running ? response.guestFeatures : nil, ownerPid: response.ownerPid)
     }
 
     private static func isNotListening(_ error: Error?) -> Bool {

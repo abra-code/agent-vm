@@ -14,9 +14,9 @@ test_lifecycle() {
     assert_status 0 || return 1
     run_avm box start "$_box" --json
     assert_status 0 || return 1
-    assert_json state ready || return 1
+    assert_json state running || return 1
     assert_err_events || return 1
-    assert_err_contains '{"box":"'"$_box"'","event":"progress","message":"ready","step":"ready"}' || return 1
+    assert_err_contains '{"box":"'"$_box"'","event":"progress","message":"running","step":"running"}' || return 1
     local _pid
     _pid="$(json_value pid)"
 
@@ -25,7 +25,7 @@ test_lifecycle() {
     local _version="$OUT"
     run_avm box status "$_box" --json
     assert_status 0 || return 1
-    assert_json state ready || return 1
+    assert_json state running || return 1
     assert_json running true || return 1
     assert_json pid "$_pid" || return 1
     assert_json supervisorVersion "$_version" || return 1
@@ -166,7 +166,7 @@ test_a_start_while_stopping_starts_again() {
     assert_eq "$_started" 0 "box start's status" || return 1
     assert_eq "$_stopped" 0 "box stop's status" || return 1
     assert_err_contains '"message":"waiting for the box to stop","step":"stopping"' || return 1
-    assert_json state ready || return 1
+    assert_json state running || return 1
     assert_json ownerPid "$_owner" || return 1
     [ "$(json_value pid)" != "$_old" ] || { fail "the old supervisor still runs the box"; return 1; }
     # The owner is gone, so the box is stopping again; cleanup_on_exit waits for it.

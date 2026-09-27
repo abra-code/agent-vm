@@ -152,7 +152,7 @@ public struct HostFacts: Sendable {
 
     /// Counts processes running Virtualization's VM service, one per running VM of any
     /// application. Nil when the process list cannot be read (for example inside a sandbox).
-    private static func countVirtualMachineProcesses() -> Int? {
+    public static func countVirtualMachineProcesses() -> Int? {
         let capacity = proc_listallpids(nil, 0)
         guard capacity > 0 else {
             return nil

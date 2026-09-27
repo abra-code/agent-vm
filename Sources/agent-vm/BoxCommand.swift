@@ -20,10 +20,10 @@ struct BoxCommand: ParsableCommand {
             public host name), through a proxy on this Mac that logs every attempt; off - \
             nothing; open - NAT to the internet and your local network. See `box network`, `box netlog` and `box packs`. `box shell` opens a shell in \
             the box on this terminal, `box view` shows its screen in a window, `box execlog` \
-            shows what exec and shell ran there, and `box status` shows its state without \
-            starting anything.
+            shows what exec and shell ran there, `box status` shows its state without \
+            starting anything, and `box info` adds the space it takes on disk.
             """,
-        subcommands: [Create.self, Recreate.self, List.self, Status.self, Start.self, GC.self, SyncClock.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self,
+        subcommands: [Create.self, Recreate.self, List.self, Status.self, Info.self, Start.self, GC.self, SyncClock.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self,
                       Packs.self, Serve.self]
     )
 
@@ -118,22 +118,24 @@ struct BoxCommand: ParsableCommand {
 
         @OptionGroup var options: StoreOptions
 
-        /// A box as `box list` and `box status` print it: the record, whether a supervisor
-        /// holds it, its folder and space, and the status fields (BoxStatus) as more keys.
+        /// A box as `box list`, `box status` and `box info` print it: the record, whether a
+        /// supervisor holds it, its folder, and the status fields (BoxStatus) as more keys.
+        /// Only `box info` measures the box's space (`sizes`): a scan of the folder's files,
+        /// about 0.1 s per box, which a list and a quick status check should not pay.
         struct Entry: Encodable {
             var box: BoxRecord
             var running: Bool
             var path: String
-            var diskUsage: DiskUsage
+            var diskUsage: DiskUsage?
             var status: BoxStatus
 
-            init(_ box: Box) {
+            init(_ box: Box, sizes: Bool = false) {
                 self.status = BoxStatus.of(box)
                 self.box = box.record
                 // Held by a supervisor (or, briefly, by another command changing the box).
                 self.running = status.state != .stopped
                 self.path = box.directory.path
-                self.diskUsage = DiskUsage.of(box.directory)
+                self.diskUsage = sizes ? DiskUsage.of(box.directory) : nil
             }
 
             private enum Keys: String, CodingKey {
@@ -149,7 +151,7 @@ struct BoxCommand: ParsableCommand {
                 try container.encode(box, forKey: .box)
                 try container.encode(running, forKey: .running)
                 try container.encode(path, forKey: .path)
-                try container.encode(diskUsage, forKey: .diskUsage)
+                try container.encodeIfPresent(diskUsage, forKey: .diskUsage)
             }
 
             /// The entry for a person: a line with the essentials, then indented details.
@@ -177,7 +179,7 @@ struct BoxCommand: ParsableCommand {
                     if let error = status.statusError {
                         lines.append("    no answer from its supervisor: \(error)")
                     }
-                    if let version = status.guestVersion, status.state == .ready {
+                    if let version = status.guestVersion, status.state == .running {
                         let features = status.guestFeatures ?? []
                         lines.append("    agent-vm-guest \(version)\(features.isEmpty ? "" : " (\(features.joined(separator: ", ")))")")
                     }
@@ -190,6 +192,9 @@ struct BoxCommand: ParsableCommand {
                     if let execs = status.activeExecs, execs > 0 {
                         lines.append("    \(execs) program\(execs == 1 ? "" : "s") running through exec or box shell")
                     }
+                }
+                guard let diskUsage else {
+                    return lines + ["    \(path)"]
                 }
                 return lines + Output.placeLines(URL(fileURLWithPath: path), diskUsage, others: "its image or other boxes", delete: "box delete")
             }
@@ -227,7 +232,8 @@ struct BoxCommand: ParsableCommand {
                 id, agent-vm version and path, when it started, the shared project, how many \
                 programs exec and box shell run in it now, and its guest daemon. "unresponsive" \
                 means something holds the box but its supervisor does not answer. With --json, \
-                the same entry as `box list --json`.
+                the same entry as `box list --json`. It measures nothing; `box info` adds the \
+                box's space on disk.
                 """)
 
         @Argument(help: "The box name.")
@@ -237,6 +243,34 @@ struct BoxCommand: ParsableCommand {
 
         func run() throws {
             let entry = List.Entry(try options.boxStore.box(named: name))
+            if options.json {
+                try Output.json(entry)
+                return
+            }
+            for line in entry.lines {
+                print(line)
+            }
+        }
+    }
+
+    struct Info: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Show one box, with its space on disk.",
+            discussion: """
+                The box's `box status`, plus its space: all of it, and the part no image or \
+                other box shares, which is what `box delete` frees (what the box wrote, plus \
+                image blocks the image rewrote after the box was made). With --json, the status \
+                entry with `diskUsage` (`bytes`, and `unsharedBytes` unless the volume does not \
+                report it). Measuring takes a moment: about 0.1 s per disk.
+                """)
+
+        @Argument(help: "The box name.")
+        var name: String
+
+        @OptionGroup var options: StoreOptions
+
+        func run() throws {
+            let entry = List.Entry(try options.boxStore.box(named: name), sizes: true)
             if options.json {
                 try Output.json(entry)
                 return
@@ -276,7 +310,7 @@ struct BoxCommand: ParsableCommand {
             // Starting a running box succeeds, so clients can simply make sure a box is up.
             if box.isRunning, let status = try? ControlClient.request(.status, path: box.controlSocketPath), status.state == .ready {
                 if options.json {
-                    try Output.json(status)
+                    try Output.json(BoxStatus.from(status))
                 } else {
                     let owner = status.ownerPid.map { ", stops when process \($0) exits" } ?? ""
                     print("Box \(box.name) is already running (supervisor pid \(status.pid ?? 0)\(owner))\(ownerPid == nil ? "" : "; --owner-pid is ignored")")
@@ -288,9 +322,11 @@ struct BoxCommand: ParsableCommand {
             let response: ControlResponse
             do {
                 response = try BoxLauncher.start(box, executable: try AskpassEntry.executablePath(), ownerPid: ownerPid) { state in
+                    // The supervisor's "ready" is a box that is running, as box status says it.
+                    let step = state == ControlResponse.State.ready.rawValue ? BoxStatus.State.running.rawValue : state
                     // A box that was stopping is waited for, then started again.
-                    let text = state == ControlResponse.State.stopping.rawValue ? "  waiting for the box to stop" : "  \(state)"
-                    Events.emit(ProgressEvent(.progress, text, step: state, box: box.name), json: options.json)
+                    let text = state == ControlResponse.State.stopping.rawValue ? "  waiting for the box to stop" : "  \(step)"
+                    Events.emit(ProgressEvent(.progress, text, step: step, box: box.name), json: options.json)
                 }
             } catch AgentVMError.boxDisposed(let name) {
                 // A disposable box that was stopping has stopped for good.
@@ -298,11 +334,11 @@ struct BoxCommand: ParsableCommand {
                 throw AgentVMError.boxDisposed(name)
             }
             if options.json {
-                try Output.json(response)
+                try Output.json(BoxStatus.from(response))
                 return
             }
             let elapsed = clock.now - began
-            print("Box \(box.name) is ready (\(elapsed.formatted(.units(allowed: [.seconds], width: .narrow))), agent-vm-guest \(response.guestVersion ?? "?"), supervisor pid \(response.pid ?? 0))")
+            print("Box \(box.name) is running (\(elapsed.formatted(.units(allowed: [.seconds], width: .narrow))), agent-vm-guest \(response.guestVersion ?? "?"), supervisor pid \(response.pid ?? 0))")
             print("  run programs with: agent-vm exec --box \(box.name) -- <program>")
         }
     }

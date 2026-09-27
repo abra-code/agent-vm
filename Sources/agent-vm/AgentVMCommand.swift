@@ -65,7 +65,7 @@ struct AgentVMCommand: AsyncParsableCommand {
         commandName: "agent-vm",
         abstract: "Run AI agents inside disposable macOS virtual machines, and undo what they did.",
         version: AgentVM.version,
-        subcommands: [ExecCommand.self, BoxCommand.self, ImageCommand.self, SessionCommand.self, SecretCommand.self, DoctorCommand.self, VersionCommand.self]
+        subcommands: [ExecCommand.self, StatusCommand.self, BoxCommand.self, ImageCommand.self, SessionCommand.self, SecretCommand.self, DoctorCommand.self, VersionCommand.self]
     )
 }
 

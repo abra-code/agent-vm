@@ -19,7 +19,7 @@ struct ImageCommand: ParsableCommand {
             off again and shuts the guest down. Starting virtual machines needs the binaries \
             built by Scripts/build.sh (see `agent-vm doctor`).
             """,
-        subcommands: [Create.self, List.self, Delete.self, Setup.self, UpdateGuest.self, FetchIPSW.self]
+        subcommands: [Create.self, List.self, Info.self, Delete.self, Setup.self, UpdateGuest.self, FetchIPSW.self]
     )
 
     struct Create: AsyncParsableCommand {
@@ -327,16 +327,24 @@ struct ImageCommand: ParsableCommand {
     }
 
     struct List: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "List images.")
+        static let configuration = CommandConfiguration(
+            abstract: "List images.",
+            discussion: """
+                Quick: it reads each image's record and measures nothing. `agent-vm image info \
+                <name>` adds the image's space on disk: all of it, what no box or other image \
+                shares, and for an image built with --from what it added over its base.
+                """)
 
         @OptionGroup var options: StoreOptions
 
-        /// An image's record with its folder, space, growth over its base and what it lacks
-        /// added as more keys, so a program reading the records as before sees no change.
+        /// An image's record with its folder and what it lacks added as more keys, so a program
+        /// reading the records as before sees no change; `image info` adds its space and its
+        /// growth over its base. Those two measure the disk (a scan of the folder's files, and a
+        /// map of two disks' extents, about 0.3 s each), which a list of every image should not.
         struct Entry: Encodable {
             var record: ImageRecord
             var path: String
-            var diskUsage: DiskUsage
+            var diskUsage: DiskUsage?
             var addedOverBase: Added?
 
             private enum Keys: String, CodingKey {
@@ -350,9 +358,49 @@ struct ImageCommand: ParsableCommand {
                 try record.encode(to: encoder)
                 var container = encoder.container(keyedBy: Keys.self)
                 try container.encode(path, forKey: .path)
-                try container.encode(diskUsage, forKey: .diskUsage)
+                try container.encodeIfPresent(diskUsage, forKey: .diskUsage)
                 try container.encodeIfPresent(addedOverBase, forKey: .addedOverBase)
                 try container.encode(record.needs, forKey: .needs)
+            }
+
+            /// The entry for a person: a line with the essentials, the folder (and with sizes,
+            /// the space), then what the image lacks and why it failed.
+            var lines: [String] {
+                let record = self.record
+                let state = record.state.rawValue.padding(toLength: 12, withPad: " ", startingAt: 0)
+                var line = "\(record.name)  \(state)  macOS \(record.macOSVersion) (\(record.macOSBuild))  \(record.cpuCount) CPUs  \(record.memoryBytes >> 30) GB  created \(Output.time(record.createdAt))"
+                if let base = record.derivedFrom {
+                    line += "  from \"\(base.image)\" image"
+                }
+                if let recipe = record.recipe {
+                    line += "  recipe \(recipe.description ?? String(recipe.digest.prefix(12)))"
+                    if let parameters = recipe.parameters, !parameters.isEmpty {
+                        line += " [\(parameters.keys.sorted().map { "\($0)=\(parameters[$0] ?? "")" }.joined(separator: ", "))]"
+                    }
+                }
+                var lines = [line]
+                if let diskUsage {
+                    lines += Output.placeLines(URL(fileURLWithPath: path), diskUsage, others: "other images or boxes", delete: "image delete")
+                } else {
+                    lines.append("    \(path)")
+                }
+                if let added = addedOverBase {
+                    lines.append("    \(Output.size(added.bytes)) added over base \"\(added.image)\" image")
+                }
+                for need in record.needs {
+                    switch (need.kind, need.reason) {
+                    case (.guestUpdate, _):
+                        lines.append("    agent-vm-guest lacks \((need.missing ?? []).joined(separator: ", ")); `agent-vm image update-guest \(record.name)` adds it")
+                    case (.fullDiskAccess, .notGranted?):
+                        lines.append("    agent-vm-guest has no Full Disk Access: programs in boxes that open Desktop, Documents or Downloads wait on a hidden prompt; `agent-vm image setup \(record.name)`")
+                    case (.fullDiskAccess, _):
+                        lines.append("    Full Disk Access for agent-vm-guest is not checked\(record.fullDiskAccess == nil ? "" : " for its current version"); `agent-vm image setup \(record.name)`")
+                    }
+                }
+                if let failure = record.failure {
+                    lines.append("    failed: \(failure)")
+                }
+                return lines
             }
         }
 
@@ -379,50 +427,56 @@ struct ImageCommand: ParsableCommand {
             for problem in problems {
                 FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
             }
+            let entries = images.map { Entry(record: $0.record, path: $0.directory.path) }
             if options.json {
-                try Output.json(images.map { image in
-                    Entry(record: image.record, path: image.directory.path, diskUsage: DiskUsage.of(image.directory),
-                          addedOverBase: Self.added(image, among: images))
-                })
+                try Output.json(entries)
                 return
             }
-            if images.isEmpty {
+            if entries.isEmpty {
                 print("No images.")
                 return
             }
-            for image in images {
-                let record = image.record
-                let state = record.state.rawValue.padding(toLength: 12, withPad: " ", startingAt: 0)
-                var line = "\(record.name)  \(state)  macOS \(record.macOSVersion) (\(record.macOSBuild))  \(record.cpuCount) CPUs  \(record.memoryBytes >> 30) GB  created \(Output.time(record.createdAt))"
-                if let base = record.derivedFrom {
-                    line += "  from \"\(base.image)\" image"
+            for entry in entries {
+                for line in entry.lines {
+                    print(line)
                 }
-                if let recipe = record.recipe {
-                    line += "  recipe \(recipe.description ?? String(recipe.digest.prefix(12)))"
-                    if let parameters = recipe.parameters, !parameters.isEmpty {
-                        line += " [\(parameters.keys.sorted().map { "\($0)=\(parameters[$0] ?? "")" }.joined(separator: ", "))]"
-                    }
-                }
+            }
+        }
+    }
+
+    struct Info: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Show one image, with its space on disk.",
+            discussion: """
+                The image's `image list` entry, plus its space: all of it, and the part no box \
+                or other image shares, which is what `image delete` frees. For an image built \
+                with --from, also what its disk added over the image it was built from. With \
+                --json, the list entry with `diskUsage` (`bytes`, and `unsharedBytes` unless the \
+                volume does not report it) and `addedOverBase` (`image`, `bytes`). Measuring \
+                takes a moment: about 0.1 s per disk, and 0.3 s more for the growth over a base.
+                """)
+
+        @Argument(help: "The image name.")
+        var name: String
+
+        @OptionGroup var options: StoreOptions
+
+        func run() throws {
+            let image = try options.imageStore.image(named: name)
+            var added: List.Added?
+            if image.record.derivedFrom != nil {
+                // The base is found among all images, as `image list` found it.
+                let (images, _) = try options.imageStore.list()
+                added = List.added(image, among: images)
+            }
+            let entry = List.Entry(record: image.record, path: image.directory.path,
+                                   diskUsage: DiskUsage.of(image.directory), addedOverBase: added)
+            if options.json {
+                try Output.json(entry)
+                return
+            }
+            for line in entry.lines {
                 print(line)
-                for place in Output.placeLines(image.directory, DiskUsage.of(image.directory), others: "other images or boxes", delete: "image delete") {
-                    print(place)
-                }
-                if let added = Self.added(image, among: images) {
-                    print("    \(Output.size(added.bytes)) added over base \"\(added.image)\" image")
-                }
-                for need in record.needs {
-                    switch (need.kind, need.reason) {
-                    case (.guestUpdate, _):
-                        print("    agent-vm-guest lacks \((need.missing ?? []).joined(separator: ", ")); `agent-vm image update-guest \(record.name)` adds it")
-                    case (.fullDiskAccess, .notGranted?):
-                        print("    agent-vm-guest has no Full Disk Access: programs in boxes that open Desktop, Documents or Downloads wait on a hidden prompt; `agent-vm image setup \(record.name)`")
-                    case (.fullDiskAccess, _):
-                        print("    Full Disk Access for agent-vm-guest is not checked\(record.fullDiskAccess == nil ? "" : " for its current version"); `agent-vm image setup \(record.name)`")
-                    }
-                }
-                if let failure = record.failure {
-                    print("    failed: \(failure)")
-                }
             }
         }
     }

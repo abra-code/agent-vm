@@ -29,7 +29,7 @@ restore image (.ipsw)
 | Runs programs | Only while agent-vm builds or updates it | Yes: `exec`, `box shell`, `box view` |
 | Changed by | `image update-guest`, `image setup` | Whatever runs in it; `box network` for its network rules |
 | Its own settings | CPUs, memory, disk size, account name | CPUs and memory (default: the image's), network mode and rules |
-| Folder (shown by `image list`, `box list`) | `~/Library/Application Support/agent-vm/Images/<name>/` | `~/Library/Application Support/agent-vm/Boxes/<name>/` |
+| Folder (shown by `image list`, `box list`; with its space by `image info`, `box info`) | `~/Library/Application Support/agent-vm/Images/<name>/` | `~/Library/Application Support/agent-vm/Boxes/<name>/` |
 
 Your **project folder** is neither: it stays on your Mac and is shared into a box while a program runs with `--project`. Deleting a box never touches it. Take a session snapshot (`agent-vm session start`) before an agent works on it, to review and undo its changes.
 
@@ -110,7 +110,7 @@ agent-vm box start work
 
 ### Freeing disk space
 
-`image list` and `box list` show each one's folder and the space it takes, for example:
+`image info <image>` and `box info <box>` show each one's folder and the space it takes (the lists show only the folder, so they stay quick), for example:
 
 ```
 try1  stopped   image dev (macOS 26A428)  4 CPUs  8 GB  network allowlist
@@ -120,7 +120,7 @@ try1  stopped   image dev (macOS 26A428)  4 CPUs  8 GB  network allowlist
 
 The first number counts everything the box's disk holds, most of it shared with its image, so adding these numbers up overstates the space used. The second is what only this one holds, and what deleting it gives back.
 
-The second number changes as clones come and go: an image that a later image or box was built from holds little of its own, because the later one shares its data. `dev-xcode` with Xcode installed showed only 440 MB of its own, since `dev-xcode-ios` shares its Xcode. So `image list` gives a third line for an image built with `--from`: what its disk added over the image it was built from (`7.3 GB added over base "dev" image`), which stays the same whatever else is built, so each layer's growth can be followed. Starting the base image again (`image update-guest`, `image setup`) makes it grow a little: blocks the base rewrites were shared with the derived image, and now only the derived image holds the old ones. Besides what the recipe installed, it includes what the build itself wrote, such as a moved recovery container (about 1.5 GB when a disk grows) and what the guest changed while it ran; files the guest deleted are given back to the Mac and do not count.
+The second number changes as clones come and go: an image that a later image or box was built from holds little of its own, because the later one shares its data. `dev-xcode` with Xcode installed showed only 440 MB of its own, since `dev-xcode-ios` shares its Xcode. So `image info` gives a third line for an image built with `--from`: what its disk added over the image it was built from (`7.3 GB added over base "dev" image`), which stays the same whatever else is built, so each layer's growth can be followed. Starting the base image again (`image update-guest`, `image setup`) makes it grow a little: blocks the base rewrites were shared with the derived image, and now only the derived image holds the old ones. Besides what the recipe installed, it includes what the build itself wrote, such as a moved recovery container (about 1.5 GB when a disk grows) and what the guest changed while it ran; files the guest deleted are given back to the Mac and do not count.
 
 - `box delete <name>` gives back what the box wrote, and also the image's blocks the image changed after the box was made (`image update-guest` changes some), since the box then holds the old ones alone.
 - `image delete <name>` gives back what only that image holds. Space an image shares with its boxes and derived images stays in use until the last of them is deleted too, because they are clones of the same data. Deleting an image can therefore make a box's unshared space grow: what only the image and that box shared becomes the box's alone.
@@ -150,8 +150,8 @@ What changes:
 
 - `box list` still names the deleted image, as where the box came from.
 - You can no longer make new boxes from that image, and there is nothing to refresh the box from: to make the box again, build the image again first (from the same recipe).
-- The image's disk space is not all freed: whatever its boxes (or images built from it) still share stays in use until they are deleted too. Space the image shared with only one box becomes that box's own in `box list`.
-- An image built from the deleted one no longer shows what it added over its base in `image list`, since there is no base to compare with.
+- The image's disk space is not all freed: whatever its boxes (or images built from it) still share stays in use until they are deleted too. Space the image shared with only one box becomes that box's own in `box info`.
+- An image built from the deleted one no longer shows what it added over its base in `image info`, since there is no base to compare with.
 
 **Does changing an image change the images derived from it?**
 No. A derived image is a clone made at `image create --from`. To pass a change on, delete the derived image and build it again from the same recipe.
@@ -163,7 +163,7 @@ Not after creation. For a box, make it again with `box create --cpus N --memory-
 Not supported yet. Build a new image from a newer restore image (`image create --ipsw`), then build the derived images again from their recipes.
 
 **How many boxes can I have?**
-As many as your disk holds: a stopped box costs only the space it wrote. At most two can run at once, because macOS runs at most two macOS virtual machines at a time, counting image builds and updates and other apps' virtual machines (`agent-vm doctor` shows how many are running). A start or build with no free slot fails with exit status 75 ("no free VM slot"); try again when a VM has stopped. A box, or a new image, that was refused before its first boot is left as it was, so the same command can simply run again.
+As many as your disk holds: a stopped box costs only the space it wrote. At most two can run at once, because macOS runs at most two macOS virtual machines at a time, counting image builds and updates and other apps' virtual machines (`agent-vm status` and `agent-vm doctor` show how many are running). A start or build with no free slot fails with exit status 75 ("no free VM slot"); try again when a VM has stopped. A box, or a new image, that was refused before its first boot is left as it was, so the same command can simply run again.
 
 **Can I update an image while boxes made from it are running?**
 Yes. Running boxes use their own disks, not the image's. The update does need one of the two virtual machine slots. While another agent-vm command uses an image (building or updating it, or building a derived image from it), `box create` from it is refused as busy; try again when that command ends.
