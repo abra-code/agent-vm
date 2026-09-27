@@ -37,6 +37,10 @@ let package = Package(
         // The daemon installed inside the guest; talks to the host over vsock only.
         .executableTarget(name: "agent-vm-guest", dependencies: ["AgentVMKit"]),
 
+        // The terminal pickers and prompts of `agent-vm connect`: raw mode, keys, drawing inline.
+        .target(name: "TerminalUI"),
+
         .testTarget(name: "AgentVMKitTests", dependencies: ["AgentVMKit"]),
+        .testTarget(name: "TerminalUITests", dependencies: ["TerminalUI"]),
     ]
 )
