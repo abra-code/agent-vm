@@ -222,7 +222,11 @@ public enum ConnectPlanner {
         case .command(let words):
             return loginWrapper + words
         case .agent(let agent):
-            return loginWrapper + agent.command
+            guard let setup = agent.setup else {
+                return loginWrapper + agent.command
+            }
+            // The setup, then the agent in its place: $0 and $@ are the agent's words.
+            return loginWrapper + ["/bin/sh", "-c", setup + "\nexec \"$0\" \"$@\""] + agent.command
         }
     }
 

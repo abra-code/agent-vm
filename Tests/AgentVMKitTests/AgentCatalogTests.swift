@@ -38,11 +38,51 @@ import Testing
         let claude = try #require(catalog.entry(id: "claude"))
         #expect(claude.command == ["claude"] && claude.secretsNeeded == .one && claude.source == .builtIn)
         #expect(claude.secrets.map(\.env) == ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"])
+        // Claude Code's first-run screens ignore a token until onboarding is marked done.
+        #expect(claude.setup?.contains("hasCompletedOnboarding") == true)
         // Every rule is one a box takes.
         let packs = try NetworkPacks.load(store: scratch.root, builtIn: TestPacks.repository)
         for entry in catalog.entries {
             _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: entry.allow), packs: packs)
         }
+    }
+
+    /// Claude Code's setup, run as the session runs it, with `home` as the home folder.
+    func runClaudeSetup(home: URL, token: String?) throws {
+        let scratch = try Scratch()
+        let setup = try #require(AgentCatalog.load(store: scratch.root, builtIn: Self.repository).entry(id: "claude")?.setup)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", setup]
+        var environment = ["HOME": home.path, "PATH": "/usr/bin:/bin"]
+        environment["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        process.environment = environment
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+    }
+
+    @Test func theClaudeSetupMarksOnboardingDone() throws {
+        let scratch = try Scratch()
+        let file = scratch.root.appendingPathComponent(".claude.json")
+        // No token: nothing written.
+        try runClaudeSetup(home: scratch.root, token: nil)
+        #expect(!FileManager.default.fileExists(atPath: file.path))
+        // No file: made, private.
+        try runClaudeSetup(home: scratch.root, token: "t")
+        var config = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        #expect(config["hasCompletedOnboarding"] as? Bool == true)
+        #expect(try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int == 0o600)
+        // Other keys kept.
+        try Data(#"{"theme": "dark", "hasCompletedOnboarding": false}"#.utf8).write(to: file)
+        try runClaudeSetup(home: scratch.root, token: "t")
+        config = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        #expect(config["theme"] as? String == "dark" && config["hasCompletedOnboarding"] as? Bool == true)
+        // A file that is not JSON is left alone, with no temporary file behind.
+        try Data("not json".utf8).write(to: file)
+        try runClaudeSetup(home: scratch.root, token: "t")
+        #expect(try String(contentsOf: file, encoding: .utf8) == "not json")
+        #expect(!FileManager.default.fileExists(atPath: file.path + ".avm"))
     }
 
     @Test func aUserFileReplacesInPlace() throws {
@@ -108,6 +148,7 @@ import Testing
             (#"{"id": "a", "name": "A", "command": ["a"], "secrets": [{"env": "K"}]}"#, "1", "\"label\" must be text"),
             (#"{"id": "a", "name": "A", "command": ["a"], "secretsNeeded": "one"}"#, "1", "there are no \"secrets\""),
             (#"{"id": "a", "name": "A", "command": ["a"], "secretsNeeded": "all", "secrets": [{"env": "K", "label": "k"}]}"#, "1", "\"one\" or \"optional\""),
+            (#"{"id": "a", "name": "A", "command": ["a"], "setup": ["x"]}"#, "1", "\"setup\" must be text"),
         ]
         for (agents, version, reason) in cases {
             let url = try builtIn(agents, in: scratch, version: version)

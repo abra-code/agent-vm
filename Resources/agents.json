@@ -12,6 +12,7 @@
       ],
       "secretsNeeded": "one",
       "env": {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+      "setup": "if [ -n \"${CLAUDE_CODE_OAUTH_TOKEN:-}\" ]; then (umask 077; f=\"$HOME/.claude.json\"; [ -e \"$f\" ] || printf '{}' > \"$f\"; /usr/bin/jq '.hasCompletedOnboarding = true' \"$f\" > \"$f.avm\" 2>/dev/null && /bin/mv \"$f.avm\" \"$f\" || /bin/rm -f \"$f.avm\"); fi",
       "login": "Or log in inside a kept box: /login in Claude Code, then open the address it prints in this Mac's browser.",
       "install": "npm install --global @anthropic-ai/claude-code",
       "note": "Your Claude login on this Mac is not visible in the box."

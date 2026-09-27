@@ -50,6 +50,10 @@ public struct AgentEntry: Equatable, Sendable {
     public var secrets: [Secret]
     public var secretsNeeded: SecretsNeeded
     public var env: [String: String]
+    /// A shell script run in the session right before the agent, in the box, through the login
+    /// shell, with the agent's variables and secret set (for example to skip a first-run screen
+    /// a secret makes needless).
+    public var setup: String?
     /// How to log in inside a kept box instead of a secret.
     public var login: String?
     /// How to install it in a box that lacks it.
@@ -62,7 +66,7 @@ public struct AgentEntry: Equatable, Sendable {
     public var replacesBuiltIn: Bool
 
     public init(id: String, name: String, command: [String], allow: [String] = [], secrets: [Secret] = [],
-                secretsNeeded: SecretsNeeded = .optional, env: [String: String] = [:], login: String? = nil,
+                secretsNeeded: SecretsNeeded = .optional, env: [String: String] = [:], setup: String? = nil, login: String? = nil,
                 install: String? = nil, note: String? = nil, source: Source = .builtIn, path: String = "",
                 replacesBuiltIn: Bool = false) {
         self.id = id
@@ -72,6 +76,7 @@ public struct AgentEntry: Equatable, Sendable {
         self.secrets = secrets
         self.secretsNeeded = secretsNeeded
         self.env = env
+        self.setup = setup
         self.login = login
         self.install = install
         self.note = note
@@ -363,16 +368,16 @@ public struct AgentCatalog: Sendable {
             }
         }
         var texts: [String: String] = [:]
-        for key in ["login", "install", "note"] {
+        for key in ["setup", "login", "install", "note"] {
             if let value = object[key] {
-                guard let text = value as? String else {
+                guard let text = value as? String, !text.contains("\u{0}") else {
                     throw EntryError("\"\(key)\" must be text")
                 }
                 texts[key] = text
             }
         }
         return AgentEntry(id: id, name: name, command: command, allow: allow, secrets: secrets, secretsNeeded: secretsNeeded,
-                          env: env, login: texts["login"], install: texts["install"], note: texts["note"], source: .builtIn,
+                          env: env, setup: texts["setup"], login: texts["login"], install: texts["install"], note: texts["note"], source: .builtIn,
                           path: path, replacesBuiltIn: false)
     }
 

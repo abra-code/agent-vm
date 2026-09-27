@@ -232,7 +232,9 @@ test_connect_dry_run_for_an_agent() {
     assert_out_contains "  start box c1" || return 1
     assert_out_contains "  check that claude is installed in the box" || return 1
     assert_out_contains "--env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 -- /bin/sh -c" || return 1
-    assert_out_contains "sh claude" || return 1
+    # The setup that marks Claude Code's onboarding done runs first, then claude itself.
+    assert_out_contains "hasCompletedOnboarding" || return 1
+    assert_out_contains "exec \"\$0\" \"\$@\"' claude" || return 1
     # A box without the agent's hosts is asked; one with no folder shared still is.
     run_avm box create c2 --image dev --allow github.com
     assert_status 0 || return 1

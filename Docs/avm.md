@@ -73,11 +73,11 @@ A secret's state is `set`, `missing`, or `asks`: stored by another build of agen
 
 | Agent | Needs in the box | Signs in with |
 |---|---|---|
-| Claude Code | `claude` (Recipes/agent-clis), hosts `pack:anthropic` | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on this Mac, for a Claude subscription) or `ANTHROPIC_API_KEY`; or `/login` inside a kept box. avm sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Your Claude login on this Mac is not visible in the box. |
+| Claude Code | `claude` (Recipes/agent-clis), hosts `pack:anthropic` | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on this Mac, for a Claude subscription) or `ANTHROPIC_API_KEY`; or `/login` inside a kept box. avm sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, and with the token it marks Claude Code's first-run screens done (`"hasCompletedOnboarding": true` in the box user's `~/.claude.json`), since they ask for a login method even when the token is set. Your Claude login on this Mac is not visible in the box. |
 | Codex | `codex`, hosts `pack:openai` | `OPENAI_API_KEY` (optional), or `codex login --device-auth` inside a kept box (a ChatGPT account works) |
 | opencode | `opencode`, hosts `opencode.ai` and `models.opencode.ai` | nothing for OpenCode Zen's free models; other providers need their key (`--secret`) and their hosts (`agent-vm box network --allow`). avm sets `OPENCODE_DISABLE_AUTOUPDATE=1`. |
 
-- **Secrets:** when an agent needs one of its secrets, none is set, and your own `--env` or `--secret` does not give one of its variables, avm shows a list: set one of them now, or go on without (and log in inside the box). The value is typed without echo and goes to your Keychain only, as `agent-vm secret set` stores it; it is never in an argument, a file or the output. The session reads it from the Keychain itself (`exec --secret`). The first of the agent's secrets that is set is the one passed, unless your own `--secret` or `--env` sets its variable; then yours is. When that secret was stored by another build of agent-vm, avm offers to store it again, since macOS would otherwise ask on this Mac's screen, where nobody sees it over SSH.
+- **Secrets:** when an agent needs one of its secrets, none is set, and your own `--env` or `--secret` does not give one of its variables, avm shows a list: set one of them now, or go on without (and log in inside the box). The value is typed without echo and goes to your Keychain only, as `agent-vm secret set` stores it; it is never in an argument, a file or the output. The session reads it from the Keychain itself (`exec --secret`). The first of the agent's secrets that is set is the one passed, unless your own `--secret` or `--env` sets its variable; then yours is. When that secret was stored by another build of agent-vm, macOS asks on this Mac's screen before the session reads it (choose Always Allow; over SSH nobody sees the question), so avm says it was found and offers to replace it with a new value.
 - **Hosts:** a box in allowlist mode that lacks the agent's rules (compared as written: a box allowing `api.anthropic.com` is still asked about `pack:anthropic`) is asked about them; yes adds them, as `agent-vm box network <box> --allow` does, and a running box takes them at once. No leaves the box as it is, and the agent's connections are refused (`agent-vm box netlog <box> --denied` lists them). A box whose network is `off` gets a warning; an `open` box needs nothing.
 - **Installed?** avm looks for the agent's command through the account's login shell, the way the agent is started, so it sees the same `PATH`. An agent installed by its own installer into a folder the login shell does not add to `PATH` (such as `~/.local/bin` without a line in `~/.zprofile`) reads as not installed; run it by its path instead: `avm dev1 -- /path/to/agent`.
 - **Your own agents:** a file `Agents/<id>.json` in the agent-vm store, the id lower-case letters, digits, `.`, `_` and `-`. One named like a built-in agent replaces it; others follow the built-in ones, by id. The same object as an entry of `agents.json` next to `agent-vm`, without `id`:
@@ -90,6 +90,7 @@ A secret's state is `set`, `missing`, or `asks`: stored by another build of agen
     "secrets": [{"env": "ANTHROPIC_API_KEY", "label": "Anthropic API key"}],
     "secretsNeeded": "one",
     "env": {"AIDER_CHECK_UPDATE": "false"},
+    "setup": "mkdir -p ~/.aider",
     "login": "How to log in inside the box instead, if there is a way.",
     "install": "pip install aider-chat",
     "note": "Anything else worth knowing."
@@ -99,6 +100,7 @@ A secret's state is `set`, `missing`, or `asks`: stored by another build of agen
   - `name` and `command` are required; `command` is a list of words, the first a command name or an absolute path.
   - `allow`: hosts, `*.domain`, `host:port` or `pack:<name>`, as `agent-vm box create --allow` takes them (not `public`).
   - `secrets`: each with `env` (the variable) and `label`, and `secret` when its Keychain name differs from `env`. `secretsNeeded` is `one` (offer to set one when none is set) or `optional` (the default).
+  - `setup`: a shell script run in the session right before the agent, in the box, with its variables and secret set; its failure does not stop the agent.
   - A file that cannot be used is listed by `avm agents` with the reason, and only that agent is missing; the others still work. Unknown keys are ignored.
 
 ## Snapshot and report

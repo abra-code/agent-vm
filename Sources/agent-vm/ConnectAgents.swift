@@ -117,8 +117,8 @@ extension ConnectRunner {
         // on this Mac's screen before exec reads it, which nobody sees over SSH.
         if answered.secretsListed, let secret = agent.secrets.first(where: { answered.setSecrets.contains($0.name) }),
            !stored.contains(secret.name), secretEntries.first(where: { $0.name == secret.name })?.readable == false {
-            print("\(secret.name) was stored by another build of agent-vm, so macOS will ask on this Mac's screen before this one reads it (choose Always Allow).")
-            if try Confirm("Store it again now instead?", defaultAnswer: false).run(on: terminal) {
+            print("\(secret.name) was found in the Keychain. If macOS asks to allow access to it, choose Always Allow.")
+            if try Confirm("Replace it in the Keychain with a new value?", defaultAnswer: false).run(on: terminal) {
                 _ = try storeSecret(secret.name, terminal: terminal)
             }
         }
@@ -303,6 +303,7 @@ struct AgentJSON: Encodable {
     var secrets: [SecretJSON]?
     var secretsNeeded: String?
     var env: [String: String]?
+    var setup: String?
     var login: String?
     var install: String?
     var note: String?
@@ -319,6 +320,7 @@ struct AgentJSON: Encodable {
         self.secrets = secrets
         secretsNeeded = agent.secretsNeeded.rawValue
         env = agent.env
+        setup = agent.setup
         login = agent.login
         install = agent.install
         note = agent.note

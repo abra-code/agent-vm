@@ -165,6 +165,27 @@ import Testing
         #expect(ConnectPlanner.launchArgv(.agent(claude)) == ConnectPlanner.loginWrapper + ["claude"])
     }
 
+    @Test func anAgentsSetupRunsFirstInTheSession() throws {
+        var agent = AgentEntry(id: "a", name: "A", command: ["/usr/bin/printf", "[%s]\\n", "a b", "$HOME"])
+        agent.setup = "echo setup-ran-with-$AGENT_VAR"
+        let argv = ConnectPlanner.launchArgv(.agent(agent))
+        #expect(argv.starts(with: ConnectPlanner.loginWrapper))
+        // Run as the box would, with this Mac's shells: the setup, then the agent's words untouched.
+        for shell in ["/bin/zsh", "/bin/bash"] {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: argv[0])
+            process.arguments = Array(argv.dropFirst())
+            process.environment = ["SHELL": shell, "PATH": "/usr/bin:/bin", "HOME": NSTemporaryDirectory(), "AGENT_VAR": "x"]
+            let output = Pipe()
+            process.standardOutput = output
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            #expect(process.terminationStatus == 0)
+            #expect(String(decoding: data, as: UTF8.self) == "setup-ran-with-x\n[a b]\n[$HOME]\n", "\(shell)")
+        }
+    }
+
     @Test func childArgumentsInOrder() {
         let arguments = ConnectPlanner.childArguments(box: "b", project: "/p", readOnly: false, secrets: ["A"], env: ["X=1"],
                                                       argv: ["/bin/echo", "hi"])
