@@ -2,9 +2,10 @@
 #
 # Tests/Shell/fast/connect.sh - agent-vm connect and its other name, avm, without a virtual
 # machine: the name dispatch, the list of what the picker offers, the order of the checks and
-# their statuses, --dry-run, and the agents catalog (the built-in file next to agent-vm, user
-# entries, a secret's state in a test Keychain service). Every test that would share a folder names one (a fast test
-# runs inside its scratch folder, which holds the store, and such a folder cannot be shared).
+# their statuses, --dry-run, the agents catalog (the built-in file next to agent-vm, user
+# entries, a secret's state in a test Keychain service), new boxes, and shell completion.
+# Every test that would share a folder names one (a fast test runs inside its scratch folder,
+# which holds the store, and such a folder cannot be shared).
 
 # Two stopped boxes from a stand-in image, and a disposable one that never started.
 make_boxes() {
@@ -318,6 +319,48 @@ test_connect_new_images_without_a_terminal_feature_are_refused() {
     run_avm_link new old --shell --dry-run --no-project
     assert_status 1 || return 1
     assert_err_contains "update it with agent-vm image update-guest old" || return 1
+}
+
+test_completion_scripts_name_avm() {
+    run_avm_link --generate-completion-script zsh
+    assert_status 0 || return 1
+    assert_out_contains "#compdef avm" || return 1
+    assert_out_contains "---completion to -- positional@0" || return 1
+    run_avm_link --generate-completion-script bash
+    assert_status 0 || return 1
+    assert_out_contains "complete -o filenames -F _avm avm" || return 1
+    run_avm --generate-completion-script zsh
+    assert_out_contains "#compdef agent-vm" || return 1
+}
+
+test_completion_lists_boxes_images_and_agents() {
+    make_boxes || return 1
+    fake_image ready1 ready '["terminal"]'
+    # The call the generated scripts make: boxes, a prefix, --box.
+    run_avm_link ---completion to -- positional@0 0 0 ""
+    assert_status 0 || return 1
+    assert_eq "$OUT" "b1
+b2" "box names" || return 1
+    run_avm_link ---completion to -- positional@0 0 2 b2
+    assert_eq "$OUT" "b2" "box names starting with b2" || return 1
+    run_avm_link ---completion to -- --box 0 0 ""
+    assert_out_contains "b1" || return 1
+    # Only images a new box can be made from (dev lacks the terminal feature).
+    run_avm_link ---completion new -- positional@0 0 0 ""
+    assert_eq "$OUT" "ready1" "image names" || return 1
+    run_avm_link ---completion to -- --agent 0 0 ""
+    assert_eq "$OUT" "claude
+codex
+opencode" "agent ids" || return 1
+    # agent-vm connect completes the same.
+    run_avm ---completion connect to -- positional@0 0 0 b
+    assert_eq "$OUT" "b1
+b2" "box names under agent-vm connect" || return 1
+    # A store that cannot be read completes nothing, quietly.
+    export AGENT_VM_HOME="$SCRATCH/no-such-store"
+    run_avm_link ---completion to -- positional@0 0 0 ""
+    assert_status 0 || return 1
+    assert_eq "$OUT" "" "box names from a missing store" || return 1
 }
 
 test_connect_refuses_the_home_folder() {

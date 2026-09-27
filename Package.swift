@@ -18,7 +18,7 @@ let package = Package(
         .executable(name: "agent-vm-guest", targets: ["agent-vm-guest"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser", from: "1.6.0"),
     ],
     targets: [
         // Host-side library: box images and clones, the VM supervisor, the guest protocol,

@@ -224,6 +224,19 @@ Errors go to stderr, prefixed with the name avm was started as (`avm:` or `agent
 - **A window closed without ending its programs:** a terminal can close a window and keep its programs running (seen once with Ghostty 1.3.1, until the application quit). The session then goes on unseen and the box keeps its folder, so avm refuses another folder there and points to the exec log: `agent-vm box execlog <box> --json` gives the session's `hostPid`; `kill` on that process id ends it.
 - **If avm is killed** with SIGKILL while its list is showing, nothing can put the terminal back; type `reset`. The same goes for a killed session (`kill -9` on avm): the program in the box keeps running, and its `agent-vm exec` is left without a terminal. `agent-vm box execlog <box> --json` gives that exec's process id (`hostPid`).
 
+## Completion
+
+zsh, bash and fish complete avm's box names (`avm to <Tab>`, `avm to --box <Tab>`), the images a new box can be made from (`avm new <Tab>`: ready images whose `agent-vm-guest` runs terminal sessions) and agent ids (`--agent`, after `to` or `new`), read from the store when you press Tab; a store that cannot be read completes nothing. The scripts do not know that `to` is the default, so `avm <Tab>` offers only the subcommands (`to`, `new`, `list`, `agents`, `help`). Install the script once:
+
+```sh
+mkdir -p ~/.zfunc && avm --generate-completion-script zsh > ~/.zfunc/_avm
+# in ~/.zshrc, before compinit:  fpath=(~/.zfunc $fpath)
+avm --generate-completion-script bash > ~/.avm-completion.bash   # bash: source it in ~/.bashrc
+avm --generate-completion-script fish > ~/.config/fish/completions/avm.fish
+```
+
+`agent-vm --generate-completion-script zsh > ~/.zfunc/_agent-vm` does the same for `agent-vm connect` and every other command.
+
 ## For applications
 
-`agent-vm connect <box> --shell --no-project` opens a login shell in a box on a terminal, for example to log in to an agent's account inside the box. An application that ships agent-vm can make an `avm` symlink next to its copy.
+`agent-vm connect <box> --shell --no-project` opens a login shell in a box on a terminal, for example to log in to an agent's account inside a kept box; an application can open Terminal on that command. An application that ships agent-vm can make an `avm` symlink next to its copy, as `Scripts/build.sh` does.

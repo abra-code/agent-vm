@@ -86,7 +86,7 @@ enum ConnectHelp {
 
 /// What to run and what to share.
 struct ConnectOptions: ParsableArguments {
-    @Option(name: .long, help: "Run this agent from the catalog (`avm agents` lists them).")
+    @Option(name: .long, help: "Run this agent from the catalog (`avm agents` lists them).", completion: ConnectCompletion.agents)
     var agent: String?
 
     @Flag(name: .long, help: "Run a login shell.")
@@ -151,10 +151,11 @@ enum Connect {
             commandName: "to",
             abstract: "Connect to a box (the default: `avm dev1` is `avm to dev1`).")
 
-        @Argument(help: "The box (default: choose from a list).")
+        @Argument(help: "The box (default: choose from a list).", completion: ConnectCompletion.boxes)
         var name: String?
 
-        @Option(name: .long, help: "The box, when its name is also one of avm's words (new, list, agents, to, help).")
+        @Option(name: .long, help: "The box, when its name is also one of avm's words (new, list, agents, to, help).",
+                completion: ConnectCompletion.boxes)
         var box: String?
 
         @OptionGroup var options: ConnectOptions
@@ -181,7 +182,7 @@ enum Connect {
                 a new box needs one of them: when none is free this exits 75.
                 """)
 
-        @Argument(help: "The image to make the box from.")
+        @Argument(help: "The image to make the box from.", completion: ConnectCompletion.images)
         var image: String
 
         @Flag(name: .long, help: "A temporary box, deleted when the session ends (the default).")

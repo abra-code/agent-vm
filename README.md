@@ -181,6 +181,7 @@ Box dev1 keeps running; stop it with: agent-vm box stop dev1
 - **A box avm started keeps running** afterwards; stop it with `agent-vm box stop <box>`. avm stops and deletes only the temporary box it made in that run.
 - **Exit status:** the program's; 1 when avm could not connect (no such box, a box that did not start, a refused folder, an agent not installed in the box, no snapshot and you chose not to go on); 64 for options that do not go together, an unknown agent, or when there is no terminal (from a script, use `agent-vm exec`); 75 when no VM slot is free; 130 when you quit the list.
 - **Installing:** `avm` is a symlink to `agent-vm`, made by `Scripts/build.sh` next to it; link it into a folder on your `PATH` (`ln -s <repository>/.build/signed/release/avm ~/bin/avm`), or run `agent-vm connect`, which is the same command.
+- **Completion** of box, image and agent names (after `to` or `new`: `avm to <Tab>`, `avm new <Tab>`): `avm --generate-completion-script zsh > ~/.zfunc/_avm` (with `fpath=(~/.zfunc $fpath)` before `compinit` in `~/.zshrc`), or for bash `avm --generate-completion-script bash > ~/.avm-completion.bash` and `source ~/.avm-completion.bash` in `~/.bashrc`. The same with `agent-vm` completes `agent-vm connect` and every other command.
 - `NO_COLOR=1` turns off bold and reverse video; with `TERM=dumb` (or no `TERM`) the list is a numbered menu. Everything else: [Docs/avm.md](Docs/avm.md).
 
 ## Secrets in the Keychain (works today)
