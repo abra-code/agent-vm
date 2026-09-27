@@ -49,6 +49,9 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case invalidNetworkRule(String, reason: String)
     /// The host packs file, or a user pack file, cannot be used.
     case invalidPacks(path: String, reason: String)
+    /// The agents file next to agent-vm, a user agent file, or the folder of user agents cannot
+    /// be used.
+    case invalidAgents(path: String, reason: String)
     /// An unusable --env entry or environment file (the message never includes a value).
     case invalidEnvironment(String)
     /// A box name that is not lower-case letters, digits, ".", "_" or "-".
@@ -157,6 +160,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "\(rule) is not a usable network rule: \(reason)"
         case let .invalidPacks(path, reason):
             return "host packs \(path): \(reason)"
+        case let .invalidAgents(path, reason):
+            return "agents \(path): \(reason)"
         case let .invalidEnvironment(message):
             return message
         case let .invalidBoxName(name):

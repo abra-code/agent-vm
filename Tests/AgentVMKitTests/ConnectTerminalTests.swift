@@ -3,7 +3,8 @@
 // `agent-vm connect` (avm) on a pseudo-terminal: the debug agent-vm this build produced, next to
 // the test bundle, run with a scratch store holding two stopped boxes. The picker is driven
 // with keys; --dry-run keeps it from starting anything. The terminal's settings must be what
-// they were however connect ends.
+// they were however connect ends. An agent's secret typed at the offer goes to a test Keychain
+// service, never to the output.
 
 import Darwin
 import Foundation
@@ -270,5 +271,80 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
         let help = try TerminalProgram(link, arguments: ["--help"], environment: store.environment)
         #expect(help.exitStatus() == 0)
         #expect(help.text.contains("USAGE: avm"))
+    }
+
+    @Test func theSecretPromptStoresWithoutEcho() throws {
+        let store = try ConnectScratch()
+        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        var environment = store.environment
+        environment["AGENT_VM_SECRET_SERVICE"] = "agent-vm-test-\(UUID().uuidString)"
+        environment["AGENT_VM_AGENTS_FILE"] = repository.appendingPathComponent("Resources/agents.json").path
+        environment["AGENT_VM_PACKS_FILE"] = repository.appendingPathComponent("Resources/packs.json").path
+        let secrets = SecretStore(service: environment["AGENT_VM_SECRET_SERVICE"]!)
+        // Deleted by the agent-vm that stored it: this test process reading or deleting the
+        // item would make macOS ask on the screen first.
+        defer {
+            let delete = Process()
+            delete.executableURL = URL(fileURLWithPath: store.agentVM)
+            delete.arguments = ["secret", "delete", "CLAUDE_CODE_OAUTH_TOKEN"]
+            delete.environment = environment
+            delete.standardOutput = FileHandle.nullDevice
+            delete.standardError = FileHandle.nullDevice
+            try? delete.run()
+            delete.waitUntilExit()
+        }
+        // A box that already allows the agent's hosts, so no question comes between the secret
+        // and the start.
+        let create = Process()
+        create.executableURL = URL(fileURLWithPath: store.agentVM)
+        create.arguments = ["box", "create", "c1", "--image", "img", "--allow", "pack:anthropic"]
+        create.environment = environment
+        create.standardOutput = FileHandle.nullDevice
+        try create.run()
+        create.waitUntilExit()
+        #expect(create.terminationStatus == 0)
+
+        let program = try connect(store, ["c1", "--agent", "claude"], environment: environment)
+        #expect(program.waitFor("signs in with one of these"))
+        program.type("\r")
+        #expect(program.waitFor("Value of CLAUDE_CODE_OAUTH_TOKEN: "))
+        let value = "sk-ant-oat-test-\(UUID().uuidString)"
+        program.type(value + "\r")
+        #expect(program.waitFor("Stored secret CLAUDE_CODE_OAUTH_TOKEN in the Keychain"))
+        // Then the start, which the debug build cannot do (no virtualization entitlement).
+        #expect(program.exitStatus(seconds: 60) != nil)
+        #expect(!program.text.contains(value))
+        // Listing reads attributes only, which never asks.
+        #expect(try secrets.list().map(\.name) == ["CLAUDE_CODE_OAUTH_TOKEN"])
+    }
+
+    @Test func theHostsQuestionAddsTheAgentsRules() throws {
+        let store = try ConnectScratch()
+        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        var environment = store.environment
+        environment["AGENT_VM_AGENTS_FILE"] = repository.appendingPathComponent("Resources/agents.json").path
+        environment["AGENT_VM_PACKS_FILE"] = repository.appendingPathComponent("Resources/packs.json").path
+        func agentVM(_ arguments: [String]) throws -> String {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: store.agentVM)
+            process.arguments = arguments
+            process.environment = environment
+            let output = Pipe()
+            process.standardOutput = output
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return String(decoding: data, as: UTF8.self)
+        }
+        _ = try agentVM(["box", "create", "c2", "--image", "img", "--allow", "github.com"])
+        // opencode has no secrets, so its hosts are the only question.
+        let program = try connect(store, ["c2", "--agent", "opencode"], environment: environment)
+        #expect(program.waitFor("opencode needs opencode.ai, models.opencode.ai, which box c2 does not allow."))
+        #expect(program.waitFor("Allow them? [Y/n]"))
+        program.type("\r")
+        #expect(program.waitFor("Box c2 now allows opencode.ai, models.opencode.ai"))
+        // Then the start, which the debug build cannot do.
+        #expect(program.exitStatus(seconds: 60) != nil)
+        #expect(try agentVM(["box", "network", "c2"]).contains("github.com, opencode.ai, models.opencode.ai"))
     }
 }

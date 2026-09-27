@@ -1,49 +1,105 @@
 # avm and agent-vm connect
 
-`avm` runs a login shell or a command in an agent-vm box, on your terminal, with the current folder shared into the box at the same path. A folder shared read-write is snapshotted first, and afterwards avm reports what changed and lets you keep the changes or undo them. `avm` is a symlink to `agent-vm`: started under that name, agent-vm is `agent-vm connect`, and every form below works with either name (`avm dev1` is `agent-vm connect dev1`).
+`avm` runs an agent (Claude Code, Codex, opencode), a login shell or a command in an agent-vm box, on your terminal, with the current folder shared into the box at the same path. A folder shared read-write is snapshotted first, and afterwards avm reports what changed and lets you keep the changes or undo them. `avm` is a symlink to `agent-vm`: started under that name, agent-vm is `agent-vm connect`, and every form below works with either name (`avm dev1` is `agent-vm connect dev1`).
 
 ## Forms
 
 ```
-avm [to] [<box>] [--box <box>] [--shell | -- <command> ...] [--project <folder> | --no-project]
+avm [to] [<box>] [--box <box>] [--agent <id> | --shell | -- <command> ...] [--project <folder> | --no-project]
     [--read-only] [--no-snapshot] [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
 avm list [--json] [--project <folder>]
+avm agents [--json]
 ```
 
 - **`avm`** shows the list of boxes; **`avm <box>`** takes that box.
-- **`to`** is the default subcommand, so `avm dev1` is `avm to dev1`. A box named `list`, `to` or `help` is reached with `--box`: `avm --box list`.
-- **What runs:** the account's login shell (`--shell`, the default), or the command after `--`. A command runs through the login shell as well (`$SHELL -l -c`), so `~/.zprofile` applies as it does in `agent-vm box shell`, with its words passed unchanged.
+- **`to`** is the default subcommand, so `avm dev1` is `avm to dev1`. A box named `list`, `agents`, `to` or `help` is reached with `--box`: `avm --box list`.
+- **What runs:** an agent from the catalog (`--agent <id>`; see [Agents](#agents)), the account's login shell (`--shell`), or the command after `--`; without any of them, avm shows the list of what it can run. An agent or a command runs through the login shell as well (`$SHELL -l -c`), so `~/.zprofile` applies as it does in `agent-vm box shell`, with its words passed unchanged.
 - **`--project <folder>`** shares that folder instead of the current one; **`--no-project`** shares none, and the program starts in the box user's home folder.
 - **`--read-only`** shares the folder read only: programs in the box cannot change it, so no snapshot is taken. **`--no-snapshot`** shares it read-write without a snapshot, so there is nothing to report or undo afterwards.
 - **`--secret`** and **`--env`** are passed on to `agent-vm exec` (see the README's Boxes and exec section): `--secret NAME` takes a value from your Keychain, `--env NAME=VALUE` or `--env NAME` sets a variable.
-- **`--dry-run`** prints the steps instead of taking them, and exits 0. It creates, starts, shares and remembers nothing, and needs a terminal only to show the list.
+- **`--dry-run`** prints the steps instead of taking them, and exits 0. It creates, starts, shares, stores and remembers nothing, asks nothing, and needs a terminal only to show a list.
 - **`avm --version`** and **`avm help <subcommand>`** work as for agent-vm. `avm --help` lists the subcommands; the options are under `avm to --help`.
 
 ## What happens
 
 1. **The folder:** `--project`, or the current folder. It must be a folder you can share: not the disk's root, your home folder or a folder containing it, anything inside `~/Library` or a hidden folder of your home, or the agent-vm store. When the current folder cannot be shared, avm on a terminal asks whether to connect without a folder. A folder named with `--project` that cannot be shared is an error.
 2. **The box:** the one named, or the one you choose in the list (below). Disposable boxes that have stopped are deleted first, as `box list` does (`box gc`).
-3. **Start:** a stopped box is started (`Starting box dev1`, then `Box dev1 is running (14 s)`). A box that is stopping is waited for, then started again. avm never makes itself the box's owner, so the box keeps running after avm exits.
-4. **Share:** the folder is shared into the box at the same path (`Sharing ~/src/app (read-write)`). A box shares one folder at a time. When programs in the box still use another folder, the box refuses: avm says so and, when you chose the box in the list, shows the list again.
-5. **Snapshot:** a folder shared read-write is snapshotted (`Snapshot of ~/src/app taken (session 20260926-101500-7c1e)`), unless `--no-snapshot`; see [Snapshot and report](#snapshot-and-report).
-6. **Remember:** the choice is recorded for the folder (below).
-7. **The session:** `agent-vm exec --tty` runs as avm's child on your terminal. Your terminal is in raw mode, so keys such as Control-C go to the program, and the window size follows. Exit the shell (or let the command end) to come back.
-8. **After:** the terminal's settings are put back, the cursor is shown and text attributes are reset, even if the session was killed. When it did not end normally, mouse reporting, bracketed paste and the kitty keyboard mode are turned off too.
-9. **The report**, when a snapshot was taken: what changed, then keep or undo (below).
-10. A kept box is left running: `Box dev1 keeps running; stop it with: agent-vm box stop dev1`.
+3. **What to run:** the one named, or the one you choose in the second list: the agents, then the login shell. For a running box, avm first checks which agents it has, and one it lacks cannot be chosen.
+4. **Questions, for an agent:** when none of its secrets is set, avm offers to set one; when the box does not allow its hosts, avm asks to add them. See [Agents](#agents).
+5. **Start:** a stopped box is started (`Starting box dev1`, then `Box dev1 is running (14 s)`). A box that is stopping is waited for, then started again. avm never makes itself the box's owner, so the box keeps running after avm exits.
+6. **Installed?** For an agent not checked in the list (named with `--agent`, or a box that was stopped), avm checks that its command is in the box. When it is not, avm says how to get it and stops (or, when you chose the agent in the list, shows the list again).
+7. **Share:** the folder is shared into the box at the same path (`Sharing ~/src/app (read-write)`). A box shares one folder at a time. When programs in the box still use another folder, the box refuses: avm says so and, when you chose the box in the list, shows the list again.
+8. **Snapshot:** a folder shared read-write is snapshotted (`Snapshot of ~/src/app taken (session 20260926-101500-7c1e)`), unless `--no-snapshot`; see [Snapshot and report](#snapshot-and-report).
+9. **Remember:** the choices are recorded for the folder (below).
+10. **The session:** `agent-vm exec --tty` runs as avm's child on your terminal. Your terminal is in raw mode, so keys such as Control-C go to the program, and the window size follows. Exit the agent or the shell (or let the command end) to come back.
+11. **After:** the terminal's settings are put back, the cursor is shown and text attributes are reset, even if the session was killed. When it did not end normally, mouse reporting, bracketed paste and the kitty keyboard mode are turned off too.
+12. **The report**, when a snapshot was taken: what changed, then keep or undo (below).
+13. A kept box is left running: `Box dev1 keeps running; stop it with: agent-vm box stop dev1`.
 
 avm never stops or deletes a box.
 
 `--dry-run` prints the same steps:
 
 ```
+$ avm dev1 --agent claude --dry-run
 avm would:
+  offer to set one of: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY
+  ask to allow pack:anthropic in box dev1
   start box dev1
+  check that claude is installed in the box
   share /Users/me/src/app (read-write)
   snapshot /Users/me/src/app
-  run: agent-vm exec --tty --box dev1 --project /Users/me/src/app -- /bin/sh -c 'exec "$SHELL" -l'
+  run: agent-vm exec --tty --box dev1 --project /Users/me/src/app --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 -- /bin/sh -c 'exec "$SHELL" -l -c '\''exec "$0" "$@"'\'' "$@"' sh claude
   report what changed in /Users/me/src/app, then keep or undo it
 ```
+
+## Agents
+
+`avm agents` lists what avm can run, and the state of each secret:
+
+```
+claude  Claude Code  (built-in)
+    runs: claude    allows: pack:anthropic
+    secrets (one of): CLAUDE_CODE_OAUTH_TOKEN set; ANTHROPIC_API_KEY missing
+    Or log in inside a kept box: /login in Claude Code, then open the address it prints in this Mac's browser.
+codex  Codex  (built-in)
+    runs: codex    allows: pack:openai
+    secrets (optional): OPENAI_API_KEY missing
+opencode  opencode  (built-in)
+    runs: opencode    allows: opencode.ai, models.opencode.ai
+```
+
+A secret's state is `set`, `missing`, or `asks`: stored by another build of agent-vm, so macOS asks on this Mac's screen before this one reads it.
+
+| Agent | Needs in the box | Signs in with |
+|---|---|---|
+| Claude Code | `claude` (Recipes/agent-clis), hosts `pack:anthropic` | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on this Mac, for a Claude subscription) or `ANTHROPIC_API_KEY`; or `/login` inside a kept box. avm sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`. Your Claude login on this Mac is not visible in the box. |
+| Codex | `codex`, hosts `pack:openai` | `OPENAI_API_KEY` (optional), or `codex login --device-auth` inside a kept box (a ChatGPT account works) |
+| opencode | `opencode`, hosts `opencode.ai` and `models.opencode.ai` | nothing for OpenCode Zen's free models; other providers need their key (`--secret`) and their hosts (`agent-vm box network --allow`). avm sets `OPENCODE_DISABLE_AUTOUPDATE=1`. |
+
+- **Secrets:** when an agent needs one of its secrets, none is set, and your own `--env` or `--secret` does not give one of its variables, avm shows a list: set one of them now, or go on without (and log in inside the box). The value is typed without echo and goes to your Keychain only, as `agent-vm secret set` stores it; it is never in an argument, a file or the output. The session reads it from the Keychain itself (`exec --secret`). The first of the agent's secrets that is set is the one passed, unless your own `--secret` or `--env` sets its variable; then yours is. When that secret was stored by another build of agent-vm, avm offers to store it again, since macOS would otherwise ask on this Mac's screen, where nobody sees it over SSH.
+- **Hosts:** a box in allowlist mode that lacks the agent's rules (compared as written: a box allowing `api.anthropic.com` is still asked about `pack:anthropic`) is asked about them; yes adds them, as `agent-vm box network <box> --allow` does, and a running box takes them at once. No leaves the box as it is, and the agent's connections are refused (`agent-vm box netlog <box> --denied` lists them). A box whose network is `off` gets a warning; an `open` box needs nothing.
+- **Installed?** avm looks for the agent's command through the account's login shell, the way the agent is started, so it sees the same `PATH`. An agent installed by its own installer into a folder the login shell does not add to `PATH` (such as `~/.local/bin` without a line in `~/.zprofile`) reads as not installed; run it by its path instead: `avm dev1 -- /path/to/agent`.
+- **Your own agents:** a file `Agents/<id>.json` in the agent-vm store, the id lower-case letters, digits, `.`, `_` and `-`. One named like a built-in agent replaces it; others follow the built-in ones, by id. The same object as an entry of `agents.json` next to `agent-vm`, without `id`:
+
+  ```json
+  {
+    "name": "Aider",
+    "command": ["aider", "--no-auto-commits"],
+    "allow": ["api.anthropic.com"],
+    "secrets": [{"env": "ANTHROPIC_API_KEY", "label": "Anthropic API key"}],
+    "secretsNeeded": "one",
+    "env": {"AIDER_CHECK_UPDATE": "false"},
+    "login": "How to log in inside the box instead, if there is a way.",
+    "install": "pip install aider-chat",
+    "note": "Anything else worth knowing."
+  }
+  ```
+
+  - `name` and `command` are required; `command` is a list of words, the first a command name or an absolute path.
+  - `allow`: hosts, `*.domain`, `host:port` or `pack:<name>`, as `agent-vm box create --allow` takes them (not `public`).
+  - `secrets`: each with `env` (the variable) and `label`, and `secret` when its Keychain name differs from `env`. `secretsNeeded` is `one` (offer to set one when none is set) or `optional` (the default).
+  - A file that cannot be used is listed by `avm agents` with the reason, and only that agent is missing; the others still work. Unknown keys are ignored.
 
 ## Snapshot and report
 
@@ -108,7 +164,7 @@ AgentVM - project ~/src/app  type to filter, arrows, Enter; Esc quits
 
 ## Remembered choices
 
-The box chosen for each folder is kept in `connect.json` in the agent-vm store (`~/Library/Application Support/agent-vm`, or `$AGENT_VM_HOME`). The file is private (mode 0600) and holds the 200 most recent folders. It records folder paths, box names and whether a login shell ran; nothing secret. It is only used to preselect a row. A missing or damaged file counts as empty and is replaced the next time. `--dry-run` and `--no-project` runs are not remembered.
+The box and what ran, chosen for each folder, are kept in `connect.json` in the agent-vm store (`~/Library/Application Support/agent-vm`, or `$AGENT_VM_HOME`). The file is private (mode 0600) and holds the 200 most recent folders. It records folder paths, box names, what ran (an agent's id or `shell`; a command after `--` leaves it as it was) and whether the folder was shared read only; nothing secret. It is only used to preselect rows. A missing or damaged file counts as empty and is replaced the next time. `--dry-run` and `--no-project` runs are not remembered.
 
 `avm list --json` shows it:
 
@@ -131,11 +187,11 @@ The box chosen for each folder is kept in `connect.json` in the agent-vm store (
 | Status | When |
 |---|---|
 | the program's | a session ran: what `agent-vm exec --tty` returned (the program's, 128 + a signal, 125 when exec itself failed, 126 or 127 when the program could not start) |
-| 0 | `list`, `--dry-run` |
-| 1 | avm could not connect: no such box, a temporary box that is not running, a folder that cannot be shared, a box that did not start, a refused share, no snapshot and you chose not to go on |
-| 64 | options that do not go together, a bad `--secret` or `--env`, or no terminal for the list or the session |
+| 0 | `list`, `agents`, `--dry-run` |
+| 1 | avm could not connect: no such box, a temporary box that is not running, a folder that cannot be shared, a box that did not start, an agent not installed in the box, a refused share, no snapshot and you chose not to go on; `avm agents` when `agents.json` next to agent-vm cannot be used |
+| 64 | options that do not go together, a bad `--secret` or `--env`, an unknown agent, or no terminal for a list or the session |
 | 75 | no free VM slot (macOS runs at most two macOS virtual machines at once) |
-| 130 | the list was quit (Escape, Control-C) |
+| 130 | a list or a question was quit (Escape, Control-C) |
 | 128 + n | signal n ended avm, for example 143 for SIGTERM, or 129 when the terminal closed during the session |
 
 Errors go to stderr, prefixed with the name avm was started as (`avm:` or `agent-vm connect:`).

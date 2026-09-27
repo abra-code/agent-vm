@@ -2,7 +2,8 @@
 #
 # Tests/Shell/fast/connect.sh - agent-vm connect and its other name, avm, without a virtual
 # machine: the name dispatch, the list of what the picker offers, the order of the checks and
-# their statuses, and --dry-run. Every test that would share a folder names one (a fast test
+# their statuses, --dry-run, and the agents catalog (the built-in file next to agent-vm, user
+# entries, a secret's state in a test Keychain service). Every test that would share a folder names one (a fast test
 # runs inside its scratch folder, which holds the store, and such a folder cannot be shared).
 
 # Two stopped boxes from a stand-in image, and a disposable one that never started.
@@ -126,7 +127,7 @@ test_connect_dry_run_names_every_step() {
     # A box named like one of avm's words, with --box.
     run_avm box create list --image dev
     assert_status 0 || return 1
-    run_avm_link --box list --dry-run --no-project
+    run_avm_link --box list --dry-run --no-project --shell
     assert_status 0 || return 1
     assert_out_contains "  start box list" || return 1
     # Nothing was remembered or changed.
@@ -161,6 +162,97 @@ test_read_only_needs_a_folder() {
     run_avm_link b1 --read-only --no-project
     assert_status 64 || return 1
     assert_err_contains "--read-only and --no-project do not go together" || return 1
+}
+
+test_connect_agents_lists_the_catalog() {
+    export AGENT_VM_SECRET_SERVICE="agent-vm-shtest-$$-$RANDOM"
+    trap '"$AGENT_VM" secret delete ANTHROPIC_API_KEY > /dev/null 2>&1' EXIT
+    run_avm_link agents --json
+    assert_status 0 || return 1
+    assert_json 0.id claude || return 1
+    assert_json 1.id codex || return 1
+    assert_json 2.id opencode || return 1
+    assert_json 0.source built-in || return 1
+    assert_json 0.secrets.1.env ANTHROPIC_API_KEY || return 1
+    assert_json 0.secrets.1.state missing || return 1
+    run_avm_input "sk-shtest-$RANDOM" secret set ANTHROPIC_API_KEY
+    assert_status 0 || return 1
+    run_avm_link agents --json
+    assert_json 0.secrets.1.state set || return 1
+    run_avm_link agents
+    assert_status 0 || return 1
+    assert_out_contains "claude  Claude Code  (built-in)" || return 1
+    assert_out_contains "secrets (one of): CLAUDE_CODE_OAUTH_TOKEN missing; ANTHROPIC_API_KEY set" || return 1
+}
+
+test_user_agents_replace_and_problems_show() {
+    /bin/mkdir -p "$AGENT_VM_HOME/Agents" || return 1
+    printf '%s\n' '{"name": "My Claude", "command": ["claude", "--verbose"]}' > "$AGENT_VM_HOME/Agents/claude.json"
+    printf '%s\n' '{"name": "Aider", "command": ["aider"], "allow": ["api.example.com"]}' > "$AGENT_VM_HOME/Agents/aider.json"
+    printf '%s\n' '{"name": "Broken", "command": "broken"}' > "$AGENT_VM_HOME/Agents/broken.json"
+    run_avm_link agents --json
+    assert_status 0 || return 1
+    assert_json 0.id claude || return 1
+    assert_json 0.name "My Claude" || return 1
+    assert_json 0.source user || return 1
+    assert_json 0.replacesBuiltIn true || return 1
+    assert_json 3.id aider || return 1
+    assert_json 4.id broken || return 1
+    assert_json 4.problem '"command" must be a list of words' || return 1
+    run_avm_link agents
+    assert_status 0 || return 1
+    assert_out_contains "replaces the built-in one" || return 1
+    assert_out_contains "cannot be used: \"command\" must be a list of words" || return 1
+}
+
+test_a_broken_built_in_catalog_fails_agents() {
+    printf '{"version": true, "agents": []}\n' > "$SCRATCH/agents.json"
+    export AGENT_VM_AGENTS_FILE="$SCRATCH/agents.json"
+    run_avm_link agents
+    assert_status 1 || return 1
+    assert_err_contains '"version" must be 1' || return 1
+    # --agent says why the agent is unknown.
+    make_boxes || return 1
+    run_avm_link b1 --agent claude --no-project --dry-run
+    assert_status 64 || return 1
+    assert_err_contains '"version" must be 1' || return 1
+    assert_err_contains "no agent claude" || return 1
+}
+
+test_connect_dry_run_for_an_agent() {
+    export AGENT_VM_SECRET_SERVICE="agent-vm-shtest-$$-$RANDOM"
+    fake_image dev
+    run_avm box create c1 --image dev --allow pack:anthropic
+    assert_status 0 || return 1
+    make_project "$SCRATCH/project"
+    run_avm_link c1 --agent claude --dry-run --project "$SCRATCH/project"
+    assert_status 0 || return 1
+    assert_out_contains "  offer to set one of: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY" || return 1
+    assert_not_contains "$OUT" "ask to allow" "the steps" || return 1
+    assert_out_contains "  start box c1" || return 1
+    assert_out_contains "  check that claude is installed in the box" || return 1
+    assert_out_contains "--env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 -- /bin/sh -c" || return 1
+    assert_out_contains "sh claude" || return 1
+    # A box without the agent's hosts is asked; one with no folder shared still is.
+    run_avm box create c2 --image dev --allow github.com
+    assert_status 0 || return 1
+    run_avm_link c2 --agent claude --dry-run --no-project
+    assert_status 0 || return 1
+    assert_out_contains "  ask to allow pack:anthropic in box c2" || return 1
+    # Without a terminal, what to run must be named.
+    run_avm_link c1 --project "$SCRATCH/project"
+    assert_status 64 || return 1
+    assert_err_contains "choosing what to run needs a terminal" || return 1
+}
+
+test_unknown_agent() {
+    make_boxes || return 1
+    run_avm_link b1 --agent nope --project "$SCRATCH/project"
+    assert_status 64 || return 1
+    assert_err_contains "no agent nope; avm agents lists them: claude, codex, opencode" || return 1
+    run_avm_link b1 --agent claude --shell
+    assert_status 64 || return 1
+    assert_err_contains "do not go together" || return 1
 }
 
 test_connect_refuses_the_home_folder() {

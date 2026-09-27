@@ -14,11 +14,12 @@
 #   --debug                debug build instead of release
 #
 # Both binaries are signed with the hardened runtime. The guest daemon gets no entitlements:
-# it never starts virtual machines. The built-in host packs (Resources/packs.json) go next to
-# them, and so does avm, a symlink to agent-vm (started under that name it is `agent-vm
-# connect`). After signing, the script verifies both signatures, checks that `agent-vm box packs`
-# reads the packs and that avm answers as agent-vm, and runs `agent-vm doctor` with the signed
-# binary as the end-to-end check.
+# it never starts virtual machines. The built-in host packs (Resources/packs.json) and agents
+# (Resources/agents.json) go next to them, and so does avm, a symlink to agent-vm (started under
+# that name it is `agent-vm connect`). After signing, the script verifies both signatures,
+# checks that `agent-vm box packs` reads the packs, that `agent-vm connect agents` reads the
+# agents and that avm answers as agent-vm, and runs `agent-vm doctor` with the signed binary as
+# the end-to-end check.
 #
 # Notarization of a distributable archive is not done here yet.
 
@@ -114,6 +115,10 @@ done
 /bin/cp -f "$REPO_ROOT/Resources/packs.json" "$STAGE/packs.json"
 status=$?
 [ "$status" -eq 0 ] || die_unsigned "cannot copy $REPO_ROOT/Resources/packs.json to $STAGE"
+# The agents avm offers, read from next to agent-vm too (AgentCatalog).
+/bin/cp -f "$REPO_ROOT/Resources/agents.json" "$STAGE/agents.json"
+status=$?
+[ "$status" -eq 0 ] || die_unsigned "cannot copy $REPO_ROOT/Resources/agents.json to $STAGE"
 
 timestamp="--timestamp"
 if [ "$IDENTITY" = "-" ]; then
@@ -142,7 +147,7 @@ case "$entitlements" in
     *) die_unsigned "the signed agent-vm does not carry com.apple.security.virtualization" ;;
 esac
 
-for product in packs.json agent-vm agent-vm-guest; do
+for product in packs.json agents.json agent-vm agent-vm-guest; do
     /bin/mv -f "$STAGE/$product" "$OUTPUT/$product"
     status=$?
     [ "$status" -eq 0 ] || die_unsigned "cannot move the signed $product into $OUTPUT"
@@ -159,6 +164,10 @@ printf '\nSigned binaries in %s\n\n' "$OUTPUT"
 AGENT_VM_PACKS_FILE="" "$OUTPUT/agent-vm" box packs > /dev/null
 status=$?
 [ "$status" -eq 0 ] || die "agent-vm cannot read $OUTPUT/packs.json (status $status); run \"$OUTPUT/agent-vm box packs\" to see why"
+# The same for the agents file.
+AGENT_VM_AGENTS_FILE="" "$OUTPUT/agent-vm" connect agents > /dev/null
+status=$?
+[ "$status" -eq 0 ] || die "agent-vm cannot read $OUTPUT/agents.json (status $status); run \"$OUTPUT/agent-vm connect agents\" to see why"
 agent_vm_version="$("$OUTPUT/agent-vm" --version)"
 avm_version="$("$OUTPUT/avm" --version)"
 status=$?

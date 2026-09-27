@@ -1,8 +1,9 @@
 // Sources/agent-vm/ConnectPickers.swift
 //
 // The boxes connect offers, as rows for the box picker and for `connect list`, which shows
-// what the picker would. Built from the box records and one status question per running box;
-// never the space on disk, which would make the list slow.
+// what the picker would; and the rows of the launch picker (the agents, then a login shell).
+// Boxes come from their records and one status question per running box; never the space on
+// disk, which would make the list slow.
 
 import AgentVMKit
 import Foundation
@@ -97,6 +98,50 @@ enum ConnectPickers {
             selected = running.first { $0.reason == nil && $0.status.project == project }?.box.name
         }
         return (sections, selected)
+    }
+
+    // MARK: - What to run
+
+    /// The launch picker's rows: each agent (its name, its command, its secret, its hosts),
+    /// then the login shell. `installed` (a probe's answer) disables the agents it lacks; nil
+    /// means not known yet (a stopped box), and every agent is offered.
+    static func launchSections(_ agents: [AgentEntry], setSecrets: [String]?, installed: Set<String>?,
+                               remembered: String?) -> (sections: [PickerSection], selected: String?) {
+        var rows: [PickerRow] = []
+        for agent in agents {
+            var notes: [String] = []
+            let missing = installed.map { !$0.contains(agent.command[0]) } ?? false
+            if missing {
+                notes.append("not installed")
+            }
+            if let secret = secretNote(agent, setSecrets: setSecrets) {
+                notes.append(secret)
+            }
+            if !agent.allow.isEmpty {
+                notes.append("allows: " + agent.allow.joined(separator: ", "))
+            }
+            rows.append(PickerRow(id: agent.id, columns: [agent.name, agent.command.joined(separator: " ")],
+                                  note: notes.isEmpty ? nil : notes.joined(separator: "; "), enabled: !missing))
+        }
+        rows.append(PickerRow(id: AgentCatalog.shellID, columns: ["Login shell", "$SHELL -l"]))
+        var selected: String?
+        if let remembered, rows.contains(where: { $0.id == remembered && $0.enabled }) {
+            selected = remembered
+        }
+        return ([PickerSection(title: nil, rows: rows)], selected)
+    }
+
+    /// "secret set", "needs one of: A, B", or nil (no secrets, or the Keychain could not be
+    /// listed).
+    static func secretNote(_ agent: AgentEntry, setSecrets: [String]?) -> String? {
+        guard let setSecrets, !agent.secrets.isEmpty else {
+            return nil
+        }
+        if agent.secrets.contains(where: { setSecrets.contains($0.name) }) {
+            return "secret set"
+        }
+        let names = agent.secrets.map(\.name).joined(separator: ", ")
+        return agent.secretsNeeded == .one ? "needs one of: \(names)" : "optional: \(names)"
     }
 
     /// `connect list` for a person, and the plain list printed when there is no terminal to

@@ -78,6 +78,93 @@ import Testing
         #expect(none.count == 1)
     }
 
+    let claude = AgentEntry(id: "claude", name: "Claude Code", command: ["claude"], allow: ["pack:anthropic"],
+                            secrets: [AgentEntry.Secret(env: "CLAUDE_CODE_OAUTH_TOKEN", label: "token"),
+                                      AgentEntry.Secret(env: "ANTHROPIC_API_KEY", label: "key")],
+                            secretsNeeded: .one, env: ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"])
+
+    @Test func anAgentOnARunningBoxWithEverything() {
+        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: "/p", secrets: ["MINE"], env: ["X=1"])
+        let facts = ConnectFacts(boxRunning: true, boxRules: ["pack:anthropic"], setSecrets: ["ANTHROPIC_API_KEY", "OTHER"],
+                                 probed: ["claude"], ownPid: pid)
+        let steps = ConnectPlanner.steps(for: request, facts: facts)
+        // No offer, no question, no probe (the picker's probe found it).
+        #expect(steps.count == 2)
+        #expect(steps[0] == .share(box: "b1", project: "/p", readOnly: false))
+        #expect(steps[1] == .run(arguments: ["exec", "--tty", "--box", "b1", "--project", "/p",
+                                             "--secret", "ANTHROPIC_API_KEY", "--secret", "MINE",
+                                             "--env", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "--env", "X=1", "--"]
+                                    + ConnectPlanner.loginWrapper + ["claude"]))
+    }
+
+    @Test func thePersonsVariableWinsOverTheAgentsSecret() {
+        // exec puts every --secret over every --env: the agent's secret is left out when the
+        // person's --env or --secret sets the same variable.
+        let facts = ConnectFacts(boxRunning: true, setSecrets: ["ANTHROPIC_API_KEY"], probed: ["claude"], ownPid: pid)
+        for (secrets, env) in [([String](), ["ANTHROPIC_API_KEY=sk-mine"]), (["ANTHROPIC_API_KEY=MY_KEY"], [String]())] {
+            let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil, secrets: secrets, env: env)
+            guard case let .run(arguments)? = ConnectPlanner.steps(for: request, facts: facts).last else {
+                Issue.record("no run step")
+                continue
+            }
+            let passed = zip(arguments, arguments.dropFirst()).filter { $0.0 == "--secret" }.map(\.1)
+            #expect(passed == secrets)
+        }
+        // Nor is a secret offered when none is set but the person gives the variable.
+        let none = ConnectFacts(boxRunning: true, probed: ["claude"], ownPid: pid)
+        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil, env: ["ANTHROPIC_API_KEY=sk-mine"])
+        #expect(!ConnectPlanner.steps(for: request, facts: none).contains { $0.isQuestion })
+    }
+
+    @Test func aMissingSecretIsOffered() {
+        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil)
+        let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: true, probed: ["claude"], ownPid: pid))
+        #expect(steps.first == .offerSecret(agent: "Claude Code", secrets: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]))
+        #expect(steps.first?.text == "offer to set one of: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY")
+        #expect(steps.first?.isQuestion == true)
+        // Not when the Keychain could not be listed, nor for an agent whose secrets are optional.
+        let unlisted = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: true, secretsListed: false, probed: [], ownPid: pid))
+        #expect(!unlisted.contains { $0.isQuestion })
+        var optional = claude
+        optional.secretsNeeded = .optional
+        let none = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .agent(optional), project: nil),
+                                        facts: ConnectFacts(boxRunning: true, probed: [], ownPid: pid))
+        #expect(!none.contains { $0.isQuestion })
+    }
+
+    @Test func missingRulesAreAsked() {
+        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil)
+        let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: true, boxRules: ["api.anthropic.com"],
+                                                                            setSecrets: ["CLAUDE_CODE_OAUTH_TOKEN"], probed: [], ownPid: pid))
+        #expect(steps.first == .askRules(box: "b1", rules: ["pack:anthropic"]))
+        #expect(steps.first?.text == "ask to allow pack:anthropic in box b1")
+    }
+
+    @Test func anOpenBoxIsNotAsked() {
+        // An open (or off) box has no rules to add to: boxRules is nil.
+        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil)
+        let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: true, boxRules: nil,
+                                                                            setSecrets: ["CLAUDE_CODE_OAUTH_TOKEN"], probed: [], ownPid: pid))
+        #expect(!steps.contains { $0.isQuestion })
+    }
+
+    @Test func aStoppedBoxIsProbedAfterTheStart() {
+        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: "/p", snapshot: true)
+        let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: false, setSecrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
+                                                                            ownPid: pid))
+        #expect(Array(steps.prefix(4)) == [.start(box: "b1", ownerPid: nil), .probe(box: "b1", command: "claude"),
+                                           .share(box: "b1", project: "/p", readOnly: false), .snapshot(project: "/p")])
+        #expect(ConnectStep.probe(box: "b1", command: "claude").text == "check that claude is installed in the box")
+        // Named on the command line for a running box: probed before the share.
+        let running = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: true, setSecrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
+                                                                              ownPid: pid))
+        #expect(running.first == .probe(box: "b1", command: "claude"))
+    }
+
+    @Test func agentsGoThroughTheLoginShell() {
+        #expect(ConnectPlanner.launchArgv(.agent(claude)) == ConnectPlanner.loginWrapper + ["claude"])
+    }
+
     @Test func childArgumentsInOrder() {
         let arguments = ConnectPlanner.childArguments(box: "b", project: "/p", readOnly: false, secrets: ["A"], env: ["X=1"],
                                                       argv: ["/bin/echo", "hi"])

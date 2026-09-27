@@ -2,11 +2,13 @@
 //
 // The work of `agent-vm connect` (avm). Checks come in a fixed order, so the same mistake
 // always gives the same status: the options (ArgumentParser, 64), then what the command line
-// names (the box), then the folder, then what there is to offer, then the terminal. Then the
-// box is chosen (or taken), the steps planned (ConnectPlanner), and each performed with a line
-// saying so: start the box when it is not running, share the folder, snapshot it when shared
-// read-write, run the session as a child `agent-vm exec --tty` (SessionChild), then report what
-// changed and keep or undo it (ConnectReport). connect never stops or deletes a box.
+// names (the box, the agent), then the folder, then what there is to offer, then the terminal.
+// Then the box is chosen (or taken), what to run is chosen (or taken; ConnectAgents), the
+// questions asked (an agent's secret, its hosts), the steps planned (ConnectPlanner), and each
+// performed with a line saying so: start the box when it is not running, check the agent is
+// installed, share the folder, snapshot it when shared read-write, run the session as a child
+// `agent-vm exec --tty` (SessionChild), then report what changed and keep or undo it
+// (ConnectReport). connect never stops or deletes a box.
 
 import AgentVMKit
 import Darwin
@@ -17,6 +19,12 @@ import TerminalUI
 enum ConnectError: Error, CustomStringConvertible {
     /// A picker was needed and stdin or stdout is not a terminal.
     case pickerNeedsTerminal(name: String)
+    /// The launch picker was needed and stdin or stdout is not a terminal.
+    case launchNeedsTerminal
+    /// --agent names no usable agent.
+    case unknownAgent(id: String, known: [String], problem: AgentCatalog.Problem?, name: String)
+    /// The agent's command is not in the box.
+    case agentNotInstalled(agent: AgentEntry, box: Box, name: String)
     /// A session was asked for and stdin or stdout is not a terminal.
     case sessionNeedsTerminal
     /// No box at all to offer.
@@ -41,6 +49,22 @@ enum ConnectError: Error, CustomStringConvertible {
         case let .pickerNeedsTerminal(name):
             let words = name == "avm" ? "avm" : "agent-vm connect"
             return "choosing needs a terminal; name a box (\(words) <box>); \(words) list shows them"
+        case .launchNeedsTerminal:
+            return "choosing what to run needs a terminal; name it: --agent <id>, --shell, or a command after --"
+        case let .unknownAgent(id, known, problem, name):
+            let words = name == "avm" ? "avm" : "agent-vm connect"
+            if let problem {
+                return "agent \(id) cannot be used: \(problem.path): \(problem.reason)"
+            }
+            return "no agent \(id); \(words) agents lists them\(known.isEmpty ? "" : ": " + known.joined(separator: ", "))"
+        case let .agentNotInstalled(agent, box, name):
+            let words = name == "avm" ? "avm" : "agent-vm connect"
+            var text = "\(agent.name) (\(agent.command[0])) is not installed in box \(box.name) (image \(box.record.image)); use an image built with Recipes/agent-clis, or install it in a kept box (\(words) \(box.name) --shell"
+            if let install = agent.install {
+                text += ", then \(install)"
+            }
+            text += ")\nwhen it is installed outside the login shell's PATH, run it by its path: \(words) \(box.name) -- /path/to/\(agent.command[0])"
+            return text
         case .sessionNeedsTerminal:
             return "the session runs on this terminal, and stdin or stdout is not one; from a script use agent-vm exec --box <box> -- <program>"
         case .nothingToOffer:
@@ -64,7 +88,7 @@ enum ConnectError: Error, CustomStringConvertible {
 
     var status: Int32 {
         switch self {
-        case .pickerNeedsTerminal, .sessionNeedsTerminal:
+        case .pickerNeedsTerminal, .sessionNeedsTerminal, .launchNeedsTerminal, .unknownAgent:
             return 64
         case .canceled:
             return 130
@@ -87,7 +111,7 @@ struct ConnectRunner {
     /// "avm" or "agent-vm connect": the prefix of messages and the words in hints.
     var invokedAs: String
 
-    private var boxStore: BoxStore {
+    var boxStore: BoxStore {
         return BoxStore(root: root)
     }
 
@@ -147,14 +171,29 @@ struct ConnectRunner {
             }
             named = box
         }
+        let catalog = AgentCatalog.load(store: root)
+        var namedAgent: AgentEntry?
+        if let id = options.agent {
+            guard let agent = catalog.entry(id: id) else {
+                if catalog.problems[id] == nil {
+                    // An unusable built-in file or user folder may be why: said above the error.
+                    warnAbout(catalog)
+                }
+                throw ConnectError.unknownAgent(id: id, known: catalog.entries.map(\.id), problem: catalog.problems[id], name: invokedAs)
+            }
+            namedAgent = agent
+        }
         let project = try resolveProject(terminal)
         BoxCommand.GC.collect(boxStore)
         let choices = ConnectChoices(store: root)
         let remembered = project.flatMap { choices.choice(for: $0) }
+        if options.namedLaunch == nil && namedAgent == nil {
+            warnAbout(catalog)
+        }
 
-        while true {
+        boxes: while true {
             let box: Box
-            let status: BoxStatus
+            var status: BoxStatus
             let chosenInPicker: Bool
             if let named {
                 box = named
@@ -182,31 +221,53 @@ struct ConnectRunner {
                 status = offer.status
                 chosenInPicker = true
             }
-            if !options.dryRun && !terminal.isInteractive {
-                throw ConnectError.sessionNeedsTerminal
-            }
 
-            let request = ConnectRequest(target: .box(box.name), launch: options.launch, project: project, readOnly: options.readOnly,
-                                         snapshot: !options.noSnapshot, secrets: options.secrets, env: options.env)
-            let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: status.state == .running, ownPid: getpid()))
-            if options.dryRun {
-                print("\(invokedAs) would:")
-                for step in steps {
-                    print("  " + step.text)
+            // What to run; an agent found missing after it was chosen in the launch picker
+            // shows that picker again, with what the probe found.
+            var probed: Set<String>?
+            while true {
+                let (launch, launchChosenInPicker) = try chooseLaunch(box: box, running: status.state == .running, catalog: catalog,
+                                                                      namedAgent: namedAgent, remembered: remembered?.launch,
+                                                                      probed: &probed, terminal: terminal)
+                if !options.dryRun && !terminal.isInteractive {
+                    throw ConnectError.sessionNeedsTerminal
                 }
-                return 0
-            }
-            do {
-                return try perform(steps, box: box, request: request, remembered: remembered, terminal: terminal)
-            } catch let error as ConnectError where chosenInPicker {
-                // A refused share: another box may do; the list again, with the reason above it.
-                guard case .shareRefused = error else {
-                    throw error
+                let request = ConnectRequest(target: .box(box.name), launch: launch, project: project, readOnly: options.readOnly,
+                                             snapshot: !options.noSnapshot, secrets: options.secrets, env: options.env)
+                let (facts, secretEntries) = try self.facts(for: launch, box: box, running: status.state == .running, probed: probed)
+                let steps = ConnectPlanner.steps(for: request, facts: facts)
+                if options.dryRun {
+                    print("\(invokedAs) would:")
+                    for step in steps {
+                        print("  " + step.text)
+                    }
+                    return 0
                 }
-                say(error)
-            } catch AgentVMError.boxDisposed(let name) where chosenInPicker {
-                BoxCommand.GC.collect(boxStore)
-                say(ConnectError.failed(AgentVMError.boxDisposed(name)))
+                do {
+                    // The questions first (a secret, the hosts); then the steps again, with
+                    // what the answers changed.
+                    let answered = try ask(steps, launch: launch, facts: facts, secretEntries: secretEntries, box: box, terminal: terminal)
+                    let rest = ConnectPlanner.steps(for: request, facts: answered).filter { !$0.isQuestion }
+                    return try perform(rest, box: box, request: request, remembered: remembered, terminal: terminal)
+                } catch let error as ConnectError {
+                    switch error {
+                    case .agentNotInstalled where launchChosenInPicker:
+                        say(error)
+                        status = BoxStatus.of(box)
+                        probed = nil
+                        continue
+                    case .shareRefused where chosenInPicker:
+                        // Another box may do; the list again, with the reason above it.
+                        say(error)
+                        continue boxes
+                    default:
+                        throw error
+                    }
+                } catch AgentVMError.boxDisposed(let name) where chosenInPicker {
+                    BoxCommand.GC.collect(boxStore)
+                    say(ConnectError.failed(AgentVMError.boxDisposed(name)))
+                    continue boxes
+                }
             }
         }
     }
@@ -268,6 +329,18 @@ struct ConnectRunner {
                     throw ConnectError.failed(error)
                 }
                 print("Box \(name) is running (\((clock.now - began).components.seconds) s)")
+            case let .probe(_, command):
+                guard case .agent(let agent) = request.launch else {
+                    continue
+                }
+                // A probe that fails (an old guest, no answer) says nothing: exec reports 127
+                // if the command is missing.
+                if let found = AgentProbe.run(box: box, commands: [command]), !found.contains(command) {
+                    throw ConnectError.agentNotInstalled(agent: agent, box: box, name: invokedAs)
+                }
+            case .offerSecret, .askRules:
+                // Asked before the steps (ask).
+                continue
             case let .share(_, project, readOnly):
                 print("Sharing \(Self.tilde(project)) (\(readOnly ? "read only" : "read-write"))")
                 let response: ControlResponse
@@ -295,6 +368,8 @@ struct ConnectRunner {
                     print("Login shell in box \(box.name); exit it to come back here")
                 case .command(let words):
                     print("Running \(ConnectPlanner.shellQuoted(words)) in box \(box.name)")
+                case .agent(let agent):
+                    print("\(agent.name) in box \(box.name); exit it to come back here")
                 }
                 let ended: SessionChild.Outcome
                 do {
@@ -392,6 +467,8 @@ struct ConnectRunner {
             launchID = "shell"
         case .command:
             launchID = previous?.launch
+        case .agent(let agent):
+            launchID = agent.id
         }
         do {
             try ConnectChoices(store: root).remember(ConnectChoice(target: .box, box: box, launch: launchID, readOnly: readOnly), for: project)
@@ -412,7 +489,7 @@ struct ConnectRunner {
     }
 
     /// Each line of the error's text, prefixed with the name connect was started as.
-    private func say(_ error: ConnectError) {
+    func say(_ error: ConnectError) {
         let text = error.description
         if !text.isEmpty {
             let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { "\(invokedAs): \($0)\n" }
@@ -420,7 +497,7 @@ struct ConnectRunner {
         }
     }
 
-    private func warn(_ text: String) {
+    func warn(_ text: String) {
         FileHandle.standardError.write(Data("\(invokedAs): warning: \(text)\n".utf8))
     }
 

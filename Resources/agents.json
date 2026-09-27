@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "id": "claude",
+      "name": "Claude Code",
+      "command": ["claude"],
+      "allow": ["pack:anthropic"],
+      "secrets": [
+        {"env": "CLAUDE_CODE_OAUTH_TOKEN", "label": "Claude subscription token (run claude setup-token on this Mac)"},
+        {"env": "ANTHROPIC_API_KEY", "label": "Anthropic API key"}
+      ],
+      "secretsNeeded": "one",
+      "env": {"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"},
+      "login": "Or log in inside a kept box: /login in Claude Code, then open the address it prints in this Mac's browser.",
+      "install": "npm install --global @anthropic-ai/claude-code",
+      "note": "Your Claude login on this Mac is not visible in the box."
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "command": ["codex"],
+      "allow": ["pack:openai"],
+      "secrets": [{"env": "OPENAI_API_KEY", "label": "OpenAI API key"}],
+      "secretsNeeded": "optional",
+      "login": "Or log in inside a kept box: codex login --device-auth, and enter the code in this Mac's browser (works with a ChatGPT account).",
+      "install": "npm install --global @openai/codex"
+    },
+    {
+      "id": "opencode",
+      "name": "opencode",
+      "command": ["opencode"],
+      "allow": ["opencode.ai", "models.opencode.ai"],
+      "secrets": [],
+      "env": {"OPENCODE_DISABLE_AUTOUPDATE": "1"},
+      "install": "npm install --global opencode-ai",
+      "note": "OpenCode Zen's free models need no account. Other providers need their key (--secret) and their hosts (box network --allow)."
+    }
+  ]
+}

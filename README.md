@@ -134,28 +134,32 @@ agent-vm box start s1 --owner-pid $$               # stops when this shell exits
 
 ## Terminal sessions: avm (works today)
 
-`avm` is the short way into a box from a terminal. Run it in a project folder: it lists your boxes, starts the one you choose when it is stopped, shares the folder into it at the same path, snapshots it, and opens a login shell there. Exit the shell to come back: avm reports what changed in the folder, and you keep the changes or undo them.
+`avm` is the short way into a box from a terminal. Run it in a project folder: it lists your boxes, starts the one you choose when it is stopped, shares the folder into it at the same path, snapshots it, and runs what you choose there: Claude Code, Codex, opencode, or a login shell. Exit it to come back: avm reports what changed in the folder, and you keep the changes or undo them.
 
 ```sh
 cd ~/src/app
-avm                        # choose a box from the list, then a login shell in ~/src/app
+avm                        # choose a box, then what to run in ~/src/app
 avm dev1                   # that box
-avm dev1 -- make test      # a command instead of the shell; its exit status is avm's
+avm dev1 --agent claude    # Claude Code in it (avm agents lists the agents)
+avm dev1 --shell           # a login shell
+avm dev1 -- make test      # a command; its exit status is avm's
 avm dev1 --no-project      # share no folder (the shell starts in the box user's home)
 avm dev1 --read-only       # share the folder read only (nothing to snapshot)
 avm dev1 --no-snapshot     # share it read-write without a snapshot (nothing to undo)
 avm list                   # the boxes avm offers, and the choice remembered for this folder
+avm agents                 # the agents avm can run, and whether their secrets are set
 avm dev1 --dry-run         # print the steps instead of taking them
 ```
 
 ```
 $ avm
 Box dev1
+Claude Code
 Starting box dev1
 Box dev1 is running (14 s)
 Sharing ~/src/app (read-write)
 Snapshot of ~/src/app taken (session 20260926-101500-7c1e)
-Login shell in box dev1; exit it to come back here
+Claude Code in box dev1; exit it to come back here
 ...
 Session 20260926-101500-7c1e: 3 added, 5 modified in ~/src/app; review first: 1 high
 HIGH   A .git/hooks/pre-commit
@@ -165,12 +169,13 @@ Kept. Undo later with: agent-vm session undo 20260926-101500-7c1e
 Box dev1 keeps running; stop it with: agent-vm box stop dev1
 ```
 
-- **The list:** running boxes first (with the folder each one shares and how many programs run in it), then stopped ones. Arrows (or Control-P and Control-N) move, typing filters, Enter chooses, Escape clears the filter and then quits. The box chosen for a folder is remembered (`connect.json` in the store) and preselected next time. A temporary box that is not running is never offered, and an unresponsive one is shown but cannot be chosen.
+- **The lists:** first the boxes, running ones first (with the folder each one shares and how many programs run in it), then stopped ones; then what to run. Arrows (or Control-P and Control-N) move, typing filters, Enter chooses, Escape clears the filter and then quits. The box and what ran, chosen for a folder, are remembered (`connect.json` in the store) and preselected next time. A temporary box that is not running is never offered, and an unresponsive one is shown but cannot be chosen.
+- **Agents:** Claude Code (`claude`), Codex (`codex`) and opencode (`opencode`), as an image built with [Recipes/agent-clis](Recipes/README.md) installs them. The list of what to run marks an agent the box lacks; each runs through the account's login shell, as the shell does. When none of an agent's secrets is set (for Claude Code, `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` on this Mac, or `ANTHROPIC_API_KEY`), avm offers to set one in the Keychain: typed without echo, it goes to the Keychain only, and the session reads it from there (`exec --secret`). Or go on without and log in inside the box. When the box does not allow the agent's hosts (`pack:anthropic` for Claude Code), avm asks to add them. The agents come from `agents.json` next to `agent-vm`; your own go in `Agents/<id>.json` in the store (see [Docs/avm.md](Docs/avm.md#agents)).
 - **Snapshot, report, keep or undo:** a folder shared read-write is snapshotted before the session (a session, as in [Sessions](#sessions-snapshot-report-and-undo-works-today)). Afterwards avm lists what changed, flagging files that run code later on this Mac, and asks: `k` keeps the changes (the snapshot stays, so `agent-vm session undo <id>` still works later), `r` shows every change, `u` undoes them all. Escape keeps them. With no changes, the snapshot is discarded. The box keeps running, so stop what the agent left running in the background before you undo; avm asks first when other programs (another terminal or application) use the box. Kept snapshots take space as the folder changes: `agent-vm session discard --older-than 7` frees those older than a week.
 - **One folder per box:** a box shares one folder at a time, and a box whose programs use another folder refuses to switch. avm says so and shows the list again.
 - **Your home folder cannot be shared** (nor `~/Library`, a hidden folder in it, or the agent-vm store). Started there, avm offers to connect without a folder; `--project <folder>` shares another one.
 - **A box avm started keeps running** afterwards; stop it with `agent-vm box stop <box>`. avm never stops or deletes a box.
-- **Exit status:** the program's; 1 when avm could not connect (no such box, a box that did not start, a refused folder, no snapshot and you chose not to go on); 64 for options that do not go together, or when there is no terminal (from a script, use `agent-vm exec`); 75 when no VM slot is free; 130 when you quit the list.
+- **Exit status:** the program's; 1 when avm could not connect (no such box, a box that did not start, a refused folder, an agent not installed in the box, no snapshot and you chose not to go on); 64 for options that do not go together, an unknown agent, or when there is no terminal (from a script, use `agent-vm exec`); 75 when no VM slot is free; 130 when you quit the list.
 - **Installing:** `avm` is a symlink to `agent-vm`, made by `Scripts/build.sh` next to it; link it into a folder on your `PATH` (`ln -s <repository>/.build/signed/release/avm ~/bin/avm`), or run `agent-vm connect`, which is the same command.
 - `NO_COLOR=1` turns off bold and reverse video; with `TERM=dumb` (or no `TERM`) the list is a numbered menu. Everything else: [Docs/avm.md](Docs/avm.md).
 
@@ -305,7 +310,7 @@ Tests/Shell/run.sh all --filter network   # both tiers, only tests whose name co
 ```
 
 - **fast** covers the CLI (`avm` and `agent-vm connect` included), sessions (report, undo, refusals), the image and box stores, network rules and recipe checks. Each test gets its own `AGENT_VM_HOME` in a scratch folder, so it never touches your images or boxes.
-- **extended** starts real boxes: their life cycle, exec (streams, exit statuses, signals, a killed client), terminals, `box shell`, `avm` and the exec log, `box view` (a window appears briefly), the allowlist network (it needs the internet), project shares, and derived images built from recipes. It uses your store (or `$AGENT_VM_TEST_HOME`) and needs a ready image named `dev` (or `$AGENT_VM_TEST_IMAGE`); without one those tests are skipped. It creates boxes and images named `shtest-*` and deletes them. A full install from a restore image runs only when `$AGENT_VM_TEST_IPSW` names one. The tier takes about 7 minutes, and macOS runs at most two virtual machines at once, so stop other boxes first.
+- **extended** starts real boxes: their life cycle, exec (streams, exit statuses, signals, a killed client), terminals, `box shell`, `avm` and the exec log, `box view` (a window appears briefly), the allowlist network (it needs the internet), project shares, and derived images built from recipes. It uses your store (or `$AGENT_VM_TEST_HOME`) and needs a ready image named `dev` (or `$AGENT_VM_TEST_IMAGE`); without one those tests are skipped. The avm agent tests also need an image built with Recipes/agent-clis, named by `$AGENT_VM_TEST_AGENT_IMAGE`; without it they are skipped. It creates boxes and images named `shtest-*` and deletes them. A full install from a restore image runs only when `$AGENT_VM_TEST_IPSW` names one. The tier takes about 7 minutes, and macOS runs at most two virtual machines at once, so stop other boxes first.
 
 A test that fails keeps its scratch folder, with the commands it ran and their output, and the last lines are printed. `--keep` keeps every folder, and `--agent-vm <path>` tests another binary.
 
