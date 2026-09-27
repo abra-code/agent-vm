@@ -1,8 +1,9 @@
 // Sources/AgentVMKit/Connect/ConnectPlan.swift
 //
 // What `agent-vm connect` (avm) does once the choices are made, as data: the steps in order
-// (offer to set an agent's secret, ask to allow its hosts, start the box, check the agent is
-// installed, share the folder, snapshot it, run the session, report what changed), so
+// (offer to set an agent's secret, ask to allow its hosts, create a new box, start the box,
+// check the agent is installed, share the folder, snapshot it, run the session, stop and
+// delete a temporary box, report what changed), so
 // `--dry-run` prints exactly what a run performs, and tests check the steps without a box. The
 // session itself is `agent-vm exec --tty` run as a child; the program goes through the
 // account's login shell, so ~/.zprofile applies as it does in `box shell`.
@@ -13,6 +14,10 @@ import Foundation
 public enum ConnectTarget: Equatable, Sendable {
     /// An existing box.
     case box(String)
+    /// A new box from the image, owned by connect and deleted when the session ends.
+    case newTemporary(image: String)
+    /// A new box from the image, kept under this name.
+    case newKept(image: String, name: String)
 }
 
 /// What runs in the box.
@@ -39,9 +44,14 @@ public struct ConnectRequest: Equatable, Sendable {
     public var secrets: [String]
     /// The person's --env specs, passed on to exec.
     public var env: [String]
+    /// A new box's rules besides the agent's (--allow).
+    public var extraAllow: [String]
+    /// A new box's CPUs and memory; nil: the image's.
+    public var cpus: Int?
+    public var memoryBytes: UInt64?
 
     public init(target: ConnectTarget, launch: ConnectLaunch, project: String?, readOnly: Bool = false, snapshot: Bool = false,
-                secrets: [String] = [], env: [String] = []) {
+                secrets: [String] = [], env: [String] = [], extraAllow: [String] = [], cpus: Int? = nil, memoryBytes: UInt64? = nil) {
         self.target = target
         self.launch = launch
         self.project = project
@@ -49,6 +59,9 @@ public struct ConnectRequest: Equatable, Sendable {
         self.snapshot = snapshot
         self.secrets = secrets
         self.env = env
+        self.extraAllow = extraAllow
+        self.cpus = cpus
+        self.memoryBytes = memoryBytes
     }
 }
 
@@ -67,15 +80,18 @@ public struct ConnectFacts: Equatable, Sendable {
     public var probed: Set<String>?
     /// connect's own process id.
     public var ownPid: Int32
+    /// The name for a new temporary box (temporaryName, chosen free).
+    public var temporaryName: String?
 
     public init(boxRunning: Bool, boxRules: [String]? = nil, setSecrets: [String] = [], secretsListed: Bool = true,
-                probed: Set<String>? = nil, ownPid: Int32) {
+                probed: Set<String>? = nil, ownPid: Int32, temporaryName: String? = nil) {
         self.boxRunning = boxRunning
         self.boxRules = boxRules
         self.setSecrets = setSecrets
         self.secretsListed = secretsListed
         self.probed = probed
         self.ownPid = ownPid
+        self.temporaryName = temporaryName
     }
 }
 
@@ -84,6 +100,9 @@ public enum ConnectStep: Equatable, Sendable {
     case offerSecret(agent: String, secrets: [String])
     /// The box's allowlist lacks rules the agent needs: ask to add them.
     case askRules(box: String, rules: [String])
+    /// Create the box from the image, with these rules; a temporary one is deleted after the
+    /// session.
+    case create(box: String, image: String, allow: [String], temporary: Bool, cpus: Int?, memoryBytes: UInt64?)
     /// Start the box (a box that is starting or stopping is waited for); `ownerPid` stops it
     /// when that process exits.
     case start(box: String, ownerPid: Int32?)
@@ -95,6 +114,8 @@ public enum ConnectStep: Equatable, Sendable {
     case snapshot(project: String)
     /// Run the session: agent-vm with these arguments, on this terminal.
     case run(arguments: [String])
+    /// Stop the temporary box connect created, and delete it.
+    case stopAndDelete(box: String)
     /// Report what changed in the folder since the snapshot, then keep it or undo it.
     case report(project: String)
 
@@ -115,6 +136,20 @@ public enum ConnectStep: Equatable, Sendable {
             return "offer to set one of: \(secrets.joined(separator: ", "))"
         case let .askRules(box, rules):
             return "ask to allow \(rules.joined(separator: ", ")) in box \(box)"
+        case let .create(box, image, allow, temporary, cpus, memoryBytes):
+            var text = "create box \(box) from image \(image)" + (temporary ? " (temporary)" : "")
+            if let cpus {
+                text += ", \(cpus) CPUs"
+            }
+            if let memoryBytes {
+                text += ", \(memoryBytes >> 30) GB"
+            }
+            if !allow.isEmpty {
+                text += ", allowing " + allow.joined(separator: ", ")
+            }
+            return text
+        case let .stopAndDelete(box):
+            return "stop and delete box \(box)"
         case let .probe(_, command):
             return "check that \(command) is installed in the box"
         case let .start(box, ownerPid):
@@ -141,57 +176,121 @@ public enum ConnectPlanner {
 
     /// The steps for `request`, in order.
     public static func steps(for request: ConnectRequest, facts: ConnectFacts) -> [ConnectStep] {
+        let name: String
+        var image: String?
+        var temporary = false
         switch request.target {
-        case .box(let name):
-            var steps: [ConnectStep] = []
-            var secrets = request.secrets
-            var env = request.env
-            if case .agent(let agent) = request.launch {
-                // The variables the person's --env and --secret set (NAME or NAME=...).
-                func variable(_ spec: String) -> Substring {
-                    return spec.prefix { $0 != "=" }
-                }
-                let personal = Set((request.env + request.secrets).map(variable))
-                let secret = facts.secretsListed ? AgentCatalog.secretArguments(for: agent, set: facts.setSecrets) : []
-                let givenByPerson = agent.secrets.contains { personal.contains(Substring($0.env)) }
-                if agent.secretsNeeded == .one && facts.secretsListed && secret.isEmpty && !givenByPerson {
-                    steps.append(.offerSecret(agent: agent.name, secrets: agent.secrets.map(\.name)))
-                }
-                if let rules = facts.boxRules {
-                    let missing = AgentCatalog.missingRules(for: agent, in: rules)
-                    if !missing.isEmpty {
-                        steps.append(.askRules(box: name, rules: missing))
-                    }
-                }
-                // The agent's own first, so the person's --env or --secret for the same variable
-                // comes later and wins. exec puts every --secret over every --env, so the agent's
-                // secret is left out when the person's option sets its variable.
-                secrets = secret.filter { !personal.contains(variable($0)) } + secrets
-                env = AgentCatalog.envArguments(for: agent) + env
-            }
-            if !facts.boxRunning {
-                // An existing box is never given connect as its owner: another client using it
-                // would lose it when this connect exits.
-                steps.append(.start(box: name, ownerPid: nil))
-            }
-            if case .agent(let agent) = request.launch, facts.probed == nil, let command = agent.command.first {
-                steps.append(.probe(box: name, command: command))
-            }
-            // A folder shared read only cannot change, so it gets no snapshot.
-            let snapshot = request.snapshot && !request.readOnly ? request.project : nil
-            if let project = request.project {
-                steps.append(.share(box: name, project: project, readOnly: request.readOnly))
-            }
-            if let snapshot {
-                steps.append(.snapshot(project: snapshot))
-            }
-            steps.append(.run(arguments: childArguments(box: name, project: request.project, readOnly: request.readOnly,
-                                                        secrets: secrets, env: env, argv: launchArgv(request.launch))))
-            if let snapshot {
-                steps.append(.report(project: snapshot))
-            }
-            return steps
+        case .box(let box):
+            name = box
+        case .newTemporary(let from):
+            name = facts.temporaryName ?? temporaryName(image: from, random: 0)
+            image = from
+            temporary = true
+        case let .newKept(from, box):
+            name = box
+            image = from
         }
+        var steps: [ConnectStep] = []
+        var secrets = request.secrets
+        var env = request.env
+        var allow = request.extraAllow
+        if case .agent(let agent) = request.launch {
+            // The variables the person's --env and --secret set (NAME or NAME=...).
+            func variable(_ spec: String) -> Substring {
+                return spec.prefix { $0 != "=" }
+            }
+            let personal = Set((request.env + request.secrets).map(variable))
+            let secret = facts.secretsListed ? AgentCatalog.secretArguments(for: agent, set: facts.setSecrets) : []
+            let givenByPerson = agent.secrets.contains { personal.contains(Substring($0.env)) }
+            if agent.secretsNeeded == .one && facts.secretsListed && secret.isEmpty && !givenByPerson {
+                steps.append(.offerSecret(agent: agent.name, secrets: agent.secrets.map(\.name)))
+            }
+            // A new box gets the agent's rules when it is created; an existing one is asked.
+            if image == nil, let rules = facts.boxRules {
+                let missing = AgentCatalog.missingRules(for: agent, in: rules)
+                if !missing.isEmpty {
+                    steps.append(.askRules(box: name, rules: missing))
+                }
+            }
+            allow = agent.allow + allow.filter { !agent.allow.contains($0) }
+            // The agent's own first, so the person's --env or --secret for the same variable
+            // comes later and wins. exec puts every --secret over every --env, so the agent's
+            // secret is left out when the person's option sets its variable.
+            secrets = secret.filter { !personal.contains(variable($0)) } + secrets
+            env = AgentCatalog.envArguments(for: agent) + env
+        }
+        if let image {
+            steps.append(.create(box: name, image: image, allow: allow, temporary: temporary, cpus: request.cpus,
+                                 memoryBytes: request.memoryBytes))
+            // Only a temporary box connect made gets connect as its owner: it stops when this
+            // connect exits, however it exits.
+            steps.append(.start(box: name, ownerPid: temporary ? facts.ownPid : nil))
+        } else if !facts.boxRunning {
+            // An existing box is never given connect as its owner: another client using it
+            // would lose it when this connect exits.
+            steps.append(.start(box: name, ownerPid: nil))
+        }
+        if case .agent(let agent) = request.launch, image != nil || facts.probed == nil, let command = agent.command.first {
+            steps.append(.probe(box: name, command: command))
+        }
+        // A folder shared read only cannot change, so it gets no snapshot.
+        let snapshot = request.snapshot && !request.readOnly ? request.project : nil
+        if let project = request.project {
+            steps.append(.share(box: name, project: project, readOnly: request.readOnly))
+        }
+        if let snapshot {
+            steps.append(.snapshot(project: snapshot))
+        }
+        steps.append(.run(arguments: childArguments(box: name, project: request.project, readOnly: request.readOnly,
+                                                    secrets: secrets, env: env, argv: launchArgv(request.launch))))
+        // Stopped before the report: nothing in the box can change the folder during an undo,
+        // and the report is final.
+        if temporary {
+            steps.append(.stopAndDelete(box: name))
+        }
+        if let snapshot {
+            steps.append(.report(project: snapshot))
+        }
+        return steps
+    }
+
+    /// A temporary box's name: "avm-", the image's name cut so the whole fits 63 characters,
+    /// "-", and six hex digits of `random`.
+    public static func temporaryName(image: String, random: UInt32) -> String {
+        return "avm-" + String(image.prefix(52)) + "-" + String(format: "%06x", random & 0xFF_FFFF)
+    }
+
+    /// A name to suggest for a kept box: the folder's last component in the box-name alphabet
+    /// (lower case; every run of other characters one "-"; no "-", "." or "_" at either end; at
+    /// most 59 characters, leaving room for a suffix), else the image's name plus "-box"; then
+    /// "-2", "-3" and so on while `existing` has it.
+    public static func suggestedBoxName(project: String?, image: String, existing: Set<String>) -> String {
+        var base = ""
+        if let project {
+            var previousDash = false
+            for character in (project as NSString).lastPathComponent.lowercased() {
+                if character.isASCII && (character.isLetter || character.isNumber || "._-".contains(character)) {
+                    base.append(character)
+                    previousDash = false
+                } else if !previousDash {
+                    base.append("-")
+                    previousDash = true
+                }
+            }
+            base = String(base.drop { "-._".contains($0) }.reversed().drop { "-._".contains($0) }.reversed())
+            base = String(base.prefix(59))
+            base = String(base.reversed().drop { "-._".contains($0) }.reversed())
+        }
+        if base.isEmpty {
+            base = String(image.prefix(59 - 4)) + "-box"
+        }
+        var name = base
+        var suffix = 2
+        while existing.contains(name) {
+            name = "\(base)-\(suffix)"
+            suffix += 1
+        }
+        return name
     }
 
     /// agent-vm's arguments for the session child.

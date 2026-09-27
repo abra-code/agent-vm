@@ -186,6 +186,61 @@ import Testing
         }
     }
 
+    @Test func aTemporaryBoxIsOwnedAndDeleted() {
+        let request = ConnectRequest(target: .newTemporary(image: "dev-agents"), launch: .agent(claude), project: "/p", snapshot: true,
+                                     extraAllow: ["github.com", "pack:anthropic"])
+        let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: false, setSecrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
+                                                                            ownPid: pid, temporaryName: "avm-dev-agents-3f2a91"))
+        let name = "avm-dev-agents-3f2a91"
+        // The agent's rules and --allow's, each once; connect owns it; stopped and deleted after
+        // the run and before the report.
+        #expect(steps.first == .create(box: name, image: "dev-agents", allow: ["pack:anthropic", "github.com"], temporary: true,
+                                       cpus: nil, memoryBytes: nil))
+        #expect(steps[1] == .start(box: name, ownerPid: pid))
+        #expect(steps[2] == .probe(box: name, command: "claude"))
+        guard let run = steps.firstIndex(where: { if case .run = $0 { return true } else { return false } }) else {
+            Issue.record("no run step")
+            return
+        }
+        #expect(Array(steps[(run + 1)...]) == [.stopAndDelete(box: name), .report(project: "/p")])
+        #expect(steps[0].text == "create box \(name) from image dev-agents (temporary), allowing pack:anthropic, github.com")
+        #expect(ConnectStep.stopAndDelete(box: name).text == "stop and delete box \(name)")
+        // Without an agent: --allow's rules only.
+        let shell = ConnectPlanner.steps(for: ConnectRequest(target: .newTemporary(image: "dev"), launch: .shell, project: nil),
+                                         facts: ConnectFacts(boxRunning: false, ownPid: pid, temporaryName: "avm-dev-000001"))
+        #expect(shell.first == .create(box: "avm-dev-000001", image: "dev", allow: [], temporary: true, cpus: nil, memoryBytes: nil))
+    }
+
+    @Test func aKeptBoxIsNeverOwned() {
+        let request = ConnectRequest(target: .newKept(image: "dev", name: "k1"), launch: .shell, project: "/p", cpus: 6, memoryBytes: 16 << 30)
+        let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: false, ownPid: pid))
+        #expect(steps[0] == .create(box: "k1", image: "dev", allow: [], temporary: false, cpus: 6, memoryBytes: 16 << 30))
+        #expect(steps[0].text == "create box k1 from image dev, 6 CPUs, 16 GB")
+        #expect(steps[1] == .start(box: "k1", ownerPid: nil))
+        #expect(!steps.contains(.stopAndDelete(box: "k1")))
+    }
+
+    @Test func temporaryNamesFit() {
+        let long = String(repeating: "a", count: 63)
+        let name = ConnectPlanner.temporaryName(image: long, random: 0xABCDEF)
+        #expect(name.count == 63)
+        #expect(ImageStore.isValidName(name))
+        #expect(name.hasSuffix("-abcdef"))
+        #expect(ConnectPlanner.temporaryName(image: "dev", random: 0x1_000_0001) == "avm-dev-000001")
+    }
+
+    @Test func suggestedNamesAvoidExistingOnes() {
+        #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/src/app", image: "dev", existing: []) == "app")
+        #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/src/app", image: "dev", existing: ["app"]) == "app-2")
+        #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/src/app", image: "dev", existing: ["app", "app-2"]) == "app-3")
+        #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/My App!", image: "dev", existing: []) == "my-app")
+        #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/.hidden_", image: "dev", existing: []) == "hidden")
+        #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/\u{00E9}\u{00E9}", image: "dev", existing: []) == "dev-box")
+        #expect(ConnectPlanner.suggestedBoxName(project: nil, image: "dev-agents", existing: []) == "dev-agents-box")
+        let long = ConnectPlanner.suggestedBoxName(project: "/p/" + String(repeating: "x", count: 80), image: "dev", existing: [])
+        #expect(long.count == 59 && ImageStore.isValidName(long + "-99"))
+    }
+
     @Test func childArgumentsInOrder() {
         let arguments = ConnectPlanner.childArguments(box: "b", project: "/p", readOnly: false, secrets: ["A"], env: ["X=1"],
                                                       argv: ["/bin/echo", "hi"])

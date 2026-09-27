@@ -158,11 +158,17 @@ make_project() {
     /bin/chmod 755 "$_dir/build.sh"
 }
 
-# fake_image <name> [state]: an image record with stand-in machine files in $AGENT_VM_HOME, so
-# box commands can run without a real macOS install.
+# fake_image <name> [state] [features]: an image record with stand-in machine files in
+# $AGENT_VM_HOME, so box commands can run without a real macOS install. <features> is the
+# guest daemon's features as a JSON list (default: none, as for an image built before they
+# were recorded), for example '["terminal"]'.
 fake_image() {
     local _name="$1"
     local _state="${2:-ready}"
+    local _features_line
+    if [ -n "${3:-}" ]; then
+        _features_line="  \"guestFeatures\" : $3,"
+    fi
     local _dir="$AGENT_VM_HOME/Images/$_name"
     /bin/mkdir -p "$_dir"
     /bin/chmod 700 "$AGENT_VM_HOME" "$AGENT_VM_HOME/Images" "$_dir"
@@ -186,6 +192,7 @@ fake_image() {
   "diskBytes" : 68719476736,
   "macAddress" : "da:51:72:d4:e5:72",
   "userName" : "agent",
+$_features_line
   "guestProtocol" : 1
 }
 EOF

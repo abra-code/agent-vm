@@ -134,7 +134,7 @@ agent-vm box start s1 --owner-pid $$               # stops when this shell exits
 
 ## Terminal sessions: avm (works today)
 
-`avm` is the short way into a box from a terminal. Run it in a project folder: it lists your boxes, starts the one you choose when it is stopped, shares the folder into it at the same path, snapshots it, and runs what you choose there: Claude Code, Codex, opencode, or a login shell. Exit it to come back: avm reports what changed in the folder, and you keep the changes or undo them.
+`avm` is the short way into a box from a terminal. Run it in a project folder: it lists your boxes (or makes a new one from an image), starts the one you choose when it is stopped, shares the folder into it at the same path, snapshots it, and runs what you choose there: Claude Code, Codex, opencode, or a login shell. Exit it to come back: avm reports what changed in the folder, and you keep the changes or undo them.
 
 ```sh
 cd ~/src/app
@@ -142,6 +142,8 @@ avm                        # choose a box, then what to run in ~/src/app
 avm dev1                   # that box
 avm dev1 --agent claude    # Claude Code in it (avm agents lists the agents)
 avm dev1 --shell           # a login shell
+avm new dev-agents         # a new temporary box from the image, deleted when you leave
+avm new dev-agents --name app1   # a new box, kept
 avm dev1 -- make test      # a command; its exit status is avm's
 avm dev1 --no-project      # share no folder (the shell starts in the box user's home)
 avm dev1 --read-only       # share the folder read only (nothing to snapshot)
@@ -172,9 +174,11 @@ Box dev1 keeps running; stop it with: agent-vm box stop dev1
 - **The lists:** first the boxes, running ones first (with the folder each one shares and how many programs run in it), then stopped ones; then what to run. Arrows (or Control-P and Control-N) move, typing filters, Enter chooses, Escape clears the filter and then quits. The box and what ran, chosen for a folder, are remembered (`connect.json` in the store) and preselected next time. A temporary box that is not running is never offered, and an unresponsive one is shown but cannot be chosen.
 - **Agents:** Claude Code (`claude`), Codex (`codex`) and opencode (`opencode`), as an image built with [Recipes/agent-clis](Recipes/README.md) installs them. The list of what to run marks an agent the box lacks; each runs through the account's login shell, as the shell does. When none of an agent's secrets is set (for Claude Code, `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` on this Mac, or `ANTHROPIC_API_KEY`), avm offers to set one in the Keychain: typed without echo, it goes to the Keychain only, and the session reads it from there (`exec --secret`). Or go on without and log in inside the box. When the box does not allow the agent's hosts (`pack:anthropic` for Claude Code), avm asks to add them. The agents come from `agents.json` next to `agent-vm`; your own go in `Agents/<id>.json` in the store (see [Docs/avm.md](Docs/avm.md#agents)).
 - **Snapshot, report, keep or undo:** a folder shared read-write is snapshotted before the session (a session, as in [Sessions](#sessions-snapshot-report-and-undo-works-today)). Afterwards avm lists what changed, flagging files that run code later on this Mac, and asks: `k` keeps the changes (the snapshot stays, so `agent-vm session undo <id>` still works later), `r` shows every change, `u` undoes them all. Escape keeps them. With no changes, the snapshot is discarded. The box keeps running, so stop what the agent left running in the background before you undo; avm asks first when other programs (another terminal or application) use the box. Kept snapshots take space as the folder changes: `agent-vm session discard --older-than 7` frees those older than a week.
+- **New boxes:** the list ends with `Temporary box from an image...` and `Kept box from an image...`, then a list of your ready images; `avm new <image>` names the image. A temporary box (`avm-<image>-<6 hex digits>`) belongs to that avm: it is stopped and deleted after the session, before the report, and if avm is killed it stops on its own and `box gc` deletes it. A kept box (named in a question, or with `--name`) stays. A new box allows the agent's hosts, plus `--allow`; `--cpus` and `--memory-gb` set its size.
+- **Two VMs at most:** macOS runs at most two macOS virtual machines at once, and a new or stopped box needs one of them. When none is free avm names the running boxes and exits 75 (or, when you chose in the list, shows it again: joining a running box needs no slot).
 - **One folder per box:** a box shares one folder at a time, and a box whose programs use another folder refuses to switch. avm says so and shows the list again.
 - **Your home folder cannot be shared** (nor `~/Library`, a hidden folder in it, or the agent-vm store). Started there, avm offers to connect without a folder; `--project <folder>` shares another one.
-- **A box avm started keeps running** afterwards; stop it with `agent-vm box stop <box>`. avm never stops or deletes a box.
+- **A box avm started keeps running** afterwards; stop it with `agent-vm box stop <box>`. avm stops and deletes only the temporary box it made in that run.
 - **Exit status:** the program's; 1 when avm could not connect (no such box, a box that did not start, a refused folder, an agent not installed in the box, no snapshot and you chose not to go on); 64 for options that do not go together, an unknown agent, or when there is no terminal (from a script, use `agent-vm exec`); 75 when no VM slot is free; 130 when you quit the list.
 - **Installing:** `avm` is a symlink to `agent-vm`, made by `Scripts/build.sh` next to it; link it into a folder on your `PATH` (`ln -s <repository>/.build/signed/release/avm ~/bin/avm`), or run `agent-vm connect`, which is the same command.
 - `NO_COLOR=1` turns off bold and reverse video; with `TERM=dumb` (or no `TERM`) the list is a numbered menu. Everything else: [Docs/avm.md](Docs/avm.md).

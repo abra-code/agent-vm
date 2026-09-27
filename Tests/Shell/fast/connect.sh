@@ -53,6 +53,10 @@ test_connect_list_shows_what_the_picker_offers() {
     assert_json boxes.0.offered true || return 1
     assert_json boxes.1.name b2 || return 1
     assert_not_contains "$OUT" '"t1"' "the list" || return 1
+    # The image, not usable for a new box: its guest daemon cannot run terminal sessions.
+    assert_json images.0.name dev || return 1
+    assert_json images.0.offered false || return 1
+    assert_contains "$(json_value images.0.reason)" "update-guest dev" "the image's reason" || return 1
     run_avm_link list --project "$SCRATCH/project"
     assert_status 0 || return 1
     assert_out_contains "Stopped" || return 1
@@ -93,7 +97,7 @@ test_connect_refuses_unknown_boxes_first() {
     /bin/rm -rf "$AGENT_VM_HOME/Boxes"
     run_avm_link --project "$SCRATCH/project"
     assert_status 1 || return 1
-    assert_err_contains "no boxes to connect to" || return 1
+    assert_err_contains "no boxes and no ready images" || return 1
 }
 
 test_connect_options_that_do_not_go_together() {
@@ -255,6 +259,65 @@ test_unknown_agent() {
     run_avm_link b1 --agent claude --shell
     assert_status 64 || return 1
     assert_err_contains "do not go together" || return 1
+}
+
+test_connect_new_checks_names_first() {
+    make_boxes || return 1
+    fake_image half provisioning
+    run_avm_link new dev --name "Bad Name" --shell
+    assert_status 64 || return 1
+    run_avm_link new dev --temp --name x --shell
+    assert_status 64 || return 1
+    run_avm_link new nope --shell --no-project
+    assert_status 1 || return 1
+    assert_err_contains "no image nope" || return 1
+    run_avm_link new half --shell --no-project
+    assert_status 1 || return 1
+    assert_err_contains "it is provisioning" || return 1
+    fake_image ready1 ready '["terminal"]'
+    run_avm_link new ready1 --name b1 --shell --no-project
+    assert_status 1 || return 1
+    assert_err_contains "box b1 already exists" || return 1
+    run_avm_link new ready1 --allow pack:nope --shell --no-project
+    assert_status 1 || return 1
+    assert_err_contains "pack:nope" || return 1
+    # Nothing was made.
+    run_avm box list --json
+    assert_not_contains "$OUT" "avm-ready1" "the boxes" || return 1
+}
+
+test_connect_new_dry_run() {
+    fake_image dev ready '["terminal"]'
+    make_project "$SCRATCH/project"
+    run_avm_link new dev --shell --dry-run --no-project --allow github.com
+    assert_status 0 || return 1
+    local _name
+    _name="$(printf '%s\n' "$OUT" | /usr/bin/sed -n 's/^  create box \(avm-dev-[0-9a-f]\{6\}\) from image dev (temporary), allowing github.com$/\1/p')"
+    [ -n "$_name" ] || { fail "no create line for a temporary box"; return 1; }
+    assert_out_contains "  start box $_name, stopping it when process " || return 1
+    assert_out_contains "  stop and delete box $_name" || return 1
+    # Kept: no owner, no stop.
+    run_avm_link new dev --name k1 --shell --dry-run --project "$SCRATCH/project" --cpus 2 --memory-gb 4
+    assert_status 0 || return 1
+    assert_out_contains "  create box k1 from image dev, 2 CPUs, 4 GB" || return 1
+    assert_out_contains "  start box k1" || return 1
+    assert_not_contains "$OUT" "stopping it when" "the steps" || return 1
+    assert_not_contains "$OUT" "stop and delete" "the steps" || return 1
+    # An agent's hosts come with the new box, and nothing is asked about them.
+    run_avm_link new dev --agent opencode --dry-run --no-project
+    assert_status 0 || return 1
+    assert_out_contains "(temporary), allowing opencode.ai, models.opencode.ai" || return 1
+    assert_not_contains "$OUT" "ask to allow" "the steps" || return 1
+    # Nothing was made.
+    run_avm box list --json
+    assert_not_contains "$OUT" '"name"' "the boxes" || return 1
+}
+
+test_connect_new_images_without_a_terminal_feature_are_refused() {
+    fake_image old
+    run_avm_link new old --shell --dry-run --no-project
+    assert_status 1 || return 1
+    assert_err_contains "update it with agent-vm image update-guest old" || return 1
 }
 
 test_connect_refuses_the_home_folder() {

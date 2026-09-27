@@ -7,12 +7,14 @@
 ```
 avm [to] [<box>] [--box <box>] [--agent <id> | --shell | -- <command> ...] [--project <folder> | --no-project]
     [--read-only] [--no-snapshot] [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
+avm new <image> [--temp | --name <box>] [--allow RULE ...] [--cpus N] [--memory-gb N]
+    [the same --agent, --shell, -- <command>, sharing and --dry-run options]
 avm list [--json] [--project <folder>]
 avm agents [--json]
 ```
 
-- **`avm`** shows the list of boxes; **`avm <box>`** takes that box.
-- **`to`** is the default subcommand, so `avm dev1` is `avm to dev1`. A box named `list`, `agents`, `to` or `help` is reached with `--box`: `avm --box list`.
+- **`avm`** shows the list of boxes; **`avm <box>`** takes that box; **`avm new <image>`** makes a new box from the image (see [New boxes](#new-boxes)).
+- **`to`** is the default subcommand, so `avm dev1` is `avm to dev1`. A box named `new`, `list`, `agents`, `to` or `help` is reached with `--box`: `avm --box list`.
 - **What runs:** an agent from the catalog (`--agent <id>`; see [Agents](#agents)), the account's login shell (`--shell`), or the command after `--`; without any of them, avm shows the list of what it can run. An agent or a command runs through the login shell as well (`$SHELL -l -c`), so `~/.zprofile` applies as it does in `agent-vm box shell`, with its words passed unchanged.
 - **`--project <folder>`** shares that folder instead of the current one; **`--no-project`** shares none, and the program starts in the box user's home folder.
 - **`--read-only`** shares the folder read only: programs in the box cannot change it, so no snapshot is taken. **`--no-snapshot`** shares it read-write without a snapshot, so there is nothing to report or undo afterwards.
@@ -23,10 +25,10 @@ avm agents [--json]
 ## What happens
 
 1. **The folder:** `--project`, or the current folder. It must be a folder you can share: not the disk's root, your home folder or a folder containing it, anything inside `~/Library` or a hidden folder of your home, or the agent-vm store. When the current folder cannot be shared, avm on a terminal asks whether to connect without a folder. A folder named with `--project` that cannot be shared is an error.
-2. **The box:** the one named, or the one you choose in the list (below). Disposable boxes that have stopped are deleted first, as `box list` does (`box gc`).
+2. **The box:** the one named, the one you choose in the list (below), or a new one from an image. Disposable boxes that have stopped are deleted first, as `box list` does (`box gc`).
 3. **What to run:** the one named, or the one you choose in the second list: the agents, then the login shell. For a running box, avm first checks which agents it has, and one it lacks cannot be chosen.
 4. **Questions, for an agent:** when none of its secrets is set, avm offers to set one; when the box does not allow its hosts, avm asks to add them. See [Agents](#agents).
-5. **Start:** a stopped box is started (`Starting box dev1`, then `Box dev1 is running (14 s)`). A box that is stopping is waited for, then started again. avm never makes itself the box's owner, so the box keeps running after avm exits.
+5. **Create and start:** a new box is created first (`Creating box avm-dev-agents-3f2a91 from dev-agents (temporary: deleted when you leave)`). A stopped box is started (`Starting box dev1`, then `Box dev1 is running (14 s)`). A box that is stopping is waited for, then started again. avm makes itself the owner of a temporary box it created only: that box stops when avm exits, however it exits. Any other box keeps running after avm exits.
 6. **Installed?** For an agent not checked in the list (named with `--agent`, or a box that was stopped), avm checks that its command is in the box. When it is not, avm says how to get it and stops (or, when you chose the agent in the list, shows the list again).
 7. **Share:** the folder is shared into the box at the same path (`Sharing ~/src/app (read-write)`). A box shares one folder at a time. When programs in the box still use another folder, the box refuses: avm says so and, when you chose the box in the list, shows the list again.
 8. **Snapshot:** a folder shared read-write is snapshotted (`Snapshot of ~/src/app taken (session 20260926-101500-7c1e)`), unless `--no-snapshot`; see [Snapshot and report](#snapshot-and-report).
@@ -34,9 +36,9 @@ avm agents [--json]
 10. **The session:** `agent-vm exec --tty` runs as avm's child on your terminal. Your terminal is in raw mode, so keys such as Control-C go to the program, and the window size follows. Exit the agent or the shell (or let the command end) to come back.
 11. **After:** the terminal's settings are put back, the cursor is shown and text attributes are reset, even if the session was killed. When it did not end normally, mouse reporting, bracketed paste and the kitty keyboard mode are turned off too.
 12. **The report**, when a snapshot was taken: what changed, then keep or undo (below).
-13. A kept box is left running: `Box dev1 keeps running; stop it with: agent-vm box stop dev1`.
+13. A kept box is left running: `Box dev1 keeps running; stop it with: agent-vm box stop dev1`. A temporary box is stopped and deleted right after the session, before the report (`Stopping box avm-dev-agents-3f2a91 (temporary)`, then `stopped and deleted (5 s)`), so nothing in it can change the folder during an undo.
 
-avm never stops or deletes a box.
+avm stops and deletes only the temporary box it created in that run.
 
 `--dry-run` prints the same steps:
 
@@ -52,6 +54,16 @@ avm would:
   run: agent-vm exec --tty --box dev1 --project /Users/me/src/app --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 -- /bin/sh -c 'exec "$SHELL" -l -c '\''exec "$0" "$@"'\'' "$@"' sh claude
   report what changed in /Users/me/src/app, then keep or undo it
 ```
+
+## New boxes
+
+- **From the list:** its last section has `Temporary box from an image...` and `Kept box from an image...` (shown but not choosable when no image is ready). Either one shows the ready images (name, macOS version, what the recipe installed), preselecting the one remembered for the folder; an image whose `agent-vm-guest` cannot run terminal sessions is shown with `needs agent-vm image update-guest <image>`. A kept box then asks its name, suggesting the folder's name (`app`, or `app-2` when taken). Escape in the image list or at the name goes back to the box list.
+- **From the command line:** `avm new <image>` (temporary, `--temp` says so) or `avm new <image> --name <box>` (kept). The image, the name and `--allow`'s rules are checked before anything is made.
+- **Temporary boxes** are named `avm-<image>-<6 hex digits>`. avm is their owner: the box stops when avm exits, however it exits (even `kill -9`), and `agent-vm box gc` (or the next `box list` or avm) deletes it. After the session avm stops and deletes it itself.
+- **Kept boxes** stay, with no owner, as `agent-vm box create` makes them.
+- **Rules:** a new box's network is an allowlist of the agent's hosts (none for a shell or a command) plus `--allow`'s; nothing is asked. `--cpus N` and `--memory-gb N` set its size (default: the image's).
+- **Two VMs at most:** macOS runs at most two macOS virtual machines at once, in any application, and starting a box needs one of them. When none is free, avm says which of your boxes run (and whether a program uses one, or it is another avm's temporary box) and how to stop one, deletes the temporary box it just made, and exits 75; when you chose in the list, it shows the list again instead, where a running box can be joined without a slot.
+- If the start fails otherwise, a temporary box that never ran is deleted; a kept one stays (`avm <box>` tries again).
 
 ## Agents
 
@@ -139,9 +151,12 @@ AgentVM - project ~/src/app  type to filter, arrows, Enter; Esc quits
     avm-dev-agents-3f2a91  dev-agents  running  project ~/src/lib, temporary, ends with process 4711
   Stopped
     try1                   dev         stopped
+  New box
+    Temporary box from an image...                 deleted when you leave
+    Kept box from an image...
 ```
 
-- **Rows:** every box that is not stopped comes first, with the folder it shares, how many programs run in it, and, for a temporary box, the process whose exit stops it. Then come the stopped boxes.
+- **Rows:** every box that is not stopped comes first, with the folder it shares, how many programs run in it, and, for a temporary box, the process whose exit stops it. Then come the stopped boxes, then the two New box rows.
 - **Shown but not choosable:** an unresponsive box, and a temporary box that is stopping for good.
 - **Not shown:** a temporary (disposable) box that has stopped. It is either garbage or another program's box about to start.
 - **Keys:**
@@ -158,15 +173,15 @@ AgentVM - project ~/src/app  type to filter, arrows, Enter; Esc quits
   | Control-C | quit (status 130) |
   | Control-D | quit, when the filter is empty |
 
-- **Preselected:** the box remembered for this folder, else the first running box that already shares it.
+- **Preselected:** the box remembered for this folder (or `Temporary box from an image...` when a temporary box was), else the first running box that already shares it.
 - **Drawing:** the list is drawn under the cursor, not on a separate screen, and erased when done, so the terminal's scrollback keeps what came before.
 - **Escape is a lone ESC with nothing after it for 50 ms.** Over a slow connection an arrow key's bytes can arrive further apart than that; they are then taken as Escape, then text for the filter.
 - **Without a terminal** (stdin or stdout not a terminal), avm prints the list and exits 64.
-- `avm list` prints the same rows, and needs no terminal.
+- `avm list` prints the same rows, then the ready images for a new box, and needs no terminal. `--json` has `boxes` and `images` (each image's `name`, `macOSVersion`, `description`, `offered` and `reason`).
 
 ## Remembered choices
 
-The box and what ran, chosen for each folder, are kept in `connect.json` in the agent-vm store (`~/Library/Application Support/agent-vm`, or `$AGENT_VM_HOME`). The file is private (mode 0600) and holds the 200 most recent folders. It records folder paths, box names, what ran (an agent's id or `shell`; a command after `--` leaves it as it was) and whether the folder was shared read only; nothing secret. It is only used to preselect rows. A missing or damaged file counts as empty and is replaced the next time. `--dry-run` and `--no-project` runs are not remembered.
+The box (or, for a temporary box, its image) and what ran, chosen for each folder, are kept in `connect.json` in the agent-vm store (`~/Library/Application Support/agent-vm`, or `$AGENT_VM_HOME`). The file is private (mode 0600) and holds the 200 most recent folders. It records folder paths, box or image names, what ran (an agent's id or `shell`; a command after `--` leaves it as it was) and whether the folder was shared read only; nothing secret. It is only used to preselect rows. A missing or damaged file counts as empty and is replaced the next time. `--dry-run` and `--no-project` runs are not remembered.
 
 `avm list --json` shows it:
 
@@ -192,7 +207,7 @@ The box and what ran, chosen for each folder, are kept in `connect.json` in the 
 | 0 | `list`, `agents`, `--dry-run` |
 | 1 | avm could not connect: no such box, a temporary box that is not running, a folder that cannot be shared, a box that did not start, an agent not installed in the box, a refused share, no snapshot and you chose not to go on; `avm agents` when `agents.json` next to agent-vm cannot be used |
 | 64 | options that do not go together, a bad `--secret` or `--env`, an unknown agent, or no terminal for a list or the session |
-| 75 | no free VM slot (macOS runs at most two macOS virtual machines at once) |
+| 75 | no free VM slot for a new or stopped box (macOS runs at most two macOS virtual machines at once) |
 | 130 | a list or a question was quit (Escape, Control-C) |
 | 128 + n | signal n ended avm, for example 143 for SIGTERM, or 129 when the terminal closed during the session |
 

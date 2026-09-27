@@ -3,12 +3,14 @@
 // The work of `agent-vm connect` (avm). Checks come in a fixed order, so the same mistake
 // always gives the same status: the options (ArgumentParser, 64), then what the command line
 // names (the box, the agent), then the folder, then what there is to offer, then the terminal.
-// Then the box is chosen (or taken), what to run is chosen (or taken; ConnectAgents), the
-// questions asked (an agent's secret, its hosts), the steps planned (ConnectPlanner), and each
-// performed with a line saying so: start the box when it is not running, check the agent is
+// Then the box is chosen (or taken): an existing one, or a new one from an image, temporary or
+// kept. What to run is chosen (or taken; ConnectAgents), the questions asked (an agent's
+// secret, its hosts), the steps planned (ConnectPlanner), and each performed with a line
+// saying so: create a new box, start the box when it is not running, check the agent is
 // installed, share the folder, snapshot it when shared read-write, run the session as a child
-// `agent-vm exec --tty` (SessionChild), then report what changed and keep or undo it
-// (ConnectReport). connect never stops or deletes a box.
+// `agent-vm exec --tty` (SessionChild), stop and delete a temporary box, then report what
+// changed and keep or undo it (ConnectReport). connect stops and deletes only the temporary box
+// it created in this run.
 
 import AgentVMKit
 import Darwin
@@ -27,8 +29,12 @@ enum ConnectError: Error, CustomStringConvertible {
     case agentNotInstalled(agent: AgentEntry, box: Box, name: String)
     /// A session was asked for and stdin or stdout is not a terminal.
     case sessionNeedsTerminal
-    /// No box at all to offer.
+    /// No box and no usable image to offer.
     case nothingToOffer
+    /// No VM slot for the start; the running boxes are named.
+    case noFreeSlot(String)
+    /// The image's guest daemon cannot run a terminal session.
+    case imageNeedsUpdate(String)
     /// A named temporary box that is not running.
     case temporaryNotRunning(box: String, name: String)
     /// The folder cannot be shared.
@@ -48,7 +54,7 @@ enum ConnectError: Error, CustomStringConvertible {
         switch self {
         case let .pickerNeedsTerminal(name):
             let words = name == "avm" ? "avm" : "agent-vm connect"
-            return "choosing needs a terminal; name a box (\(words) <box>); \(words) list shows them"
+            return "choosing needs a terminal; name a box (\(words) <box>) or an image (\(words) new <image>); \(words) list shows them"
         case .launchNeedsTerminal:
             return "choosing what to run needs a terminal; name it: --agent <id>, --shell, or a command after --"
         case let .unknownAgent(id, known, problem, name):
@@ -68,9 +74,14 @@ enum ConnectError: Error, CustomStringConvertible {
         case .sessionNeedsTerminal:
             return "the session runs on this terminal, and stdin or stdout is not one; from a script use agent-vm exec --box <box> -- <program>"
         case .nothingToOffer:
-            return "no boxes to connect to; create one with agent-vm box create <name> --image <image>"
+            return "no boxes and no ready images; build an image first (agent-vm image create, see the README)"
+        case let .noFreeSlot(message):
+            return message
+        case let .imageNeedsUpdate(image):
+            return "image \(image)'s agent-vm-guest cannot run terminal sessions; update it with agent-vm image update-guest \(image)"
         case let .temporaryNotRunning(box, name):
-            return "box \(box) is a temporary box that is not running, so it is not started again; choose another box (\(name) list shows them)"
+            let words = name == "avm" ? "avm" : "agent-vm connect"
+            return "box \(box) is a temporary box that is not running, so it is not started again; make a new one with \(words) new <image>"
         case let .unsuitableFolder(error):
             return "\(error); share another folder with --project, or none with --no-project"
         case let .shareRefused(message, box):
@@ -92,6 +103,8 @@ enum ConnectError: Error, CustomStringConvertible {
             return 64
         case .canceled:
             return 130
+        case .noFreeSlot:
+            return AgentVMError.noFreeVMSlotStatus
         case let .interrupted(signal):
             return 128 + signal
         case let .failed(error):
@@ -110,9 +123,32 @@ struct ConnectRunner {
     var root: URL
     /// "avm" or "agent-vm connect": the prefix of messages and the words in hints.
     var invokedAs: String
+    /// `connect new`: the new box; nil for `connect to`.
+    var newBox: NewBox?
+
+    /// What `connect new` names: the image, the kept box's name (nil: temporary), and the new
+    /// box's rules, CPUs and memory.
+    struct NewBox {
+        var image: String
+        var name: String?
+        var allow: [String]
+        var cpus: Int?
+        var memoryBytes: UInt64?
+    }
+
+    /// Where the session runs.
+    enum Place {
+        case existing(Box, BoxStatus)
+        /// A new box from `image`; `name` nil: temporary.
+        case new(image: GoldenImage, name: String?)
+    }
 
     var boxStore: BoxStore {
         return BoxStore(root: root)
+    }
+
+    var imageStore: ImageStore {
+        return ImageStore(root: root)
     }
 
     /// Connects and exits with the session's status, or with the status of what stopped it.
@@ -149,20 +185,22 @@ struct ConnectRunner {
         }
         BoxCommand.GC.collect(boxStore)
         let offers = try self.offers()
+        let images = try imageOffers()
         let remembered = project.flatMap { ConnectChoices(store: root).choice(for: $0) }
         if json {
             try Output.json(ConnectPickers.ListJSON(project: project, projectProblem: problem, remembered: remembered,
-                                                    boxes: offers.map(ConnectPickers.BoxEntry.init)))
+                                                    boxes: offers.map(ConnectPickers.BoxEntry.init),
+                                                    images: images.map(ConnectPickers.ImageEntry.init)))
             return
         }
-        for line in ConnectPickers.listLines(offers, project: project, projectProblem: problem, remembered: remembered) {
+        for line in ConnectPickers.listLines(offers, images: images, project: project, projectProblem: problem, remembered: remembered) {
             print(line)
         }
     }
 
     private func connect(boxName: String?) throws -> Int32 {
         let terminal = Terminal()
-        // What the command line names.
+        // What the command line names: the box, or the image and the new box's name.
         var named: Box?
         if let boxName {
             let box = try boxStore.box(named: boxName)
@@ -170,6 +208,18 @@ struct ConnectRunner {
                 throw ConnectError.temporaryNotRunning(box: box.name, name: invokedAs)
             }
             named = box
+        }
+        var namedImage: GoldenImage?
+        if let newBox {
+            let image = try imageStore.image(named: newBox.image)
+            try Self.checkUsable(image)
+            if let name = newBox.name, (try? boxStore.box(named: name)) != nil {
+                throw AgentVMError.boxExists(name)
+            }
+            // Rules and packs checked before anything is made.
+            let network = BoxNetwork(mode: .allowlist, allow: newBox.allow)
+            _ = try CompiledPolicy(network, packs: try NetworkPacks.needed(for: network, store: root))
+            namedImage = image
         }
         let catalog = AgentCatalog.load(store: root)
         var namedAgent: AgentEntry?
@@ -192,49 +242,63 @@ struct ConnectRunner {
         }
 
         boxes: while true {
-            let box: Box
-            var status: BoxStatus
+            var place: Place
             let chosenInPicker: Bool
             if let named {
-                box = named
-                status = BoxStatus.of(box)
+                place = .existing(named, BoxStatus.of(named))
+                chosenInPicker = false
+            } else if let namedImage {
+                place = .new(image: namedImage, name: newBox?.name)
                 chosenInPicker = false
             } else {
-                let offers = try self.offers()
-                if offers.isEmpty {
-                    throw ConnectError.nothingToOffer
-                }
-                guard terminal.isInteractive else {
-                    for line in ConnectPickers.listLines(offers, project: project, projectProblem: nil, remembered: remembered) {
-                        print(line)
-                    }
-                    throw ConnectError.pickerNeedsTerminal(name: invokedAs)
-                }
-                let (sections, selected) = ConnectPickers.boxSections(offers, project: project, remembered: remembered)
-                let title = "AgentVM - " + (project.map { "project " + Self.tilde($0) } ?? "no folder shared")
-                let id = try Picker(title: title, sections: sections, selected: selected).run(on: terminal)
-                guard let offer = offers.first(where: { $0.box.name == id }) else {
+                guard let chosen = try choosePlace(project: project, remembered: remembered, terminal: terminal) else {
                     continue
                 }
-                print("Box \(offer.box.name)")
-                box = offer.box
-                status = offer.status
+                place = chosen
                 chosenInPicker = true
+            }
+            // A new temporary box's name, chosen once and free now.
+            var temporaryName: String?
+            if case .new(let image, nil) = place {
+                temporaryName = try freeTemporaryName(image: image.name)
             }
 
             // What to run; an agent found missing after it was chosen in the launch picker
             // shows that picker again, with what the probe found.
             var probed: Set<String>?
             while true {
-                let (launch, launchChosenInPicker) = try chooseLaunch(box: box, running: status.state == .running, catalog: catalog,
-                                                                      namedAgent: namedAgent, remembered: remembered?.launch,
-                                                                      probed: &probed, terminal: terminal)
+                let boxName: String
+                let temporary: Bool
+                var runningBox: Box?
+                switch place {
+                case let .existing(box, status):
+                    boxName = box.name
+                    temporary = box.record.disposable == true
+                    runningBox = status.state == .running ? box : nil
+                case let .new(_, name):
+                    boxName = name ?? temporaryName ?? ""
+                    temporary = name == nil
+                }
+                let (launch, launchChosenInPicker) = try chooseLaunch(boxName: boxName, temporary: temporary, runningBox: runningBox,
+                                                                      catalog: catalog, namedAgent: namedAgent,
+                                                                      remembered: remembered?.launch, probed: &probed, terminal: terminal)
                 if !options.dryRun && !terminal.isInteractive {
                     throw ConnectError.sessionNeedsTerminal
                 }
-                let request = ConnectRequest(target: .box(box.name), launch: launch, project: project, readOnly: options.readOnly,
-                                             snapshot: !options.noSnapshot, secrets: options.secrets, env: options.env)
-                let (facts, secretEntries) = try self.facts(for: launch, box: box, running: status.state == .running, probed: probed)
+                let target: ConnectTarget
+                var existing: Box?
+                switch place {
+                case let .existing(box, _):
+                    target = .box(box.name)
+                    existing = box
+                case let .new(image, name):
+                    target = name.map { .newKept(image: image.name, name: $0) } ?? .newTemporary(image: image.name)
+                }
+                let request = ConnectRequest(target: target, launch: launch, project: project, readOnly: options.readOnly,
+                                             snapshot: !options.noSnapshot, secrets: options.secrets, env: options.env,
+                                             extraAllow: newBox?.allow ?? [], cpus: newBox?.cpus, memoryBytes: newBox?.memoryBytes)
+                var (facts, secretEntries) = try self.facts(for: launch, box: existing, running: runningBox != nil, probed: probed)
+                facts.temporaryName = temporaryName
                 let steps = ConnectPlanner.steps(for: request, facts: facts)
                 if options.dryRun {
                     print("\(invokedAs) would:")
@@ -246,17 +310,21 @@ struct ConnectRunner {
                 do {
                     // The questions first (a secret, the hosts); then the steps again, with
                     // what the answers changed.
-                    let answered = try ask(steps, launch: launch, facts: facts, secretEntries: secretEntries, box: box, terminal: terminal)
+                    let answered = try ask(steps, launch: launch, facts: facts, secretEntries: secretEntries, boxName: boxName, terminal: terminal)
                     let rest = ConnectPlanner.steps(for: request, facts: answered).filter { !$0.isQuestion }
-                    return try perform(rest, box: box, request: request, remembered: remembered, terminal: terminal)
+                    return try perform(rest, existing: existing, request: request, remembered: remembered, terminal: terminal)
                 } catch let error as ConnectError {
                     switch error {
                     case .agentNotInstalled where launchChosenInPicker:
                         say(error)
-                        status = BoxStatus.of(box)
+                        // A kept box made meanwhile is an existing box now; a temporary one
+                        // was deleted, and is made again.
+                        if let box = try? boxStore.box(named: boxName) {
+                            place = .existing(box, BoxStatus.of(box))
+                        }
                         probed = nil
                         continue
-                    case .shareRefused where chosenInPicker:
+                    case .shareRefused where chosenInPicker, .noFreeSlot where chosenInPicker:
                         // Another box may do; the list again, with the reason above it.
                         say(error)
                         continue boxes
@@ -270,6 +338,124 @@ struct ConnectRunner {
                 }
             }
         }
+    }
+
+    /// The box list: an existing box, or a new temporary or kept box (then the image list, and
+    /// for a kept box its name). Nil: choose again.
+    private func choosePlace(project: String?, remembered: ConnectChoice?, terminal: Terminal) throws -> Place? {
+        let offers = try self.offers()
+        let images = try imageOffers()
+        let usable = images.filter { $0.reason == nil }
+        if offers.isEmpty && usable.isEmpty {
+            throw ConnectError.nothingToOffer
+        }
+        guard terminal.isInteractive else {
+            for line in ConnectPickers.listLines(offers, images: images, project: project, projectProblem: nil, remembered: remembered) {
+                print(line)
+            }
+            throw ConnectError.pickerNeedsTerminal(name: invokedAs)
+        }
+        let (sections, selected) = ConnectPickers.boxSections(offers, newBoxes: !usable.isEmpty, project: project, remembered: remembered)
+        let title = "AgentVM - " + (project.map { "project " + Self.tilde($0) } ?? "no folder shared")
+        let id = try Picker(title: title, sections: sections, selected: selected).run(on: terminal)
+        switch id {
+        case ConnectPickers.newTemporaryID, ConnectPickers.newKeptID:
+            // Escape in the image list or at the name goes back to the box list.
+            do {
+                return try chooseNewBox(temporary: id == ConnectPickers.newTemporaryID, project: project, remembered: remembered,
+                                        terminal: terminal)
+            } catch TerminalUIError.canceled {
+                return nil
+            }
+        default:
+            guard let offer = offers.first(where: { $0.box.name == id }) else {
+                return nil
+            }
+            print("Box \(offer.box.name)")
+            return .existing(offer.box, offer.status)
+        }
+    }
+
+    /// The image list, and for a kept box its name. Nil: choose again.
+    private func chooseNewBox(temporary: Bool, project: String?, remembered: ConnectChoice?, terminal: Terminal) throws -> Place? {
+        let images = try imageOffers()
+        let (imageSections, imageSelected) = ConnectPickers.imageSections(images, remembered: remembered?.image)
+        let title = temporary ? "New temporary box (deleted when you leave) from an image" : "New kept box from an image"
+        let name = try Picker(title: title, sections: imageSections, selected: imageSelected).run(on: terminal)
+        guard let image = images.first(where: { $0.image.name == name })?.image else {
+            return nil
+        }
+        print("Image \(image.name)")
+        if temporary {
+            return .new(image: image, name: nil)
+        }
+        let existing = Set(((try? boxStore.list().boxes) ?? []).map(\.name))
+        let suggested = ConnectPlanner.suggestedBoxName(project: project, image: image.name, existing: existing)
+        let boxName = try LineInput(prompt: "Name of the new box: ", initial: suggested) { name in
+            guard ImageStore.isValidName(name) else {
+                return "a box name is lower-case letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit, at most 63"
+            }
+            return (try? boxStore.box(named: name)) == nil ? nil : "box \(name) already exists"
+        }.run(on: terminal)
+        return .new(image: image, name: boxName)
+    }
+
+    /// A new box can be made from `image`: it is ready, and its guest daemon runs terminal
+    /// sessions.
+    static func checkUsable(_ image: GoldenImage) throws {
+        guard image.record.state == .ready else {
+            throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "create a box from")
+        }
+        guard (image.record.guestFeatures ?? []).contains(GuestFeature.terminal) else {
+            throw ConnectError.imageNeedsUpdate(image.name)
+        }
+    }
+
+    /// A temporary box's name no box has: three tries with random hex.
+    private func freeTemporaryName(image: String) throws -> String {
+        let existing = Set(((try? boxStore.list().boxes) ?? []).map(\.name))
+        for _ in 0..<3 {
+            let name = ConnectPlanner.temporaryName(image: image, random: UInt32.random(in: 0...0xFF_FFFF))
+            if !existing.contains(name) {
+                return name
+            }
+        }
+        throw AgentVMError.boxExists(ConnectPlanner.temporaryName(image: image, random: 0))
+    }
+
+    /// The ready images, each usable or with why not.
+    private func imageOffers() throws -> [ConnectPickers.ImageOffer] {
+        let (images, problems) = try imageStore.list()
+        for problem in problems {
+            warn(problem)
+        }
+        return images.filter { $0.record.state == .ready }.map { image in
+            let terminal = (image.record.guestFeatures ?? []).contains(GuestFeature.terminal)
+            return ConnectPickers.ImageOffer(image: image, reason: terminal ? nil : "needs agent-vm image update-guest \(image.name)")
+        }
+    }
+
+    /// The message when no VM slot is free: the running boxes, and how to stop one.
+    private func noSlotMessage() -> String {
+        let limit = HostReport.macOSGuestLimit
+        var running: [String] = []
+        for box in ((try? boxStore.list().boxes) ?? []) where box.isRunning {
+            let status = BoxStatus.of(box)
+            var notes: [String] = []
+            if let execs = status.activeExecs, execs > 0 {
+                notes.append("\(execs) program\(execs == 1 ? "" : "s") running")
+            }
+            if let owner = status.ownerPid {
+                notes.append("stops when process \(owner) exits")
+            }
+            running.append(box.name + (notes.isEmpty ? "" : " (" + notes.joined(separator: ", ") + ")"))
+        }
+        var text = "no free VM slot: macOS runs at most \(limit) macOS virtual machines at once; running now: "
+        text += running.isEmpty ? "none of your boxes" : running.joined(separator: ", ")
+        if running.count < limit {
+            text += running.isEmpty ? ", so \(limit) in another application" : ", and \(limit - running.count) in another application"
+        }
+        return text + "; stop one (agent-vm box stop <name>) and try again"
     }
 
     /// The folder to share, canonical; nil with --no-project, or when the person agreed to go
@@ -307,103 +493,190 @@ struct ConnectRunner {
         return ConnectPickers.offers(boxes.map { ($0, BoxStatus.of($0)) })
     }
 
-    private func perform(_ steps: [ConnectStep], box: Box, request: ConnectRequest, remembered: ConnectChoice?, terminal: Terminal) throws -> Int32 {
+    private func perform(_ steps: [ConnectStep], existing: Box?, request: ConnectRequest, remembered: ConnectChoice?,
+                         terminal: Terminal) throws -> Int32 {
         let sessions = SessionStore(root: root)
+        var box = existing
+        // The temporary box this run created, until it is stopped and deleted; `started` once
+        // its start succeeded.
+        var temporary: Box?
+        var started = false
         var session: Session?
         var outcome: SessionChild.Outcome?
-        for step in steps {
-            switch step {
-            case let .start(name, ownerPid):
-                print("Starting box \(name)")
-                let clock = ContinuousClock()
-                let began = clock.now
-                do {
-                    _ = try BoxLauncher.start(box, executable: try AskpassEntry.executablePath(), ownerPid: ownerPid) { state in
-                        if state == ControlResponse.State.stopping.rawValue {
-                            print("  waiting for the box to stop")
+        do {
+            for step in steps {
+                switch step {
+                case let .create(name, image, allow, isTemporary, cpus, memoryBytes):
+                    print(isTemporary ? "Creating box \(name) from \(image) (temporary: deleted when you leave)" : "Creating box \(name) from \(image)")
+                    let golden = try imageStore.image(named: image)
+                    let created = try boxStore.create(name: name, from: golden, imageStore: imageStore, cpuCount: cpus, memoryBytes: memoryBytes,
+                                                      network: BoxNetwork(mode: .allowlist, allow: allow), disposable: isTemporary)
+                    box = created
+                    if isTemporary {
+                        temporary = created
+                    }
+                case let .start(name, ownerPid):
+                    guard let current = box else {
+                        continue
+                    }
+                    print("Starting box \(name)")
+                    let clock = ContinuousClock()
+                    let began = clock.now
+                    do {
+                        _ = try BoxLauncher.start(current, executable: try AskpassEntry.executablePath(), ownerPid: ownerPid) { state in
+                            if state == ControlResponse.State.stopping.rawValue {
+                                print("  waiting for the box to stop")
+                            }
                         }
+                    } catch AgentVMError.boxDisposed(let name) {
+                        throw AgentVMError.boxDisposed(name)
+                    } catch AgentVMError.noFreeVMSlot {
+                        var message = noSlotMessage()
+                        if case .newKept = request.target {
+                            // Made in this run and kept, as a kept box is.
+                            let words = invokedAs == "avm" ? "avm" : "agent-vm connect"
+                            message += "\nbox \(name) was made and is kept: \(words) \(name) starts it later"
+                        }
+                        throw ConnectError.noFreeSlot(message)
+                    } catch {
+                        throw ConnectError.failed(error)
                     }
-                } catch AgentVMError.boxDisposed(let name) {
-                    throw AgentVMError.boxDisposed(name)
-                } catch {
-                    throw ConnectError.failed(error)
-                }
-                print("Box \(name) is running (\((clock.now - began).components.seconds) s)")
-            case let .probe(_, command):
-                guard case .agent(let agent) = request.launch else {
+                    started = true
+                    print("Box \(name) is running (\((clock.now - began).components.seconds) s)")
+                case let .probe(_, command):
+                    guard case .agent(let agent) = request.launch, let current = box else {
+                        continue
+                    }
+                    // A probe that fails (an old guest, no answer) says nothing: exec reports
+                    // 127 if the command is missing.
+                    if let found = AgentProbe.run(box: current, commands: [command]), !found.contains(command) {
+                        throw ConnectError.agentNotInstalled(agent: agent, box: current, name: invokedAs)
+                    }
+                case .offerSecret, .askRules:
+                    // Asked before the steps (ask).
                     continue
-                }
-                // A probe that fails (an old guest, no answer) says nothing: exec reports 127
-                // if the command is missing.
-                if let found = AgentProbe.run(box: box, commands: [command]), !found.contains(command) {
-                    throw ConnectError.agentNotInstalled(agent: agent, box: box, name: invokedAs)
-                }
-            case .offerSecret, .askRules:
-                // Asked before the steps (ask).
-                continue
-            case let .share(_, project, readOnly):
-                print("Sharing \(Self.tilde(project)) (\(readOnly ? "read only" : "read-write"))")
-                let response: ControlResponse
-                do {
-                    response = try ControlClient.request(ControlRequest(op: .share, path: project, readOnly: readOnly),
-                                                         path: box.controlSocketPath, timeout: ControlClient.shareTimeout)
-                } catch {
-                    throw ConnectError.failed(error)
-                }
-                guard response.ok else {
-                    throw ConnectError.shareRefused(message: response.error ?? "box \(box.name) did not share \(project)", box: box.name)
-                }
-            case let .snapshot(project):
-                let (taken, signal) = try snapshot(project, store: sessions, terminal: terminal)
-                session = taken
-                if let signal {
-                    return 128 + signal
-                }
-            case let .run(arguments):
-                if let project = request.project {
-                    remember(box: box.name, launch: request.launch, project: project, readOnly: request.readOnly, previous: remembered)
-                }
-                switch request.launch {
-                case .shell:
-                    print("Login shell in box \(box.name); exit it to come back here")
-                case .command(let words):
-                    print("Running \(ConnectPlanner.shellQuoted(words)) in box \(box.name)")
-                case .agent(let agent):
-                    print("\(agent.name) in box \(box.name); exit it to come back here")
-                }
-                let ended: SessionChild.Outcome
-                do {
-                    ended = try SessionChild.run(executable: try AskpassEntry.executablePath(), arguments: arguments)
-                } catch {
-                    if let session {
-                        ConnectReport.end(session, store: sessions, warn: warn)
+                case let .share(name, project, readOnly):
+                    guard let current = box else {
+                        continue
                     }
-                    throw ConnectError.failed(error)
-                }
-                restoreTerminal(after: ended, terminal: terminal)
-                if let signal = ended.signal {
-                    // The terminal closed or the session was ended from outside: no one to talk
-                    // to. The session is ended, kept for undo.
-                    if let session {
-                        ConnectReport.end(session, store: sessions, warn: warn)
+                    print("Sharing \(Self.tilde(project)) (\(readOnly ? "read only" : "read-write"))")
+                    let response: ControlResponse
+                    do {
+                        response = try ControlClient.request(ControlRequest(op: .share, path: project, readOnly: readOnly),
+                                                             path: current.controlSocketPath, timeout: ControlClient.shareTimeout)
+                    } catch {
+                        throw ConnectError.failed(error)
                     }
-                    return 128 + signal
-                }
-                outcome = ended
-            case .report:
-                guard let session else {
-                    // The person went on without a snapshot.
-                    continue
-                }
-                if let signal = ConnectReport.run(session: session, store: sessions, box: box, terminal: terminal, warn: warn) {
-                    return 128 + signal
+                    guard response.ok else {
+                        throw ConnectError.shareRefused(message: response.error ?? "box \(name) did not share \(project)", box: name)
+                    }
+                case let .snapshot(project):
+                    let (taken, signal) = try snapshot(project, store: sessions, terminal: terminal)
+                    session = taken
+                    if let signal {
+                        // A temporary box is left to its owner lease: it stops when this exits.
+                        return 128 + signal
+                    }
+                case let .run(arguments):
+                    guard let current = box else {
+                        continue
+                    }
+                    if let project = request.project {
+                        remember(request: request, box: current.name, project: project, previous: remembered)
+                    }
+                    switch request.launch {
+                    case .shell:
+                        print("Login shell in box \(current.name); exit it to come back here")
+                    case .command(let words):
+                        print("Running \(ConnectPlanner.shellQuoted(words)) in box \(current.name)")
+                    case .agent(let agent):
+                        print("\(agent.name) in box \(current.name); exit it to come back here")
+                    }
+                    let ended: SessionChild.Outcome
+                    do {
+                        ended = try SessionChild.run(executable: try AskpassEntry.executablePath(), arguments: arguments)
+                    } catch {
+                        if let session {
+                            ConnectReport.end(session, store: sessions, warn: warn)
+                        }
+                        throw ConnectError.failed(error)
+                    }
+                    restoreTerminal(after: ended, terminal: terminal)
+                    if let signal = ended.signal {
+                        // The terminal closed or the session was ended from outside: no one to
+                        // talk to. The session is ended, kept for undo; a temporary box is left
+                        // to its owner lease.
+                        if let session {
+                            ConnectReport.end(session, store: sessions, warn: warn)
+                        }
+                        return 128 + signal
+                    }
+                    outcome = ended
+                case .stopAndDelete:
+                    guard let current = temporary else {
+                        continue
+                    }
+                    temporary = nil
+                    if let signal = stopAndDelete(current) {
+                        if let session {
+                            ConnectReport.end(session, store: sessions, warn: warn)
+                        }
+                        return 128 + signal
+                    }
+                case .report:
+                    guard let session, let current = box else {
+                        // The person went on without a snapshot.
+                        continue
+                    }
+                    if let signal = ConnectReport.run(session: session, store: sessions, box: current, terminal: terminal, warn: warn) {
+                        return 128 + signal
+                    }
                 }
             }
+        } catch {
+            // A temporary box this run created goes with the failure: stopped and deleted once
+            // it started; deleted when it never ran; left to its owner lease while a start that
+            // failed may still be going (it stops when this exits, and box gc deletes it).
+            if let current = temporary {
+                if started {
+                    _ = stopAndDelete(current)
+                } else if !current.isRunning {
+                    try? boxStore.delete(named: current.name)
+                }
+            }
+            throw error
         }
-        if box.record.disposable != true {
-            print("Box \(box.name) keeps running; stop it with: agent-vm box stop \(box.name)")
+        if let current = box, current.record.disposable != true {
+            print("Box \(current.name) keeps running; stop it with: agent-vm box stop \(current.name)")
         }
         return outcome?.status ?? 0
+    }
+
+    /// Stops the temporary box and deletes it, with signals held; a signal that arrived
+    /// meanwhile comes back. A box that stopped on its own (the guest shut down) counts as
+    /// stopped.
+    private func stopAndDelete(_ box: Box) -> Int32? {
+        print("Stopping box \(box.name) (temporary)")
+        let clock = ContinuousClock()
+        let began = clock.now
+        let (result, signal) = SignalHold.around { () -> Void in
+            do {
+                try BoxLauncher.stop(box)
+            } catch AgentVMError.boxNotRunning {
+            }
+            do {
+                try boxStore.delete(named: box.name)
+            } catch AgentVMError.boxNotFound {
+                // Stopped, it had a tombstone: another client's box gc deleted it meanwhile.
+            }
+        }
+        switch result {
+        case .success:
+            print("  stopped and deleted (\((clock.now - began).components.seconds) s)")
+        case .failure(let error):
+            warn("could not stop and delete box \(box.name): \(error); it stops when this \(invokedAs) exits, and agent-vm box gc deletes it")
+        }
+        return signal
     }
 
     /// Takes the snapshot, with signals held. When it cannot be taken, says why and asks
@@ -459,10 +732,11 @@ struct ConnectRunner {
     }
 
     /// Right before the session, so one that ends with a closed terminal is remembered too. A
-    /// command run leaves the remembered launch as it was.
-    private func remember(box: String, launch: ConnectLaunch, project: String, readOnly: Bool, previous: ConnectChoice?) {
+    /// command run leaves the remembered launch as it was. A temporary box is remembered as
+    /// its image, a kept box by its name.
+    private func remember(request: ConnectRequest, box: String, project: String, previous: ConnectChoice?) {
         let launchID: String?
-        switch launch {
+        switch request.launch {
         case .shell:
             launchID = "shell"
         case .command:
@@ -470,8 +744,14 @@ struct ConnectRunner {
         case .agent(let agent):
             launchID = agent.id
         }
+        let choice: ConnectChoice
+        if case .newTemporary(let image) = request.target {
+            choice = ConnectChoice(target: .temporary, image: image, launch: launchID, readOnly: request.readOnly)
+        } else {
+            choice = ConnectChoice(target: .box, box: box, launch: launchID, readOnly: request.readOnly)
+        }
         do {
-            try ConnectChoices(store: root).remember(ConnectChoice(target: .box, box: box, launch: launchID, readOnly: readOnly), for: project)
+            try ConnectChoices(store: root).remember(choice, for: project)
         } catch {
             warn("cannot remember this choice: \(error)")
         }

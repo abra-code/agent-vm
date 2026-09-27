@@ -19,11 +19,12 @@ extension ConnectRunner {
     // MARK: - What to run
 
     /// What the command line says to run, else the launch picker's choice (true: chosen in the
-    /// picker). The picker is skipped when the catalog has no agent. For a running box the
-    /// agents it lacks are found first (`probed`, kept between rounds) and cannot be chosen; a
-    /// dry run asks nothing of the box.
-    func chooseLaunch(box: Box, running: Bool, catalog: AgentCatalog, namedAgent: AgentEntry?, remembered: String?,
-                      probed: inout Set<String>?, terminal: Terminal) throws -> (ConnectLaunch, Bool) {
+    /// picker). The picker is skipped when the catalog has no agent. For a running box
+    /// (`runningBox`) the agents it lacks are found first (`probed`, kept between rounds) and
+    /// cannot be chosen; for a stopped or new box nothing is known yet; a dry run asks nothing
+    /// of the box.
+    func chooseLaunch(boxName: String, temporary: Bool, runningBox: Box?, catalog: AgentCatalog, namedAgent: AgentEntry?,
+                      remembered: String?, probed: inout Set<String>?, terminal: Terminal) throws -> (ConnectLaunch, Bool) {
         if let launch = options.namedLaunch {
             return (launch, false)
         }
@@ -36,7 +37,7 @@ extension ConnectRunner {
         guard terminal.isInteractive else {
             throw ConnectError.launchNeedsTerminal
         }
-        if probed == nil && running && !options.dryRun {
+        if probed == nil, let box = runningBox, !options.dryRun {
             var commands: [String] = []
             for agent in catalog.entries where !commands.contains(agent.command[0]) {
                 commands.append(agent.command[0])
@@ -46,8 +47,8 @@ extension ConnectRunner {
         let setSecrets = try? SecretStore().list().map(\.name)
         let (sections, selected) = ConnectPickers.launchSections(catalog.entries, setSecrets: setSecrets, installed: probed,
                                                                  remembered: remembered)
-        let kind = box.record.disposable == true ? "temporary" : "kept"
-        let id = try Picker(title: "Run in box \(box.name) (\(kind))", sections: sections, selected: selected).run(on: terminal)
+        let kind = temporary ? "temporary: deleted when you leave" : "kept"
+        let id = try Picker(title: "Run in box \(boxName) (\(kind))", sections: sections, selected: selected).run(on: terminal)
         guard id != AgentCatalog.shellID, let agent = catalog.entry(id: id) else {
             print("Login shell")
             return (.shell, true)
@@ -56,22 +57,25 @@ extension ConnectRunner {
         return (.agent(agent), true)
     }
 
-    /// What the planner needs to know about an agent's box and secrets, and the Keychain's
-    /// entries (whether each is readable without macOS asking).
-    func facts(for launch: ConnectLaunch, box: Box, running: Bool, probed: Set<String>?) throws -> (ConnectFacts, [SecretStore.Entry]) {
+    /// What the planner needs to know about an agent's box (nil: a new one, which gets the
+    /// agent's rules when it is made) and secrets, and the Keychain's entries (whether each is
+    /// readable without macOS asking).
+    func facts(for launch: ConnectLaunch, box: Box?, running: Bool, probed: Set<String>?) throws -> (ConnectFacts, [SecretStore.Entry]) {
         var facts = ConnectFacts(boxRunning: running, ownPid: getpid())
         guard case .agent(let agent) = launch else {
             return (facts, [])
         }
-        // The record again: an earlier round may have changed its rules.
-        let network = try boxStore.box(named: box.name).record.effectiveNetwork
-        switch network.mode {
-        case .allowlist:
-            facts.boxRules = network.allow
-        case .off where !agent.allow.isEmpty:
-            warn("box \(box.name)'s network is off, so \(agent.name) cannot reach \(agent.allow.joined(separator: ", ")); agent-vm box network \(box.name) --net allowlist --allow <rule> opens it")
-        default:
-            break
+        if let box {
+            // The record again: an earlier round may have changed its rules.
+            let network = try boxStore.box(named: box.name).record.effectiveNetwork
+            switch network.mode {
+            case .allowlist:
+                facts.boxRules = network.allow
+            case .off where !agent.allow.isEmpty:
+                warn("box \(box.name)'s network is off, so \(agent.name) cannot reach \(agent.allow.joined(separator: ", ")); agent-vm box network \(box.name) --net allowlist --allow <rule> opens it")
+            default:
+                break
+            }
         }
         var entries: [SecretStore.Entry] = []
         if !agent.secrets.isEmpty {
@@ -91,7 +95,7 @@ extension ConnectRunner {
 
     /// Asks the questions among `steps` (a secret to set, rules to allow), and whether a secret
     /// another build stored should be stored again; the facts as the answers changed them.
-    func ask(_ steps: [ConnectStep], launch: ConnectLaunch, facts: ConnectFacts, secretEntries: [SecretStore.Entry], box: Box,
+    func ask(_ steps: [ConnectStep], launch: ConnectLaunch, facts: ConnectFacts, secretEntries: [SecretStore.Entry], boxName: String,
              terminal: Terminal) throws -> ConnectFacts {
         guard case .agent(let agent) = launch else {
             return facts
@@ -106,7 +110,7 @@ extension ConnectRunner {
                     stored.insert(name)
                 }
             case let .askRules(_, rules):
-                if try askRules(rules, agent: agent, box: box, terminal: terminal) {
+                if try askRules(rules, agent: agent, boxName: boxName, terminal: terminal) {
                     answered.boxRules = nil
                 }
             default:
@@ -207,7 +211,8 @@ extension ConnectRunner {
     }
 
     /// Asks to add `rules` to the box's allowlist; true when they were added.
-    private func askRules(_ rules: [String], agent: AgentEntry, box: Box, terminal: Terminal) throws -> Bool {
+    private func askRules(_ rules: [String], agent: AgentEntry, boxName: String, terminal: Terminal) throws -> Bool {
+        let box = try boxStore.box(named: boxName)
         print("\(agent.name) needs \(rules.joined(separator: ", ")), which box \(box.name) does not allow.")
         guard try Confirm(rules.count == 1 ? "Allow it?" : "Allow them?", defaultAnswer: true).run(on: terminal) else {
             print("Not allowed: its connections will be refused (agent-vm box netlog \(box.name) --denied lists them)")

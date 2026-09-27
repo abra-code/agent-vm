@@ -31,7 +31,7 @@ final class ConnectScratch {
         let record = """
             {"formatVersion": 1, "name": "img", "state": "ready", "createdAt": "2026-09-23T10:00:00Z", "createdBy": "test",
              "macOSVersion": "27.0", "macOSBuild": "26A428", "cpuCount": 4, "memoryBytes": 8589934592, "diskBytes": 68719476736,
-             "macAddress": "da:51:72:d4:e5:72", "userName": "agent", "guestProtocol": 1}
+             "macAddress": "da:51:72:d4:e5:72", "userName": "agent", "guestProtocol": 1, "guestFeatures": ["terminal"]}
             """
         try Data(record.utf8).write(to: image.appendingPathComponent("image.json"))
         // As the store makes them: private folders, a private password.
@@ -387,5 +387,61 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
         #expect(without.waitFor("Going on without CLAUDE_CODE_OAUTH_TOKEN"))
         #expect(without.waitFor("Starting box c1"))
         #expect(without.exitStatus(seconds: 60) != nil)
+    }
+
+    @Test func aNewKeptBoxFromTheLists() throws {
+        let store = try ConnectScratch()
+        let program = try connect(store, ["--dry-run", "--shell"])
+        #expect(program.waitFor("AgentVM - project"))
+        program.type("kept")
+        #expect(program.waitFor("filter: kept"))
+        program.type("\r")
+        #expect(program.waitFor("New kept box from an image"))
+        program.type("\r")
+        // The folder's name is suggested; Enter takes it.
+        #expect(program.waitFor("Name of the new box: "))
+        program.type("\r")
+        #expect(program.exitStatus() == 0)
+        #expect(program.text.contains("create box project from image img"), "\(program.text)")
+        #expect(program.text.contains("start box project"))
+        #expect(!program.text.contains("stop and delete"))
+    }
+
+    @Test func aNewTemporaryBoxFromTheLists() throws {
+        let store = try ConnectScratch()
+        let program = try connect(store, ["--dry-run", "--shell"])
+        #expect(program.waitFor("AgentVM - project"))
+        program.type("temporary")
+        #expect(program.waitFor("filter: temporary"))
+        program.type("\r")
+        #expect(program.waitFor("New temporary box (deleted when you leave) from an image"))
+        program.type("\r")
+        #expect(program.exitStatus() == 0)
+        #expect(program.text.contains("create box avm-img-"), "\(program.text)")
+        #expect(program.text.contains("(temporary)"))
+        #expect(program.text.contains("stop and delete box avm-img-"))
+    }
+
+    @Test func escapeInTheImageListGoesBackToTheBoxes() throws {
+        let store = try ConnectScratch()
+        let program = try connect(store, ["--dry-run", "--shell"])
+        #expect(program.waitFor("AgentVM - project"))
+        program.type("kept\r")
+        #expect(program.waitFor("New kept box from an image"))
+        program.type("\u{1B}")
+        // The box list again, after the image list; Escape there quits.
+        func boxListAfterImages() -> Bool {
+            guard let images = program.text.range(of: "New kept box from an image", options: .backwards) else {
+                return false
+            }
+            return program.text[images.upperBound...].contains("AgentVM - project")
+        }
+        let deadline = Date().addingTimeInterval(10)
+        while !boxListAfterImages() && Date() < deadline {
+            _ = program.waitFor("\u{0}", seconds: 0.2)
+        }
+        #expect(boxListAfterImages(), "\(program.text)")
+        program.type("\u{1B}")
+        #expect(program.exitStatus() == 130)
     }
 }

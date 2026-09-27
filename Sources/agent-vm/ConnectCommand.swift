@@ -16,7 +16,7 @@ struct ConnectCommand: ParsableCommand {
         commandName: "connect",
         abstract: "Pick a box and run an agent, a shell or a command in it on this terminal, with this folder shared (also installed as avm).",
         discussion: ConnectHelp.discussion(name: "agent-vm connect"),
-        subcommands: [Connect.To.self, Connect.List.self, Connect.Agents.self],
+        subcommands: [Connect.To.self, Connect.New.self, Connect.List.self, Connect.Agents.self],
         defaultSubcommand: Connect.To.self)
 }
 
@@ -28,7 +28,7 @@ struct AVMCommand: AsyncParsableCommand {
         abstract: "Run an agent, a shell or a command in an agent-vm box on this terminal, with this folder shared.",
         discussion: ConnectHelp.discussion(name: "avm"),
         version: AgentVM.version,
-        subcommands: [Connect.To.self, Connect.List.self, Connect.Agents.self],
+        subcommands: [Connect.To.self, Connect.New.self, Connect.List.self, Connect.Agents.self],
         defaultSubcommand: Connect.To.self)
 }
 
@@ -40,22 +40,27 @@ enum ConnectHelp {
             (" <box> --agent claude", "Claude Code in that box"),
             (" <box> --shell", "a login shell"),
             (" <box> -- make test", "a command"),
-            (" --box <box>", "a box named list, agents, to, help"),
+            (" --box <box>", "a box named like a subcommand"),
+            (" new <image>", "a new temporary box from the image"),
+            (" new <image> --name <box>", "a new box, kept under that name"),
             (" list [--json]", "the boxes, the remembered choice"),
             (" agents [--json]", "the agents, and their secrets"),
-            (" ... --dry-run", "print the steps instead of taking them"),
+            (" ... --dry-run", "print the steps, take none"),
         ]
         let width = forms.map { name.count + $0.0.count }.max()! + 2
         let lines = forms.map { form, what in
             "  " + (name + form).padding(toLength: width, withPad: " ", startingAt: 0) + what
         }.joined(separator: "\n")
         return """
-            \(name) [<box>] chooses a box from a list (or takes the one named), starts it when \
-            it is stopped, shares the current folder into it at the same path (--project \
+            \(name) [<box>] chooses a box from a list (or takes the one named; or makes a new \
+            one from an image), starts it when it is stopped, shares the current folder into \
+            it at the same path (--project \
             another one, --no-project none), and runs what you choose there on this terminal: \
             an agent from the catalog (Claude Code, Codex, opencode; --agent <id>), a login \
             shell (--shell), or a command (after --). Exit it to come back. A box that was \
-            started keeps running afterwards; stop it with agent-vm box stop <box>.
+            started keeps running afterwards; stop it with agent-vm box stop <box>. A \
+            temporary box is stopped and deleted when you leave, or when \(name) exits \
+            however it exits; a kept one (new <image> --name <box>) stays.
 
             When none of an agent's secrets (an API key or token) is set, \(name) offers to \
             set one in the Keychain; when the box does not allow the agent's hosts, it asks \
@@ -149,7 +154,7 @@ enum Connect {
         @Argument(help: "The box (default: choose from a list).")
         var name: String?
 
-        @Option(name: .long, help: "The box, when its name is also one of avm's words (list, agents, to, help).")
+        @Option(name: .long, help: "The box, when its name is also one of avm's words (new, list, agents, to, help).")
         var box: String?
 
         @OptionGroup var options: ConnectOptions
@@ -163,6 +168,60 @@ enum Connect {
 
         func run() throws {
             ConnectRunner(options: options, root: SessionStore.defaultRoot(), invokedAs: Main.invokedName).run(boxName: name ?? box)
+        }
+    }
+
+    struct New: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Make a box from an image and connect to it: temporary (deleted when you leave, the default) or kept (--name).",
+            discussion: """
+                A temporary box is named avm-<image>-<6 hex digits>; it stops when the session \
+                ends (or when this command exits, however it exits) and is deleted. It gets the \
+                agent's hosts, plus --allow. macOS runs at most two macOS virtual machines, and \
+                a new box needs one of them: when none is free this exits 75.
+                """)
+
+        @Argument(help: "The image to make the box from.")
+        var image: String
+
+        @Flag(name: .long, help: "A temporary box, deleted when the session ends (the default).")
+        var temp = false
+
+        @Option(name: .long, help: "Keep the box, under this name.")
+        var name: String?
+
+        @Option(name: .long, parsing: .singleValue, help: "Allow a host or pack in the new box, besides what the agent needs (repeatable; as box create --allow).")
+        var allow: [String] = []
+
+        @Option(name: .long, help: "Virtual CPUs (default: the image's).")
+        var cpus: Int?
+
+        @Option(name: .customLong("memory-gb"), help: "Memory in GB (default: the image's).")
+        var memoryGB: Int?
+
+        @OptionGroup var options: ConnectOptions
+
+        func validate() throws {
+            if temp && name != nil {
+                throw ValidationError("--temp and --name do not go together: --name keeps the box")
+            }
+            if let name, !ImageStore.isValidName(name) {
+                throw ValidationError(AgentVMError.invalidBoxName(name).description)
+            }
+            if let cpus, !(1...256).contains(cpus) {
+                throw ValidationError("--cpus must be between 1 and 256")
+            }
+            if let memoryGB, !(1...4096).contains(memoryGB) {
+                throw ValidationError("--memory-gb must be between 1 and 4096")
+            }
+            try options.check()
+        }
+
+        func run() throws {
+            var runner = ConnectRunner(options: options, root: SessionStore.defaultRoot(), invokedAs: Main.invokedName)
+            runner.newBox = ConnectRunner.NewBox(image: image, name: name, allow: allow, cpus: cpus,
+                                                 memoryBytes: memoryGB.map { UInt64($0) << 30 })
+            runner.run(boxName: nil)
         }
     }
 
