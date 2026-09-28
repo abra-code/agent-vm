@@ -19,11 +19,12 @@ struct BoxCommand: ParsableCommand {
             Network modes: allowlist (default) - only listed hosts (or, with the rule public, any \
             public host name), through a proxy on this Mac that logs every attempt; off - \
             nothing; open - NAT to the internet and your local network. See `box network`, `box netlog` and `box packs`. `box shell` opens a shell in \
-            the box on this terminal, `box view` shows its screen in a window, `box execlog` \
+            the box on this terminal, `box view` shows its screen in a window, `box send` \
+            copies files from this Mac into its Downloads folder, `box execlog` \
             shows what exec and shell ran there, `box status` shows its state without \
             starting anything, and `box info` adds the space it takes on disk.
             """,
-        subcommands: [Create.self, Recreate.self, List.self, Status.self, Info.self, Start.self, GC.self, SyncClock.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self,
+        subcommands: [Create.self, Recreate.self, List.self, Status.self, Info.self, Start.self, GC.self, SyncClock.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self, Send.self,
                       Packs.self, Serve.self]
     )
 

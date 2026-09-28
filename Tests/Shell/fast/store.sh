@@ -124,13 +124,17 @@ test_packs_are_listed() {
     assert_out_contains "pack:npm  (yours, $AGENT_VM_HOME/Packs/npm.json, replaces the built-in one)" || return 1
 }
 
-test_a_stopped_box_refuses_exec_and_stop() {
+test_a_stopped_box_refuses_exec_send_and_stop() {
     fake_image dev
     run_avm box create b1 --image dev
     run_avm exec --box b1 -- /usr/bin/true
     assert_status 125 || return 1
     assert_err_contains "is not running" || return 1
     run_avm box stop b1
+    assert_status 1 || return 1
+    assert_err_contains "is not running" || return 1
+    : > "$SCRATCH/file.txt"
+    run_avm box send b1 "$SCRATCH/file.txt"
     assert_status 1 || return 1
     assert_err_contains "is not running" || return 1
     run_avm box netlog b1

@@ -33,6 +33,10 @@ public final class GuestSend: @unchecked Sendable {
     public struct Failure: Error, Equatable, CustomStringConvertible {
         public let message: String
         public var description: String { message }
+
+        public init(message: String) {
+            self.message = message
+        }
     }
 
     public let source: URL
@@ -63,11 +67,11 @@ public final class GuestSend: @unchecked Sendable {
     /// Stops the send from any thread: the Mac's ditto ends, and the connection is closed, so
     /// the guest removes what it unpacked. `run` then throws `Failure` "stopped".
     public func cancel() {
+        // Under the lock: run clears the descriptor under it before returning, so the caller
+        // cannot close it (and the number go to another connection) while this shuts it down.
         lock.lock()
+        defer { lock.unlock() }
         canceled = true
-        let process = self.process
-        let descriptor = self.descriptor
-        lock.unlock()
         abort(process: process, descriptor: descriptor)
     }
 
@@ -145,8 +149,9 @@ public final class GuestSend: @unchecked Sendable {
             abort(process: nil, descriptor: descriptor)
             throw Failure(message: "cannot run ditto on this Mac: \(error)")
         }
-        // Only the child holds the write end now, so the read below ends when ditto does.
-        try? archive.fileHandleForWriting.close()
+        // Process.run closed this side's copy of the write end, so the read below ends when ditto
+        // does. Never close it again: FileHandle does not know, and the number may already be
+        // another thread's descriptor (measured; that cut other connections in tests).
 
         // The writer: the archive to the guest's stdin; stdin end only after ditto did well.
         let writer = Writer()
@@ -271,6 +276,14 @@ public final class GuestSend: @unchecked Sendable {
             defer { lock.unlock() }
             return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         }
+    }
+
+    /// A size for progress text: "1.23 GB", and "0 bytes" rather than "Zero KB".
+    public static func byteCount(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowsNonnumericFormatting = false
+        return formatter.string(fromByteCount: bytes)
     }
 
     /// ditto's arguments to archive `path` to stdout. A folder keeps its own name in the

@@ -257,8 +257,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         }
         switch event {
         case let .progress(sent, total):
-            let format = { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
-            setSendStatus("Sending \(what): \(format(sent)) of \(format(max(total, sent)))")
+            setSendStatus("Sending \(what): \(GuestSend.byteCount(sent)) of \(GuestSend.byteCount(max(total, sent)))")
         case let .waiting(service):
             let click = isInteractive ? "" : " (the window is view only: open it with --interactive to answer)"
             setSendStatus("Sending \(what): waiting for access to \(service); answer the prompt in the box\(click)", failed: true)

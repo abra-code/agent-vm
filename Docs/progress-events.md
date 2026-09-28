@@ -2,7 +2,7 @@
 
 Long commands tell what they are doing as they go. For a person, that is lines of text on standard output. With `--json`, the same information goes to standard error as one JSON object per line, so a program can show the current step and a progress bar without reading prose. Standard output then holds only the command's result: the image record, the box's status.
 
-Commands that report progress: `image create` (from a restore image or `--from` an image), `image update-guest`, `image setup`, `box start` and `box stop`.
+Commands that report progress: `image create` (from a restore image or `--from` an image), `image update-guest`, `image setup`, `image fetch-ipsw`, `box start`, `box stop` and `box send`.
 
 ```sh
 agent-vm image create dev-node --from dev --recipe Recipes/homebrew-node/recipe.json --json 2> events.jsonl > record.json
@@ -66,6 +66,8 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 `box start`: `starting`, then `running`, following the supervisor's state (`stopping` when the box this command started is stopped before it runs; the command then fails). A box that is already running reports no steps; one that another `box start` is starting reports its state from then on. A box that is stopping reports `stopping` (message `waiting for the box to stop`) until it has stopped, then `starting` and `running` as it is started again.
 
 `box stop`: `shutdown`.
+
+`box send`: `send` for each item, with `index` and `count` (which item of how many), and `fraction` from 0 at every whole percent (the archive's bytes over the size of the files, so it may reach 1 a little early). A `log` event follows each item sent (`Sent Setup.pkg to Downloads as Setup 2.pkg`). A `notice` says when the box waits on a permission prompt on its screen. SIGINT or SIGTERM ends the send with a `notice` and exit status 128 + the signal.
 
 `image fetch-ipsw`: `resolve` (asking Apple for the latest restore image), `download` with `fraction` at every whole percent (its first event says whether the download starts or resumes), then `check` (Virtualization loads the file). An image already downloaded reports a `log` line and no `download`. SIGINT or SIGTERM ends the download with a `notice` (what was downloaded is kept for the next run) and exit status 128 + the signal.
 

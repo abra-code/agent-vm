@@ -1,7 +1,8 @@
 #!/bin/bash
 #
 # Tests/Shell/extended/exec.sh - agent-vm exec against a real box: output and input streams,
-# exit statuses, signals, environment, accounts, and what happens when the client dies.
+# exit statuses, signals, environment, accounts, and what happens when the client dies. Also
+# box send, which runs its receiving side through exec.
 
 file_setup() {
     start_file_box "shtest-exec-$$"
@@ -20,6 +21,26 @@ test_runs_a_program_in_the_guest() {
     assert_eq "$OUT" "agent" "default account" || return 1
     run_avm exec --box "$BOX" --user root -- /usr/bin/id -un
     assert_eq "$OUT" "root" "--user root" || return 1
+}
+
+test_send_copies_into_downloads() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    local _name="shtest-send-$$"
+    /bin/mkdir -p "$SCRATCH/$_name.app/Contents"
+    printf 'plist' > "$SCRATCH/$_name.app/Contents/Info.plist"
+    printf 'data' > "$SCRATCH/$_name.txt"
+    run_avm box send "$BOX" "$SCRATCH/$_name.txt" "$SCRATCH/$_name.app"
+    assert_status 0 || return 1
+    assert_out_contains "Sent $_name.txt (1 of 2) to Downloads" || return 1
+    # The same name again gets a number, and --json names it.
+    run_avm box send "$BOX" "$SCRATCH/$_name.txt" --json
+    assert_status 0 || return 1
+    assert_out_contains "\"name\" : \"$_name 2.txt\"" || return 1
+    assert_err_contains '"step":"send"' || return 1
+    run_avm exec --box "$BOX" -- /bin/cat "Downloads/$_name.txt" "Downloads/$_name 2.txt" "Downloads/$_name.app/Contents/Info.plist"
+    assert_eq "$OUT" "datadataplist" "what arrived" || return 1
+    run_avm exec --box "$BOX" -- /bin/rm -rf "Downloads/$_name.txt" "Downloads/$_name 2.txt" "Downloads/$_name.app"
+    assert_status 0 || return 1
 }
 
 test_streams_and_statuses() {
