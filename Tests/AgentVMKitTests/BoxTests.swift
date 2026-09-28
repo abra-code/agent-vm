@@ -547,3 +547,20 @@ final class ShortFolder {
         close(control)
     }
 }
+
+@Suite struct LastBootTests {
+    @Test func theLastReadyLineCounts() {
+        let log = """
+            2026-09-27T19:04:46Z Starting box b (4 CPUs, 4 GB, image dev, network allowlist)
+            2026-09-27T19:05:12Z Ready in 26 s: agent-vm-guest 0.2.18
+            2026-09-27T19:26:14Z Starting box b (4 CPUs, 4 GB, image dev, network allowlist)
+            2026-09-27T19:26:43Z Ready in 29 s: agent-vm-guest 0.2.18
+            2026-09-27T19:26:45Z Shared /Users/me/src/app
+            """
+        #expect(BoxLauncher.lastBootSeconds(inLog: log) == 29)
+        #expect(BoxLauncher.lastBootSeconds(inLog: "2026-09-27T19:04:46Z Starting box b\n") == nil)
+        #expect(BoxLauncher.lastBootSeconds(inLog: "") == nil)
+        // Not a boot line: no number, or no " s" after it.
+        #expect(BoxLauncher.lastBootSeconds(inLog: "Ready in no time\nReady in 12 minutes\n") == nil)
+    }
+}

@@ -82,6 +82,8 @@ test_connect_starts_a_stopped_kept_box() {
     on_terminal ':' "$SCRATCH/avm" "$BOX" --no-project -- /usr/bin/true
     assert_status 0 || return 1
     assert_out_contains "Starting box $BOX" || return 1
+    # The box started in file_setup, so its last boot time is known.
+    assert_out_contains "(usually about " || return 1
     assert_out_contains "Box $BOX is running" || return 1
     run_avm box status "$BOX" --json
     assert_json state running || return 1

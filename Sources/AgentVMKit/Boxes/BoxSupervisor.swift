@@ -882,16 +882,17 @@ public enum BoxLauncher {
     /// supervisor.log, and waits (up to `timeout`, or `minimumBootWait` after a long wait for a stopping box) until it reports ready. Returns its status.
     /// `ownerPid`: the process whose exit stops the box; ignored when the box already runs
     /// (its status names the owner it has). A box that is stopping is waited for and started
-    /// again, with `ownerPid`.
+    /// again, with `ownerPid`. `tick` is called at every poll (twice a second) while it waits,
+    /// for a caller that shows the time passing.
     public static func start(_ box: Box, executable: String, ownerPid: Int32? = nil, timeout: Duration = .seconds(200),
-                             progress: (String) -> Void) throws -> ControlResponse {
+                             tick: (() -> Void)? = nil, progress: (String) -> Void) throws -> ControlResponse {
         // One limit for the whole call, a wait for a stopping box included.
         let deadline = ContinuousClock.now + timeout
         if box.isRunning {
             // Another start is under way (or done): wait for it rather than fail. A box that is
             // stopping (or whose other start failed) is started here once it has stopped, so
             // one call covers every state.
-            if let response = try waitForOtherSupervisor(box, timeout: timeout, progress: progress) {
+            if let response = try waitForOtherSupervisor(box, timeout: timeout, tick: tick, progress: progress) {
                 return response
             }
             // Checked once the old supervisor is gone: it leaves a disposable box's tombstone
@@ -933,11 +934,50 @@ public enum BoxLauncher {
         }
 
         // A box that took long to stop still gets time to boot.
-        return try waitUntilReady(box, supervisor: pid, timeout: max(deadline - ContinuousClock.now, minimumBootWait), progress: progress)
+        return try waitUntilReady(box, supervisor: pid, timeout: max(deadline - ContinuousClock.now, minimumBootWait), tick: tick,
+                                  progress: progress)
+    }
+
+    /// How long the box took to become ready the last time it started, from its supervisor
+    /// log's last "Ready in N s" line; nil when there is none (a new box) or the log cannot be
+    /// read. Only the log's end is read.
+    public static func lastBootSeconds(of box: Box) -> Int? {
+        // As the supervisor writes it: never through a link, and never waiting on something
+        // that is not a plain file.
+        let descriptor = open(box.logURL.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            return nil
+        }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG else {
+            close(descriptor)
+            return nil
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        let size = (try? handle.seekToEnd()) ?? 0
+        try? handle.seek(toOffset: size > 65536 ? size - 65536 : 0)
+        guard let data = try? handle.readToEnd() else {
+            return nil
+        }
+        return lastBootSeconds(inLog: String(decoding: data, as: UTF8.self))
+    }
+
+    /// The seconds of the last "Ready in N s" line in `text`.
+    public static func lastBootSeconds(inLog text: String) -> Int? {
+        for line in text.split(separator: "\n").reversed() {
+            guard let range = line.range(of: "Ready in ") else {
+                continue
+            }
+            let digits = line[range.upperBound...].prefix { $0.isNumber }
+            if let seconds = Int(digits), line[range.upperBound...].dropFirst(digits.count).hasPrefix(" s") {
+                return seconds
+            }
+        }
+        return nil
     }
 
     /// Polls our own supervisor until the box is ready; its exit ends the wait.
-    private static func waitUntilReady(_ box: Box, supervisor pid: pid_t, timeout: Duration,
+    private static func waitUntilReady(_ box: Box, supervisor pid: pid_t, timeout: Duration, tick: (() -> Void)?,
                                        progress: (String) -> Void) throws -> ControlResponse {
         let deadline = ContinuousClock.now + timeout
         var lastState: ControlResponse.State?
@@ -953,7 +993,8 @@ public enum BoxLauncher {
                 }
                 // Another start took the box between our check and our supervisor (which then
                 // found the lock held): that start is the one to wait for.
-                if box.isRunning, let response = try waitForOtherSupervisor(box, timeout: max(deadline - ContinuousClock.now, minimumBootWait), progress: progress) {
+                if box.isRunning, let response = try waitForOtherSupervisor(box, timeout: max(deadline - ContinuousClock.now, minimumBootWait),
+                                                                          tick: tick, progress: progress) {
                     return response
                 }
                 throw AgentVMError.guestUnreachable("the supervisor exited (status \(status)); see \(box.logURL.path)")
@@ -967,6 +1008,7 @@ public enum BoxLauncher {
                     return response
                 }
             }
+            tick?()
             usleep(500_000)
         }
         throw AgentVMError.guestUnreachable("the box did not become ready within \(timeout); see \(box.logURL.path)")
@@ -975,7 +1017,8 @@ public enum BoxLauncher {
     /// Polls a supervisor another process started: the box's status once it is ready, nil once
     /// the box has stopped (it was stopping, or that start failed). Its states are reported as
     /// they change, so a wait for a stop shows as `stopping`.
-    private static func waitForOtherSupervisor(_ box: Box, timeout: Duration, progress: (String) -> Void) throws -> ControlResponse? {
+    private static func waitForOtherSupervisor(_ box: Box, timeout: Duration, tick: (() -> Void)?,
+                                               progress: (String) -> Void) throws -> ControlResponse? {
         let deadline = ContinuousClock.now + timeout
         var lastState: ControlResponse.State?
         while ContinuousClock.now < deadline {
@@ -991,6 +1034,7 @@ public enum BoxLauncher {
                     return response
                 }
             }
+            tick?()
             usleep(500_000)
         }
         throw AgentVMError.guestUnreachable("box \(box.name) did not become ready or stop within \(timeout); see \(box.logURL.path)")

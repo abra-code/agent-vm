@@ -519,13 +519,14 @@ struct ConnectRunner {
                     guard let current = box else {
                         continue
                     }
-                    print("Starting box \(name)")
-                    let clock = ContinuousClock()
-                    let began = clock.now
+                    let shown = StartProgress(box: name, estimate: BoxLauncher.lastBootSeconds(of: current), terminal: terminal)
+                    shown.begin()
                     do {
-                        _ = try BoxLauncher.start(current, executable: try AskpassEntry.executablePath(), ownerPid: ownerPid) { state in
+                        defer { shown.end() }
+                        _ = try BoxLauncher.start(current, executable: try AskpassEntry.executablePath(), ownerPid: ownerPid,
+                                                  tick: { shown.tick() }) { state in
                             if state == ControlResponse.State.stopping.rawValue {
-                                print("  waiting for the box to stop")
+                                shown.note("  waiting for the box to stop")
                             }
                         }
                     } catch AgentVMError.boxDisposed(let name) {
@@ -542,7 +543,7 @@ struct ConnectRunner {
                         throw ConnectError.failed(error)
                     }
                     started = true
-                    print("Box \(name) is running (\((clock.now - began).components.seconds) s)")
+                    print("Box \(name) is running (\(shown.elapsedSeconds) s)")
                 case let .probe(_, command):
                     guard case .agent(let agent) = request.launch, let current = box else {
                         continue

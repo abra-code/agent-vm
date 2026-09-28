@@ -444,4 +444,18 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
         program.type("\u{1B}")
         #expect(program.exitStatus() == 130)
     }
+
+    @Test func theStartShowsTheLastBootTime() throws {
+        let store = try ConnectScratch()
+        // As the supervisor logs a start that became ready.
+        let log = store.home.appendingPathComponent("Boxes/b1/supervisor.log")
+        try Data("2026-09-27T19:26:43Z Ready in 29 s: agent-vm-guest 0.3.7\n".utf8).write(to: log)
+        let program = try connect(store, ["b1", "--shell"])
+        // The debug build cannot start the box; the line is drawn before the start fails, and
+        // put back to "Starting box b1" after it.
+        #expect(program.exitStatus(seconds: 60) != nil)
+        #expect(program.text.contains("Starting box b1  0 s (usually about 29 s)"), "\(program.text.debugDescription)")
+        // The terminal sends the line end as CR LF.
+        #expect(program.text.contains("\r\u{1B}[KStarting box b1\r\n"),"\(program.text.debugDescription)")
+    }
 }
