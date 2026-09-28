@@ -61,7 +61,7 @@ public final class BoxSupervisor {
         }
         let password = try? String(contentsOf: box.passwordURL, encoding: .utf8)
         let firstShow = self.viewer == nil
-        let viewer = self.viewer ?? BoxViewer(name: box.name, machine: machine, password: password)
+        let viewer = self.viewer ?? BoxViewer(name: box.name, machine: machine, password: password, log: { [weak self] in self?.log($0) })
         self.viewer = viewer
         viewer.show(interactive: interactive)
         log("Showing the screen\(interactive ? " (interactive)" : " (view only)")")

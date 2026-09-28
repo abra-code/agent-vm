@@ -5,7 +5,9 @@
 // process. View only unless asked otherwise: a clear layer over the screen takes every key and
 // click, so looking cannot change anything in the box. Closing the window leaves the box
 // running. The supervisor has no Dock icon and no menu, so nothing in the window can quit it
-// (quitting would pull the plug on the guest).
+// (quitting would pull the plug on the guest). The Send button copies files or folders from
+// this Mac into the guest account's Downloads folder (GuestSend), in either mode: it is not
+// input to the guest's screen.
 //
 // Only a supervisor in a login session can show windows: one started over SSH or by a service
 // has no window server, and runs without AppKit.
@@ -23,18 +25,31 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     /// A line of instructions under the title bar.
     private let note: String?
     private let onClose: (@MainActor () -> Void)?
+    /// Where sends are recorded (the supervisor's or the image build's log).
+    private let log: (@MainActor (String) -> Void)?
     private var window: NSWindow?
     private var screen: BoxScreen?
     private var shield: InputShield?
     private var typeButton: NSButton?
+    private var sendButton: NSButton?
     private var noteLabel: NSTextField?
+    private var sendLabel: NSTextField?
+    /// The send under way, if any; its button then stops it.
+    private var currentSend: GuestSend?
+    /// Sends are under way (set before the first one starts, so the button never opens a
+    /// second panel meanwhile).
+    private var sending = false
+    /// Stop was pressed or the window closed: no further item starts.
+    private var stopRequested = false
 
-    init(name: String, machine: MacMachine, password: String? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil) {
+    init(name: String, machine: MacMachine, password: String? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil,
+         log: (@MainActor (String) -> Void)? = nil) {
         self.name = name
         self.machine = machine
         self.password = password
         self.note = note
         self.onClose = onClose
+        self.log = log
     }
 
     /// Whether this process runs in a login session with a window server (not over SSH, not as a
@@ -91,16 +106,15 @@ final class BoxViewer: NSObject, NSWindowDelegate {
             window.setContentSize(NSSize(width: size.width * scale, height: size.height * scale))
         }
         window.center()
-        if password != nil || note != nil {
-            window.addTitlebarAccessoryViewController(makeAccessory())
-        }
+        window.addTitlebarAccessoryViewController(makeAccessory())
         self.window = window
         self.screen = screen
         self.shield = shield
         return window
     }
 
-    /// Under the title bar: the note, and the Type Password button.
+    /// Under the title bar: the note, what a send is doing, and the Send and Type Password
+    /// buttons.
     private func makeAccessory() -> NSTitlebarAccessoryViewController {
         let bar = NSStackView()
         bar.orientation = .horizontal
@@ -112,6 +126,20 @@ final class BoxViewer: NSObject, NSWindowDelegate {
             bar.addArrangedSubview(label)
             noteLabel = label
         }
+        let sending = NSTextField(labelWithString: "")
+        sending.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        sending.lineBreakMode = .byTruncatingMiddle
+        sending.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        sending.isHidden = true
+        bar.addArrangedSubview(sending)
+        sendLabel = sending
+        let send = NSButton(title: Self.sendTitle, target: self, action: #selector(sendFiles(_:)))
+        send.controlSize = .small
+        send.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+        send.toolTip = "Copies files or folders from this Mac into the Downloads folder in the box. Nothing there is replaced: a name in use gets a number."
+        send.setContentHuggingPriority(.required, for: .horizontal)
+        bar.addArrangedSubview(send)
+        sendButton = send
         if password != nil {
             let button = NSButton(title: "Type Password", target: self, action: #selector(typePassword(_:)))
             button.controlSize = .small
@@ -135,6 +163,113 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     /// Replaces the note under the title bar (a window made with a note).
     func setNote(_ text: String) {
         noteLabel?.stringValue = text
+    }
+
+    static let sendTitle = "Send..."
+
+    /// Send: picks files or folders on this Mac and sends them; while a send runs, stops it.
+    @objc private func sendFiles(_ sender: Any?) {
+        if sending {
+            stopSending()
+            return
+        }
+        guard let window else {
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Send"
+        panel.message = "Files and folders to copy into the Downloads folder in \(name)"
+        panel.beginSheetModal(for: window) { [weak self] response in
+            let urls = panel.urls
+            MainActor.assumeIsolated {
+                if response == .OK, !urls.isEmpty {
+                    self?.send(urls)
+                }
+            }
+        }
+    }
+
+    private func stopSending() {
+        guard sending else {
+            return
+        }
+        stopRequested = true
+        currentSend?.cancel()
+    }
+
+    /// Sends each of `urls` in turn, on a fresh connection to the guest daemon; a failure or a
+    /// stop ends the rest.
+    private func send(_ urls: [URL]) {
+        sending = true
+        stopRequested = false
+        sendButton?.title = "Stop Sending"
+        Task { @MainActor in
+            defer {
+                currentSend = nil
+                sending = false
+                sendButton?.title = Self.sendTitle
+            }
+            for (index, url) in urls.enumerated() where !stopRequested {
+                let item = url.lastPathComponent
+                let what = urls.count > 1 ? "\(item) (\(index + 1) of \(urls.count))" : item
+                let sender = GuestSend(source: url)
+                currentSend = sender
+                setSendStatus("Sending \(what)")
+                do {
+                    let connection = try await machine.connect(toPort: GuestProtocol.port)
+                    defer { connection.close() }
+                    let descriptor = connection.descriptor
+                    let received = try await Task.detached {
+                        try sender.run(descriptor: descriptor) { event in
+                            Task { @MainActor in
+                                self.show(event, of: sender, what: what)
+                            }
+                        }
+                    }.value
+                    currentSend = nil
+                    let renamed = received == item ? "" : " as \(received)"
+                    setSendStatus("Sent \(what) to Downloads\(renamed)")
+                    log?("Send: \(url.path) to Downloads\(renamed)")
+                } catch {
+                    currentSend = nil
+                    if sender.isCanceled {
+                        let detail = (error as? GuestSend.Failure)?.message == "stopped" ? "" : " (\(error))"
+                        setSendStatus("Stopped sending \(what)\(detail)")
+                        log?("Send: \(url.path) stopped\(detail)")
+                    } else {
+                        setSendStatus("Could not send \(what): \(error)", failed: true)
+                        log?("Send: \(url.path) failed: \(error)")
+                    }
+                    return
+                }
+            }
+        }
+    }
+
+    /// A send's progress, if that send is still the current one (events arrive out of order
+    /// with the send's end).
+    private func show(_ event: GuestSend.Event, of sender: GuestSend, what: String) {
+        guard currentSend === sender else {
+            return
+        }
+        switch event {
+        case let .progress(sent, total):
+            let format = { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+            setSendStatus("Sending \(what): \(format(sent)) of \(format(max(total, sent)))")
+        case let .waiting(service):
+            let click = isInteractive ? "" : " (the window is view only: open it with --interactive to answer)"
+            setSendStatus("Sending \(what): waiting for access to \(service); answer the prompt in the box\(click)", failed: true)
+        }
+    }
+
+    private func setSendStatus(_ text: String, failed: Bool = false) {
+        sendLabel?.stringValue = text
+        sendLabel?.textColor = failed ? .systemRed : .secondaryLabelColor
+        sendLabel?.toolTip = text
+        sendLabel?.isHidden = text.isEmpty
     }
 
     @objc private func typePassword(_ sender: Any?) {
@@ -206,6 +341,9 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        // Nobody sees a send's progress or its Stop button any more (and closing an image setup
+        // window shuts the guest down): stop it.
+        stopSending()
         // Back to a background process; the window is kept for the next box view.
         NSApplication.shared.setActivationPolicy(.prohibited)
         onClose?()
