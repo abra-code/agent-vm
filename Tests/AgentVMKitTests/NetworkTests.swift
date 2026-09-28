@@ -380,6 +380,54 @@ final class LocalServer: @unchecked Sendable {
         #expect(entries.first?.bytesDown == 4)
     }
 
+    /// A tunnel is in the log as soon as it is connected, not only when it ends.
+    @Test func anOpenTunnelIsLoggedWhileItRuns() throws {
+        let scratch = try Scratch()
+        let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
+        let server = try LocalServer(reply: "pong")
+        let policy = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["127.0.0.1:\(server.port)"]), packs: TestPacks.builtIn)
+        let proxy = ProxyServer(policy: policy, log: log, allowPrivate: true)
+        var pair: [Int32] = [-1, -1]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+        let (client, served) = (pair[0], pair[1])
+        let done = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            proxy.handle(client: served)
+            close(served)
+            done.signal()
+        }
+        defer { close(client) }
+        _ = "CONNECT 127.0.0.1:\(server.port) HTTP/1.1\r\n\r\n".withCString { write(client, $0, strlen($0)) }
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        #expect(read(client, &buffer, buffer.count) > 0)
+
+        // The open line follows the proxy's answer closely.
+        var open: [NetworkLog.Entry] = []
+        for _ in 0..<100 where open.isEmpty {
+            open = log.entries()
+            usleep(20_000)
+        }
+        #expect(open.count == 1)
+        #expect(open.first?.open == true)
+        #expect(open.first?.bytesUp == nil)
+        #expect(open.first?.id != nil)
+        // A supervisor started after it: the connection ended unlogged.
+        let stale = try #require(log.entries(liveSince: .distantFuture).first)
+        #expect(stale.open == nil)
+        #expect(stale.endNotLogged)
+
+        // A tunnel ends when both sides have closed.
+        _ = "ping".withCString { write(client, $0, strlen($0)) }
+        shutdown(client, SHUT_WR)
+        #expect(done.wait(timeout: .now() + 10) == .success)
+        let ended = log.entries()
+        #expect(ended.count == 1)
+        #expect(ended.first?.open == nil)
+        #expect(ended.first?.id == open.first?.id)
+        #expect(ended.first?.bytesUp == 4)
+        #expect(ended.first?.endNotLogged == false)
+    }
+
     @Test func refusalsAnswerAndAreLogged() throws {
         let scratch = try Scratch()
         let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
@@ -625,6 +673,42 @@ final class LocalServer: @unchecked Sendable {
         #expect(follower.read().map(\.host) == ["b.example"])
     }
 
+    /// start() gives the end of the log, and read() then goes on after it, including a line
+    /// that was still being written when start() read.
+    @Test func startGivesTheEndThenReadGoesOn() throws {
+        let scratch = try Scratch()
+        let url = scratch.root.appendingPathComponent("network.jsonl")
+        let log = NetworkLog(url: url)
+        for index in 0..<5 {
+            log.append(entry("h\(index).example"))
+        }
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let line = String(decoding: try encoder.encode(entry("late.example")), as: UTF8.self)
+        let middle = line.index(line.startIndex, offsetBy: line.count / 2)
+        try append(String(line[..<middle]), to: url)
+        let follower = NetworkLogFollower(url: url)
+        #expect(follower.start(last: 2).map(\.host) == ["h3.example", "h4.example"])
+        #expect(follower.read().isEmpty)
+        try append(String(line[middle...]) + "\n", to: url)
+        log.append(entry("h5.example"))
+        #expect(follower.read().map(\.host) == ["late.example", "h5.example"])
+    }
+
+    /// --follow --last 0: nothing from before, and read() goes on after the last line.
+    @Test func startWithNoneStillGoesOnFromTheEnd() throws {
+        let scratch = try Scratch()
+        let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
+        for index in 0..<5 {
+            log.append(entry("h\(index).example"))
+        }
+        let follower = NetworkLogFollower(url: log.url)
+        #expect(follower.start(last: 0).isEmpty)
+        #expect(follower.read().isEmpty)
+        log.append(entry("h5.example"))
+        #expect(follower.read().map(\.host) == ["h5.example"])
+    }
+
     /// The proxy moves a full log to .1 and starts a new one: the follower reads the end of the
     /// old file, then the new one from its start.
     @Test func aRotatedLogIsFollowed() throws {
@@ -648,6 +732,87 @@ final class LocalServer: @unchecked Sendable {
         #expect(hosts.last == "h7.example")
         #expect(hosts == hosts.sorted { Int($0.dropFirst().prefix(while: \.isNumber))! < Int($1.dropFirst().prefix(while: \.isNumber))! })
         #expect(Set(hosts).count == hosts.count)
+    }
+}
+
+/// `NetworkLog.entries` reads from the end of the log and gives each connection once.
+@Suite struct NetworkLogTailTests {
+    func entry(_ host: String, _ decision: NetworkLog.Decision = .denied, id: String? = nil, open: Bool? = nil,
+               bytes: Int? = nil, time: TimeInterval = 1_790_000_000) -> NetworkLog.Entry {
+        var entry = NetworkLog.Entry(time: Date(timeIntervalSince1970: time), method: "CONNECT", host: host, port: 443, decision: decision)
+        entry.id = id
+        entry.open = open
+        entry.bytesUp = bytes
+        entry.bytesDown = bytes
+        return entry
+    }
+
+    /// Many chunks' worth: any count from the end matches reading everything.
+    @Test func theLastEntriesAcrossChunks() throws {
+        let scratch = try Scratch()
+        let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
+        let total = 3000
+        for index in 0..<total {
+            log.append(entry("host\(index).example"))
+        }
+        let size = try FileSystem.status(log.url.path).st_size
+        #expect(size > 3 * off_t(NetworkLog.Tail.chunkSize))
+        let all = log.entries().map(\.host)
+        #expect(all == (0..<total).map { "host\($0).example" })
+        for count in [0, 1, 7, 450, 451, 1999, total, total + 5] {
+            #expect(log.entries(last: count).map(\.host) == Array(all.suffix(count)), "last \(count)")
+        }
+        #expect(log.entries(last: 3) { $0.host.hasSuffix("0.example") }.map(\.host) == ["host2970.example", "host2980.example", "host2990.example"])
+    }
+
+    /// An allowed connection's two lines are one entry, placed where it opened; an end line
+    /// whose open line moved to .1 counts as older than the file; old logs have no ids.
+    @Test func openAndEndLinesArePaired() throws {
+        let scratch = try Scratch()
+        let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
+        log.append(entry("legacy.example", .allowed, bytes: 5))
+        log.append(entry("long.example", .allowed, id: "a", open: true))
+        log.append(entry("short.example", .allowed, id: "b", open: true))
+        log.append(entry("refused.example"))
+        log.append(entry("rotated.example", .allowed, id: "r", bytes: 9, time: 1_789_999_000))
+        log.append(entry("short.example", .allowed, id: "b", bytes: 3))
+        log.append(entry("still.example", .allowed, id: "c", open: true))
+        log.append(entry("long.example", .allowed, id: "a", bytes: 1000))
+
+        let all = log.entries()
+        #expect(all.map(\.host) == ["rotated.example", "legacy.example", "long.example", "short.example", "refused.example", "still.example"])
+        #expect(all.map(\.bytesUp) == [9, 5, 1000, 3, nil, nil])
+        #expect(all.map(\.open) == [nil, nil, nil, nil, nil, true])
+        #expect(log.entries(last: 2).map(\.host) == ["refused.example", "still.example"])
+        #expect(log.entries(last: 4).map(\.host) == ["long.example", "short.example", "refused.example", "still.example"])
+        #expect(log.entries(last: 6).first?.host == "rotated.example")
+        #expect(log.entries { $0.decision != .allowed }.map(\.host) == ["refused.example"])
+        // Opened before the running supervisor started: it ended unlogged.
+        let later = log.entries(last: 1, liveSince: Date(timeIntervalSince1970: 1_790_000_001))
+        #expect(later.first?.open == nil)
+        #expect(later.first?.endNotLogged == true)
+        #expect(log.entries(last: 1, liveSince: Date(timeIntervalSince1970: 1_790_000_000)).first?.open == true)
+    }
+
+    /// A last line still being written, a bad line and an overlong one are skipped; the
+    /// lines around them are kept.
+    @Test func unreadableLinesAreSkipped() throws {
+        let scratch = try Scratch()
+        let url = scratch.root.appendingPathComponent("network.jsonl")
+        let log = NetworkLog(url: url)
+        log.append(entry("a.example"))
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(("not json\n" + String(repeating: "x", count: 3 * NetworkLog.Tail.chunkSize) + "\n").utf8))
+        try handle.close()
+        log.append(entry("b.example"))
+        let append = try FileHandle(forWritingTo: url)
+        try append.seekToEnd()
+        try append.write(contentsOf: Data("{\"host\":\"half".utf8))
+        try append.close()
+        #expect(log.entries().map(\.host) == ["a.example", "b.example"])
+        #expect(log.entries(last: 1).map(\.host) == ["b.example"])
+        #expect(log.entries(last: 5).map(\.host) == ["a.example", "b.example"])
     }
 }
 

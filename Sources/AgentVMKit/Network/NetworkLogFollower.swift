@@ -28,7 +28,26 @@ public final class NetworkLogFollower {
         }
     }
 
-    /// The entries completed since the last call.
+    /// The last `count` connections as `NetworkLog.entries` gives them, each once; later calls
+    /// to `read()` return the lines logged after them. Call it first, instead of `read()`: it
+    /// reads only the end of the log, where a first `read()` reads all of it.
+    public func start(last count: Int, liveSince: Date = .distantPast, matching: (NetworkLog.Entry) -> Bool = { _ in true }) -> [NetworkLog.Entry] {
+        if descriptor < 0 {
+            open()
+        }
+        var info = stat()
+        guard descriptor >= 0, fstat(descriptor, &info) == 0 else {
+            return []
+        }
+        let (entries, complete) = NetworkLog.Tail.read(descriptor, end: info.st_size, last: count, liveSince: liveSince, matching: matching)
+        // A last line still being written is read whole by the next read().
+        lseek(descriptor, complete, SEEK_SET)
+        pending.removeAll()
+        return entries
+    }
+
+    /// The lines completed since the last call, each as logged: an allowed connection comes
+    /// twice, with `open` when it opens and with its bytes when it ends.
     public func read() -> [NetworkLog.Entry] {
         var entries: [NetworkLog.Entry] = []
         if descriptor < 0 {

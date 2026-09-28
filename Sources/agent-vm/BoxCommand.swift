@@ -679,13 +679,7 @@ struct BoxCommand: ParsableCommand {
                 try runFollowing(box)
                 return
             }
-            var entries = NetworkLog(url: box.networkLogURL).entries()
-            if denied {
-                entries = entries.filter { $0.decision != .allowed }
-            }
-            if let last, entries.count > last {
-                entries = Array(entries.suffix(last))
-            }
+            let entries = NetworkLog(url: box.networkLogURL).entries(last: last, liveSince: Self.liveSince(box), matching: matching)
             if options.json {
                 try Output.json(entries)
                 return
@@ -710,13 +704,12 @@ struct BoxCommand: ParsableCommand {
             var first = true
             while true {
                 let running = box.isRunning
-                var entries = follower.read()
-                if denied {
-                    entries = entries.filter { $0.decision != .allowed }
-                }
+                let entries: [NetworkLog.Entry]
                 if first {
-                    entries = Array(entries.suffix(last ?? 10))
+                    entries = follower.start(last: last ?? 10, liveSince: Self.liveSince(box), matching: matching)
                     first = false
+                } else {
+                    entries = follower.read().filter(matching)
                 }
                 for entry in entries {
                     if options.json {
@@ -732,6 +725,25 @@ struct BoxCommand: ParsableCommand {
             }
         }
 
+        func matching(_ entry: NetworkLog.Entry) -> Bool {
+            return !denied || entry.decision != .allowed
+        }
+
+        /// A connection logged as open before this time is not open any more: the supervisor
+        /// that served it stopped before logging its end. The time is when the running
+        /// supervisor started; all time when none runs; none when the supervisor does not answer.
+        static func liveSince(_ box: Box) -> Date {
+            let status = BoxStatus.of(box)
+            switch status.state {
+            case .stopped:
+                return .distantFuture
+            case .starting, .running, .stopping:
+                return status.startedAt ?? .distantPast
+            case .unresponsive:
+                return .distantPast
+            }
+        }
+
         static func text(_ entry: NetworkLog.Entry) -> String {
             let decision = entry.decision.rawValue.padding(toLength: 7, withPad: " ", startingAt: 0)
             var line = "\(Output.time(entry.time))  \(decision)  \(entry.method) \(entry.host):\(entry.port)"
@@ -743,6 +755,10 @@ struct BoxCommand: ParsableCommand {
             }
             if let up = entry.bytesUp, let down = entry.bytesDown {
                 line += "  \(up) up, \(down) down"
+            } else if entry.open == true {
+                line += "  open"
+            } else if entry.endNotLogged {
+                line += "  end not logged (the box stopped)"
             }
             return line
         }
