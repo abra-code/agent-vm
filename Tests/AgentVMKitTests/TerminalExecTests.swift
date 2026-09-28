@@ -79,11 +79,13 @@ import Testing
 
     @Test func inputIsEchoedAndControlDEndsIt() throws {
         let pair = try GuestPair(helperPath: try GuestPair.builtHelper())
-        let session = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["/bin/cat"], terminal: size))
-        try session.sendStdin(Array("hello\r".utf8))
-        Thread.sleep(forTimeInterval: 0.3)
-        try session.sendStdin([0x04])
-        let (report, output) = try finish(session)
+        // Typed once the program runs ("ready", then cat in its place): keys typed before it
+        // started were lost, and cat, never seeing Control-D, hung the run.
+        let session = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["/bin/sh", "-c", "echo ready; exec /bin/cat"], terminal: size))
+        let (report, output) = try finish(session) {
+            try session.sendStdin(Array("hello\r".utf8))
+            try session.sendStdin([0x04])
+        }
         #expect(report == ExitReport(status: 0))
         // Once echoed by the terminal, once written by cat.
         #expect(output.components(separatedBy: "hello").count == 3)
@@ -117,7 +119,8 @@ import Testing
         let script = "set -m; /bin/sh -c 'trap \"\" HUP; echo inner $$; exec /bin/sleep 30'; echo after"
         let session = try ExecSession(descriptor: pair.client, request: GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script], terminal: size))
         var output = ""
-        let deadline = ContinuousClock.now + .seconds(5)
+        // Generous: under a full parallel run, starting the helper and two shells took over 5 s.
+        let deadline = ContinuousClock.now + .seconds(15)
         let channel = FrameChannel(descriptor: pair.client)
         // By scalars: "\r\n" is one Character, which contains("\n") would not find.
         while !output.unicodeScalars.contains("\n"), ContinuousClock.now < deadline, let frame = try channel.receive() {
@@ -125,7 +128,7 @@ import Testing
         }
         _ = session
         let words = output.split(whereSeparator: \.isWhitespace)
-        let inner = try #require(words.firstIndex(of: "inner").flatMap { Int32(words[$0 + 1]) })
+        let inner = try #require(words.firstIndex(of: "inner").flatMap { words.index(after: $0) < words.endIndex ? Int32(words[$0 + 1]) : nil }, "output: \(output.debugDescription)")
         #expect(kill(inner, 0) == 0)
         shutdown(pair.client, SHUT_RDWR)
         var gone = false

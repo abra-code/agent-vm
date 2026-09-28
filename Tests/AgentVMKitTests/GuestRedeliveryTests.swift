@@ -30,7 +30,10 @@ final class Attempts {
 @Suite struct GuestRedeliveryTests {
     let refused = GuestProtocolError.notDelivered(code: EPIPE)
 
-    func run(_ attempts: Attempts, window: Duration = .seconds(5)) async throws -> (Int, ImageBuilder.Redelivery?) {
+    /// The window only ends a test that fails: long, since the retries run on the main actor,
+    /// which other tests in a full parallel run held for over 5 s (the window then ran out
+    /// between two 10 ms pauses). refusalsEndWithTheWindow tests the window itself.
+    func run(_ attempts: Attempts, window: Duration = .seconds(60)) async throws -> (Int, ImageBuilder.Redelivery?) {
         return try await ImageBuilder.redelivering("hello", window: window, pause: .milliseconds(10), check: {}) {
             try attempts.next()
         }

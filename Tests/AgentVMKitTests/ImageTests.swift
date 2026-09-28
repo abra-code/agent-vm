@@ -174,7 +174,22 @@ import Testing
         let port = UInt16(bigEndian: address.sin_port)
         #expect(GuestNetwork.isPortOpen("127.0.0.1", port: port))
         close(listener)
-        #expect(!GuestNetwork.isPortOpen("127.0.0.1", port: port))
+        // Closed: a port held bound but not listening. A port just closed is free, and another
+        // test's server was given it once before the check below ran.
+        let held = socket(AF_INET, SOCK_STREAM, 0)
+        defer { close(held) }
+        var closed = sockaddr_in()
+        closed.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        closed.sin_family = sa_family_t(AF_INET)
+        closed.sin_addr.s_addr = inet_addr("127.0.0.1")
+        var closedLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let reserved = withUnsafeMutablePointer(to: &closed) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { pointer -> Bool in
+                bind(held, pointer, closedLength) == 0 && getsockname(held, pointer, &closedLength) == 0
+            }
+        }
+        #expect(reserved)
+        #expect(!GuestNetwork.isPortOpen("127.0.0.1", port: UInt16(bigEndian: closed.sin_port)))
         #expect(!GuestNetwork.isPortOpen("not an address", port: 22))
     }
 }

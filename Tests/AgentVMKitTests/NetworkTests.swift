@@ -251,10 +251,23 @@ enum TestPacks {
     @Test func theHeadMustArriveWithinTheTimeoutInTotal() throws {
         var pair: [Int32] = [-1, -1]
         #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
-        defer { close(pair[0]); close(pair[1]) }
         let writer = pair[0]
+        // A write after the shutdown below fails with EPIPE instead of killing the tests.
+        _ = fcntl(writer, F_SETNOSIGPIPE, 1)
+        let writerDone = DispatchSemaphore(value: 0)
+        defer {
+            // The writer goes on for seconds after the reader gives up. It must be done before
+            // the descriptors close: its next byte would go to whatever took the number next,
+            // another test's connection or terminal (a stray "t" was read there as "unknown
+            // frame type 116", and made the guest server hang up a program).
+            shutdown(writer, SHUT_RDWR)
+            writerDone.wait()
+            close(pair[0])
+            close(pair[1])
+        }
         // One byte every 200 ms: each read succeeds, but the whole head never comes in time.
         Thread.detachNewThread {
+            defer { writerDone.signal() }
             for byte in Array("GET http://example.com/ HTTP/1.1\r\nX: ".utf8) {
                 var value = byte
                 if write(writer, &value, 1) != 1 {

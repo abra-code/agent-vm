@@ -23,6 +23,10 @@ final class GuestPair {
         }
         client = pair[0]
         let server = pair[1]
+        // A test whose program never ends (a lost key, say) fails after this instead of hanging
+        // the whole run: no program in these tests runs that long.
+        var limit = timeval(tv_sec: 60, tv_usec: 0)
+        _ = setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
         let done = serverDone
         Thread.detachNewThread {
             GuestServer(defaultUser: nil, helperPath: helperPath, setClock: setClock).serve(descriptor: server)
@@ -144,6 +148,34 @@ private final class BundleMarker {}
         #expect(result.stdout == "out\n")
         #expect(result.stderr == "err\n")
         #expect(result.report == ExitReport(status: 3))
+    }
+
+    /// A program that ends without reading its input: the guest closes its end while capture
+    /// is still writing, and capture still returns the exit report that waits for it (it threw
+    /// "write failed: Broken pipe", now and then even for a quick program with no input).
+    @Test func aProgramEndingBeforeItsInputIsSentStillReports() throws {
+        var pair: [Int32] = [-1, -1]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+        let guest = FrameChannel(descriptor: pair[1])
+        let guestDone = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            defer { guestDone.signal() }
+            _ = try? guest.receive()
+            try? guest.send(.response, json: GuestResponse(ok: true, v: AgentVM.guestProtocolVersion, pid: 42))
+            try? guest.send(Frame(.stdout, Array("out".utf8)))
+            try? guest.send(.exit, json: ExitReport(status: 0))
+            // Gone without reading the input, as the guest server is once its program ended.
+            guest.close()
+        }
+        defer {
+            guestDone.wait()
+            close(pair[0])
+        }
+        // Far more than the socket buffers hold: the write is still under way when the guest
+        // closes, so it fails every time.
+        let result = try GuestClient.capture(pair[0], GuestRequest(op: .exec, argv: ["/bin/true"]), input: Data(count: 8 << 20))
+        #expect(result.report == ExitReport(status: 0))
+        #expect(result.stdout == "out")
     }
 
     @Test func programsAreFoundOnThePath() throws {

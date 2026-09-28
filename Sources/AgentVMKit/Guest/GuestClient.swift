@@ -45,10 +45,17 @@ public enum GuestClient {
     /// `input` as its stdin.
     public static func capture(_ descriptor: Int32, _ request: GuestRequest, input: Data? = nil) throws -> (report: ExitReport, stdout: String, stderr: String) {
         let session = try ExecSession(descriptor: descriptor, request: request)
-        if let input {
-            try session.sendStdin(Array(input))
+        // Written before anything is read, so a program that ends first (a quick one, or one
+        // that does not read its input) has the guest close its end, and these writes fail
+        // though its exit report waits to be read. run() reads it, and fails on its own when
+        // the connection is really gone.
+        do {
+            if let input {
+                try session.sendStdin(Array(input))
+            }
+            try session.sendStdinEnd()
+        } catch let GuestProtocolError.io(operation, code) where operation == "write" && [EPIPE, ECONNRESET, ENOTCONN].contains(code) {
         }
-        try session.sendStdinEnd()
         var stdout = Data()
         var stderr = Data()
         let report = try session.run(stdout: { stdout.append(contentsOf: $0) }, stderr: { stderr.append(contentsOf: $0) })
