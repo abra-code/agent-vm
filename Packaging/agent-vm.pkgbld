@@ -1,0 +1,118 @@
+{
+  "FORMAT_VERSION": 1,
+  "PROJECT": {
+    "NAME": "agent-vm",
+    "VERSION": "0.3.13",
+    "MIN_OS_VERSION": "27.0",
+    "ARTIFACTS_DIR": "../.build/signed/release",
+    "OUTPUT_DIR": "../.build/package",
+    "PACKAGE_NAME": "${NAME}_${VERSION}.pkg"
+  },
+  "COMPONENTS": [
+    {
+      "IDENTIFIER": "com.abracode.pkg.agent-vm",
+      "VERSION": "",
+      "TITLE": "agent-vm and avm",
+      "DESCRIPTION": "Installs this version in ~/.local/share/agent-vm/versions and points ~/.local/bin/agent-vm and ~/.local/bin/avm at it. Earlier versions stay where they are, so boxes they started keep running.",
+      "SELECTED": true,
+      "INSTALL_LOCATION": "~/.local/share/agent-vm/versions/${VERSION}",
+      "OVERWRITE_PERMISSIONS": false,
+      "RELOCATABLE": false,
+      "AUTH": "User",
+      "PREINSTALL": "",
+      "POSTINSTALL": "postinstall",
+      "ADD_TO_PATH": "",
+      "PAYLOAD": [
+        {
+          "SOURCE": "${ARTIFACTS_DIR}/agent-vm",
+          "DESTINATION": "~/.local/share/agent-vm/versions/${VERSION}/agent-vm",
+          "OWNER": "root",
+          "GROUP": "wheel",
+          "MODE": "0755",
+          "VERIFY": {
+            "ARCHITECTURES": ["arm64"],
+            "SIGNED_BY": "Developer ID Application: Tomasz Kukielka (T9NM2ZLDTY)",
+            "HARDENED_RUNTIME": true,
+            "SECURE_TIMESTAMP": true,
+            "VERSION_FLAG": "--version"
+          }
+        },
+        {
+          "SOURCE": "${ARTIFACTS_DIR}/agent-vm-guest",
+          "DESTINATION": "~/.local/share/agent-vm/versions/${VERSION}/agent-vm-guest",
+          "OWNER": "root",
+          "GROUP": "wheel",
+          "MODE": "0755",
+          "VERIFY": {
+            "ARCHITECTURES": ["arm64"],
+            "SIGNED_BY": "Developer ID Application: Tomasz Kukielka (T9NM2ZLDTY)",
+            "HARDENED_RUNTIME": true,
+            "SECURE_TIMESTAMP": true,
+            "VERSION_FLAG": "--version"
+          }
+        },
+        {
+          "SOURCE": "${ARTIFACTS_DIR}/packs.json",
+          "DESTINATION": "~/.local/share/agent-vm/versions/${VERSION}/packs.json",
+          "OWNER": "root",
+          "GROUP": "wheel",
+          "MODE": "0644"
+        },
+        {
+          "SOURCE": "${ARTIFACTS_DIR}/agents.json",
+          "DESTINATION": "~/.local/share/agent-vm/versions/${VERSION}/agents.json",
+          "OWNER": "root",
+          "GROUP": "wheel",
+          "MODE": "0644"
+        },
+        {
+          "SOURCE": "../Recipes",
+          "DESTINATION": "~/.local/share/agent-vm/versions/${VERSION}/Recipes",
+          "OWNER": "root",
+          "GROUP": "wheel",
+          "MODE": "0755"
+        },
+        {
+          "SOURCE": "../LICENSE",
+          "DESTINATION": "~/.local/share/agent-vm/versions/${VERSION}/LICENSE",
+          "OWNER": "root",
+          "GROUP": "wheel",
+          "MODE": "0644"
+        }
+      ]
+    },
+    {
+      "IDENTIFIER": "com.abracode.pkg.agent-vm.path",
+      "VERSION": "",
+      "TITLE": "Add ~/.local/bin to your shell's PATH",
+      "DESCRIPTION": "Adds a few marked lines to your shell's login file (~/.zprofile for zsh) so new Terminal windows find agent-vm and avm by name. Nothing is changed when your shell's files already mention ~/.local/bin.",
+      "SELECTED": true,
+      "INSTALL_LOCATION": "~",
+      "OVERWRITE_PERMISSIONS": false,
+      "RELOCATABLE": false,
+      "AUTH": "User",
+      "PREINSTALL": "",
+      "POSTINSTALL": "",
+      "ADD_TO_PATH": "~/.local/bin",
+      "PAYLOAD": []
+    }
+  ],
+  "DISTRIBUTION": {
+    "TITLE": "agent-vm",
+    "DOMAIN": "user",
+    "HOST_ARCHITECTURES": ["arm64"],
+    "CUSTOMIZE": "allow",
+    "REQUIRE_SCRIPTS": false,
+    "RESOURCES": {
+      "README": "",
+      "LICENSE": "",
+      "WELCOME": "",
+      "CONCLUSION": "conclusion.rtf",
+      "BACKGROUND": ""
+    }
+  },
+  "SIGNING": {
+    "ENABLED": true,
+    "INSTALLER_IDENTITY": "Developer ID Installer: Tomasz Kukielka (T9NM2ZLDTY)"
+  }
+}

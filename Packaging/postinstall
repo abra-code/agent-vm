@@ -1,0 +1,110 @@
+#!/bin/sh
+# postinstall - point ~/.local/bin/agent-vm and ~/.local/bin/avm at the version just installed
+#
+# Run by Installer after the agent-vm component is in place. The package installs for the
+# user, into their home folder, and this component's install location is
+# ~/.local/share/agent-vm/versions/<version>, so $2 - where Installer put the component - is
+# that version folder. The links are relative, so the home folder can move (absolute when
+# ~/.local or ~/.local/bin is itself a symbolic link, where a relative one would dangle):
+#
+#   ~/.local/bin/agent-vm -> ../share/agent-vm/versions/<version>/agent-vm
+#   ~/.local/bin/avm      -> ../share/agent-vm/versions/<version>/agent-vm
+#
+# agent-vm follows the link to find agent-vm-guest, packs.json and agents.json beside its
+# real executable, and knows it is avm by the name it was started as.
+#
+# A new version installs into a folder of its own and the links move, so a box supervisor
+# started by the previous version keeps running from files nothing touches.
+#
+# Each link is replaced by renaming a new link over it, so there is no moment without one.
+# Something at ~/.local/bin/agent-vm that is not a symbolic link was put there by hand and is
+# left alone, with a line in the log saying so.
+#
+# It never fails the install: the version folder is in place either way, and a failed link
+# is named in /var/log/install.log with the command that makes it.
+
+say() {
+    printf '%s\n' "agent-vm postinstall: $*"
+}
+
+version_dir="${2%/}"
+version="${version_dir##*/}"
+versions_dir="${version_dir%/*}"
+suffix="/.local/share/agent-vm/versions"
+case "$versions_dir" in
+    *"$suffix") ;;
+    *)
+        say "installed at $version_dir, not under ~$suffix - the links in ~/.local/bin were not made"
+        exit 0
+        ;;
+esac
+home="${versions_dir%"$suffix"}"
+if [ -z "$home" ] || [ ! -d "$home" ] || [ -z "$version" ]; then
+    say "could not tell the home folder and version from $version_dir - the links in ~/.local/bin were not made"
+    exit 0
+fi
+if [ ! -x "$version_dir/agent-vm" ]; then
+    say "$version_dir/agent-vm is not there - the links in ~/.local/bin were not made"
+    exit 0
+fi
+
+# Owner of the home folder, so a folder this makes belongs to them even if the script turns
+# out to run as root. Installer runs a per-user package's scripts as the user.
+owner="$(/usr/bin/stat -f %Su "$home" 2>/dev/null)"
+
+bin_dir="$home/.local/bin"
+# Set when ~/.local or ~/.local/bin is a symbolic link; see the target below.
+linked_folder=0
+for folder in "$home/.local" "$bin_dir"; do
+    if [ -L "$folder" ]; then
+        # A dotfiles setup may link ~/.local or ~/.local/bin elsewhere; following it is what
+        # the user asked for, so it is used as it is.
+        linked_folder=1
+        continue
+    fi
+    if [ ! -d "$folder" ]; then
+        /bin/mkdir "$folder" 2>/dev/null
+        mkdir_status=$?
+        if [ "$mkdir_status" -ne 0 ]; then
+            say "could not create $folder - the links were not made"
+            exit 0
+        fi
+        [ -z "$owner" ] || /usr/sbin/chown "$owner" "$folder" 2>/dev/null
+    fi
+done
+
+target="../share/agent-vm/versions/$version/agent-vm"
+# Relative only when both folders are real: through a linked ~/.local/bin, ".." is the
+# parent of wherever that link points, and the relative link would dangle.
+[ "$linked_folder" = "0" ] || target="$version_dir/agent-vm"
+for name in agent-vm avm; do
+    link="$bin_dir/$name"
+    if [ -e "$link" ] && [ ! -L "$link" ]; then
+        say "$link is not a symbolic link, so it was left alone - remove it and run: /bin/ln -s $target $link"
+        continue
+    fi
+    # mv onto a link to a folder would move the new link into that folder instead.
+    if [ -L "$link" ] && [ -d "$link" ]; then
+        say "$link links to a folder, so it was left alone - remove it and run: /bin/ln -s $target $link"
+        continue
+    fi
+    fresh="$bin_dir/.$name.installing.$$"
+    /bin/rm -f "$fresh"
+    /bin/ln -s "$target" "$fresh" 2>/dev/null
+    ln_status=$?
+    if [ "$ln_status" -ne 0 ]; then
+        say "could not make $link - run: /bin/ln -sfh $target $link"
+        continue
+    fi
+    # rename(2) replaces the old link in one step. The old link points at a file, never a
+    # folder, so mv renames onto it rather than into it.
+    /bin/mv -f "$fresh" "$link" 2>/dev/null
+    mv_status=$?
+    if [ "$mv_status" -ne 0 ]; then
+        /bin/rm -f "$fresh"
+        say "could not put $link in place - run: /bin/ln -sfh $target $link"
+        continue
+    fi
+    say "$link -> $target"
+done
+exit 0
