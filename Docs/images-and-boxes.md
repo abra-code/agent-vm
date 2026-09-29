@@ -93,7 +93,7 @@ agent-vm image update-guest dev dev-node dev-agents        # one after another, 
 agent-vm image setup dev                                   # again for each image: the update drops Full Disk Access
 ```
 
-Then make your boxes again (next procedure): existing boxes keep their old daemon. The update drops Full Disk Access because macOS ties the grant to the daemon's code signature, and the default signature (ad hoc) changes with every build; signing with a Developer ID (`Scripts/build.sh --identity ...`) should keep it.
+Then make your boxes again (next procedure, or `box recreate`): existing boxes keep their old daemon. `box list` and `status` say "needs recreate" for each box whose image's daemon is no longer the one the box was made with (with `--json`, a `needs` entry of kind `recreate`); boxes made before agent-vm 0.4.3 did not record their daemon and say nothing. The update drops Full Disk Access because macOS ties the grant to the daemon's code signature, and the default signature (ad hoc) changes with every build; signing with a Developer ID (`Scripts/build.sh --identity ...`) should keep it.
 
 ### Refreshing a box
 

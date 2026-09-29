@@ -162,6 +162,43 @@ final class BoxScratch {
         #expect(recreated.record.disposable == true)
     }
 
+    /// A box records the image's guest daemon; once the image's changes (image update-guest),
+    /// the box needs recreating, and recreating it takes the new one.
+    @Test func aBoxNeedsRecreatingAfterItsImagesGuestChanged() throws {
+        let fixture = try BoxScratch()
+        let image = try fixture.images.update(fixture.image) {
+            $0.guestVersion = "0.4.2"
+            $0.guestDigest = "aaaa"
+        }
+        let box = try fixture.boxes.create(name: "b1", from: image, imageStore: fixture.images)
+        #expect(box.record.guestVersion == "0.4.2")
+        #expect(box.record.guestDigest == "aaaa")
+        #expect(box.record.needs(image: image.record).isEmpty)
+
+        let updated = try fixture.images.update(image) {
+            $0.guestVersion = "0.4.3"
+            $0.guestDigest = "bbbb"
+        }
+        #expect(box.record.needs(image: updated.record) == [BoxNeed(kind: .recreate, guestVersion: "0.4.3")])
+        // Nothing to compare: the image is gone, or not ready, or either digest unknown.
+        #expect(box.record.needs(image: nil).isEmpty)
+        var building = updated.record
+        building.state = .provisioning
+        #expect(box.record.needs(image: building).isEmpty)
+        var unknown = box.record
+        unknown.guestDigest = nil
+        #expect(unknown.needs(image: updated.record).isEmpty)
+
+        let recreated = try fixture.boxes.recreate(name: "b1", from: updated, imageStore: fixture.images)
+        #expect(recreated.record.guestDigest == "bbbb")
+        #expect(recreated.record.needs(image: updated.record).isEmpty)
+
+        // Given the image as it was before an update that ended since, create records the
+        // image as it is under its lock, which is what it clones.
+        let stale = try fixture.boxes.create(name: "b2", from: image, imageStore: fixture.images)
+        #expect(stale.record.guestDigest == "bbbb")
+    }
+
     /// The command given when the box was deleted but could not be created again.
     @Test func theCreateCommandReadsBackInAShell() {
         let record = BoxRecord(formatVersion: 1, name: "b1", image: "dev", macOSVersion: "27.0", macOSBuild: "26A428", guestProtocol: 1,

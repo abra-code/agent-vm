@@ -129,10 +129,14 @@ struct BoxCommand: ParsableCommand {
             var path: String
             var diskUsage: DiskUsage?
             var status: BoxStatus
+            /// What it lacks next to its image (BoxNeed): `recreate` after `image update-guest`.
+            var needs: [BoxNeed]
 
-            init(_ box: Box, sizes: Bool = false) {
+            /// `image`: the box's image's record now, nil when it is gone.
+            init(_ box: Box, image: ImageRecord?, sizes: Bool = false) {
                 self.status = BoxStatus.of(box)
                 self.box = box.record
+                self.needs = box.record.needs(image: image)
                 // Held by a supervisor (or, briefly, by another command changing the box).
                 self.running = status.state != .stopped
                 self.path = box.directory.path
@@ -144,6 +148,7 @@ struct BoxCommand: ParsableCommand {
                 case running
                 case path
                 case diskUsage
+                case needs
             }
 
             func encode(to encoder: Encoder) throws {
@@ -153,6 +158,19 @@ struct BoxCommand: ParsableCommand {
                 try container.encode(running, forKey: .running)
                 try container.encode(path, forKey: .path)
                 try container.encodeIfPresent(diskUsage, forKey: .diskUsage)
+                try container.encode(needs, forKey: .needs)
+            }
+
+            /// Every image's record by name, for the entries' needs; images that cannot be
+            /// read are left out (their boxes then need nothing).
+            static func images(_ store: ImageStore) -> [String: ImageRecord] {
+                let images = (try? store.list().images) ?? []
+                return Dictionary(images.map { ($0.name, $0.record) }, uniquingKeysWith: { first, _ in first })
+            }
+
+            /// The box's image's record, for one entry.
+            static func image(of box: Box, in store: ImageStore) -> ImageRecord? {
+                return try? store.image(named: box.record.image).record
             }
 
             /// The entry for a person: a line with the essentials, then indented details.
@@ -194,6 +212,9 @@ struct BoxCommand: ParsableCommand {
                         lines.append("    \(execs) program\(execs == 1 ? "" : "s") running through exec or box shell")
                     }
                 }
+                for need in needs where need.kind == .recreate {
+                    lines.append("    needs recreate: image \(box.image) has a different agent-vm-guest\(need.guestVersion.map { " (\($0))" } ?? "") from the one this box was made with; `agent-vm box recreate \(box.name)` makes it again (what it keeps is lost)")
+                }
                 guard let diskUsage else {
                     return lines + ["    \(path)"]
                 }
@@ -207,7 +228,8 @@ struct BoxCommand: ParsableCommand {
             for problem in problems {
                 FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
             }
-            let entries = boxes.map { Entry($0) }
+            let images = Entry.images(options.imageStore)
+            let entries = boxes.map { Entry($0, image: images[$0.record.image]) }
             if options.json {
                 try Output.json(entries)
                 return
@@ -232,8 +254,10 @@ struct BoxCommand: ParsableCommand {
                 its supervisor: its state (starting, ready, stopping), the supervisor's process \
                 id, agent-vm version and path, when it started, the shared project, how many \
                 programs exec and box shell run in it now, and its guest daemon. "unresponsive" \
-                means something holds the box but its supervisor does not answer. With --json, \
-                the same entry as `box list --json`. It measures nothing; `box info` adds the \
+                means something holds the box but its supervisor does not answer. It also says \
+                when the box needs recreating: its image's agent-vm-guest is no longer the one \
+                it was made with. With --json, the same entry as `box list --json`, with \
+                `needs`. It measures nothing; `box info` adds the \
                 box's space on disk.
                 """)
 
@@ -243,7 +267,8 @@ struct BoxCommand: ParsableCommand {
         @OptionGroup var options: StoreOptions
 
         func run() throws {
-            let entry = List.Entry(try options.boxStore.box(named: name))
+            let box = try options.boxStore.box(named: name)
+            let entry = List.Entry(box, image: List.Entry.image(of: box, in: options.imageStore))
             if options.json {
                 try Output.json(entry)
                 return
@@ -271,7 +296,8 @@ struct BoxCommand: ParsableCommand {
         @OptionGroup var options: StoreOptions
 
         func run() throws {
-            let entry = List.Entry(try options.boxStore.box(named: name), sizes: true)
+            let box = try options.boxStore.box(named: name)
+            let entry = List.Entry(box, image: List.Entry.image(of: box, in: options.imageStore), sizes: true)
             if options.json {
                 try Output.json(entry)
                 return

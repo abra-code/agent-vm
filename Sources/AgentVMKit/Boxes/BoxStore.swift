@@ -44,9 +44,42 @@ public struct BoxRecord: Codable, Equatable, Sendable {
     /// A box for one session: once it stops, its supervisor leaves a tombstone and `box gc`
     /// deletes it (`box create --disposable`).
     public var disposable: Bool?
+    /// The image's agent-vm-guest when the box was made (a box's daemon changes only when it
+    /// is made again): its version and the SHA-256 of its executable. Absent in boxes made
+    /// before 0.4.3, and when the image recorded no digest.
+    public var guestVersion: String?
+    public var guestDigest: String?
 
     public var effectiveNetwork: BoxNetwork {
         return network ?? .legacy
+    }
+
+    /// What the box lacks next to `image`, its image's record now (nil when it is gone): a
+    /// `recreate` when the image's agent-vm-guest is not the one the box was made with. Only
+    /// when both digests are known: a box made before they were recorded says nothing.
+    public func needs(image: ImageRecord?) -> [BoxNeed] {
+        guard let image, image.state == .ready, let mine = guestDigest, let theirs = image.guestDigest, mine != theirs else {
+            return []
+        }
+        return [BoxNeed(kind: .recreate, guestVersion: image.guestVersion)]
+    }
+}
+
+/// Something a box lacks, and the command that supplies it.
+public struct BoxNeed: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable {
+        /// Its image's agent-vm-guest changed since the box was made (`image update-guest`):
+        /// `box recreate` makes it again from the image, losing what the box keeps.
+        case recreate
+    }
+
+    public var kind: Kind
+    /// recreate: the image's agent-vm-guest version now.
+    public var guestVersion: String?
+
+    public init(kind: Kind, guestVersion: String? = nil) {
+        self.kind = kind
+        self.guestVersion = guestVersion
     }
 }
 
@@ -132,6 +165,12 @@ public struct BoxStore: Sendable {
             throw AgentVMError.imageBusy(image.name)
         }
         defer { imageLock.release() }
+        // Read again under the lock: an update or rebuild that ended after the caller read the
+        // record changed the disk and the record together, and the box records what it clones.
+        let current = try imageStore.image(named: image.name)
+        guard current.record.state == .ready else {
+            throw AgentVMError.wrongImageState(name: current.name, state: current.record.state.rawValue, operation: "create a box from")
+        }
 
         try FileSystem.makeDirectories(boxesDirectory.path)
         let directory = boxesDirectory.appendingPathComponent(name, isDirectory: true)
@@ -143,19 +182,20 @@ public struct BoxStore: Sendable {
             throw AgentVMError.system(operation: "create \(directory.path)", code: code)
         }
         let record = BoxRecord(
-            formatVersion: BoxRecord.currentFormatVersion, name: name, image: image.name,
-            macOSVersion: image.record.macOSVersion, macOSBuild: image.record.macOSBuild,
+            formatVersion: BoxRecord.currentFormatVersion, name: name, image: current.name,
+            macOSVersion: current.record.macOSVersion, macOSBuild: current.record.macOSBuild,
             // Whole seconds: the record is stored with ISO 8601 dates, which drop fractions.
-            guestProtocol: image.record.guestProtocol, createdAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)),
-            cpuCount: cpuCount ?? image.record.cpuCount, memoryBytes: memoryBytes ?? image.record.memoryBytes,
-            macAddress: VZMACAddress.randomLocallyAdministered().string, userName: image.record.userName,
-            network: network, disposable: disposable ? true : nil)
+            guestProtocol: current.record.guestProtocol, createdAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)),
+            cpuCount: cpuCount ?? current.record.cpuCount, memoryBytes: memoryBytes ?? current.record.memoryBytes,
+            macAddress: VZMACAddress.randomLocallyAdministered().string, userName: current.record.userName,
+            network: network, disposable: disposable ? true : nil,
+            guestVersion: current.record.guestVersion, guestDigest: current.record.guestDigest)
         let box = Box(record: record, directory: directory)
         do {
-            try Self.cloneFile(image.diskURL, to: box.diskURL)
-            try Self.cloneFile(image.auxiliaryStorageURL, to: box.auxiliaryStorageURL)
-            try Self.cloneFile(image.hardwareModelURL, to: box.hardwareModelURL)
-            try Self.cloneFile(image.passwordURL, to: box.passwordURL)
+            try Self.cloneFile(current.diskURL, to: box.diskURL)
+            try Self.cloneFile(current.auxiliaryStorageURL, to: box.auxiliaryStorageURL)
+            try Self.cloneFile(current.hardwareModelURL, to: box.hardwareModelURL)
+            try Self.cloneFile(current.passwordURL, to: box.passwordURL)
             try VZMacMachineIdentifier().dataRepresentation.write(to: box.machineIdentifierURL)
             try save(box)
         } catch {

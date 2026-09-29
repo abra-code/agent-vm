@@ -422,3 +422,53 @@ test_recreate_keeps_the_settings() {
     assert_status 1 || return 1
     assert_err_contains "no box nosuch" || return 1
 }
+
+# edit_json <file> <jq filter>: rewrites a JSON file through jq.
+edit_json() {
+    /usr/bin/jq "$2" "$1" > "$1.new"
+    local _status=$?
+    [ "$_status" -eq 0 ] || { fail "jq $2 on $1 failed"; return 1; }
+    /bin/mv "$1.new" "$1"
+    _status=$?
+    [ "$_status" -eq 0 ] || { fail "cannot replace $1"; return 1; }
+}
+
+test_a_box_needs_recreating_after_its_images_guest_changed() {
+    fake_image dev
+    local _record="$AGENT_VM_HOME/Images/dev/image.json"
+    edit_json "$_record" '.guestVersion = "0.4.2" | .guestDigest = "aaaa"' || return 1
+    run_avm box create b1 --image dev
+    assert_status 0 || return 1
+    run_avm box list --json
+    assert_json 0.box.guestDigest aaaa || return 1
+    assert_json 0.needs 0 || return 1
+
+    # What image update-guest records.
+    edit_json "$_record" '.guestVersion = "0.4.3" | .guestDigest = "bbbb"' || return 1
+    run_avm box list --json
+    assert_json 0.needs.0.kind recreate || return 1
+    assert_json 0.needs.0.guestVersion 0.4.3 || return 1
+    run_avm box list
+    assert_out_contains "needs recreate: image dev has a different agent-vm-guest (0.4.3) from the one this box was made with" || return 1
+    run_avm box status b1 --json
+    assert_json needs.0.kind recreate || return 1
+    run_avm status --json
+    assert_json boxes.0.needs.0.kind recreate || return 1
+    run_avm status
+    assert_out_contains "image dev  needs recreate" || return 1
+
+    # A box made before 0.4.3 recorded no daemon: it still reads, and never needs recreating.
+    local _box="$AGENT_VM_HOME/Boxes/b1/box.json"
+    edit_json "$_box" 'del(.guestVersion, .guestDigest)' || return 1
+    run_avm box list --json
+    assert_status 0 || return 1
+    assert_not_contains "$ERR" "warning" || return 1
+    assert_json 0.box.name b1 || return 1
+    assert_json 0.needs 0 || return 1
+
+    run_avm box recreate b1
+    assert_status 0 || return 1
+    run_avm box list --json
+    assert_json 0.box.guestDigest bbbb || return 1
+    assert_json 0.needs 0 || return 1
+}

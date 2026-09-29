@@ -62,7 +62,7 @@ struct StatusCommand: ParsableCommand {
         }
         let summary = Summary(
             images: images.map { ImageCommand.List.Entry(record: $0.record, path: $0.directory.path) },
-            boxes: boxes.map { BoxCommand.List.Entry($0) },
+            boxes: boxes.map { box in BoxCommand.List.Entry(box, image: images.first { $0.name == box.record.image }?.record) },
             jobs: jobs,
             jobsError: jobsError,
             runningVMs: .init(count: HostFacts.countVirtualMachineProcesses(), limit: HostReport.macOSGuestLimit))
@@ -110,6 +110,9 @@ struct StatusCommand: ParsableCommand {
             var line = "  \(column(entry.box.name, width))  \(column(status.state.rawValue, 12))  image \(entry.box.image)"
             if entry.box.disposable == true {
                 line += "  disposable"
+            }
+            if entry.needs.contains(where: { $0.kind == .recreate }) {
+                line += "  needs recreate"
             }
             if status.state != .stopped {
                 if let pid = status.pid {
