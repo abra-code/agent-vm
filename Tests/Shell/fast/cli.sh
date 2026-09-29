@@ -13,7 +13,7 @@ test_help_lists_the_commands() {
     run_avm --help
     assert_status 0 || return 1
     local _command
-    for _command in exec connect box image session doctor; do
+    for _command in exec connect box image job session doctor; do
         assert_out_contains "$_command" || return 1
     done
 }

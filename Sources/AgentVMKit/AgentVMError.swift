@@ -92,6 +92,15 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case secretNotFound(String)
     case secretUnreadable(name: String, reason: String)
     case keychain(operation: String, message: String)
+    /// A job id that is not the form `job start` makes ("20260929-101500-a1b2c3").
+    case invalidJobID(String)
+    case jobNotFound(String)
+    case jobNotRunning(String)
+    /// Running, but its runner has not recorded its process id yet.
+    case jobNotStarted(String)
+    /// A change that needs the job to have ended.
+    case jobRunning(String)
+    case corruptJobRecord(path: String, reason: String)
 
     /// The exit status of a command refused for want of a VM slot: EX_TEMPFAIL of sysexits(3)
     /// ("try again later"), so a program tells that refusal from other failures without
@@ -207,6 +216,18 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "canceled by \(signal == SIGINT ? "SIGINT" : signal == SIGTERM ? "SIGTERM" : "signal \(signal)")"
         case let .download(url, reason):
             return "cannot download \(url): \(reason)"
+        case let .invalidJobID(id):
+            return "\(id) is not a job id (`agent-vm job list` shows them)"
+        case let .jobNotFound(id):
+            return "no job \(id); `agent-vm job list` shows the jobs kept (finished ones for a week)"
+        case let .jobNotRunning(id):
+            return "job \(id) is not running"
+        case let .jobNotStarted(id):
+            return "job \(id) has not started yet; try again in a moment"
+        case let .jobRunning(id):
+            return "job \(id) is still running; cancel it first with `agent-vm job cancel \(id)`"
+        case let .corruptJobRecord(path, reason):
+            return "job record \(path) is unusable: \(reason)"
         }
     }
 }

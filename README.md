@@ -134,6 +134,24 @@ agent-vm box start s1 --owner-pid $$               # stops when this shell exits
 - **macOS runs at most two macOS guests at once**, whichever applications started them (`agent-vm status` and `agent-vm doctor` count them; with `--json`, `status` has `runningVMs` and doctor's "running VMs" check has `count` and `limit`). A command that needs a VM when none is free (`box start`, `image create`, `image update-guest`, `image setup`) fails with exit status 75 and a message that starts with "no free VM slot". A refusal before the first VM starts leaves nothing behind: a new image whose VM never ran is removed, so its name stays free, an image being updated stays as it was, and a disposable box can be started again. A build or update boots more than once, and if another application takes the slot between two boots, the image is marked failed, as after any other failure; delete it (or update it again) and retry.
 - **Socket paths:** the control socket's full path must stay under 104 bytes, which a very long `AGENT_VM_HOME` can exceed.
 
+## Jobs: long commands in the background (works today)
+
+An image build takes minutes to an hour, a box start half a minute. `agent-vm job start` runs such a command detached, in its own session, so closing the terminal (or quitting the application that started it) does not end it, and records what happened in the store, where any terminal or application sees it.
+
+```sh
+agent-vm job start -- image create dev --ipsw latest   # prints the job's id at once
+agent-vm job list                                      # what runs, and what ended in the last week
+agent-vm job log 20260929-101500-a1b2c3 --follow       # its progress as it comes, then how it ended
+agent-vm job cancel 20260929-101500-a1b2c3             # stops it at its next safe point
+agent-vm job forget 20260929-101500-a1b2c3             # removes a finished job's record
+```
+
+- **What a job runs:** `image create`, `image update-guest`, `image setup`, `image fetch-ipsw`, `box start` and `box stop`, written after `--` as they would follow `agent-vm`. The command is checked when the job starts, so a mistyped one fails at once rather than in the background. It runs with `--json` (added when missing): its progress events go to the job's `log` and its result to the job's `out`. It runs in the folder `job start` was run from, so a relative path (a recipe file) means what it meant there, and on the same store.
+- **States:** `running`, `done` (exit status 0), `failed` (another status, with agent-vm's error), `canceled` (after `job cancel`; an image build shuts its guest down first and is recorded as canceled), and `lost`: the job's runner was stopped (killed, or the Mac restarted) before it could record the result. A command whose runner is lost may still be running; `status` shows its boxes and images.
+- **`job cancel`** sends SIGINT to the command, as Control-C would; it returns at once, and the job ends `canceled` when the command has stopped. A `box start` that is canceled leaves the box starting (the supervisor is its own process); stop it with `box stop`.
+- **For programs:** `job start --json` prints the job; `job list --json` is an array of jobs with `id`, `command` (agent-vm's arguments), `targets` (`image:<name>`, `box:<name>` or `ipsw`, what the command works on), `state`, `status` (the exit status once it ended), `createdAt`, `startedAt`, `endedAt`, `progress` (the last progress event, [Docs/progress-events.md](Docs/progress-events.md)), `notice` (the text of the last notice), `error` (a failed, canceled or lost job's error, possibly several lines) and `path`. `job log <id> --json` adds every event (`events`) and the lines that are neither events nor the error (`lines`).
+- **Where it lives:** `Jobs/<id>/` in the store: `job.json` (what runs), `log`, `out`, `runner.json` and `end.json` (how it ended). The runner is `agent-vm job run <id>` in its own session; it holds the job's `lock` for as long as it lives, which is how every client tells a running job from a lost one without trusting a process id. Finished jobs are removed a week after they ended (by `job list` and `job start`).
+
 ## Terminal sessions: avm (works today)
 
 `avm` is the short way into a box from a terminal. Run it in a project folder: it lists your boxes (or makes a new one from an image), starts the one you choose when it is stopped, shares the folder into it at the same path, snapshots it, and runs what you choose there: Claude Code, Codex, opencode, or a login shell. Exit it to come back: avm reports what changed in the folder, and you keep the changes or undo them.

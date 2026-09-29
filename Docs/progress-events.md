@@ -4,6 +4,8 @@ Long commands tell what they are doing as they go. For a person, that is lines o
 
 Commands that report progress: `image create` (from a restore image or `--from` an image), `image update-guest`, `image setup`, `image fetch-ipsw`, `box start`, `box stop` and `box send`.
 
+Run as a job (`agent-vm job start -- <command>`, see the README), a command's events are kept in the job's log: `job list --json` gives each job's last `progress` event and last notice, and `job log <id> --json` all of its events.
+
 ```sh
 agent-vm image create dev-node --from dev --recipe Recipes/homebrew-node/recipe.json --json 2> events.jsonl > record.json
 ```
