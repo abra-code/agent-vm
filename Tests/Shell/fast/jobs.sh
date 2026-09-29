@@ -125,3 +125,29 @@ test_cancel_and_forget_refusals() {
     assert_status 1 || return 1
     assert_err_contains "../Images is not a job id" || return 1
 }
+
+test_a_job_after_another() {
+    run_avm job start --after ../x -- image fetch-ipsw --list
+    assert_status 64 || return 1
+    assert_err_contains "../x is not a job id" || return 1
+
+    run_avm job start --after 20260101-000000-abcdef -- image fetch-ipsw --list
+    assert_status 1 || return 1
+    assert_err_contains "no job 20260101-000000-abcdef" || return 1
+
+    run_avm job start -- box stop nobox
+    local _failed="$OUT"
+    wait_for_job "$_failed" failed || return 1
+    run_avm job start --after "$_failed" -- image fetch-ipsw --list
+    assert_status 1 || return 1
+    assert_err_contains "job $_failed failed, so a job after it would never run" || return 1
+
+    run_avm job start -- image fetch-ipsw --list
+    local _first="$OUT"
+    run_avm job start --json --after "$_first" -- image fetch-ipsw --list
+    assert_status 0 || return 1
+    assert_json after "$_first" || return 1
+    local _second
+    _second="$(json_value id)"
+    wait_for_job "$_second" done || return 1
+}

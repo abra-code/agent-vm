@@ -6,6 +6,10 @@
 // tells that the job still runs. The command's stdout goes to the job's `out`, its stderr (the
 // progress events) to its `log`, and the command runs in the folder it was started from.
 //
+// A job started after another waits for it first, looking every half second: it runs once
+// that one ended with status 0, and otherwise ends canceled with the reason, which ends every
+// job queued after it in turn.
+//
 // Cancel (SIGINT from `job cancel`) and SIGTERM (a logout or shutdown) are passed on to the
 // command, which stops at its next safe point; the runner keeps waiting, to record the result.
 // SIGHUP is ignored. Signals and the command's exit arrive through one kqueue, so no code runs
@@ -91,8 +95,21 @@ public enum JobRunner {
             return fail("cannot write \(store.path(id, JobStore.runnerName))", status: nil)
         }
         // A cancel that came before the command exists ends the job here.
-        if let signalNumber = pendingSignal(queue, timeout: 0) {
+        if let signalNumber = pendingSignal(queue, milliseconds: 0) {
             return Self.recordEnd(store: store, id: id, JobEnd(status: nil, canceled: true, signal: signalNumber))
+        }
+        if let after = record.after {
+            while true {
+                if let reason = store.blockingReason(after: after) {
+                    if reason.isEmpty {
+                        break
+                    }
+                    return Self.recordEnd(store: store, id: id, JobEnd(status: nil, canceled: true, reason: reason))
+                }
+                if let signalNumber = pendingSignal(queue, milliseconds: 500) {
+                    return Self.recordEnd(store: store, id: id, JobEnd(status: nil, canceled: true, signal: signalNumber))
+                }
+            }
         }
 
         let child: pid_t
@@ -138,7 +155,7 @@ public enum JobRunner {
         }
         // A cancel that arrived as the command was ending still counts.
         if canceledBy == nil {
-            canceledBy = pendingSignal(queue, timeout: 0)
+            canceledBy = pendingSignal(queue, milliseconds: 0)
         }
         let status = ExitReport(waitStatus: waitStatus).shellStatus
         return Self.recordEnd(store: store, id: id, JobEnd(status: status, canceled: canceledBy != nil, signal: canceledBy))
@@ -158,10 +175,10 @@ public enum JobRunner {
         return flock(descriptor, LOCK_EX | LOCK_NB) == 0
     }
 
-    /// A cancel signal the queue has recorded, waiting up to `timeout` seconds for one.
-    static func pendingSignal(_ queue: Int32, timeout: Int) -> Int32? {
+    /// A cancel signal the queue has recorded, waiting up to `milliseconds` for one.
+    static func pendingSignal(_ queue: Int32, milliseconds: Int) -> Int32? {
         var event = kevent()
-        var wait = timespec(tv_sec: timeout, tv_nsec: 0)
+        var wait = timespec(tv_sec: milliseconds / 1000, tv_nsec: (milliseconds % 1000) * 1_000_000)
         let count = kevent(queue, nil, 0, &event, 1, &wait)
         guard count > 0, event.filter == Int16(EVFILT_SIGNAL) else {
             return nil

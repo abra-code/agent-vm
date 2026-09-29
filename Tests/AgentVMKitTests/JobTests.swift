@@ -5,7 +5,8 @@
 // apart and stops on SIGINT or SIGTERM as agent-vm does. What is pinned: a start returns at once
 // while the job goes on in its own session; progress, results and errors in the listing;
 // cancel; a runner that dies leaves a lost job, not one running forever; a runner started by
-// hand does nothing; forget; pruning; job ids cannot name a path.
+// hand does nothing; forget; pruning; job ids cannot name a path; a queue (--after) that runs
+// on success and is canceled, with the reason, down the chain on a failure.
 
 import Darwin
 import Foundation
@@ -34,7 +35,7 @@ final class JobScratch {
         // A job a failed test left running is canceled, and its command killed if that is not
         // enough: while the runner holds the lock it has not reaped the command, so the pids it
         // recorded are still theirs.
-        for id in (try? store.ids()) ?? [] where store.state(id).state == .running {
+        for id in (try? store.ids()) ?? [] where !store.state(id).state.isFinished {
             try? store.cancel(id)
             let deadline = Date().addingTimeInterval(2)
             while store.runnerHoldsLock(id) && Date() < deadline {
@@ -87,8 +88,8 @@ final class JobScratch {
         exit 3
         """
 
-    func start(_ arguments: [String], directory: String = "/", runner: [String]? = nil) throws -> String {
-        return try store.start(executable: command, arguments: arguments, targets: ["box:b1"], directory: directory,
+    func start(_ arguments: [String], directory: String = "/", after: String? = nil, runner: [String]? = nil) throws -> String {
+        return try store.start(executable: command, arguments: arguments, targets: ["box:b1"], directory: directory, after: after,
                                runner: runner ?? self.runner).id
     }
 
@@ -299,6 +300,103 @@ final class JobScratch {
         _ = try scratch.wait(id, for: .canceled)
         try scratch.store.forget(id)
         #expect(try scratch.store.list().jobs.isEmpty)
+    }
+
+    @Test func aQueuedJobRunsOnceTheOneBeforeItSucceeds() throws {
+        let scratch = try JobScratch()
+        let first = try scratch.start(["events", "5"])
+        let second = try scratch.start(["where"], directory: scratch.root.path, after: first)
+        let queued = try scratch.store.job(second)
+        #expect(queued.state == .queued)
+        #expect(queued.after == first)
+        #expect(queued.startedAt == nil)
+        let done = try scratch.wait(second, for: .done)
+        let before = try scratch.store.job(first)
+        #expect(before.state == .done)
+        #expect(try #require(done.startedAt) >= (try #require(before.endedAt)))
+    }
+
+    @Test func aFailureCancelsTheQueueBehindIt() throws {
+        let scratch = try JobScratch()
+        let first = try scratch.start(["fail"])
+        let second = try scratch.start(["events", "1"], after: first)
+        let third = try scratch.start(["events", "1"], after: second)
+        let canceled = try scratch.wait(third, for: .canceled)
+        #expect(canceled.error == "job \(second), which it waited for, was canceled")
+        let middle = try scratch.store.job(second)
+        #expect(middle.state == .canceled)
+        #expect(middle.error == "job \(first), which it waited for, failed (status 1)")
+        #expect(middle.status == nil && middle.startedAt == nil)
+        // It never ran: nothing in its output or log.
+        #expect(try String(contentsOfFile: scratch.store.path(second, JobStore.outputName), encoding: .utf8).isEmpty)
+        #expect(scratch.store.log(second).events.isEmpty)
+    }
+
+    @Test func aQueuedJobCanBeCanceled() throws {
+        let scratch = try JobScratch()
+        let first = try scratch.start(["wait"])
+        let second = try scratch.start(["events", "1"], after: first)
+        let third = try scratch.start(["events", "1"], after: second)
+        _ = try scratch.wait(second, for: .queued)
+        try scratch.store.cancel(second)
+        let canceled = try scratch.wait(second, for: .canceled)
+        #expect(canceled.error == "canceled by SIGINT")
+        #expect(canceled.startedAt == nil)
+        #expect(try scratch.wait(third, for: .canceled).error == "job \(second), which it waited for, was canceled")
+        // The one it waited for goes on.
+        #expect(try scratch.store.job(first).state == .running)
+        try scratch.store.cancel(first)
+        _ = try scratch.wait(first, for: .canceled)
+    }
+
+    /// Forgotten as soon as it is done (a client tidying up), the job would take with it the
+    /// record its follower reads to learn that it succeeded.
+    @Test func aJobAQueuedJobWaitsForIsNotForgotten() throws {
+        let scratch = try JobScratch()
+        let first = try scratch.start(["wait"])
+        let second = try scratch.start(["events", "1"], after: first)
+        _ = try scratch.wait(second, for: .queued)
+        try scratch.store.cancel(first)
+        _ = try scratch.wait(first, for: .canceled)
+        _ = try scratch.wait(second, for: .canceled)
+        // Once the follower has ended, the first can go.
+        try scratch.store.forget(first)
+
+        // A follower whose runner starts two seconds late is queued for that long, with the
+        // first already done: the moment a tidying client would forget it.
+        let third = try scratch.start(["events", "1"])
+        _ = try scratch.wait(third, for: .done)
+        let late = ["/bin/sh", "-c", "/bin/sleep 2; exec \"$0\" job run \"$1\"", scratch.runner[0]]
+        let fourth = try scratch.start(["events", "1"], after: third, runner: late)
+        #expect(try scratch.store.job(fourth).state == .queued)
+        #expect(throws: AgentVMError.jobAwaited(third, by: fourth)) { try scratch.store.forget(third) }
+        _ = try scratch.wait(fourth, for: .done)
+        try scratch.store.forget(third)
+    }
+
+    @Test func aJobAfterOneThatDidNotSucceedIsRefused() throws {
+        let scratch = try JobScratch()
+        let failed = try scratch.start(["fail"])
+        _ = try scratch.wait(failed, for: .failed)
+        #expect(throws: AgentVMError.jobWouldNeverRun(after: failed, state: "failed")) {
+            try scratch.start(["events", "1"], after: failed)
+        }
+        #expect(throws: AgentVMError.jobNotFound("20260101-000000-abcdef")) {
+            try scratch.start(["events", "1"], after: "20260101-000000-abcdef")
+        }
+        #expect(try scratch.store.list().jobs.map(\.id) == [failed])
+        // After one that is done already, it runs at once.
+        let done = try scratch.start(["events", "1"])
+        _ = try scratch.wait(done, for: .done)
+        let next = try scratch.start(["events", "1"], after: done)
+        _ = try scratch.wait(next, for: .done, seconds: 2)
+        // One old enough to be pruned is pruned by this start before it is looked at: refused,
+        // rather than accepted and then canceled as removed.
+        try JobStore.encoder.encode(JobEnd(status: 0, canceled: false, endedAt: Date().addingTimeInterval(-8 * 24 * 3600)))
+            .write(to: scratch.store.directory(of: done).appendingPathComponent(JobStore.endName))
+        #expect(throws: AgentVMError.jobNotFound(done)) {
+            try scratch.start(["events", "1"], after: done)
+        }
     }
 
     @Test func jobIDsCannotNameAPath() throws {

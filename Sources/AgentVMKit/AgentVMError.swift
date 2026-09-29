@@ -101,6 +101,10 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     /// A change that needs the job to have ended.
     case jobRunning(String)
     case corruptJobRecord(path: String, reason: String)
+    /// A job that a queued job waits for, which must not be forgotten yet.
+    case jobAwaited(String, by: String)
+    /// A job started --after one that already ended without success.
+    case jobWouldNeverRun(after: String, state: String)
 
     /// The exit status of a command refused for want of a VM slot: EX_TEMPFAIL of sysexits(3)
     /// ("try again later"), so a program tells that refusal from other failures without
@@ -225,9 +229,13 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
         case let .jobNotStarted(id):
             return "job \(id) has not started yet; try again in a moment"
         case let .jobRunning(id):
-            return "job \(id) is still running; cancel it first with `agent-vm job cancel \(id)`"
+            return "job \(id) has not ended; cancel it first with `agent-vm job cancel \(id)`"
+        case let .jobAwaited(id, other):
+            return "job \(other) waits for job \(id) to learn how it ended; forget \(id) once \(other) has started"
         case let .corruptJobRecord(path, reason):
             return "job record \(path) is unusable: \(reason)"
+        case let .jobWouldNeverRun(after, state):
+            return "job \(after) \(state == "failed" ? "failed" : "was \(state)"), so a job after it would never run"
         }
     }
 }

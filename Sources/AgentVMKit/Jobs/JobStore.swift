@@ -21,6 +21,11 @@
 // lock itself and hands it to the runner it spawns, so a job counts as running from the
 // moment its record exists. A runner that dies without writing end.json leaves a lost job.
 //
+// A job started `after` another waits, queued, until that one ends: it runs when the other
+// ended with status 0, and ends canceled, with the reason, when it did not. So a chain
+// (a base image, its Full Disk Access setup, the layers on top) runs by itself to the end,
+// or stops at its first failure.
+//
 // Finished jobs are kept for a week; `list(prune: true)` and `start` remove older ones.
 
 import Darwin
@@ -45,9 +50,11 @@ public struct JobRecord: Codable, Equatable, Sendable {
     public var createdAt: Date
     /// The agent-vm version that started the job.
     public var createdBy: String
+    /// The job this one waits for: it runs once that one ended with status 0.
+    public var after: String?
 
     public init(id: String, executable: String, arguments: [String], targets: [String], directory: String,
-                createdAt: Date = Date(), createdBy: String = AgentVM.version) {
+                after: String? = nil, createdAt: Date = Date(), createdBy: String = AgentVM.version) {
         self.formatVersion = Self.currentFormatVersion
         self.id = id
         self.executable = executable
@@ -56,6 +63,7 @@ public struct JobRecord: Codable, Equatable, Sendable {
         self.directory = directory
         self.createdAt = createdAt
         self.createdBy = createdBy
+        self.after = after
     }
 }
 
@@ -67,12 +75,15 @@ public struct JobEnd: Codable, Equatable, Sendable {
     public var canceled: Bool
     /// The signal that canceled it.
     public var signal: Int32?
+    /// Why it was canceled without a signal: the job it waited for did not succeed.
+    public var reason: String?
     public var endedAt: Date
 
-    public init(status: Int32?, canceled: Bool, signal: Int32? = nil, endedAt: Date = Date()) {
+    public init(status: Int32?, canceled: Bool, signal: Int32? = nil, reason: String? = nil, endedAt: Date = Date()) {
         self.status = status
         self.canceled = canceled
         self.signal = signal
+        self.reason = reason
         self.endedAt = endedAt
     }
 }
@@ -86,19 +97,22 @@ public struct JobRunnerInfo: Codable, Equatable, Sendable {
 }
 
 public enum JobState: String, Codable, Sendable {
+    /// Waiting for the job it was started after to end.
+    case queued
     /// The runner holds the lock: the command runs (or is about to).
     case running
     /// Ended with status 0.
     case done
     /// Ended with another status, or could not be run.
     case failed
-    /// Ended after a cancel, with a status other than 0.
+    /// Ended after a cancel, with a status other than 0, or never ran because the job it
+    /// waited for did not succeed.
     case canceled
     /// The runner died without recording how the job ended.
     case lost
 
     public var isFinished: Bool {
-        return self != .running
+        return self != .running && self != .queued
     }
 }
 
@@ -108,6 +122,8 @@ public struct Job: Encodable, Sendable {
     /// What runs: agent-vm's arguments, `--json` included.
     public var command: [String]
     public var targets: [String]
+    /// The job this one waits for, when it was started with --after.
+    public var after: String?
     public var state: JobState
     /// The command's exit status once it ended.
     public var status: Int32?
@@ -117,13 +133,14 @@ public struct Job: Encodable, Sendable {
     /// The last progress event, and the text of the last notice.
     public var progress: ProgressEvent?
     public var notice: String?
-    /// A failed, canceled or lost job's error, as agent-vm wrote it (possibly several lines).
+    /// A failed, canceled or lost job's error, as agent-vm wrote it (possibly several lines),
+    /// or why a queued job was canceled.
     public var error: String?
     /// The store folder that holds the job's files.
     public var path: String
 
     enum CodingKeys: String, CodingKey {
-        case id, command, targets, state, status, createdAt, startedAt, endedAt, progress, notice, error, path
+        case id, command, targets, after, state, status, createdAt, startedAt, endedAt, progress, notice, error, path
     }
 }
 
@@ -265,6 +282,10 @@ public struct JobStore: Sendable {
             return (Self.state(of: end), end, end.endedAt)
         }
         if runnerHoldsLock(id) {
+            // Queued until its command starts, for a job that waits for another.
+            if runnerInfo(id)?.startedAt == nil, (try? record(id))?.after != nil {
+                return (.queued, nil, nil)
+            }
             return (.running, nil, nil)
         }
         // The runner may have written end.json and exited between the two looks.
@@ -272,6 +293,31 @@ public struct JobStore: Sendable {
             return (Self.state(of: end), end, end.endedAt)
         }
         return (.lost, nil, newestChange(id))
+    }
+
+    /// For a job queued after `id`: nil while that one runs or waits, "" once it is done, and
+    /// otherwise why the queued job does not run.
+    func blockingReason(after id: String) -> String? {
+        do {
+            _ = try record(id)
+        } catch AgentVMError.jobNotFound {
+            return "job \(id), which it waited for, was removed"
+        } catch {
+            return "job \(id), which it waited for, cannot be read: \(error)"
+        }
+        let (state, end, _) = state(id)
+        switch state {
+        case .queued, .running:
+            return nil
+        case .done:
+            return ""
+        case .failed:
+            return "job \(id), which it waited for, failed\(end?.status.map { " (status \($0))" } ?? "")"
+        case .canceled:
+            return "job \(id), which it waited for, was canceled"
+        case .lost:
+            return "job \(id), which it waited for, was lost"
+        }
     }
 
     static func state(of end: JobEnd) -> JobState {
@@ -310,13 +356,13 @@ public struct JobStore: Sendable {
         case .failed:
             error = log.error ?? end?.status.map { "agent-vm exited with status \($0) and gave no reason" }
         case .canceled:
-            error = log.error ?? end?.signal.map { AgentVMError.canceled(signal: $0).description }
+            error = log.error ?? end?.reason ?? end?.signal.map { AgentVMError.canceled(signal: $0).description }
         case .lost:
             error = log.error ?? Self.lostError
-        case .running, .done:
+        case .queued, .running, .done:
             error = nil
         }
-        return Job(id: id, command: record.arguments, targets: record.targets, state: state, status: end?.status,
+        return Job(id: id, command: record.arguments, targets: record.targets, after: record.after, state: state, status: end?.status,
                    createdAt: record.createdAt, startedAt: runnerInfo(id)?.startedAt, endedAt: endedAt,
                    progress: log.lastProgress, notice: log.lastNotice, error: error, path: directory(of: id).path)
     }
@@ -383,10 +429,11 @@ public struct JobStore: Sendable {
     // MARK: - Changing
 
     /// Asks a running job to stop: SIGINT to its runner, which passes it to the command. agent-vm
-    /// stops at its next safe point and exits 130; the job then ends canceled.
+    /// stops at its next safe point and exits 130; the job then ends canceled. A queued job ends
+    /// canceled at once, and so does every job queued after it.
     public func cancel(_ id: String) throws {
         _ = try record(id)
-        guard state(id).state == .running else {
+        guard !state(id).state.isFinished else {
             throw AgentVMError.jobNotRunning(id)
         }
         // The runner writes its pid first thing; a job started a moment ago may not have yet.
@@ -397,7 +444,7 @@ public struct JobStore: Sendable {
             info = runnerInfo(id)
         }
         guard let info else {
-            throw state(id).state == .running ? AgentVMError.jobNotStarted(id) : AgentVMError.jobNotRunning(id)
+            throw state(id).state.isFinished ? AgentVMError.jobNotRunning(id) : AgentVMError.jobNotStarted(id)
         }
         // Checked once more right before the signal: while the runner holds the lock it is
         // alive, so the pid is still its own.
@@ -424,6 +471,14 @@ public struct JobStore: Sendable {
         guard state(id).state.isFinished else {
             throw AgentVMError.jobRunning(id)
         }
+        // A job queued after this one looks for its record to learn that it succeeded: removed
+        // first, the queue behind it would end canceled (a client that forgets each job as
+        // soon as it is done).
+        for other in try ids() where other != id {
+            if let waiting = try? record(other), waiting.after == id, state(other).state == .queued {
+                throw AgentVMError.jobAwaited(id, by: other)
+            }
+        }
         try FileSystem.removeTree(directory(of: id).path)
     }
 
@@ -431,14 +486,24 @@ public struct JobStore: Sendable {
     /// runner's command line (`agent-vm job run`), and it receives the job's lock on
     /// descriptor `runnerLockDescriptor`. `environment` is the runner's (and so the
     /// command's), with AGENT_VM_HOME set to this store, so the command works on the store
-    /// that holds its record. Returns the record once the runner is started.
-    public func start(executable: String, arguments: [String], targets: [String], directory: String,
+    /// that holds its record. With `after`, the job waits for that one and runs only when it
+    /// ended with status 0; one that already ended otherwise is refused here. Returns the
+    /// record once the runner is started.
+    public func start(executable: String, arguments: [String], targets: [String], directory: String, after: String? = nil,
                       runner: [String], environment: [String: String] = ProcessInfo.processInfo.environment) throws -> JobRecord {
         guard executable.hasPrefix("/"), let runnerPath = runner.first, runnerPath.hasPrefix("/") else {
             throw AgentVMError.system(operation: "start a job: the command and the runner need absolute paths", code: EINVAL)
         }
         try FileSystem.makeDirectories(jobsDirectory.path)
         _ = try? list(prune: true)
+        // Looked at after the pruning, which could otherwise remove it under the new job.
+        if let after {
+            _ = try record(after)
+            let predecessor = state(after).state
+            if predecessor != .done, predecessor.isFinished {
+                throw AgentVMError.jobWouldNeverRun(after: after, state: predecessor.rawValue)
+            }
+        }
 
         var id = Self.newID()
         while mkdir(self.directory(of: id).path, 0o700) != 0 {
@@ -449,7 +514,7 @@ public struct JobStore: Sendable {
             id = Self.newID()
         }
         do {
-            let record = JobRecord(id: id, executable: executable, arguments: arguments, targets: targets, directory: directory)
+            let record = JobRecord(id: id, executable: executable, arguments: arguments, targets: targets, directory: directory, after: after)
             try spawnRunner(record, runner: runner, environment: environment)
             return record
         } catch {

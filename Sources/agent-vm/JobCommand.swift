@@ -72,8 +72,13 @@ struct JobCommand: ParsableCommand {
                 progress events going to the job's log and its result to the job's output, in \
                 this folder, so relative paths mean what they mean here. It is checked before \
                 the job starts: a mistyped command fails here, not in the background. With \
-                --json: the job, as `job list --json` shows it.
+                --after, the job is queued until that job ends, and runs only if it ended with \
+                status 0; otherwise it ends canceled, saying why, and so does every job queued \
+                after it. With --json: the job, as `job list --json` shows it.
                 """)
+
+        @Option(name: .customLong("after"), help: ArgumentHelp("Wait for this job, and run only if it succeeds.", valueName: "id"))
+        var after: String?
 
         @OptionGroup var options: StoreOptions
 
@@ -103,6 +108,9 @@ struct JobCommand: ParsableCommand {
             if command.isEmpty {
                 throw ValidationError("give the command after --, for example: agent-vm job start -- image create dev --ipsw latest")
             }
+            if let after, !JobStore.isValidID(after) {
+                throw ValidationError(AgentVMError.invalidJobID(after).description)
+            }
             _ = try task()
         }
 
@@ -111,7 +119,8 @@ struct JobCommand: ParsableCommand {
             let executable = try AskpassEntry.executablePath()
             let store = options.jobStore
             let record = try store.start(executable: executable, arguments: arguments, targets: task.jobTargets,
-                                         directory: FileManager.default.currentDirectoryPath, runner: [executable, "job", "run"])
+                                         directory: FileManager.default.currentDirectoryPath, after: after,
+                                         runner: [executable, "job", "run"])
             if options.json {
                 try Output.json(try store.job(record.id))
                 return
@@ -130,10 +139,10 @@ struct JobCommand: ParsableCommand {
             discussion: """
                 One entry per job, oldest first: its id, state and command, then its last \
                 progress (while it runs) or its error (after it failed). The states are \
-                running, done, failed, canceled, and lost (its runner was stopped before it \
-                could record the result). Finished jobs older than a week are removed. With \
+                queued (waiting for the job it was started --after), running, done, failed, \
+                canceled, and lost (its runner was stopped before it could record the result). Finished jobs older than a week are removed. With \
                 --json: an array of jobs, each with `id`, `command` (agent-vm's arguments), \
-                `targets` ("image:<name>", "box:<name>", "ipsw"), `state`, `status` (the exit \
+                `targets` ("image:<name>", "box:<name>", "ipsw"), `after` (the job it waits for), `state`, `status` (the exit \
                 status, once it ended), `createdAt`, `startedAt`, `endedAt`, `progress` (the \
                 last progress event), `notice` (the last notice's text), `error` and `path`.
                 """)
@@ -166,6 +175,8 @@ struct JobCommand: ParsableCommand {
             let command = Output.shellQuoted(job.command.filter { $0 != "--json" })
             var lines = ["\(job.id)  \(job.state.rawValue.padding(toLength: 8, withPad: " ", startingAt: 0))  \(command)"]
             switch job.state {
+            case .queued:
+                lines.append("    waiting for job \(job.after ?? "?")")
             case .running:
                 if let progress = job.progress {
                     let percent = progress.fraction.map { " \(Int(($0 * 100).rounded()))%" } ?? ""
@@ -176,11 +187,16 @@ struct JobCommand: ParsableCommand {
                 if let notice = job.notice {
                     lines.append("    \(notice)")
                 }
+            case .canceled:
+                // Why a queued job never ran; a canceled command says nothing more.
+                if job.status == nil, let reason = job.error {
+                    lines.append("    \(reason)")
+                }
             case .failed, .lost:
                 let status = job.status.map { "status \($0): " } ?? ""
                 let error = job.error.map { $0.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? $0 } ?? "no reason given"
                 lines.append("    \(status)\(error)")
-            case .done, .canceled:
+            case .done:
                 break
             }
             if let ended = job.endedAt {
@@ -256,6 +272,8 @@ struct JobCommand: ParsableCommand {
 
         static func ending(_ job: Job) -> String {
             switch job.state {
+            case .queued:
+                return "Job \(job.id) is queued after job \(job.after ?? "?")"
             case .running:
                 return "Job \(job.id) is running"
             case .done:
@@ -263,7 +281,7 @@ struct JobCommand: ParsableCommand {
             case .failed:
                 return "Job \(job.id) failed\(job.status.map { " (status \($0))" } ?? "")"
             case .canceled:
-                return "Job \(job.id) was canceled"
+                return "Job \(job.id) was canceled\(job.status == nil ? job.error.map { ": \($0)" } ?? "" : "")"
             case .lost:
                 return "Job \(job.id) was lost: \(job.error ?? "its runner stopped without recording a result")"
             }
@@ -272,12 +290,13 @@ struct JobCommand: ParsableCommand {
 
     struct Cancel: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Ask a running job to stop.",
+            abstract: "Ask a running or queued job to stop.",
             discussion: """
                 Sends SIGINT to the job's command, which stops at its next safe point (an image \
                 build shuts its guest down and is recorded as canceled); the job then ends \
-                canceled. It returns at once: `job log --follow` shows the end. With --json: \
-                the job, as `job list --json` shows it.
+                canceled. A queued job ends canceled without running, and so does every job \
+                queued after it. It returns at once: `job log --follow` shows the end. With \
+                --json: the job, as `job list --json` shows it.
                 """)
 
         @Argument(help: "The job's id.")
