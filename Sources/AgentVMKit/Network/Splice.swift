@@ -35,10 +35,8 @@ public enum Splice {
         var buffer = [UInt8](repeating: 0, count: 65536)
         var total = 0
         while true {
-            let count = read(from, &buffer, buffer.count)
-            if count < 0 && errno == EINTR {
-                continue
-            }
+            // Not read(2): a thread asleep in it can miss the guest's shutdown (SocketRead).
+            let count = buffer.withUnsafeMutableBytes { SocketRead.read(from, $0.baseAddress!, $0.count) }
             if count <= 0 {
                 return total
             }

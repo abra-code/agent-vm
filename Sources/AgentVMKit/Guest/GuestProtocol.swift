@@ -373,15 +373,14 @@ public final class FrameChannel: @unchecked Sendable {
         var done = 0
         try buffer.withUnsafeMutableBytes { raw in
             while done < count {
-                let got = read(descriptor, raw.baseAddress! + done, count - done)
+                // Not read(2): a thread asleep in it can miss a shutdown (SocketRead).
+                let got = SocketRead.read(descriptor, raw.baseAddress! + done, count - done)
                 if got < 0 {
-                    if errno == EINTR {
-                        continue
-                    }
-                    if errno == ECONNRESET {
+                    let code = errno
+                    if code == ECONNRESET {
                         break
                     }
-                    throw GuestProtocolError.io(operation: "read", code: errno)
+                    throw GuestProtocolError.io(operation: "read", code: code)
                 }
                 if got == 0 {
                     break

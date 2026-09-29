@@ -360,7 +360,8 @@ final class LocalServer: @unchecked Sendable {
         var output = Data()
         var buffer = [UInt8](repeating: 0, count: 4096)
         while true {
-            let count = read(client, &buffer, buffer.count)
+            // A tunnel ends with a shutdown, which a thread asleep in read(2) can miss (SocketRead).
+            let count = buffer.withUnsafeMutableBytes { SocketRead.read(client, $0.baseAddress!, $0.count) }
             if count <= 0 {
                 break
             }
