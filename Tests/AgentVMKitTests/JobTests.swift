@@ -123,11 +123,10 @@ final class JobScratch {
 @Suite struct JobTests {
     @Test func aJobRunsDetachedAndEndsDone() throws {
         let scratch = try JobScratch()
-        let began = Date()
         let id = try scratch.start(["events", "5"])
-        // Five events a tenth of a second apart: the start did not wait for them.
-        #expect(Date().timeIntervalSince(began) < 0.4)
         #expect(JobStore.isValidID(id))
+        // Five events a tenth of a second apart: the start did not wait for them. (No clock
+        // bound: a loaded Mac can take longer to start than the job takes to run.)
         let running = try scratch.store.job(id)
         #expect(running.state == .running)
         #expect(running.targets == ["box:b1"])
@@ -389,7 +388,7 @@ final class JobScratch {
         let done = try scratch.start(["events", "1"])
         _ = try scratch.wait(done, for: .done)
         let next = try scratch.start(["events", "1"], after: done)
-        _ = try scratch.wait(next, for: .done, seconds: 2)
+        _ = try scratch.wait(next, for: .done)
         // One old enough to be pruned is pruned by this start before it is looked at: refused,
         // rather than accepted and then canceled as removed.
         try JobStore.encoder.encode(JobEnd(status: 0, canceled: false, endedAt: Date().addingTimeInterval(-8 * 24 * 3600)))
@@ -444,6 +443,25 @@ final class JobScratch {
         #expect(try JobStore.decoder.decode(JobEnd.self, from: data).endedAt == moment)
         let whole = Data(#"{"canceled":false,"endedAt":"2026-09-21T14:13:20Z"}"#.utf8)
         #expect(try JobStore.decoder.decode(JobEnd.self, from: whole).endedAt.timeIntervalSince1970 == 1_790_000_000)
+    }
+
+    /// status lists what runs or waits, and what ended in the last hour.
+    @Test func recentJobsLeaveOutOlderOnes() throws {
+        let scratch = try JobScratch()
+        let old = try scratch.start(["events", "1"])
+        // Apart by more than the millisecond the start times keep.
+        usleep(5_000)
+        let recent = try scratch.start(["fail"])
+        _ = try scratch.wait(old, for: .done)
+        _ = try scratch.wait(recent, for: .failed)
+        let running = try scratch.start(["wait"])
+        #expect(scratch.waitForLog(running, "waiting"))
+        try JobStore.encoder.encode(JobEnd(status: 0, canceled: false, endedAt: Date().addingTimeInterval(-7200)))
+            .write(to: scratch.store.directory(of: old).appendingPathComponent(JobStore.endName))
+        #expect(try scratch.store.list(endedWithin: 3600).jobs.map(\.id) == [recent, running])
+        #expect(try scratch.store.list().jobs.map(\.id) == [old, recent, running])
+        try scratch.store.cancel(running)
+        _ = try scratch.wait(running, for: .canceled)
     }
 
     @Test func aLogIsReadFromItsEnd() throws {

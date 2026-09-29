@@ -151,3 +151,48 @@ test_a_job_after_another() {
     _second="$(json_value id)"
     wait_for_job "$_second" done || return 1
 }
+
+test_status_shows_recent_jobs() {
+    run_avm job start -- box stop nobox
+    local _id="$OUT"
+    wait_for_job "$_id" failed || return 1
+
+    run_avm status --json
+    assert_status 0 || return 1
+    assert_json jobs.0.id "$_id" || return 1
+    assert_json jobs.0.state failed || return 1
+    assert_json jobs.0.targets.0 box:nobox || return 1
+
+    run_avm status
+    assert_status 0 || return 1
+    assert_out_contains "Jobs:" || return 1
+    assert_out_contains "  $_id  failed    box stop nobox" || return 1
+    assert_out_contains "status 1: no box nobox" || return 1
+
+    # Ended over an hour ago: only job list shows it.
+    local _end="$AGENT_VM_HOME/Jobs/$_id/end.json"
+    local _twoHoursAgo
+    _twoHoursAgo="$(/bin/date -u -v-2H +%Y-%m-%dT%H:%M:%S.000Z)"
+    /usr/bin/jq --arg at "$_twoHoursAgo" '.endedAt = $at' "$_end" > "$_end.new" || return 1
+    /bin/mv "$_end.new" "$_end" || return 1
+    run_avm status --json
+    assert_status 0 || return 1
+    assert_json jobs 0 || return 1
+    assert_not_contains "$OUT" '"jobsError"' "status --json" || return 1
+    run_avm status
+    assert_not_contains "$OUT" "Jobs:" "status" || return 1
+    run_avm job list --json
+    assert_eq "$(printf '%s' "$OUT" | /usr/bin/jq -r '.[0].id')" "$_id" "job list" || return 1
+}
+
+test_status_says_when_jobs_cannot_be_listed() {
+    run_avm job start -- box stop nobox
+    wait_for_job "$OUT" failed || return 1
+    /bin/chmod 000 "$AGENT_VM_HOME/Jobs" || return 1
+    run_avm status --json
+    /bin/chmod 700 "$AGENT_VM_HOME/Jobs"
+    assert_status 0 || return 1
+    assert_json jobs 0 || return 1
+    assert_contains "$(json_value jobsError)" "list $AGENT_VM_HOME/Jobs failed" "jobsError" || return 1
+    assert_err_contains "warning: cannot list the jobs" || return 1
+}

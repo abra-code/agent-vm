@@ -264,6 +264,7 @@ test_status_summarizes_without_measuring_or_collecting() {
     assert_out_contains "disposable" || return 1
     assert_out_contains "Virtual machines running on this Mac" || return 1
     assert_not_contains "$OUT" "not shared" "status" || return 1
+    assert_not_contains "$OUT" "Jobs:" "status" || return 1
     assert_exists "$AGENT_VM_HOME/Boxes/d1" || return 1
     run_avm status --json
     assert_status 0 || return 1
@@ -273,6 +274,9 @@ test_status_summarizes_without_measuring_or_collecting() {
     assert_json boxes.0.state stopped || return 1
     assert_json runningVMs.limit 2 || return 1
     assert_not_contains "$OUT" '"diskUsage"' "status --json" || return 1
+    # No job ever ran: an empty list, and no Jobs section for a person.
+    assert_json jobs 0 || return 1
+    assert_missing "$AGENT_VM_HOME/Jobs" || return 1
 }
 
 test_box_execlog_needs_a_box() {

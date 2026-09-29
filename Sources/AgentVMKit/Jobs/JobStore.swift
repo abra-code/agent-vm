@@ -348,8 +348,12 @@ public struct JobStore: Sendable {
     }
 
     func job(_ record: JobRecord, logLimit: Int = JobLog.tailBytes) -> Job {
+        return job(record, state(record.id), logLimit: logLimit)
+    }
+
+    private func job(_ record: JobRecord, _ looked: (state: JobState, end: JobEnd?, endedAt: Date?), logLimit: Int = JobLog.tailBytes) -> Job {
         let id = record.id
-        let (state, end, endedAt) = state(id)
+        let (state, end, endedAt) = looked
         let log = JobLog.read(path(id, Self.logName), limit: logLimit)
         let error: String?
         switch state {
@@ -395,7 +399,10 @@ public struct JobStore: Sendable {
     /// Every job, oldest first, with problems (an unreadable record) as warnings. With
     /// `prune`, finished jobs that ended over a week ago, and folders a start left behind half
     /// made, are removed first.
-    public func list(prune: Bool = false) throws -> (jobs: [Job], problems: [String]) {
+    ///
+    /// `endedWithin`: only the jobs that have not ended, and those that ended that many seconds
+    /// ago or less (`status`, which runs often, reads no older job's log).
+    public func list(prune: Bool = false, endedWithin: TimeInterval? = nil) throws -> (jobs: [Job], problems: [String]) {
         var jobs: [Job] = []
         var problems: [String] = []
         let now = Date()
@@ -415,12 +422,17 @@ public struct JobStore: Sendable {
                 problems.append("\(error)")
                 continue
             }
-            let job = job(record)
-            if prune, job.state.isFinished, let ended = job.endedAt, now.timeIntervalSince(ended) > Self.keepSeconds {
-                try? FileSystem.removeTree(directory(of: id).path)
-                continue
+            let looked = state(id)
+            if let ended = looked.endedAt {
+                if prune, now.timeIntervalSince(ended) > Self.keepSeconds {
+                    try? FileSystem.removeTree(directory(of: id).path)
+                    continue
+                }
+                if let endedWithin, now.timeIntervalSince(ended) > endedWithin {
+                    continue
+                }
             }
-            jobs.append(job)
+            jobs.append(job(record, looked))
         }
         jobs.sort { ($0.createdAt, $0.id) < ($1.createdAt, $1.id) }
         return (jobs, problems)
