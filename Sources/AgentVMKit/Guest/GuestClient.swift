@@ -45,16 +45,9 @@ public enum GuestClient {
     /// `input` as its stdin.
     public static func capture(_ descriptor: Int32, _ request: GuestRequest, input: Data? = nil) throws -> (report: ExitReport, stdout: String, stderr: String) {
         let session = try ExecSession(descriptor: descriptor, request: request)
-        // Written before anything is read, so a program that ends first (a quick one, or one
-        // that does not read its input) has the guest close its end, and these writes fail
-        // though its exit report waits to be read. run() reads it, and fails on its own when
-        // the connection is really gone.
-        do {
-            if let input {
-                try session.sendStdin(Array(input))
-            }
-            try session.sendStdinEnd()
-        } catch let GuestProtocolError.io(operation, code) where operation == "write" && [EPIPE, ECONNRESET, ENOTCONN].contains(code) {
+        // A program that ended first leaves its report to run() (see sendInput).
+        if try input.map({ try session.sendInput(Array($0)) }) ?? true {
+            _ = try session.endInput()
         }
         var stdout = Data()
         var stderr = Data()
@@ -95,6 +88,28 @@ public final class ExecSession: @unchecked Sendable {
 
     public func sendStdinEnd() throws {
         try channel.send(Frame(.stdinEnd))
+    }
+
+    /// Input sent before anything is read: false when the guest has closed its end. The program
+    /// then ended first (a quick one, or one that stopped reading its input), and its exit
+    /// report, sent before the close, waits to be read with `run`, which fails on its own when
+    /// the connection is really gone. Other errors are thrown.
+    public func sendInput(_ bytes: [UInt8]) throws -> Bool {
+        return try Self.delivered { try sendStdin(bytes) }
+    }
+
+    /// Ends the input, as `sendInput` sends it.
+    public func endInput() throws -> Bool {
+        return try Self.delivered { try sendStdinEnd() }
+    }
+
+    private static func delivered(_ send: () throws -> Void) throws -> Bool {
+        do {
+            try send()
+            return true
+        } catch let GuestProtocolError.io(operation, code) where operation == "write" && [EPIPE, ECONNRESET, ENOTCONN].contains(code) {
+            return false
+        }
     }
 
     /// Sets the size of the program's terminal (exec with `terminal` only).

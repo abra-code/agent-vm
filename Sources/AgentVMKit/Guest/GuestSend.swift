@@ -171,10 +171,19 @@ public final class GuestSend: @unchecked Sendable {
                 guard count > 0 else {
                     break
                 }
+                let delivered: Bool
                 do {
-                    try session.sendStdin(Array(buffer[0..<count]))
+                    delivered = try session.sendInput(Array(buffer[0..<count]))
                 } catch {
                     abort(process: process, descriptor: descriptor)
+                    return
+                }
+                guard delivered else {
+                    // The guest ended first (its script failed, say). No shutdown here: it would
+                    // drop the guest's report, which run() reads.
+                    if process.isRunning {
+                        process.terminate()
+                    }
                     return
                 }
                 sent += Int64(count)
@@ -190,8 +199,8 @@ public final class GuestSend: @unchecked Sendable {
                 return
             }
             event(.progress(sent: sent, total: max(total, sent)))
-            // A failure here is the guest gone, which session.run reports.
-            try? session.sendStdinEnd()
+            // The guest gone here is for session.run to report.
+            _ = try? session.endInput()
             writer.ended = true
         }
 

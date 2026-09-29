@@ -969,17 +969,28 @@ public final class ImageBuilder {
         let session = try ExecSession(descriptor: descriptor, request: ImageRecipe.inputRequest(path: path))
         var hasher = SHA256()
         var total: Int64 = 0
+        // The guest program may end before it has everything (the guest's disk full, say):
+        // sending stops, and its report says why (see sendInput).
+        var delivered = true
         while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty {
             hasher.update(data: chunk)
-            try session.sendStdin(Array(chunk))
+            delivered = try session.sendInput(Array(chunk))
+            guard delivered else {
+                break
+            }
             total += Int64(chunk.count)
         }
-        try session.sendStdinEnd()
+        if delivered {
+            delivered = try session.endInput()
+        }
         var output: [UInt8] = []
         let report = try session.run(stdout: { output += $0 }, stderr: { output += $0 })
         guard report == ExitReport(status: 0) else {
             throw AgentVMError.guestCommandFailed(command: "send input \(name)", status: report.shellStatus,
                                                   output: String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        guard delivered else {
+            throw AgentVMError.guestRefused("input \(name): it stopped taking the file after \(total) of \(before.st_size) bytes, yet reported success; build the image again")
         }
         var after = stat()
         guard stat(file.path, &after) == 0, total == Int64(before.st_size), after.st_size == before.st_size,
@@ -1062,10 +1073,11 @@ public final class ImageBuilder {
     private func runStreaming(_ machine: MacMachine, _ what: String, _ request: GuestRequest, input: Data?, readTimeout: Int, emit: LineEmitter) async throws -> ExitReport {
         return try await withGuest(machine, what, readTimeout: readTimeout) { descriptor in
             let session = try ExecSession(descriptor: descriptor, request: request)
-            if let input {
-                try session.sendStdin(Array(input))
+            // A step that ended first (a quick one, or one that failed before reading its
+            // input) leaves its report and output to run() (see sendInput).
+            if try input.map({ try session.sendInput(Array($0)) }) ?? true {
+                _ = try session.endInput()
             }
-            try session.sendStdinEnd()
             let report = try session.run(stdout: { emit.add($0) }, stderr: { emit.add($0) })
             emit.flush()
             return report

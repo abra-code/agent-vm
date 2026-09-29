@@ -126,3 +126,113 @@ import Testing
         #expect(file == 0o644 && folder == 0o755)
     }
 }
+
+/// Input sent before anything is read, against a fake guest that ends first: the program's own
+/// report is what the caller gets, never "write failed: Broken pipe".
+@Suite struct InputDeliveryTests {
+    /// A fake guest on one end of a socket pair. `act` gets its channel after the request was
+    /// read and the exec answered; the guest's end is closed when `act` returns. `finish` waits
+    /// for the guest before closing the other end, so no thread uses a closed descriptor.
+    final class FakeGuest {
+        let host: Int32
+        private let done = DispatchSemaphore(value: 0)
+
+        init(_ act: @escaping @Sendable (FrameChannel) -> Void) throws {
+            var pair: [Int32] = [-1, -1]
+            guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else {
+                throw AgentVMError.system(operation: "socketpair", code: errno)
+            }
+            host = pair[0]
+            let guest = FrameChannel(descriptor: pair[1])
+            let done = self.done
+            Thread.detachNewThread {
+                defer { done.signal() }
+                _ = try? guest.receive()
+                try? guest.send(.response, json: GuestResponse(ok: true, v: AgentVM.guestProtocolVersion, pid: 42))
+                act(guest)
+                guest.close()
+            }
+        }
+
+        func finish() {
+            // Ends a guest still waiting for input (a test that failed before sending it all).
+            shutdown(host, SHUT_RDWR)
+            done.wait()
+            close(host)
+        }
+    }
+
+    /// Reads input frames until `count` bytes arrived or stdin ended.
+    static func take(_ guest: FrameChannel, _ count: Int) -> Int {
+        var got = 0
+        while got < count, let frame = try? guest.receive(), frame.type == .stdin {
+            got += frame.payload.count
+        }
+        return got
+    }
+
+    func bigFile(_ scratch: Scratch) throws -> URL {
+        let url = scratch.root.appendingPathComponent("input.bin")
+        // Far more than the socket buffers hold, so sending is still under way at the close.
+        try Data(repeating: 7, count: 12 << 20).write(to: url)
+        return url
+    }
+
+    @Test func sendInputReportsAGuestThatClosed() throws {
+        let fake = try FakeGuest { guest in
+            try? guest.send(.exit, json: ExitReport(status: 3))
+        }
+        defer { fake.finish() }
+        let session = try ExecSession(descriptor: fake.host, request: GuestRequest(op: .exec, argv: ["/bin/true"]))
+        #expect(try session.sendInput([UInt8](repeating: 0, count: 8 << 20)) == false)
+        #expect(try session.endInput() == false)
+        #expect(try session.run(stdout: { _ in }, stderr: { _ in }) == ExitReport(status: 3))
+    }
+
+    @Test func aGuestFailingPartwayGivesItsOwnError() throws {
+        let scratch = try Scratch()
+        let fake = try FakeGuest { guest in
+            _ = Self.take(guest, 1 << 20)
+            try? guest.send(Frame(.stderr, Array("cat: No space left on device\n".utf8)))
+            try? guest.send(.exit, json: ExitReport(status: 1))
+        }
+        defer { fake.finish() }
+        do {
+            _ = try ImageBuilder.streamInput(try bigFile(scratch), name: "xip", to: "/tmp/x", descriptor: fake.host)
+            Issue.record("the send succeeded")
+        } catch let AgentVMError.guestCommandFailed(command, status, output) {
+            #expect(command == "send input xip")
+            #expect(status == 1)
+            #expect(output == "cat: No space left on device")
+        }
+    }
+
+    @Test func aGuestStoppingEarlyWithSuccessIsNotTakenAsComplete() throws {
+        let scratch = try Scratch()
+        let fake = try FakeGuest { guest in
+            _ = Self.take(guest, 1 << 20)
+            try? guest.send(.exit, json: ExitReport(status: 0))
+        }
+        defer { fake.finish() }
+        do {
+            _ = try ImageBuilder.streamInput(try bigFile(scratch), name: "xip", to: "/tmp/x", descriptor: fake.host)
+            Issue.record("the send succeeded")
+        } catch let AgentVMError.guestRefused(reason) {
+            #expect(reason.hasPrefix("input xip: it stopped taking the file after "), "\(reason)")
+            #expect(reason.contains("of \(12 << 20) bytes, yet reported success"), "\(reason)")
+        }
+    }
+
+    @Test func aCompleteSendIsRecorded() throws {
+        let scratch = try Scratch()
+        let file = try bigFile(scratch)
+        let fake = try FakeGuest { guest in
+            _ = Self.take(guest, Int.max)
+            try? guest.send(.exit, json: ExitReport(status: 0))
+        }
+        defer { fake.finish() }
+        let info = try ImageBuilder.streamInput(file, name: "xip", to: "/tmp/x", descriptor: fake.host)
+        #expect(info.bytes == Int64(12 << 20))
+        #expect(info.sha256.count == 64)
+    }
+}

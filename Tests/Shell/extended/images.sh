@@ -68,6 +68,29 @@ test_a_failing_recipe_marks_the_image_failed() {
     assert_status 0 || return 1
 }
 
+# A copy step whose program fails before reading its input (the box account cannot make a folder
+# in /Library): the build reports the program's own error, not the write that found the
+# connection closed ("Broken pipe").
+test_a_step_failing_before_its_input_reports_its_own_error() {
+    require_image || return $(( $? == 1 ? 0 : 1 ))
+    local _image="shtest-early-$$"
+    "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
+    cleanup_on_exit image "$_image"
+    write_recipe "$SCRATCH/recipe" '{"version": 1, "steps": [{"name": "blocked", "copy": "files/big", "to": "/Library/shtest-blocked/big"}]}'
+    # Far more than the connection holds, so sending is under way when the program ends.
+    /bin/dd if=/dev/zero of="$SCRATCH/recipe/files/big" bs=1048576 count=16 2> /dev/null
+    local _made=$?
+    [ "$_made" -eq 0 ] || { fail "cannot make the 16 MB test file (dd status $_made)"; return 1; }
+    run_avm image create "$_image" --from "$TEST_IMAGE" --recipe "$SCRATCH/recipe/recipe.json"
+    assert_status 1 || return 1
+    assert_err_contains "recipe step 1 (blocked)" || return 1
+    assert_err_contains "Permission denied" || return 1
+    assert_not_contains "$ERR" "Broken pipe" "the error" || return 1
+    assert_eq "$(image_state "$_image")" "failed" "the image's state" || return 1
+    run_avm image delete "$_image"
+    assert_status 0 || return 1
+}
+
 # SIGINT during a recipe step: the step is stopped, the guest shut down through its daemon, the
 # image marked failed with "canceled", and agent-vm exits with 128 + 2.
 test_a_canceled_build_is_marked_canceled() {
