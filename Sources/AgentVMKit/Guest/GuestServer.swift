@@ -269,7 +269,11 @@ public final class GuestServer: @unchecked Sendable {
             for group in groups {
                 _ = kill(-group, SIGHUP)
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + hangupGrace) {
+            // A thread of its own, not asyncAfter: a dispatch timer may fire a tenth of its
+            // delay late, and later still when the shared queue is busy (measured up to 1.3 s
+            // late under a parallel test run).
+            Thread.detachNewThread {
+                Thread.sleep(forTimeInterval: hangupGrace)
                 for group in groups {
                     _ = kill(-group, SIGKILL)
                 }

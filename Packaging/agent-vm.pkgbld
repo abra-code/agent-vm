@@ -6,6 +6,7 @@
       "PREINSTALL" : "",
       "PAYLOAD" : [
         {
+          "OWNER" : "root",
           "VERIFY" : {
             "ARCHITECTURES" : [
               "arm64"
@@ -15,13 +16,13 @@
             "SECURE_TIMESTAMP" : true,
             "SIGNED_BY" : "Developer ID Application: Tomasz Kukielka (T9NM2ZLDTY)"
           },
-          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/agent-vm",
           "MODE" : "0755",
           "SOURCE" : "${ARTIFACTS_DIR}\/agent-vm",
           "GROUP" : "wheel",
-          "OWNER" : "root"
+          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/agent-vm"
         },
         {
+          "OWNER" : "root",
           "VERIFY" : {
             "ARCHITECTURES" : [
               "arm64"
@@ -31,11 +32,10 @@
             "SECURE_TIMESTAMP" : true,
             "SIGNED_BY" : "Developer ID Application: Tomasz Kukielka (T9NM2ZLDTY)"
           },
-          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/agent-vm-guest",
           "MODE" : "0755",
           "SOURCE" : "${ARTIFACTS_DIR}\/agent-vm-guest",
           "GROUP" : "wheel",
-          "OWNER" : "root"
+          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/agent-vm-guest"
         },
         {
           "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/packs.json",
@@ -95,12 +95,10 @@
     }
   ],
   "DISTRIBUTION" : {
-    "HOST_ARCHITECTURES" : [
-      "arm64"
-    ],
+    "CUSTOMIZE" : "allow",
     "TITLE" : "agent-vm",
     "REQUIRE_SCRIPTS" : false,
-    "CUSTOMIZE" : "allow",
+    "DOMAIN" : "user",
     "RESOURCES" : {
       "README" : "",
       "CONCLUSION" : "conclusion.rtf",
@@ -108,12 +106,14 @@
       "WELCOME" : "",
       "BACKGROUND" : ""
     },
-    "DOMAIN" : "user"
+    "HOST_ARCHITECTURES" : [
+      "arm64"
+    ]
   },
   "FORMAT_VERSION" : 1,
   "PROJECT" : {
     "NAME" : "agent-vm",
-    "VERSION" : "0.4.3",
+    "VERSION" : "0.4.4",
     "OUTPUT_DIR" : "..\/.build\/package",
     "PACKAGE_NAME" : "${NAME}_${VERSION}.pkg",
     "MIN_OS_VERSION" : "27.0",
@@ -121,6 +121,7 @@
   },
   "SIGNING" : {
     "ENABLED" : true,
+    "APPLICATION_IDENTITY" : "",
     "INSTALLER_IDENTITY" : "Developer ID Installer: Tomasz Kukielka (T9NM2ZLDTY)"
   }
 }
