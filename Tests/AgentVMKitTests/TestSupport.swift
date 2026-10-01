@@ -116,3 +116,22 @@ func hasACL(_ path: String) -> Bool {
     }
     return errno != ENOENT
 }
+
+/// A flag one thread sets and another polls, with a signal for when the poller is done.
+final class StopFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    let finished = DispatchSemaphore(value: 0)
+
+    var isSet: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+}

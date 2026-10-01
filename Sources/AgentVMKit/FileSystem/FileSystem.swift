@@ -253,6 +253,80 @@ enum FileSystem {
         }
     }
 
+    // MARK: - By descriptor
+    //
+    // The same operations on an open descriptor, for trees an agent may still be changing: a
+    // path is looked up again at every call, so a folder checked a moment ago can be a symlink
+    // by the time it is used. A descriptor stays on the entry it was opened on.
+
+    /// Opens the folder `name` in the folder `parent` without following a symlink: a link (or
+    /// anything else that is not a folder) fails with ENOTDIR or ELOOP. `O_EVTONLY` needs no
+    /// read permission, and the descriptor still serves fstat, fchmod and the `*at` calls.
+    static func openFolder(at parent: Int32, _ name: String) -> Int32 {
+        return openat(parent, name, O_EVTONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    }
+
+    /// Opens the entry `name` in the folder `parent`, a symlink as itself; -1 when it cannot be
+    /// opened (an ACL that denies listing a folder refuses even this). `O_NONBLOCK` is for a
+    /// FIFO, which even this kind of open would wait on until something writes to it.
+    static func openEntry(at parent: Int32, _ name: String) -> Int32 {
+        return openat(parent, name, O_SYMLINK | O_EVTONLY | O_NONBLOCK | O_CLOEXEC)
+    }
+
+    /// `fstat` that first removes an ACL denying "readsecurity".
+    static func statusRemovingUnreadableACL(descriptor: Int32, name: String) throws -> stat {
+        var info = stat()
+        if fstat(descriptor, &info) != 0, errno == EACCES {
+            _ = removeACL(descriptor: descriptor)
+        }
+        guard fstat(descriptor, &info) == 0 else {
+            throw AgentVMError.system(operation: "stat \(name)", code: errno)
+        }
+        return info
+    }
+
+    /// `unlockEntry` for an open entry.
+    static func unlockEntry(descriptor: Int32, name: String) throws -> SavedEntry {
+        let info = try statusRemovingUnreadableACL(descriptor: descriptor, name: name)
+        if info.st_flags & userLockFlags != 0 {
+            _ = fchflags(descriptor, info.st_flags & ~userLockFlags)
+        }
+        let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED)
+        if acl != nil {
+            _ = removeACL(descriptor: descriptor)
+        }
+        if isDirectory(info), info.st_mode & S_IRWXU != S_IRWXU {
+            _ = fchmod(descriptor, (info.st_mode & 0o7777) | S_IRWXU)
+        }
+        return SavedEntry(info: info, acl: acl)
+    }
+
+    /// `restoreEntry` for an open entry.
+    static func restoreEntry(descriptor: Int32, _ saved: SavedEntry) {
+        let info = saved.info
+        if isDirectory(info), info.st_mode & S_IRWXU != S_IRWXU {
+            _ = fchmod(descriptor, info.st_mode & 0o7777)
+        }
+        if let acl = saved.acl {
+            _ = acl_set_fd_np(descriptor, acl, ACL_TYPE_EXTENDED)
+        }
+        if info.st_flags & userLockFlags != 0 {
+            _ = fchflags(descriptor, info.st_flags)
+        }
+    }
+
+    private static func removeACL(descriptor: Int32) -> Bool {
+        guard let security = filesec_init() else {
+            return false
+        }
+        defer { filesec_free(security) }
+        // _FILESEC_REMOVE_ACL, a C macro Swift does not import: ((void *)1).
+        guard filesec_set_property(security, FILESEC_ACL, UnsafeRawPointer(bitPattern: 1)) == 0 else {
+            return false
+        }
+        return fchmodx_np(descriptor, security) == 0
+    }
+
     /// The POSIX error code behind a Foundation error, for `AgentVMError.system`. Foundation
     /// reports its own codes (for example 513, "no write permission"), which strerror does not know.
     static func posixCode(_ error: Error) -> Int32 {

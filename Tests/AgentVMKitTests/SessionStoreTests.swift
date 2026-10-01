@@ -370,6 +370,157 @@ import Testing
         #expect(FileSystem.exists(outside.appendingPathComponent("keep.txt").path))
     }
 
+    // MARK: - an agent still running during the undo
+
+    /// Reports leave FIFOs out, so one left where a file or a folder was reads as a deletion.
+    /// Opening it would wait forever for a writer, with every session command behind the lock.
+    @Test(.timeLimit(.minutes(1)))
+    func aFIFOLeftWhereAnEntryWasDoesNotBlockUndo() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let original = try describeTree(scratch.project.path)
+        let session = try scratch.store.start(project: scratch.project.path)
+
+        try FileManager.default.removeItem(atPath: scratch.path("README.md"))
+        #expect(mkfifo(scratch.path("README.md"), 0o600) == 0)
+        try FileManager.default.removeItem(atPath: scratch.path("Sources"))
+        #expect(mkfifo(scratch.path("Sources"), 0o600) == 0)
+
+        let outcome = try scratch.store.undo(id: session.id)
+        #expect(outcome.restore?.failed.isEmpty == true)
+        #expect(try describeTree(scratch.project.path) == original)
+        // Moved aside, like everything else of the agent's.
+        let replaced = try #require(outcome.session.replacedTreePath)
+        for name in ["README.md", "Sources"] {
+            let info = try FileSystem.status(replaced + "/" + name)
+            #expect(info.st_mode & S_IFMT == S_IFIFO)
+        }
+        #expect(!FileSystem.exists(outcome.session.directory.appendingPathComponent(ProjectRestorer.stagingName).path))
+    }
+
+    /// The agent exchanges a folder of the project with a link to a folder outside it, again and
+    /// again, while the undo works through that folder's entries. Whatever the undo manages to
+    /// restore, nothing outside the project may be moved, written or deleted.
+    @Test(.timeLimit(.minutes(2)))
+    func undoNeverLeavesTheProjectThroughAFolderSwappedForALink() throws {
+        let scratch = try Scratch()
+        let outside = scratch.root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let count = 400
+        for index in 0..<count {
+            try scratch.write("a/modified-\(index)", "at session start\n")
+            try scratch.write("a/deleted-\(index)", "at session start\n")
+            // The same names outside: what a path-based undo would move away or overwrite.
+            try Data("the user's own\n".utf8).write(to: outside.appendingPathComponent("modified-\(index)"))
+        }
+        let outsideBefore = try describeTree(outside.path)
+        let session = try scratch.store.start(project: scratch.project.path)
+        for index in 0..<count {
+            try scratch.write("a/modified-\(index)", "changed by the agent\n")
+            try FileManager.default.removeItem(atPath: scratch.path("a/deleted-\(index)"))
+        }
+        symlink(outside.path, scratch.path("lnk"))
+
+        let stop = StopFlag()
+        let folder = scratch.path("a")
+        let link = scratch.path("lnk")
+        let flipper = Thread {
+            while !stop.isSet {
+                renamex_np(folder, link, UInt32(RENAME_SWAP))
+                renamex_np(folder, link, UInt32(RENAME_SWAP))
+            }
+            stop.finished.signal()
+        }
+        flipper.start()
+        let outcome = try scratch.store.undo(id: session.id)
+        stop.set()
+        stop.finished.wait()
+
+        #expect(try describeTree(outside.path) == outsideBefore)
+        let replaced = try #require(outcome.session.replacedTreePath)
+        let moved = try describeTree(replaced).filter {
+            if case .file(let data) = $0.kind {
+                return data == Data("the user's own\n".utf8)
+            }
+            return false
+        }
+        #expect(moved.isEmpty)
+    }
+
+    /// A locked FIFO where a deleted file was: it is opened up like any other entry of the
+    /// agent's, without being opened as a FIFO (which waits for a writer).
+    @Test(.timeLimit(.minutes(1)))
+    func aLockedFIFOLeftWhereAnEntryWasIsMovedAside() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let original = try describeTree(scratch.project.path)
+        let session = try scratch.store.start(project: scratch.project.path)
+
+        try FileManager.default.removeItem(atPath: scratch.path("README.md"))
+        #expect(mkfifo(scratch.path("README.md"), 0o600) == 0)
+        #expect(lchflags(scratch.path("README.md"), UInt32(UF_IMMUTABLE)) == 0)
+
+        let outcome = try scratch.store.undo(id: session.id)
+        #expect(outcome.restore?.failed.isEmpty == true)
+        #expect(try describeTree(scratch.project.path) == original)
+        let replaced = try #require(outcome.session.replacedTreePath)
+        #expect(try FileSystem.status(replaced + "/README.md").st_mode & S_IFMT == S_IFIFO)
+    }
+
+    /// The agent swaps a changed file for a FIFO in a folder it made read-only, after the
+    /// report was made: moving it aside must not open it.
+    @Test(.timeLimit(.minutes(1)))
+    func aFIFOPutWhereAChangedFileWasDoesNotBlockUndo() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let session = try scratch.store.start(project: scratch.project.path)
+        try scratch.write("Sources/App/main.swift", "changed by the agent\n")
+        let changes = try ChangeScanner.report(session: session).changes.filter { !$0.coveredByAncestor }
+
+        try FileManager.default.removeItem(atPath: scratch.path("Sources/App/main.swift"))
+        #expect(mkfifo(scratch.path("Sources/App/main.swift"), 0o600) == 0)
+        chmod(scratch.path("Sources/App"), 0o555)
+
+        let replaced = session.directory.appendingPathComponent("replaced-test").path
+        let result = try ProjectRestorer.restore(session: session, changes: changes, replacedPath: replaced)
+        #expect(result.failed.isEmpty)
+        #expect(try scratch.read("Sources/App/main.swift") == "print(\"hi\")\n")
+        #expect(try FileSystem.status(replaced + "/Sources/App/main.swift").st_mode & S_IFMT == S_IFIFO)
+    }
+
+    /// What the undo moves into the replaced tree is the agent's, a link to a folder outside
+    /// included: nothing moved there later may go through it.
+    @Test(.timeLimit(.minutes(2)))
+    func aLinkMovedIntoTheReplacedTreeIsNeverFollowed() throws {
+        for _ in 0..<20 {
+            let scratch = try Scratch()
+            let outside = scratch.root.appendingPathComponent("outside", isDirectory: true)
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+            try scratch.write("notes", "at session start\n")
+            try scratch.write("notes.unlisted-2/planted", "at session start\n")
+            let session = try scratch.store.start(project: scratch.project.path)
+            try scratch.write("notes", "changed by the agent\n")
+            try FileManager.default.removeItem(atPath: scratch.path("notes.unlisted-2/planted"))
+
+            let stop = StopFlag()
+            let entry = scratch.path("notes")
+            let planted = scratch.path("notes.unlisted-2/planted")
+            let agent = Thread {
+                while !stop.isSet {
+                    symlink(outside.path, entry)
+                    close(open(planted, O_CREAT | O_WRONLY, 0o600))
+                }
+                stop.finished.signal()
+            }
+            agent.start()
+            _ = try scratch.store.undo(id: session.id)
+            stop.set()
+            stop.finished.wait()
+
+            #expect(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
+        }
+    }
+
     // MARK: - awkward but legitimate projects, and agents that lock things down
 
     @Test func readOnlyFoldersAreSnapshottedAndRestored() throws {
