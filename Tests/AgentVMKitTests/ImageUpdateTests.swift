@@ -162,6 +162,55 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: image.updateCommitURL.path))
     }
 
+    /// While an update runs (it holds the update lock), its folder is nobody's leftover: a box
+    /// can be made from the image as it is, and the image cannot be deleted or changed by
+    /// another command.
+    @Test func aRunningUpdateIsLeftAloneAndBoxesCanBeMade() throws {
+        let fixture = try BoxScratch()
+        let image = fixture.image
+        let running = try #require(try fixture.images.tryLockForChange(image))
+        try FileManager.default.createDirectory(at: image.updateURL, withIntermediateDirectories: true)
+        try Data("half updated".utf8).write(to: image.updateURL.appendingPathComponent(ImageStore.diskName))
+        #expect(fixture.images.isBeingChanged(image))
+
+        let box = try fixture.boxes.create(name: "b1", from: image, imageStore: fixture.images)
+        #expect(try Data(contentsOf: box.diskURL) == Data(contentsOf: image.diskURL))
+        #expect(FileManager.default.fileExists(atPath: image.updateURL.path))
+        #expect(try fixture.images.tryLockForChange(image) == nil)
+        #expect(throws: AgentVMError.imageBusy(image.name)) { try fixture.images.delete(named: image.name) }
+        // The update itself clears what an earlier one left.
+        try fixture.images.settle(image, updating: true)
+        #expect(!FileManager.default.fileExists(atPath: image.updateURL.path))
+
+        // Once it ended (or was killed), the folder is a leftover again.
+        try FileManager.default.createDirectory(at: image.updateURL, withIntermediateDirectories: true)
+        running.release()
+        #expect(!fixture.images.isBeingChanged(image))
+        _ = try fixture.boxes.create(name: "b2", from: image, imageStore: fixture.images)
+        #expect(!FileManager.default.fileExists(atPath: image.updateURL.path))
+        try fixture.images.delete(named: image.name)
+    }
+
+    @Test func anUpdateIsDueWhenNoneEndedWellLately() {
+        var record = ImageStoreTests.record("tools", state: .ready)
+        let now = Date(timeIntervalSince1970: 1_800_100_000)
+        #expect(record.isUpdateDue(macOS: true, tools: true, olderThanHours: 24, now: now))
+        record.toolsCheckedAt = now.addingTimeInterval(-23 * 3600)
+        // Each part by itself: a tools update says nothing about macOS.
+        #expect(!record.isUpdateDue(macOS: false, tools: true, olderThanHours: 24, now: now))
+        #expect(record.isUpdateDue(macOS: false, tools: true, olderThanHours: 23, now: now))
+        #expect(record.isUpdateDue(macOS: true, tools: false, olderThanHours: 24, now: now))
+        #expect(record.isUpdateDue(macOS: true, tools: true, olderThanHours: 24, now: now))
+        record.macOSCheckedAt = now.addingTimeInterval(-3600)
+        #expect(!record.isUpdateDue(macOS: true, tools: true, olderThanHours: 24, now: now))
+        #expect(record.isUpdateDue(macOS: true, tools: true, olderThanHours: 0, now: now))
+        #expect(!record.isUpdateDue(macOS: false, tools: false, olderThanHours: 0, now: now))
+        // The expected duration travels in the event's JSON.
+        var event = ProgressEvent(.progress, "Booting", step: "boot")
+        event.expectedSeconds = 85
+        #expect(event.jsonLine.contains("\"expectedSeconds\":85"))
+    }
+
     /// A box made after a killed update gets the finished image, not half of it.
     @Test func aNewBoxFinishesADecidedUpdateFirst() throws {
         let fixture = try BoxScratch()

@@ -28,7 +28,8 @@ agent-vm image create dev-node --from dev --recipe Recipes/homebrew-node/recipe.
 | `message` | every event | The text a person would see, without its indentation. |
 | `step` | `progress` | The step's name, from the tables below. Names are stable; the messages are not. |
 | `fraction` | some `progress` | How far the step is, from 0 to 1: the macOS install, and recipe steps (steps done out of all). |
-| `index`, `count` | `recipe-step` | This step's number, from 1, and how many there are. |
+| `index`, `count` | `recipe-step`, `recipe-check`, `tools-update` | This step's (check's, recipe's) number, from 1, and how many there are. |
+| `expectedSeconds` | `boot` of `image update` | How long the last update of this image took that installed no macOS update, when one is on record: what this one will take unless it finds a macOS update. |
 | `image` | image commands | The image the event is about. `image update-guest` with several images names each one. |
 | `box` | box commands | The box the event is about. |
 | `output` | some `log` | `true` for a line printed by a program in the guest (a recipe step's output), cut to 200 characters; its `message` is the line as printed, without the indentation and bar the text form puts before it. |
@@ -46,7 +47,7 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 | `first-boot` | The first boot creates the account, logs it in and turns on SSH. |
 | `guest-daemon` | Installing `agent-vm-guest` over SSH. |
 | `command-line-tools` | Installing Xcode's Command Line Tools (unless `--no-command-line-tools`). |
-| `recipe`, `recipe-input`, `recipe-step` | With `--recipe`: the recipe begins, each input file is sent, each step runs. |
+| `recipe`, `recipe-input`, `recipe-step`, `recipe-check` | With `--recipe`: the recipe begins, each input file is sent, each step runs, each check runs. |
 | `shutdown` | Shutting the guest down. |
 
 `image create --from` (an image from an image):
@@ -72,6 +73,7 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 | `command-line-tools` | A newer Command Line Tools package is installed. |
 | `tools-update` | One recipe's update steps begin, with `index` and `count` (which recipe of how many that have update steps). |
 | `recipe-step` | Each update step, as in `image create`. |
+| `recipe-check` | Each of the recipe's checks, with `index` and `count`. |
 | `replace-guest-daemon` | Putting this agent-vm's `agent-vm-guest` into the image, when it differs (unless `--macos` or `--tools` alone). |
 | `shutdown` | Shutting the guest down. |
 | `check-guest-daemon` | Booting again to check the new `agent-vm-guest` (only when it was replaced), then `shutdown` again. |

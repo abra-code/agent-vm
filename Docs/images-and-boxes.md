@@ -95,6 +95,8 @@ agent-vm box recreate web                                  # each box, to get wh
 
 `image update` installs the macOS update Apple offers (within the same major version), runs the `update` steps of the recipes the image was built with, such as the newest agents, and puts in the guest daemon of the agent-vm you run, when the image has an older one. It works on a copy of the image's disk and puts it in place only when everything succeeded, so a failed update leaves the image as it was. `box list` then says "needs recreate" for the boxes made before. A macOS update costs about 15 GB of disk that the image no longer shares with its older boxes, until they are recreated or deleted.
 
+The image can be used while it is updated: boxes made meanwhile get it as it was. `--if-older-than <hours>` skips an image whose parts asked for were updated or checked within that time: `agent-vm image update tools --tools --if-older-than 24` refreshes the tools at most once a day and takes a minute or two when it does, so it can be run before a session; the full update, which can meet a macOS update of 15 minutes, belongs in a job (`agent-vm job start -- image update tools --if-older-than 24`).
+
 With one image this is the whole procedure. With layers, each image is updated by itself (`image update dev dev-node dev-agents`), and each then holds its own copy of the new macOS: one more reason to keep one image.
 
 ### After upgrading agent-vm
@@ -187,7 +189,7 @@ There is no command for it, on purpose: a box is a disposable copy. Whatever you
 As many as your disk holds: a stopped box costs only the space it wrote. At most two can run at once, because macOS runs at most two macOS virtual machines at a time, counting image builds and updates and other apps' virtual machines (`agent-vm status` and `agent-vm doctor` show how many are running). A start or build with no free slot fails with exit status 75 ("no free VM slot"); try again when a VM has stopped. A box, or a new image, that was refused before its first boot is left as it was, so the same command can simply run again.
 
 **Can I update an image while boxes made from it are running?**
-Yes. Running boxes use their own disks, not the image's. The update does need one of the two virtual machine slots. While another agent-vm command uses an image (building or updating it, or building a derived image from it), `box create` from it is refused as busy; try again when that command ends.
+Yes. Running boxes use their own disks, not the image's. The update does need one of the two virtual machine slots. `image update` works on a copy, so `box create` keeps working during it and gets the image as it was. While an image is being built, set up (`image setup`) or cloned by another command, `box create` from it is refused as busy; try again when that command ends.
 
 **Where does my work go when I delete a box?**
 Work in your project folder is on your Mac and stays. Anything written only inside the box (files in the box account's home, build products kept on the box's disk) is deleted with it.

@@ -119,8 +119,10 @@ public final class ImageBuilder {
     }
 
     /// A step begins (or moves on), with the line a person sees for it.
-    func progress(_ step: String, _ text: String, fraction: Double? = nil, index: Int? = nil, count: Int? = nil) {
-        report(ProgressEvent(.progress, text, step: step, fraction: fraction, index: index, count: count, image: subject))
+    func progress(_ step: String, _ text: String, fraction: Double? = nil, index: Int? = nil, count: Int? = nil, expectedSeconds: Double? = nil) {
+        var event = ProgressEvent(.progress, text, step: step, fraction: fraction, index: index, count: count, image: subject)
+        event.expectedSeconds = expectedSeconds
+        report(event)
     }
 
     /// Something the user may need to act on; the build goes on.
@@ -489,7 +491,13 @@ public final class ImageBuilder {
             throw AgentVMError.imageBusy(image.name)
         }
         defer { lock.release() }
-        image = try store.settle(image)
+        guard let changeLock = try store.tryLockForChange(image) else {
+            throw AgentVMError.imageBusy(image.name)
+        }
+        defer { changeLock.release() }
+        // `updating`: this command holds the update lock itself, so an `Update/` folder is a killed
+        // update's leftover.
+        image = try store.settle(image, updating: true)
 
         let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
         let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
@@ -842,7 +850,7 @@ public final class ImageBuilder {
         }
     }
 
-    nonisolated static func sha256(of url: URL) throws -> String {
+    public nonisolated static func sha256(of url: URL) throws -> String {
         return SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
     }
 
@@ -1073,7 +1081,10 @@ public final class ImageBuilder {
             }
             log("      done in \(Int(Self.seconds(clock.now - stepBegan))) s")
         }
-        for check in checks {
+        for (index, check) in checks.enumerated() {
+            // Counted, so a client can show how far a recipe is past its last step.
+            let shown = check.split(whereSeparator: \.isNewline).first.map { $0.count > 80 ? String($0.prefix(77)) + "..." : String($0) } ?? ""
+            progress("recipe-check", "  [check \(index + 1)/\(checks.count)] \(shown)", index: index + 1, count: checks.count)
             let result: (report: ExitReport, stdout: String, stderr: String)
             do {
                 result = try await guestCapture(machine, ImageRecipe.checkRequest(check, variables: variables), readTimeout: Self.checkTimeoutSeconds)

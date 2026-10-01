@@ -26,6 +26,9 @@ public struct ProgressEvent: Codable, Equatable, Sendable {
     /// progress, recipe steps: this step's number (from 1) and how many there are.
     public var index: Int?
     public var count: Int?
+    /// progress, the first step of `image update`: how long the last update of this image
+    /// took that installed no macOS update, in seconds, when one is on record.
+    public var expectedSeconds: Double?
     /// The image or box the event is about.
     public var image: String?
     public var box: String?
@@ -37,7 +40,7 @@ public struct ProgressEvent: Codable, Equatable, Sendable {
     public var text: String
 
     private enum CodingKeys: String, CodingKey {
-        case event, step, fraction, index, count, image, box, output, message
+        case event, step, fraction, index, count, expectedSeconds, image, box, output, message
     }
 
     /// `text` is the line as printed; `message` is it without leading spaces.
@@ -62,6 +65,7 @@ public struct ProgressEvent: Codable, Equatable, Sendable {
         fraction = try container.decodeIfPresent(Double.self, forKey: .fraction)
         index = try container.decodeIfPresent(Int.self, forKey: .index)
         count = try container.decodeIfPresent(Int.self, forKey: .count)
+        expectedSeconds = try container.decodeIfPresent(Double.self, forKey: .expectedSeconds)
         image = try container.decodeIfPresent(String.self, forKey: .image)
         box = try container.decodeIfPresent(String.self, forKey: .box)
         output = try container.decodeIfPresent(Bool.self, forKey: .output)

@@ -135,6 +135,27 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     /// A box records the revision it was cloned at, so it can tell that its image moved on.
     public var revision: Int?
     public var updatedAt: Date?
+    /// When `image update` last looked for a macOS update, and when it last ran the recipes'
+    /// update steps, and ended well, whether or not anything changed; nil when it never did.
+    /// Kept apart: a quick tools update before a session says nothing about macOS.
+    public var macOSCheckedAt: Date?
+    public var toolsCheckedAt: Date?
+    /// How long the last `image update` took that ran the tools' update steps and neither
+    /// installed a macOS update nor replaced the guest daemon, in seconds: what the next one
+    /// of that kind can be expected to take.
+    public var updateSeconds: Double?
+
+    /// Whether an update of the parts named is due: for one of them, none ended well within
+    /// the last `hours`.
+    public func isUpdateDue(macOS: Bool, tools: Bool, olderThanHours hours: Double, now: Date = Date()) -> Bool {
+        func due(_ checked: Date?) -> Bool {
+            guard let checked else {
+                return true
+            }
+            return now.timeIntervalSince(checked) >= hours * 3600
+        }
+        return (macOS && due(macOSCheckedAt)) || (tools && due(toolsCheckedAt))
+    }
 
     /// The image this one was built from (`image create --from`), and that image's recipe
     /// digest at the time, if any.

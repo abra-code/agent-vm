@@ -129,7 +129,7 @@ test_image_update_runs_update_steps_in_place() {
       "description": "update test",
       "parameters": {"mark": {"default": "one"}},
       "steps": [{ "name": "note", "run": "echo \"built $AGENT_VM_PARAM_MARK\" > ~/shtest-upd.txt" }],
-      "update": [{ "name": "note again", "run": "[ \"$AGENT_VM_PARAM_MARK\" != fail ] && echo \"updated $AGENT_VM_PARAM_MARK\" >> ~/shtest-upd.txt" }],
+      "update": [{ "name": "note again", "run": "[ \"$AGENT_VM_PARAM_MARK\" != fail ] && { [ \"$AGENT_VM_PARAM_MARK\" != slow ] || sleep 20; } && echo \"updated $AGENT_VM_PARAM_MARK\" >> ~/shtest-upd.txt" }],
       "checks": ["tr \"\\n\" \",\" < ~/shtest-upd.txt"]
     }'
     run_avm image create "$_image" --from "$TEST_IMAGE" --recipe "$SCRATCH/recipe/recipe.json"
@@ -155,6 +155,29 @@ test_image_update_runs_update_steps_in_place() {
     run_avm box list
     assert_out_contains "needs recreate: image $_image was updated since this box was made" || return 1
 
+    # While an update runs, the image stays usable: a box is made from it as it is, the lists
+    # say it is being updated, and a second update or a delete is refused as busy.
+    "$AGENT_VM" image update "$_image" --tools --set mark=slow > "$SCRATCH/slow.out" 2>&1 &
+    local _update=$!
+    wait_for_text "$SCRATCH/slow.out" "note again" 120 || { fail "the slow update did not reach its step"; kill "$_update"; return 1; }
+    run_avm image list
+    assert_out_contains "(being updated" || return 1
+    run_avm box create "$_box-during" --image "$_image"
+    assert_status 0 || { kill "$_update"; return 1; }
+    cleanup_on_exit box "$_box-during"
+    run_avm image update "$_image" --tools
+    assert_status 1 || return 1
+    assert_err_contains "in use" || return 1
+    run_avm image delete "$_image"
+    assert_status 1 || return 1
+    wait "$_update"
+    assert_eq "$?" "0" "the slow update's status" || return 1
+    run_avm image info "$_image" --json
+    assert_json revision "2" || return 1
+    run_avm box list
+    assert_out_contains "$_box-during" || return 1
+    "$AGENT_VM" box delete "$_box-during"
+
     # A failing update step: reported, and nothing of it is kept.
     # Nothing to do for the daemon: the image was just built with this agent-vm's. No boot is
     # wasted on a second check, and the image keeps its revision.
@@ -170,8 +193,8 @@ test_image_update_runs_update_steps_in_place() {
     assert_out_contains "$_image is unchanged" || return 1
     run_avm image info "$_image" --json
     assert_json state "ready" || return 1
-    assert_json revision "1" || return 1
-    assert_json recipes.0.parameters.mark "two" || return 1
+    assert_json revision "2" || return 1
+    assert_json recipes.0.parameters.mark "slow" || return 1
     assert_missing "$_folder/Update" || return 1
 
     # The recreated box has what the first update wrote, and not the failed one's.
@@ -184,7 +207,7 @@ test_image_update_runs_update_steps_in_place() {
     "$AGENT_VM" box stop "$_box"
     "$AGENT_VM" box delete "$_box"
     "$AGENT_VM" image delete "$_image"
-    assert_eq "$_output" $'built one\nupdated two' "the image after the update" || return 1
+    assert_eq "$_output" $'built one\nupdated two\nupdated slow' "the image after the updates" || return 1
 }
 
 test_a_failing_recipe_marks_the_image_failed() {

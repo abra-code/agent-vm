@@ -39,7 +39,13 @@ extension ImageBuilder {
             throw AgentVMError.imageBusy(image.name)
         }
         defer { lock.release() }
-        image = try store.settle(image)
+        guard let changeLock = try store.tryLockForChange(image) else {
+            throw AgentVMError.imageBusy(image.name)
+        }
+        defer { changeLock.release() }
+        // `updating`: this command holds the update lock itself, so an `Update/` folder is a killed
+        // update's leftover.
+        image = try store.settle(image, updating: true)
         let password = try String(contentsOf: image.passwordURL, encoding: .utf8)
 
         let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)

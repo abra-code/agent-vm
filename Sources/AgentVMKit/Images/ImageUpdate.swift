@@ -12,6 +12,9 @@
 // `Update.commit` (one atomic step) and its files take the image's files' place
 // (`ImageStore.settle`, which also finishes a commit that a killed agent-vm left halfway). A
 // failure, a cancel or a kill before that rename leaves the image as it was, still ready.
+// The image stays usable meanwhile: boxes and images can be cloned from it while its copy is
+// updated (they get the image as it was), since only the making of the copy and the final
+// moves hold the image's own lock.
 //
 // A macOS update rewrites about 15 GB of the disk (measured), which the image then no longer
 // shares with boxes and images cloned from it earlier.
@@ -147,6 +150,10 @@ extension ImageBuilder {
     /// restart may take to bring the new build up (measured: 2 minutes).
     static let macOSUpdateSilenceSeconds = 3600
     static let macOSRestartTimeout: Duration = .seconds(2700)
+    /// How long a finished update waits for the image's lock before it gives up.
+    static let commitPatience: Duration = .seconds(120)
+    /// How long the second boot of a replaced guest daemon waits for a virtual machine slot.
+    static let slotPatience: Duration = .seconds(900)
 
     /// One recipe the image keeps, ready to run its update steps.
     struct ToolsPlan {
@@ -171,13 +178,19 @@ extension ImageBuilder {
     public func update(_ options: ImageUpdateOptions) async throws -> ImageUpdateResult {
         var image = try updatableImage(named: options.name, operation: "update")
         subject = image.name
-        guard let lock = try store.tryLock(image) else {
+        // Held throughout: one command changes an image at a time.
+        guard let changeLock = try store.tryLockForChange(image) else {
             throw AgentVMError.imageBusy(image.name)
         }
-        defer { lock.release() }
+        defer { changeLock.release() }
+        // The image's own lock is held only while the copy is made, and again while it is put
+        // in place: in between, boxes can be made from the image as it is.
+        // A box being cloned from the image holds it for a moment: wait for that.
+        var cloning: ImageStore.Lock? = try await lockToCommit(image)
+        defer { cloning?.release() }
         // Before the free space is measured: an update that was killed may have left gigabytes
         // in `Update/`. The record is read again under the lock.
-        image = try store.settle(image)
+        image = try store.settle(image, updating: true)
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "update")
         }
@@ -190,7 +203,7 @@ extension ImageBuilder {
             throw AgentVMError.hostNotReady("the guest daemon \(guestDaemon.path) is missing; Scripts/build.sh builds it next to agent-vm")
         }
         if !options.tools, let name = options.parameters.keys.sorted().first {
-            throw AgentVMError.invalidRecipe(path: image.recipesURL.path, reason: "--set \(name) changes a recipe's parameter; it needs the tools update (leave out --macos, or add --tools)")
+            throw AgentVMError.invalidRecipe(path: image.recipesURL.path, reason: "--set \(name) changes a recipe's parameter; it needs the tools update (add --tools, or leave out --macos and --guest)")
         }
 
         let work = image.updateURL
@@ -202,7 +215,10 @@ extension ImageBuilder {
             try? FileSystem.removeTree(work.path)
             throw error
         }
+        cloning?.release()
+        cloning = nil
         var record = image.record
+        let began = ContinuousClock.now
         var changed = false
         var previousBuild: String?
         var updatedRecipes: [String] = []
@@ -214,7 +230,8 @@ extension ImageBuilder {
             let auxiliaryStorage = VZMacAuxiliaryStorage(url: files.auxiliaryStorage)
             let machine = MacMachine(configuration: try spec(image).configuration(for: files, auxiliaryStorage: auxiliaryStorage))
             try checkCanceled()
-            progress("boot", "Booting a copy of \(image.name)")
+            progress("boot", "Booting a copy of \(image.name)\(image.record.updateSeconds.map { " (the last update took \(Int($0.rounded())) s)" } ?? "")",
+                     expectedSeconds: image.record.updateSeconds)
             try await machine.start(provisioning: nil)
             do {
                 let hello = try await waitForDaemon(machine, attempts: 180)
@@ -257,9 +274,32 @@ extension ImageBuilder {
                 await stopAfterFailure(machine)
                 throw error
             }
+            let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+            // What this run looked at, and how long a run without a macOS install takes.
+            // Of a tools update only, and not one that also replaced the daemon (a second boot,
+            // and maybe a wait for a slot): the time a client shows before a wait it chose.
+            let seconds = options.tools && previousBuild == nil && previousGuest == nil ? Self.seconds(ContinuousClock.now - began).rounded() : nil
+            func stamp(_ record: inout ImageRecord) {
+                if options.macOS {
+                    record.macOSCheckedAt = now
+                }
+                if options.tools {
+                    record.toolsCheckedAt = now
+                }
+                if let seconds {
+                    record.updateSeconds = seconds
+                }
+            }
             guard changed else {
                 try FileSystem.removeTree(work.path)
                 log("Nothing to update in \(image.name)")
+                // Only the record, when this run looked at macOS or the tools: the image's
+                // files are as they were.
+                if options.macOS || options.tools {
+                    let lock = try await lockToCommit(image)
+                    defer { lock.release() }
+                    image = try store.update(try store.image(named: image.name)) { stamp(&$0) }
+                }
                 return ImageUpdateResult(image: image, changed: false, previousMacOSBuild: nil, recipes: [], previousGuestVersion: nil)
             }
             progress("commit", "Putting the updated disk in place")
@@ -268,7 +308,10 @@ extension ImageBuilder {
                 record.recipe = ImageRecord.RecipeInfo.combined(own)
             }
             record.revision = (record.revision ?? 0) + 1
-            record.updatedAt = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+            record.updatedAt = now
+            stamp(&record)
+            let lock = try await lockToCommit(image)
+            defer { lock.release() }
             try store.commitUpdate(image, record: record)
         } catch {
             // Nothing of the image itself was touched: it stays ready, as it was.
@@ -283,6 +326,22 @@ extension ImageBuilder {
         }
         image = try store.image(named: image.name)
         return ImageUpdateResult(image: image, changed: true, previousMacOSBuild: previousBuild, recipes: updatedRecipes, previousGuestVersion: previousGuest)
+    }
+
+    /// The image's own lock, for making the update's copy and for putting the finished update
+    /// in place: a box or an image being cloned from it holds the lock for a moment, so this
+    /// waits up to `commitPatience`.
+    private func lockToCommit(_ image: GoldenImage) async throws -> ImageStore.Lock {
+        let deadline = ContinuousClock.now + Self.commitPatience
+        while true {
+            if let lock = try store.tryLock(image) {
+                return lock
+            }
+            guard ContinuousClock.now < deadline else {
+                throw AgentVMError.imageBusy(image.name)
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
     }
 
     /// Whether agent-vm-guest has Full Disk Access now, as the record keeps it; a grant the
@@ -301,11 +360,29 @@ extension ImageBuilder {
     /// Full Disk Access, and shuts down. Returns the record with the new daemon in it.
     private func checkReplacedGuestDaemon(_ files: MachineFiles, image: GoldenImage, record: ImageRecord, digest: String, requirement: String?) async throws -> ImageRecord {
         var record = record
-        let auxiliaryStorage = VZMacAuxiliaryStorage(url: files.auxiliaryStorage)
-        let machine = MacMachine(configuration: try spec(image).configuration(for: files, auxiliaryStorage: auxiliaryStorage))
         try checkCanceled()
         progress("check-guest-daemon", "Booting again to check the new agent-vm-guest")
-        try await machine.start(provisioning: nil)
+        // Between the two boots the update holds no virtual machine slot, and a box started
+        // in that moment can take the last one: wait for a slot rather than lose the update.
+        let deadline = ContinuousClock.now + Self.slotPatience
+        var waiting = false
+        var machine: MacMachine
+        while true {
+            // A new machine for every try: one that was refused is not started again.
+            let auxiliaryStorage = VZMacAuxiliaryStorage(url: files.auxiliaryStorage)
+            machine = MacMachine(configuration: try spec(image).configuration(for: files, auxiliaryStorage: auxiliaryStorage))
+            do {
+                try await machine.start(provisioning: nil)
+                break
+            } catch AgentVMError.noFreeVMSlot where ContinuousClock.now < deadline {
+                if !waiting {
+                    waiting = true
+                    notice("  note: no free virtual machine slot for the second boot; waiting for one (up to \(Self.slotPatience.components.seconds / 60) minutes)")
+                }
+                try checkCanceled()
+                try await Task.sleep(for: .seconds(5))
+            }
+        }
         do {
             let hello = try await waitForDaemon(machine, attempts: 180)
             let missing = GuestFeature.all.filter { !(hello.features ?? []).contains($0) }

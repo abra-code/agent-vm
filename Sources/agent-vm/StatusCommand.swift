@@ -61,7 +61,7 @@ struct StatusCommand: ParsableCommand {
             FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
         }
         let summary = Summary(
-            images: images.map { ImageCommand.List.Entry(record: $0.record, path: $0.directory.path) },
+            images: images.map { ImageCommand.List.Entry(record: $0.record, path: $0.directory.path, updating: $0.record.state == .ready && options.imageStore.isBeingChanged($0)) },
             boxes: boxes.map { box in BoxCommand.List.Entry(box, image: images.first { $0.name == box.record.image }?.record) },
             jobs: jobs,
             jobsError: jobsError,
@@ -101,6 +101,9 @@ struct StatusCommand: ParsableCommand {
             }
             if !needs.isEmpty {
                 line += "  needs \(needs.joined(separator: ", "))"
+            }
+            if entry.updating {
+                line += "  being updated"
             }
             lines.append(line)
         }

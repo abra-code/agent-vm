@@ -6,7 +6,6 @@
       "PREINSTALL" : "",
       "PAYLOAD" : [
         {
-          "OWNER" : "root",
           "VERIFY" : {
             "ARCHITECTURES" : [
               "arm64"
@@ -16,13 +15,13 @@
             "SECURE_TIMESTAMP" : true,
             "SIGNED_BY" : "Developer ID Application: Tomasz Kukielka (T9NM2ZLDTY)"
           },
+          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/agent-vm",
           "MODE" : "0755",
           "SOURCE" : "${ARTIFACTS_DIR}\/agent-vm",
           "GROUP" : "wheel",
-          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/agent-vm"
+          "OWNER" : "root"
         },
         {
-          "OWNER" : "root",
           "VERIFY" : {
             "ARCHITECTURES" : [
               "arm64"
@@ -32,38 +31,39 @@
             "SECURE_TIMESTAMP" : true,
             "SIGNED_BY" : "Developer ID Application: Tomasz Kukielka (T9NM2ZLDTY)"
           },
+          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/agent-vm-guest",
           "MODE" : "0755",
           "SOURCE" : "${ARTIFACTS_DIR}\/agent-vm-guest",
           "GROUP" : "wheel",
-          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/agent-vm-guest"
+          "OWNER" : "root"
         },
         {
-          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/packs.json",
+          "OWNER" : "root",
           "MODE" : "0644",
           "SOURCE" : "${ARTIFACTS_DIR}\/packs.json",
           "GROUP" : "wheel",
-          "OWNER" : "root"
+          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/packs.json"
         },
         {
-          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/agents.json",
+          "OWNER" : "root",
           "MODE" : "0644",
           "SOURCE" : "${ARTIFACTS_DIR}\/agents.json",
           "GROUP" : "wheel",
-          "OWNER" : "root"
+          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/agents.json"
         },
         {
-          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/Recipes",
+          "OWNER" : "root",
           "MODE" : "0755",
           "SOURCE" : "..\/Recipes",
           "GROUP" : "wheel",
-          "OWNER" : "root"
+          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/Recipes"
         },
         {
-          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/LICENSE",
+          "OWNER" : "root",
           "MODE" : "0644",
           "SOURCE" : "..\/LICENSE",
           "GROUP" : "wheel",
-          "OWNER" : "root"
+          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/LICENSE"
         }
       ],
       "IDENTIFIER" : "com.abracode.pkg.agent-vm",
@@ -95,25 +95,25 @@
     }
   ],
   "DISTRIBUTION" : {
-    "CUSTOMIZE" : "allow",
-    "TITLE" : "agent-vm",
-    "REQUIRE_SCRIPTS" : false,
-    "DOMAIN" : "user",
     "RESOURCES" : {
-      "README" : "",
+      "BACKGROUND" : "",
       "CONCLUSION" : "conclusion.rtf",
       "LICENSE" : "",
       "WELCOME" : "",
-      "BACKGROUND" : ""
+      "README" : ""
     },
     "HOST_ARCHITECTURES" : [
       "arm64"
-    ]
+    ],
+    "CUSTOMIZE" : "allow",
+    "REQUIRE_SCRIPTS" : false,
+    "DOMAIN" : "user",
+    "TITLE" : "agent-vm"
   },
   "FORMAT_VERSION" : 1,
   "PROJECT" : {
     "NAME" : "agent-vm",
-    "VERSION" : "0.5.1",
+    "VERSION" : "0.5.2",
     "OUTPUT_DIR" : "..\/.build\/package",
     "PACKAGE_NAME" : "${NAME}_${VERSION}.pkg",
     "MIN_OS_VERSION" : "27.0",
@@ -121,7 +121,7 @@
   },
   "SIGNING" : {
     "ENABLED" : true,
-    "APPLICATION_IDENTITY" : "",
+    "APPLICATION_IDENTITY" : "Developer ID Application: Tomasz Kukielka (T9NM2ZLDTY)",
     "INSTALLER_IDENTITY" : "Developer ID Installer: Tomasz Kukielka (T9NM2ZLDTY)"
   }
 }

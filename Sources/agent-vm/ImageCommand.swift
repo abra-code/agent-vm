@@ -281,11 +281,17 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .customLong("set"), help: ArgumentHelp("A new value for a parameter of the image's recipes, for the tools update (repeatable).", valueName: "name=value"))
         var settings: [String] = []
 
+        @Option(name: .customLong("if-older-than"), help: ArgumentHelp("Skip an image when the parts asked for (macOS, tools) were updated, or checked and found current, less than this many hours ago, and its guest daemon need not be replaced; nothing is booted for it.", valueName: "hours"))
+        var ifOlderThan: Double?
+
         @OptionGroup var options: StoreOptions
 
         func validate() throws {
             for pair in settings where !pair.contains("=") || pair.hasPrefix("=") {
                 throw ValidationError("\(pair): give name=value")
+            }
+            if let ifOlderThan, !(ifOlderThan >= 0 && ifOlderThan.isFinite) {
+                throw ValidationError("--if-older-than takes a number of hours, 0 or more")
             }
             if (macOS || guest) && !tools && !settings.isEmpty {
                 throw ValidationError("--set changes a recipe's parameter for the tools update; add --tools, or leave out --macos and --guest")
@@ -313,7 +319,22 @@ struct ImageCommand: ParsableCommand {
             defer { signals.stop() }
             builder.cancellation = signals.cancellation
             var records: [ImageRecord] = []
+            let localDigest = guestDaemon.flatMap { try? ImageBuilder.sha256(of: $0) }
             for (index, name) in names.enumerated() {
+                // Skipped only when no part asked for is due; a guest daemon that differs is due.
+                if let ifOlderThan, let image = try? options.imageStore.image(named: name),
+                   !image.record.isUpdateDue(macOS: macOS || both, tools: tools || both, olderThanHours: ifOlderThan),
+                   guestDaemon == nil || (localDigest != nil && image.record.guestDigest == localDigest) {
+                    records.append(image.record)
+                    let what = [macOS || both ? "macOS" : nil, tools || both ? "its tools" : nil].compactMap { $0 }.joined(separator: " and ")
+                    let text = "Image \(name): \(what.isEmpty ? "its guest daemon is this agent-vm's" : "\(what) checked less than \(Self.hours(ifOlderThan)) ago"): not checked again"
+                    if json {
+                        Events.emit(ProgressEvent(.log, text, image: name), json: true)
+                    } else {
+                        print(text)
+                    }
+                    continue
+                }
                 let result: ImageUpdateResult
                 do {
                     result = try await builder.update(ImageUpdateOptions(name: name, macOS: macOS || both, tools: tools || both, parameters: parameters, guestDaemon: guestDaemon))
@@ -352,6 +373,13 @@ struct ImageCommand: ParsableCommand {
                     try Output.json(records)
                 }
             }
+        }
+
+        /// "1 hour", "24 hours", "0.5 hours".
+        static func hours(_ value: Double) -> String {
+            // Not Int(value): that traps on a number of hours too large for an Int.
+            let number = Int(exactly: value).map { String($0) } ?? String(value)
+            return "\(number) \(value == 1 ? "hour" : "hours")"
         }
 
         /// One line for a person: what changed, or that nothing did.
@@ -496,12 +524,15 @@ struct ImageCommand: ParsableCommand {
             var path: String
             var diskUsage: DiskUsage?
             var addedOverBase: Added?
+            /// A command is changing the image now (update, update-guest, setup).
+            var updating = false
 
             private enum Keys: String, CodingKey {
                 case path
                 case diskUsage
                 case addedOverBase
                 case needs
+                case updating
             }
 
             func encode(to encoder: Encoder) throws {
@@ -511,6 +542,9 @@ struct ImageCommand: ParsableCommand {
                 try container.encodeIfPresent(diskUsage, forKey: .diskUsage)
                 try container.encodeIfPresent(addedOverBase, forKey: .addedOverBase)
                 try container.encode(record.needs, forKey: .needs)
+                if updating {
+                    try container.encode(true, forKey: .updating)
+                }
             }
 
             /// The entry for a person: a line with the essentials, the folder (and with sizes,
@@ -521,6 +555,9 @@ struct ImageCommand: ParsableCommand {
                 var line = "\(record.name)  \(state)  macOS \(record.macOSVersion) (\(record.macOSBuild))  \(record.cpuCount) CPUs  \(record.memoryBytes >> 30) GB  created \(Output.time(record.createdAt))"
                 if let updatedAt = record.updatedAt {
                     line += "  updated \(Output.time(updatedAt))"
+                }
+                if updating {
+                    line += "  (being updated)"
                 }
                 if let base = record.derivedFrom {
                     line += "  from \"\(base.image)\" image"
@@ -585,7 +622,8 @@ struct ImageCommand: ParsableCommand {
             for problem in problems {
                 FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
             }
-            let entries = images.map { Entry(record: $0.record, path: $0.directory.path) }
+            let store = options.imageStore
+            let entries = images.map { Entry(record: $0.record, path: $0.directory.path, updating: $0.record.state == .ready && store.isBeingChanged($0)) }
             if options.json {
                 try Output.json(entries)
                 return
@@ -628,7 +666,8 @@ struct ImageCommand: ParsableCommand {
                 added = List.added(image, among: images)
             }
             let entry = List.Entry(record: image.record, path: image.directory.path,
-                                   diskUsage: DiskUsage.of(image.directory), addedOverBase: added)
+                                   diskUsage: DiskUsage.of(image.directory), addedOverBase: added,
+                                   updating: image.record.state == .ready && options.imageStore.isBeingChanged(image))
             if options.json {
                 try Output.json(entry)
                 return

@@ -234,6 +234,35 @@ test_update_checks_every_name_first() {
     assert_missing "$AGENT_VM_HOME/Images/dev/Update" || return 1
 }
 
+# --if-older-than skips an image that was checked lately, without booting it.
+test_update_skips_an_image_checked_lately() {
+    fake_image dev
+    local _now
+    _now="$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
+    /usr/bin/sed -i '' -e "s/\"macOSBuild\" : \"26A428\"/\"macOSBuild\" : \"26A428\", \"toolsCheckedAt\" : \"$_now\"/" "$AGENT_VM_HOME/Images/dev/image.json"
+    run_avm image update dev --tools --if-older-than 24
+    assert_status 0 || return 1
+    assert_out_contains "Image dev: its tools checked less than 24 hours ago: not checked again" || return 1
+    assert_not_contains "$OUT" "Booting" "stdout" || return 1
+    run_avm image update dev --tools --if-older-than 24 --json
+    assert_status 0 || return 1
+    assert_json name "dev" || return 1
+    # The tools were checked, macOS never was: asking for both is not skipped (and this fake
+    # image then fails to boot).
+    run_avm image update dev --macos --tools --if-older-than 24
+    assert_not_contains "$OUT" "not checked again" "stdout" || return 1
+    [ "$STATUS" -ne 0 ] || { fail "a fake image booted"; return 1; }
+    run_avm image update dev --tools --if-older-than nan
+    assert_status 64 || return 1
+    assert_err_contains "--if-older-than takes a number of hours" || return 1
+    run_avm image update dev --tools --if-older-than inf
+    assert_status 64 || return 1
+    # A number of hours too large for an integer is still only a number.
+    run_avm image update dev --tools --if-older-than 1e30
+    assert_status 0 || return 1
+    assert_out_contains "less than 1e+30 hours ago" || return 1
+}
+
 # A box says why it needs recreating: its image was updated (its revision moved on).
 test_a_box_of_an_updated_image_needs_recreating() {
     fake_image dev

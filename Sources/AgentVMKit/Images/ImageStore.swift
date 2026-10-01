@@ -4,7 +4,10 @@
 // `~/Library/Application Support/agent-vm`):
 //
 //   Images/<name>/image.json          the ImageRecord
-//   Images/<name>/.lock               flock held by whoever builds or uses the image
+//   Images/<name>/.lock               flock held by whoever builds the image, changes its
+//                                     files or clones them
+//   Images/<name>/.update.lock        flock held for as long as a command changes a ready
+//                                     image (update, update-guest, setup), one at a time
 //   Images/<name>/Disk.img            sparse raw disk
 //   Images/<name>/AuxiliaryStorage    NVRAM and boot state (Apple format)
 //   Images/<name>/HardwareModel       VZMacHardwareModel.dataRepresentation
@@ -20,7 +23,9 @@
 //                                     have taken the image's files' place
 //
 // Creating the folder with mkdir is the atomic claim on a name; the lock keeps `delete` away
-// from an image that is being built.
+// from an image that is being built. `image update` works on a copy for minutes and holds
+// `.lock` only while it makes the copy and while it puts it in place, so boxes can be made
+// from the image meanwhile; `.update.lock` is what it holds throughout.
 
 import Darwin
 import Foundation
@@ -28,6 +33,7 @@ import Foundation
 public struct ImageStore: Sendable {
     static let recordName = "image.json"
     static let lockName = ".lock"
+    static let updateLockName = ".update.lock"
     static let diskName = "Disk.img"
     static let auxiliaryStorageName = "AuxiliaryStorage"
     static let hardwareModelName = "HardwareModel"
@@ -84,6 +90,18 @@ public struct ImageStore: Sendable {
     /// Takes the lock of an existing image; nil when another process holds it.
     public func tryLock(_ image: GoldenImage) throws -> Lock? {
         return try FolderLock.tryAcquire(image.directory.appendingPathComponent(Self.lockName).path)
+    }
+
+    /// Takes an image's update lock, for a command that changes a ready image; nil when
+    /// another one is at it.
+    public func tryLockForChange(_ image: GoldenImage) throws -> Lock? {
+        // With patience: `isBeingChanged` (a list, a status poll) holds it for a moment to test it.
+        return try FolderLock.tryAcquire(image.directory.appendingPathComponent(Self.updateLockName).path, patience: FolderLock.testPatience)
+    }
+
+    /// Whether a command is changing the image now (it holds the update lock).
+    public func isBeingChanged(_ image: GoldenImage) -> Bool {
+        return FolderLock.isHeld(image.directory.appendingPathComponent(Self.updateLockName).path)
     }
 
     public func image(named name: String) throws -> GoldenImage {
@@ -157,16 +175,18 @@ public struct ImageStore: Sendable {
         guard rename(image.updateURL.path, image.updateCommitURL.path) == 0 else {
             throw AgentVMError.system(operation: "rename \(image.updateURL.path)", code: errno)
         }
-        _ = try settle(image)
+        _ = try settle(image, updating: true)
     }
 
     /// Brings an image's folder to rest after `image update`, for whoever is about to use its
     /// disk (they hold its lock): a decided update (`Update.commit`) is finished, its disk,
     /// auxiliary storage and record moved into place in that order, so the record changes
     /// last; an undecided one (`Update`, left by an agent-vm that was killed) is deleted, and
-    /// the image is as it was. Returns the image as it is now.
+    /// the image is as it was. An `Update` folder whose update is still running (its update
+    /// lock is held) is left alone; `updating` is for that update itself, which holds the
+    /// lock and clears what an earlier one left. Returns the image as it is now.
     @discardableResult
-    public func settle(_ image: GoldenImage) throws -> GoldenImage {
+    public func settle(_ image: GoldenImage, updating: Bool = false) throws -> GoldenImage {
         let commit = image.updateCommitURL
         if FileSystem.exists(commit.path) {
             for name in [Self.diskName, Self.auxiliaryStorageName, Self.recordName] {
@@ -181,7 +201,7 @@ public struct ImageStore: Sendable {
             }
             try FileSystem.removeTree(commit.path)
         }
-        if FileSystem.exists(image.updateURL.path) {
+        if FileSystem.exists(image.updateURL.path), updating || !isBeingChanged(image) {
             try FileSystem.removeTree(image.updateURL.path)
         }
         return try self.image(named: image.name)
@@ -198,10 +218,14 @@ public struct ImageStore: Sendable {
         }
         // A folder without a readable record (an interrupted create) can still be deleted.
         let image = (try? self.image(named: name)) ?? GoldenImage(record: Self.placeholder(name), directory: directory)
-        guard let lock = try tryLock(image) else {
+        // Both: an update in progress holds only the second for most of its time.
+        guard let lock = try tryLock(image), let changeLock = try tryLockForChange(image) else {
             throw AgentVMError.imageBusy(name)
         }
-        defer { lock.release() }
+        defer {
+            changeLock.release()
+            lock.release()
+        }
         try FileSystem.removeTree(directory.path)
     }
 
