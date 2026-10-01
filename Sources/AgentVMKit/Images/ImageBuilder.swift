@@ -312,7 +312,7 @@ public final class ImageBuilder {
             let state = (try? store.image(named: options.name))?.record.state.rawValue ?? "unreadable"
             throw AgentVMError.imageExists(name: options.name, state: state)
         }
-        let base = try store.image(named: options.base)
+        var base = try store.image(named: options.base)
         guard base.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: base.name, state: base.record.state.rawValue, operation: "build an image from")
         }
@@ -339,6 +339,12 @@ public final class ImageBuilder {
         guard let baseLock = try store.tryLock(base) else {
             throw AgentVMError.imageBusy(base.name)
         }
+        do {
+            base = try store.settle(base)
+        } catch {
+            baseLock.release()
+            throw error
+        }
         var record = base.record
         // Written by this agent-vm, so in its format, whatever format the base was written in.
         record.formatVersion = ImageRecord.currentFormatVersion
@@ -353,6 +359,9 @@ public final class ImageBuilder {
         record.installSeconds = nil
         record.provisionSeconds = nil
         record.recipe = nil
+        // A new image, with its own history.
+        record.revision = nil
+        record.updatedAt = nil
         // What ran on the base's disk ran on this one: kept, so an update can refresh it here.
         let inherited = base.record.recipes?.map { recipe in
             var recipe = recipe
@@ -480,6 +489,7 @@ public final class ImageBuilder {
             throw AgentVMError.imageBusy(image.name)
         }
         defer { lock.release() }
+        image = try store.settle(image)
 
         let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
         let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
@@ -544,10 +554,10 @@ public final class ImageBuilder {
 
     /// The image `updateGuest` would update, or the reason it would refuse (no such image, or
     /// not ready), without booting anything: several images are checked before the first boot.
-    public func updatableImage(named name: String) throws -> GoldenImage {
+    public func updatableImage(named name: String, operation: String = "update the guest daemon of") throws -> GoldenImage {
         let image = try store.image(named: name)
         guard image.record.state == .ready else {
-            throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "update the guest daemon of")
+            throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: operation)
         }
         return image
     }
@@ -932,7 +942,7 @@ public final class ImageBuilder {
         let inputs: [ImageRecord.InputInfo]
         do {
             inputs = try await sendInputs(recipe, machine: machine)
-            try await runSteps(recipe, machine: machine, boxUser: boxUser)
+            try await runSteps(recipe.steps, checks: recipe.checks, variables: recipe.variables, machine: machine, boxUser: boxUser)
         } catch {
             if !recipe.inputFiles.isEmpty {
                 _ = try? await guestCapture(machine, ImageRecipe.removeInputsRequest)
@@ -1032,14 +1042,14 @@ public final class ImageBuilder {
         return ImageRecord.InputInfo(name: name, file: file.lastPathComponent, bytes: total, sha256: digest)
     }
 
-    /// The recipe's steps, then its checks.
-    private func runSteps(_ recipe: ImageRecipe, machine: MacMachine, boxUser: String) async throws {
+    /// A recipe's steps (or its update steps), then its checks. `kind` names a step in errors.
+    func runSteps(_ steps: [ImageRecipe.Step], checks: [String], variables: [String: String], machine: MacMachine, boxUser: String,
+                  kind: String = "step") async throws {
         let clock = ContinuousClock()
-        let variables = recipe.variables
-        for (index, step) in recipe.steps.enumerated() {
+        for (index, step) in steps.enumerated() {
             let stepBegan = clock.now
-            progress("recipe-step", "  [\(index + 1)/\(recipe.steps.count)] \(step.name)\(step.user == "root" ? " (as root)" : "")",
-                     fraction: Double(index) / Double(recipe.steps.count), index: index + 1, count: recipe.steps.count)
+            progress("recipe-step", "  [\(index + 1)/\(steps.count)] \(step.name)\(step.user == "root" ? " (as root)" : "")",
+                     fraction: Double(index) / Double(steps.count), index: index + 1, count: steps.count)
             let request: GuestRequest
             var input: Data?
             switch step.action {
@@ -1049,7 +1059,7 @@ public final class ImageBuilder {
                 request = ImageRecipe.copyRequest(step, destination: destination, mode: mode)
                 input = try ImageRecipe.copyContents(step, source: source)
             }
-            let label = "recipe step \(index + 1) (\(step.name))"
+            let label = "recipe \(kind) \(index + 1) (\(step.name))"
             let emit = LineEmitter(report: report, image: subject)
             let ended: ExitReport
             do {
@@ -1063,7 +1073,7 @@ public final class ImageBuilder {
             }
             log("      done in \(Int(Self.seconds(clock.now - stepBegan))) s")
         }
-        for check in recipe.checks {
+        for check in checks {
             let result: (report: ExitReport, stdout: String, stderr: String)
             do {
                 result = try await guestCapture(machine, ImageRecipe.checkRequest(check, variables: variables), readTimeout: Self.checkTimeoutSeconds)
@@ -1101,7 +1111,7 @@ public final class ImageBuilder {
 
     /// Runs one request with its output shown line by line in the build log (indented) through
     /// `emit`, and `input` as its standard input; returns how it ended.
-    private func runStreaming(_ machine: MacMachine, _ what: String, _ request: GuestRequest, input: Data?, readTimeout: Int, emit: LineEmitter) async throws -> ExitReport {
+    func runStreaming(_ machine: MacMachine, _ what: String, _ request: GuestRequest, input: Data?, readTimeout: Int, emit: LineEmitter) async throws -> ExitReport {
         return try await withGuest(machine, what, readTimeout: readTimeout) { descriptor in
             let session = try ExecSession(descriptor: descriptor, request: request)
             // A step that ended first (a quick one, or one that failed before reading its
@@ -1357,6 +1367,9 @@ final class LineEmitter: @unchecked Sendable {
     private let lock = NSLock()
     private var partial: [UInt8] = []
     private var recent: [UInt8] = []
+    /// Sees every chunk as it arrives, on the thread that reads it; set before the program
+    /// runs. For output that never ends a line (a progress bar).
+    var observer: (@Sendable ([UInt8]) -> Void)?
 
     init(report: @escaping @MainActor (ProgressEvent) -> Void, image: String?) {
         self.report = report
@@ -1364,6 +1377,7 @@ final class LineEmitter: @unchecked Sendable {
     }
 
     func add(_ bytes: [UInt8]) {
+        observer?(bytes)
         lock.lock()
         recent.append(contentsOf: bytes)
         if recent.count > 4096 {

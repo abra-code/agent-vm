@@ -2,7 +2,7 @@
 
 Long commands tell what they are doing as they go. For a person, that is lines of text on standard output. With `--json`, the same information goes to standard error as one JSON object per line, so a program can show the current step and a progress bar without reading prose. Standard output then holds only the command's result: the image record, the box's status.
 
-Commands that report progress: `image create` (from a restore image or `--from` an image), `image update-guest`, `image setup`, `image fetch-ipsw`, `box start`, `box stop` and `box send`.
+Commands that report progress: `image create` (from a restore image or `--from` an image), `image update`, `image update-guest`, `image setup`, `image fetch-ipsw`, `box start`, `box stop` and `box send`.
 
 Run as a job (`agent-vm job start -- <command>`, see the README), a command's events are kept in the job's log: `job list --json` gives each job's last `progress` event and last notice, and `job log <id> --json` all of its events.
 
@@ -61,6 +61,20 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 | `shutdown` | Shutting the guest down. |
 | `check-guest-daemon` | Booting again to check the new `agent-vm-guest` (only when it was replaced), then `shutdown`. |
 
+`image update`, for each image in turn:
+
+| Step | What happens |
+|---|---|
+| `boot` | Booting a copy of the image's disk. |
+| `macos-check` | Asking Apple which macOS updates exist (unless `--tools` alone). |
+| `macos-download` | An update is offered: `softwareupdate` downloads and prepares it, with `fraction` at every 10% (it stays in the nineties for minutes while it prepares); its output lines follow as `log` events with `output`. |
+| `macos-restart` | The guest restarts and installs; the step ends when its daemon answers on the new build. |
+| `command-line-tools` | A newer Command Line Tools package is installed. |
+| `tools-update` | One recipe's update steps begin, with `index` and `count` (which recipe of how many that have update steps). |
+| `recipe-step` | Each update step, as in `image create`. |
+| `shutdown` | Shutting the guest down. |
+| `commit` | The updated disk takes the image's place. Left out when there was nothing to update. |
+
 `image update-guest`: `boot`, then, when the daemon differs, `replace-guest-daemon`, `shutdown`, `check-guest-daemon` and `shutdown` again (otherwise just `shutdown`), for each image in turn. A failure in one image skips the rest, with a `notice` naming them.
 
 `image setup`: `boot`, `full-disk-access` (the window is open: waiting for the grant, or, when agent-vm-guest has it already, for the window to close), `shutdown`.
@@ -75,7 +89,7 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 
 ## Canceling
 
-SIGINT or SIGTERM during `image create` or `image update-guest` stops the command at the next safe point. When the guest was running, a `shutdown` step with the message `Canceled; shutting down` follows while it shuts down (a guest still booting is given up to 30 seconds for its daemon to answer, then as long to shut down, before it is stopped); then a `notice` says what became of the image (`Image dev-node is marked failed (canceled): canceled by SIGTERM; ...`, or `Image dev is unchanged: ...` for an update canceled before the daemon was replaced), and the command exits with 128 + the signal (143 for SIGTERM) without printing a result on standard output. The image record's `failure` is `canceled`.
+SIGINT or SIGTERM during `image create`, `image update` or `image update-guest` stops the command at the next safe point (an image being updated is left as it was). When the guest was running, a `shutdown` step with the message `Canceled; shutting down` follows while it shuts down (a guest still booting is given up to 30 seconds for its daemon to answer, then as long to shut down, before it is stopped); then a `notice` says what became of the image (`Image dev-node is marked failed (canceled): canceled by SIGTERM; ...`, or `Image dev is unchanged: ...` for an update canceled before the daemon was replaced), and the command exits with 128 + the signal (143 for SIGTERM) without printing a result on standard output. The image record's `failure` is `canceled`.
 
 ## Notices
 

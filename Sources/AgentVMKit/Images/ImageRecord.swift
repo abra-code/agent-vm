@@ -131,6 +131,11 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     /// image's `Recipes/` folder (`folder`). nil in images built before recipes were listed.
     public var recipes: [RecipeInfo]?
 
+    /// How often `image update` changed the image's disk (nil: never), and when it last did.
+    /// A box records the revision it was cloned at, so it can tell that its image moved on.
+    public var revision: Int?
+    public var updatedAt: Date?
+
     /// The image this one was built from (`image create --from`), and that image's recipe
     /// digest at the time, if any.
     public var derivedFrom: DerivedFrom?
@@ -255,4 +260,8 @@ public struct GoldenImage: Sendable {
     public var knownHostsURL: URL { directory.appendingPathComponent(ImageStore.knownHostsName) }
     public var recipeURL: URL { directory.appendingPathComponent(ImageStore.recipeName) }
     public var recipesURL: URL { directory.appendingPathComponent(ImageStore.recipesName, isDirectory: true) }
+    /// Where `image update` works on a copy of the disk, and that folder once the update is
+    /// decided (see `ImageStore.settle`).
+    public var updateURL: URL { directory.appendingPathComponent(ImageStore.updateName, isDirectory: true) }
+    public var updateCommitURL: URL { directory.appendingPathComponent(ImageStore.updateCommitName, isDirectory: true) }
 }

@@ -44,6 +44,7 @@ At `box create`, the box gets a copy of everything the image has at that moment:
 
 After that, the box does not follow its image. In particular, these do **not** reach an existing box:
 
+- `image update` (a newer macOS, newer tools);
 - `image update-guest` (a newer guest daemon and its features, such as the terminal or the wallpaper);
 - `image setup` (Full Disk Access granted after the box was made);
 - a new derived image, or a rebuilt one with the same name.
@@ -84,6 +85,18 @@ One image with everything you use, like the tools on your own Mac, is the simple
 
 The recipes record what was installed, so the image can be built again the same way. Tools that need room, such as Xcode and its simulator runtimes (about 4 GB, then 8 GB per runtime), get it with `--disk-gb`: a derived image's disk can be larger than its base's, and images built from it inherit the size. A recipe can also ask for a file you downloaded yourself, such as Xcode's `.xip` (`--input`), and for choices (`--set`); [Recipes/](../Recipes/README.md) has an Xcode example. Recipes are described in [image-recipes.md](image-recipes.md), and examples are in [Recipes/](../Recipes/README.md). A derived image is a clone too: it does not change when its base image changes later.
 
+### Keeping an image up to date
+
+```sh
+agent-vm image update tools                                # macOS and tools; about 15 minutes when macOS has an update
+agent-vm image update tools --tools                        # only the tools: what the recipes' update steps refresh
+agent-vm box recreate web                                  # each box, to get what the image now has
+```
+
+`image update` installs the macOS update Apple offers (within the same major version) and runs the `update` steps of the recipes the image was built with, such as the newest agents. It works on a copy of the image's disk and puts it in place only when everything succeeded, so a failed update leaves the image as it was. `box list` then says "needs recreate" for the boxes made before. A macOS update costs about 15 GB of disk that the image no longer shares with its older boxes, until they are recreated or deleted.
+
+With one image this is the whole procedure. With layers, each image is updated by itself (`image update dev dev-node dev-agents`), and each then holds its own copy of the new macOS: one more reason to keep one image.
+
 ### After upgrading agent-vm
 
 A newer agent-vm can bring a newer guest daemon. `image list` names what each image's daemon lacks.
@@ -95,7 +108,7 @@ agent-vm image update-guest dev dev-node dev-agents        # one after another, 
 agent-vm image setup dev                                   # again for each image: the update drops Full Disk Access
 ```
 
-Then make your boxes again (next procedure, or `box recreate`): existing boxes keep their old daemon. `box list` and `status` say "needs recreate" for each box whose image's daemon is no longer the one the box was made with (with `--json`, a `needs` entry of kind `recreate`); boxes made before agent-vm 0.4.3 did not record their daemon and say nothing. The update drops Full Disk Access because macOS ties the grant to the daemon's code signature, and the default signature (ad hoc) changes with every build; signing with a Developer ID (`Scripts/build.sh --identity ...`) should keep it.
+Then make your boxes again (next procedure, or `box recreate`): existing boxes keep their old daemon. `box list` and `status` say "needs recreate" for each box whose image's daemon is no longer the one the box was made with, or whose image was updated or built again since (with `--json`, a `needs` entry of kind `recreate` with the `reason`); boxes made before agent-vm 0.4.3 did not record their daemon and say nothing about it. The update drops Full Disk Access because macOS ties the grant to the daemon's code signature, and the default signature (ad hoc) changes with every build; signing with a Developer ID (`Scripts/build.sh --identity ...`) should keep it.
 
 ### Refreshing a box
 
@@ -156,13 +169,19 @@ What changes:
 - An image built from the deleted one no longer shows what it added over its base in `image info`, since there is no base to compare with.
 
 **Does changing an image change the images derived from it?**
-No. A derived image is a clone made at `image create --from`. To pass a change on, delete the derived image and build it again from the same recipe.
+No. A derived image is a clone made at `image create --from`. To pass a change on, update the derived image too (`image update`), or delete it and build it again from the same recipes.
 
 **Can I change a box's CPUs or memory, or rename a box or an image?**
 Not after creation. For a box, make it again with `box create --cpus N --memory-gb N`. The network is the exception: `box network` changes the rules at once, and the mode while the box is stopped.
 
 **How do I update macOS in an image?**
-Not supported yet. Build a new image from a newer restore image (`image create --ipsw`), then build the derived images again from their recipes.
+`agent-vm image update <image> --macos` installs the update Apple offers within the same major version, unattended, in about 15 minutes; then recreate the image's boxes. For a new major version, build a new image from its restore image (`image fetch-ipsw`, `image create --ipsw latest` with the same recipes).
+
+**How do I get the newest agents into my boxes?**
+`agent-vm image update <image> --tools` runs the update steps of the image's recipes (the shipped agent-clis recipe installs the newest Claude Code, Codex and opencode), then `box recreate` each box. A box does not update its agents by itself: their own updaters are off in boxes, and the allowlist does not reach the package registry.
+
+**Can I update a box in place instead of its image?**
+There is no command for it, on purpose: a box is a disposable copy. Whatever you install or update in a kept box by hand stays in that box only, and is lost when it is recreated.
 
 **How many boxes can I have?**
 As many as your disk holds: a stopped box costs only the space it wrote. At most two can run at once, because macOS runs at most two macOS virtual machines at a time, counting image builds and updates and other apps' virtual machines (`agent-vm status` and `agent-vm doctor` show how many are running). A start or build with no free slot fails with exit status 75 ("no free VM slot"); try again when a VM has stopped. A box, or a new image, that was refused before its first boot is left as it was, so the same command can simply run again.

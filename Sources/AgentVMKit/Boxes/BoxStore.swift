@@ -49,37 +49,68 @@ public struct BoxRecord: Codable, Equatable, Sendable {
     /// before 0.4.3, and when the image recorded no digest.
     public var guestVersion: String?
     public var guestDigest: String?
+    /// The image as it was when the box was made: when it was built, and how often `image
+    /// update` had changed it (0: never). Absent in boxes made before 0.5.0.
+    public var imageCreatedAt: Date?
+    public var imageRevision: Int?
 
     public var effectiveNetwork: BoxNetwork {
         return network ?? .legacy
     }
 
     /// What the box lacks next to `image`, its image's record now (nil when it is gone): a
-    /// `recreate` when the image's agent-vm-guest is not the one the box was made with. Only
-    /// when both digests are known: a box made before they were recorded says nothing.
+    /// `recreate` when the image is no longer what the box was cloned from. In the order
+    /// checked: another image was built under the name, `image update` changed it, or its
+    /// agent-vm-guest is not the one the box was made with. Each only when the box recorded
+    /// what it compares: a box made before that says nothing.
     public func needs(image: ImageRecord?) -> [BoxNeed] {
-        guard let image, image.state == .ready, let mine = guestDigest, let theirs = image.guestDigest, mine != theirs else {
+        guard let image, image.state == .ready else {
             return []
         }
-        return [BoxNeed(kind: .recreate, guestVersion: image.guestVersion)]
+        if let builtAt = imageCreatedAt {
+            if builtAt != image.createdAt {
+                return [BoxNeed(kind: .recreate, reason: .imageRebuilt, macOSBuild: image.macOSBuild)]
+            }
+            if (imageRevision ?? 0) != (image.revision ?? 0) {
+                return [BoxNeed(kind: .recreate, reason: .imageUpdated, macOSBuild: image.macOSBuild)]
+            }
+        }
+        if let mine = guestDigest, let theirs = image.guestDigest, mine != theirs {
+            return [BoxNeed(kind: .recreate, guestVersion: image.guestVersion, reason: .guestUpdate)]
+        }
+        return []
     }
 }
 
 /// Something a box lacks, and the command that supplies it.
 public struct BoxNeed: Codable, Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
-        /// Its image's agent-vm-guest changed since the box was made (`image update-guest`):
-        /// `box recreate` makes it again from the image, losing what the box keeps.
+        /// Its image changed since the box was made (`reason`): `box recreate` makes it again
+        /// from the image, losing what the box keeps.
         case recreate
     }
 
-    public var kind: Kind
-    /// recreate: the image's agent-vm-guest version now.
-    public var guestVersion: String?
+    public enum Reason: String, Codable, Sendable {
+        /// The image's agent-vm-guest is another one (`image update-guest`).
+        case guestUpdate = "guest-update"
+        /// `image update` changed the image: macOS, or its tools.
+        case imageUpdated = "image-updated"
+        /// Another image was built under the name.
+        case imageRebuilt = "image-rebuilt"
+    }
 
-    public init(kind: Kind, guestVersion: String? = nil) {
+    public var kind: Kind
+    /// guest-update: the image's agent-vm-guest version now.
+    public var guestVersion: String?
+    public var reason: Reason?
+    /// image-updated and image-rebuilt: the image's macOS build now.
+    public var macOSBuild: String?
+
+    public init(kind: Kind, guestVersion: String? = nil, reason: Reason? = nil, macOSBuild: String? = nil) {
         self.kind = kind
         self.guestVersion = guestVersion
+        self.reason = reason
+        self.macOSBuild = macOSBuild
     }
 }
 
@@ -167,7 +198,8 @@ public struct BoxStore: Sendable {
         defer { imageLock.release() }
         // Read again under the lock: an update or rebuild that ended after the caller read the
         // record changed the disk and the record together, and the box records what it clones.
-        let current = try imageStore.image(named: image.name)
+        // An `image update` that was killed is finished or dropped first.
+        let current = try imageStore.settle(image)
         guard current.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: current.name, state: current.record.state.rawValue, operation: "create a box from")
         }
@@ -189,7 +221,8 @@ public struct BoxStore: Sendable {
             cpuCount: cpuCount ?? current.record.cpuCount, memoryBytes: memoryBytes ?? current.record.memoryBytes,
             macAddress: VZMACAddress.randomLocallyAdministered().string, userName: current.record.userName,
             network: network, disposable: disposable ? true : nil,
-            guestVersion: current.record.guestVersion, guestDigest: current.record.guestDigest)
+            guestVersion: current.record.guestVersion, guestDigest: current.record.guestDigest,
+            imageCreatedAt: current.record.createdAt, imageRevision: current.record.revision ?? 0)
         let box = Box(record: record, directory: directory)
         do {
             try Self.cloneFile(current.diskURL, to: box.diskURL)

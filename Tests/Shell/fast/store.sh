@@ -198,6 +198,57 @@ test_update_guest_checks_every_name_first() {
     assert_err_contains "Missing expected argument '<image> ...'" || return 1
 }
 
+# image update checks every name and every option before anything boots.
+test_update_checks_every_name_first() {
+    fake_image dev
+    fake_image broken failed
+    run_avm image update dev nosuch
+    assert_status 1 || return 1
+    assert_err_contains "no image nosuch" || return 1
+    assert_not_contains "$OUT" "Booting" "stdout" || return 1
+    run_avm image update dev broken --tools
+    assert_status 1 || return 1
+    assert_err_contains "cannot update image broken: it is failed" || return 1
+    run_avm image update
+    assert_status 64 || return 1
+    assert_err_contains "Missing expected argument '<image> ...'" || return 1
+    run_avm image update dev --macos --set channel=beta
+    assert_status 64 || return 1
+    assert_err_contains "--set changes a recipe's parameter for the tools update" || return 1
+    run_avm image update dev --tools --set channel
+    assert_status 64 || return 1
+    assert_err_contains "channel: give name=value" || return 1
+    # A --set that the last image's recipes do not take, too.
+    fake_image other
+    run_avm image update dev other --tools --set channel=beta
+    assert_status 1 || return 1
+    assert_err_contains "--set channel: dev keeps no recipe with update steps" || return 1
+    assert_not_contains "$OUT" "Booting" "stdout" || return 1
+    assert_missing "$AGENT_VM_HOME/Images/dev/Update" || return 1
+}
+
+# A box says why it needs recreating: its image was updated (its revision moved on).
+test_a_box_of_an_updated_image_needs_recreating() {
+    fake_image dev
+    run_avm box create b1 --image dev
+    assert_status 0 || return 1
+    run_avm box list
+    assert_not_contains "$OUT" "needs recreate" "box list" || return 1
+    /usr/bin/sed -i '' -e 's/"macOSBuild" : "26A428"/"macOSBuild" : "26A434", "revision" : 1, "updatedAt" : "2026-10-01T07:00:00Z"/' "$AGENT_VM_HOME/Images/dev/image.json"
+    run_avm box list
+    assert_out_contains "needs recreate: image dev was updated since this box was made (macOS 26A434 now)" || return 1
+    run_avm box list --json
+    assert_contains "$OUT" '"reason" : "image-updated"' "box list --json" || return 1
+    run_avm image list
+    assert_out_contains "updated 2026-10-01" || return 1
+    run_avm status
+    assert_out_contains "needs recreate" || return 1
+    run_avm box recreate b1
+    assert_status 0 || return 1
+    run_avm box list
+    assert_not_contains "$OUT" "needs recreate" "box list after recreate" || return 1
+}
+
 # The lists name each folder and measure nothing; image info and box info add the space it takes,
 # in text and in JSON (diskUsage). A list of every image must stay quick, and measuring is not.
 test_lists_show_folders_and_info_shows_space() {

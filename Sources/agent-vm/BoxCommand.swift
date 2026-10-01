@@ -129,7 +129,8 @@ struct BoxCommand: ParsableCommand {
             var path: String
             var diskUsage: DiskUsage?
             var status: BoxStatus
-            /// What it lacks next to its image (BoxNeed): `recreate` after `image update-guest`.
+            /// What it lacks next to its image (BoxNeed): `recreate` after `image update`,
+            /// `image update-guest` or a rebuild of the image.
             var needs: [BoxNeed]
 
             /// `image`: the box's image's record now, nil when it is gone.
@@ -213,7 +214,16 @@ struct BoxCommand: ParsableCommand {
                     }
                 }
                 for need in needs where need.kind == .recreate {
-                    lines.append("    needs recreate: image \(box.image) has a different agent-vm-guest\(need.guestVersion.map { " (\($0))" } ?? "") from the one this box was made with; `agent-vm box recreate \(box.name)` makes it again (what it keeps is lost)")
+                    let why: String
+                    switch need.reason {
+                    case .imageUpdated?:
+                        why = "image \(box.image) was updated since this box was made\(need.macOSBuild.map { $0 == box.macOSBuild ? "" : " (macOS \($0) now)" } ?? "")"
+                    case .imageRebuilt?:
+                        why = "image \(box.image) was built again since this box was made"
+                    default:
+                        why = "image \(box.image) has a different agent-vm-guest\(need.guestVersion.map { " (\($0))" } ?? "") from the one this box was made with"
+                    }
+                    lines.append("    needs recreate: \(why); `agent-vm box recreate \(box.name)` makes it again (what it keeps is lost)")
                 }
                 guard let diskUsage else {
                     return lines + ["    \(path)"]
@@ -255,8 +265,8 @@ struct BoxCommand: ParsableCommand {
                 id, agent-vm version and path, when it started, the shared project, how many \
                 programs exec and box shell run in it now, and its guest daemon. "unresponsive" \
                 means something holds the box but its supervisor does not answer. It also says \
-                when the box needs recreating: its image's agent-vm-guest is no longer the one \
-                it was made with. With --json, the same entry as `box list --json`, with \
+                when the box needs recreating: its image was updated or built again since, or \
+                its agent-vm-guest is no longer the one the box was made with. With --json, the same entry as `box list --json`, with \
                 `needs`. It measures nothing; `box info` adds the \
                 box's space on disk.
                 """)

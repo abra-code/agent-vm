@@ -19,7 +19,7 @@ struct ImageCommand: ParsableCommand {
             off again and shuts the guest down. Starting virtual machines needs the binaries \
             built by Scripts/build.sh (see `agent-vm doctor`).
             """,
-        subcommands: [Create.self, List.self, Info.self, Delete.self, Setup.self, UpdateGuest.self, FetchIPSW.self]
+        subcommands: [Create.self, List.self, Info.self, Delete.self, Setup.self, Update.self, UpdateGuest.self, FetchIPSW.self]
     )
 
     struct Create: AsyncParsableCommand {
@@ -242,6 +242,132 @@ struct ImageCommand: ParsableCommand {
         }
     }
 
+    struct Update: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "update",
+            abstract: "Bring ready images up to date in place: macOS, and the tools their recipes installed.",
+            discussion: """
+                macOS: installs the update Apple offers within the image's major version \
+                (softwareupdate in the guest, unattended; about 15 minutes, and about 15 GB \
+                of disk the image then no longer shares with its older boxes), then a newer \
+                Command Line Tools package when the image has the tools. Tools: runs the \
+                `update` steps of the recipes the image keeps, in the order they were applied, \
+                and each recipe's checks again, with the parameters the image recorded; --set \
+                changes one (a pinned version, say) and records it. With neither --macos nor \
+                --tools, both. The update works on a copy of the image's disk and puts it in \
+                place only when every step and check passed: a failure or a cancel leaves the \
+                image as it was, still ready. Boxes made from the image earlier keep what they \
+                have; `box list` says "needs recreate" for them. Several images are updated one \
+                after another, in the order given; every name is checked before the first boot, \
+                and the first failure stops the rest. With --json: the image's record, or an \
+                array of them for several names (on a failure, the images updated before it). \
+                SIGINT or SIGTERM stops at the next safe point; agent-vm exits with 128 + the signal.
+                """)
+
+        @Argument(help: ArgumentHelp("The images to update.", valueName: "image"))
+        var names: [String]
+
+        @Flag(name: .customLong("macos"), help: "Update macOS (and the Command Line Tools).")
+        var macOS = false
+
+        @Flag(name: .long, help: "Run the update steps of the image's recipes.")
+        var tools = false
+
+        @Option(name: .customLong("set"), help: ArgumentHelp("A new value for a parameter of the image's recipes, for the tools update (repeatable).", valueName: "name=value"))
+        var settings: [String] = []
+
+        @OptionGroup var options: StoreOptions
+
+        func validate() throws {
+            for pair in settings where !pair.contains("=") || pair.hasPrefix("=") {
+                throw ValidationError("\(pair): give name=value")
+            }
+            if macOS && !tools && !settings.isEmpty {
+                throw ValidationError("--set changes a recipe's parameter for the tools update; add --tools, or leave out --macos")
+            }
+        }
+
+        @MainActor
+        func run() async throws {
+            let json = options.json
+            let builder = ImageBuilder(store: options.imageStore, events: Events.handler(json: json))
+            let names = names.reduce(into: [String]()) { unique, name in
+                if !unique.contains(name) {
+                    unique.append(name)
+                }
+            }
+            let parameters = try Create.pairs(settings, option: "--set")
+            // Neither flag: both.
+            let both = !macOS && !tools
+            // A mistyped last name should not surface after the first images took minutes each.
+            for name in names {
+                try builder.checkUpdate(ImageUpdateOptions(name: name, macOS: macOS || both, tools: tools || both, parameters: parameters))
+            }
+            let signals = BuildCancellation.watchingSignals()
+            defer { signals.stop() }
+            builder.cancellation = signals.cancellation
+            var records: [ImageRecord] = []
+            for (index, name) in names.enumerated() {
+                let result: ImageUpdateResult
+                do {
+                    result = try await builder.update(ImageUpdateOptions(name: name, macOS: macOS || both, tools: tools || both, parameters: parameters))
+                } catch {
+                    var canceledBy: Int32?
+                    if case let AgentVMError.canceled(signal) = error {
+                        canceledBy = signal
+                        ImageCommand.reportCanceled(name, signal: signal, store: options.imageStore, json: json)
+                    }
+                    let skipped = names[(index + 1)...]
+                    if !skipped.isEmpty {
+                        let text = "\(canceledBy == nil ? "Stopped" : "Canceled") at image \(name); not updated: \(skipped.joined(separator: ", "))"
+                        if json {
+                            Events.emit(ProgressEvent(.notice, text, image: name), json: true)
+                        } else {
+                            FileHandle.standardError.write(Data((text + "\n").utf8))
+                        }
+                    }
+                    if json && names.count > 1 {
+                        try Output.json(records)
+                    }
+                    if let canceledBy {
+                        throw ExitCode(128 + canceledBy)
+                    }
+                    throw error
+                }
+                records.append(result.image.record)
+                if !json {
+                    print(Self.summary(result))
+                }
+            }
+            if json {
+                if records.count == 1 {
+                    try Output.json(records[0])
+                } else {
+                    try Output.json(records)
+                }
+            }
+        }
+
+        /// One line for a person: what changed, or that nothing did.
+        static func summary(_ result: ImageUpdateResult) -> String {
+            let record = result.image.record
+            guard result.changed else {
+                return "Image \(record.name) is up to date: macOS \(record.macOSVersion) (\(record.macOSBuild))"
+            }
+            var parts: [String] = []
+            if let previous = result.previousMacOSBuild {
+                parts.append("macOS \(record.macOSVersion) (\(record.macOSBuild), was \(previous))")
+            }
+            if !result.recipes.isEmpty {
+                parts.append("tools of \(result.recipes.joined(separator: ", "))")
+            }
+            if parts.isEmpty {
+                parts.append("the Command Line Tools")
+            }
+            return "Image \(record.name) is updated (revision \(record.revision ?? 0)): \(parts.joined(separator: "; ")). Boxes made from it before need `agent-vm box recreate`."
+        }
+    }
+
     struct UpdateGuest: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "update-guest",
@@ -373,6 +499,9 @@ struct ImageCommand: ParsableCommand {
                 let record = self.record
                 let state = record.state.rawValue.padding(toLength: 12, withPad: " ", startingAt: 0)
                 var line = "\(record.name)  \(state)  macOS \(record.macOSVersion) (\(record.macOSBuild))  \(record.cpuCount) CPUs  \(record.memoryBytes >> 30) GB  created \(Output.time(record.createdAt))"
+                if let updatedAt = record.updatedAt {
+                    line += "  updated \(Output.time(updatedAt))"
+                }
                 if let base = record.derivedFrom {
                     line += "  from \"\(base.image)\" image"
                 }

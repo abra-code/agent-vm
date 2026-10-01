@@ -39,6 +39,7 @@ extension ImageBuilder {
             throw AgentVMError.imageBusy(image.name)
         }
         defer { lock.release() }
+        image = try store.settle(image)
         let password = try String(contentsOf: image.passwordURL, encoding: .utf8)
 
         let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)

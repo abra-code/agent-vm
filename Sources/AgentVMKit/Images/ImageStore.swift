@@ -14,6 +14,10 @@
 //   Images/<name>/recipe.json         the recipe applied to the image, when it was one
 //   Images/<name>/Recipes/<n>-<name>/ each recipe that ran on the disk, in order: recipe.json
 //                                     and the files it copies, as they were
+//   Images/<name>/Update/             `image update` at work: copies of the disk and the
+//                                     auxiliary storage, then the new record
+//   Images/<name>/Update.commit/      that folder once the update succeeded, until its files
+//                                     have taken the image's files' place
 //
 // Creating the folder with mkdir is the atomic claim on a name; the lock keeps `delete` away
 // from an image that is being built.
@@ -32,6 +36,8 @@ public struct ImageStore: Sendable {
     static let knownHostsName = "known_hosts"
     static let recipeName = "recipe.json"
     static let recipesName = "Recipes"
+    static let updateName = "Update"
+    static let updateCommitName = "Update.commit"
 
     public let root: URL
 
@@ -136,6 +142,49 @@ public struct ImageStore: Sendable {
         let updated = GoldenImage(record: record, directory: image.directory)
         try save(updated)
         return updated
+    }
+
+    /// Makes an update final: writes the new record into the image's `Update/` folder, renames
+    /// the folder to `Update.commit` (the one step that decides it), and moves its files into
+    /// the image's place. The caller holds the image's lock.
+    public func commitUpdate(_ image: GoldenImage, record: ImageRecord) throws {
+        let staged = image.updateURL.appendingPathComponent(Self.recordName)
+        do {
+            try SessionStore.encoder.encode(record).write(to: staged, options: .atomic)
+        } catch {
+            throw AgentVMError.corruptImageRecord(path: staged.path, reason: "cannot write: \(error.localizedDescription)")
+        }
+        guard rename(image.updateURL.path, image.updateCommitURL.path) == 0 else {
+            throw AgentVMError.system(operation: "rename \(image.updateURL.path)", code: errno)
+        }
+        _ = try settle(image)
+    }
+
+    /// Brings an image's folder to rest after `image update`, for whoever is about to use its
+    /// disk (they hold its lock): a decided update (`Update.commit`) is finished, its disk,
+    /// auxiliary storage and record moved into place in that order, so the record changes
+    /// last; an undecided one (`Update`, left by an agent-vm that was killed) is deleted, and
+    /// the image is as it was. Returns the image as it is now.
+    @discardableResult
+    public func settle(_ image: GoldenImage) throws -> GoldenImage {
+        let commit = image.updateCommitURL
+        if FileSystem.exists(commit.path) {
+            for name in [Self.diskName, Self.auxiliaryStorageName, Self.recordName] {
+                let source = commit.appendingPathComponent(name).path
+                // Moved already by the run that was interrupted.
+                guard FileSystem.exists(source) else {
+                    continue
+                }
+                guard rename(source, image.directory.appendingPathComponent(name).path) == 0 else {
+                    throw AgentVMError.system(operation: "move \(source) into place", code: errno)
+                }
+            }
+            try FileSystem.removeTree(commit.path)
+        }
+        if FileSystem.exists(image.updateURL.path) {
+            try FileSystem.removeTree(image.updateURL.path)
+        }
+        return try self.image(named: image.name)
     }
 
     /// Deletes an image unless another process holds its lock (it is being built or run).

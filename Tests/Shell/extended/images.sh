@@ -114,6 +114,71 @@ test_several_recipes_in_one_image() {
     "$AGENT_VM" image delete "$_image"
 }
 
+# image update --tools runs the kept recipes' update steps with the recorded parameters (and
+# --set over them), puts the updated disk in place, and raises the revision, so a box made
+# before needs recreating. A failing update step leaves the image exactly as it was.
+test_image_update_runs_update_steps_in_place() {
+    require_image || return $(( $? == 1 ? 0 : 1 ))
+    local _image="shtest-upd-$$"
+    local _box="shtest-updbox-$$"
+    "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
+    cleanup_on_exit box "$_box"
+    cleanup_on_exit image "$_image"
+    write_recipe "$SCRATCH/recipe" '{
+      "version": 1,
+      "description": "update test",
+      "parameters": {"mark": {"default": "one"}},
+      "steps": [{ "name": "note", "run": "echo \"built $AGENT_VM_PARAM_MARK\" > ~/shtest-upd.txt" }],
+      "update": [{ "name": "note again", "run": "[ \"$AGENT_VM_PARAM_MARK\" != fail ] && echo \"updated $AGENT_VM_PARAM_MARK\" >> ~/shtest-upd.txt" }],
+      "checks": ["tr \"\\n\" \",\" < ~/shtest-upd.txt"]
+    }'
+    run_avm image create "$_image" --from "$TEST_IMAGE" --recipe "$SCRATCH/recipe/recipe.json"
+    assert_status 0 || return 1
+    run_avm box create "$_box" --image "$_image"
+    assert_status 0 || return 1
+
+    run_avm image update "$_image" --tools --set mark=two
+    assert_status 0 || return 1
+    assert_out_contains "Updating recipe (1 of 1): update test" || return 1
+    assert_out_contains "parameters: mark=two" || return 1
+    assert_out_contains "built one,updated two," || return 1
+    assert_out_contains "Image $_image is updated (revision 1): tools of recipe" || return 1
+    run_avm image info "$_image" --json
+    assert_json state "ready" || return 1
+    assert_json revision "1" || return 1
+    assert_json recipes.0.parameters.mark "two" || return 1
+    assert_json recipe.parameters.mark "two" || return 1
+    local _folder
+    _folder="$(json_value path)"
+    assert_missing "$_folder/Update" || return 1
+    assert_missing "$_folder/Update.commit" || return 1
+    run_avm box list
+    assert_out_contains "needs recreate: image $_image was updated since this box was made" || return 1
+
+    # A failing update step: reported, and nothing of it is kept.
+    run_avm image update "$_image" --tools --set mark=fail
+    assert_status 1 || return 1
+    assert_err_contains "recipe update step 1 (note again)" || return 1
+    assert_out_contains "$_image is unchanged" || return 1
+    run_avm image info "$_image" --json
+    assert_json state "ready" || return 1
+    assert_json revision "1" || return 1
+    assert_json recipes.0.parameters.mark "two" || return 1
+    assert_missing "$_folder/Update" || return 1
+
+    # The recreated box has what the first update wrote, and not the failed one's.
+    run_avm box recreate "$_box"
+    assert_status 0 || return 1
+    run_avm box start "$_box"
+    assert_status 0 || return 1
+    run_avm exec --box "$_box" -- /bin/cat shtest-upd.txt
+    local _output="$OUT"
+    "$AGENT_VM" box stop "$_box"
+    "$AGENT_VM" box delete "$_box"
+    "$AGENT_VM" image delete "$_image"
+    assert_eq "$_output" $'built one\nupdated two' "the image after the update" || return 1
+}
+
 test_a_failing_recipe_marks_the_image_failed() {
     require_image || return $(( $? == 1 ? 0 : 1 ))
     local _image="shtest-bad-$$"

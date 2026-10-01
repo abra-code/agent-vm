@@ -199,6 +199,46 @@ import Testing
         #expect(both?.name == nil && both?.folder == nil)
     }
 
+    @Test func updateStepsParseAndAreKept() throws {
+        let scratch = try Scratch()
+        let json = #"""
+            {
+              "version": 1,
+              "parameters": {"channel": {"default": "lts"}, "team": {}},
+              "inputs": {"xcode": {}},
+              "steps": [{"run": "install"}],
+              "update": [
+                {"name": "upgrade", "run": "upgrade \"$AGENT_VM_PARAM_CHANNEL\"", "timeoutSeconds": 90},
+                {"copy": "files/settings", "to": "~/.settings"}
+              ],
+              "checks": ["tool --version"]
+            }
+            """#
+        let url = try recipe(json, files: ["files/settings": "one"], in: scratch)
+        let parsed = try ImageRecipe.load(from: url)
+        #expect(parsed.steps.count == 1)
+        #expect(parsed.updateSteps.map(\.name) == ["upgrade", "update step 2"])
+        #expect(parsed.updateSteps[0].timeoutSeconds == 90)
+        // The files update steps copy are part of the digest, and kept with the recipe.
+        let other = try Scratch()
+        #expect(try ImageRecipe.load(from: recipe(json, files: ["files/settings": "two"], in: other)).digest != parsed.digest)
+        let folder = scratch.root.appendingPathComponent("kept/1-recipe", isDirectory: true)
+        try parsed.write(to: folder)
+        let kept = try ImageRecipe.load(from: folder.appendingPathComponent("recipe.json"))
+        #expect(kept.digest == parsed.digest)
+        #expect(kept.updateSteps.count == 2)
+
+        // For an update: --set, else what the image recorded, else the default; no inputs.
+        let bound = try kept.bindingForUpdate(recorded: ["channel": "beta", "team": "a"], set: ["team": "b"])
+        #expect(bound.parameterValues == ["channel": "beta", "team": "b"])
+        #expect(bound.variables == ["AGENT_VM_PARAM_CHANNEL": "beta", "AGENT_VM_PARAM_TEAM": "b"])
+        #expect(try kept.bindingForUpdate(recorded: ["team": "a"], set: [:]).parameterValues == ["channel": "lts", "team": "a"])
+        #expect(throws: AgentVMError.self) { try kept.bindingForUpdate(recorded: [:], set: [:]) }
+
+        #expect(reason(try recipe(#"{"version": 1, "update": {"run": "x"}}"#, in: other))?.contains("\"update\" must be a list") == true)
+        #expect(reason(try recipe(#"{"version": 1, "update": [{"run": "x", "usr": "root"}]}"#, in: other))?.contains("update step 1 has unknown key \"usr\"") == true)
+    }
+
     @Test func theDigestCoversCopiedFiles() throws {
         let first = try Scratch()
         let second = try Scratch()

@@ -24,6 +24,10 @@ extension ImageCommand.UpdateGuest: JobTask {
     var jobTargets: [String] { names.map { "image:\($0)" } }
 }
 
+extension ImageCommand.Update: JobTask {
+    var jobTargets: [String] { names.map { "image:\($0)" } }
+}
+
 extension ImageCommand.Setup: JobTask {
     var jobTargets: [String] { ["image:\(name)"] }
 }
@@ -51,7 +55,7 @@ struct JobCommand: ParsableCommand {
         commandName: "job",
         abstract: "Run long commands detached, and follow, cancel or forget them.",
         discussion: """
-            A job is an agent-vm command (image create, image update-guest, image setup, image \
+            A job is an agent-vm command (image create, image update, image update-guest, image setup, image \
             fetch-ipsw, box start or box stop) run in the background, in its own session: \
             closing the terminal or the application that started it does not end it. Its \
             record, progress events and result are kept in the store's Jobs folder, where \
@@ -61,7 +65,7 @@ struct JobCommand: ParsableCommand {
         subcommands: [Start.self, List.self, Log.self, Cancel.self, Forget.self, Run.self]
     )
 
-    static let taskNames = "image create, image update-guest, image setup, image fetch-ipsw, box start and box stop"
+    static let taskNames = "image create, image update, image update-guest, image setup, image fetch-ipsw, box start and box stop"
 
     struct Start: ParsableCommand {
         static let configuration = CommandConfiguration(

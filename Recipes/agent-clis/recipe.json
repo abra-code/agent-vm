@@ -8,5 +8,12 @@
       "timeoutSeconds": 1800
     }
   ],
+  "update": [
+    {
+      "name": "Agent command-line tools, the newest",
+      "run": "npm install --global --no-fund --no-audit @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai@latest",
+      "timeoutSeconds": 1800
+    }
+  ],
   "checks": ["node --version", "claude --version", "codex --version", "opencode --version"]
 }

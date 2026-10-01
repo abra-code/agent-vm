@@ -32,7 +32,8 @@ Examples are in [../Recipes/](../Recipes/README.md).
 | `description` | no | Shown while building and recorded in `image.json`. |
 | `commandLineTools` | no | `false` skips Xcode's Command Line Tools (default `true` for a new image). With `--from`, `true` installs them only if the base image lacks them. `--[no-]command-line-tools` on the command line overrides it. |
 | `steps` | no | What to run, in order. |
-| `checks` | no | Commands run as the box user after the steps; each must exit 0 within 300 seconds, and its first line of output is shown. |
+| `update` | no | Steps that bring what the recipe installed up to date, run by `agent-vm image update` in an image built with the recipe: see Update steps. Never run while an image is built. |
+| `checks` | no | Commands run as the box user after the steps, and again after the update steps; each must exit 0 within 300 seconds, and its first line of output is shown. |
 | `inputs` | no | Files the builder gives with `--input NAME=PATH`: see Inputs and parameters. |
 | `parameters` | no | Values the builder may set with `--set NAME=VALUE`: see Inputs and parameters. |
 
@@ -84,6 +85,27 @@ agent-vm image create dev-xcode --from dev --recipe recipe.json --input xcode=~/
 - **Parameters** without a `default` must be set. Values are text, any text but a NUL character; an empty value is a value.
 - **Steps and checks see them** as environment variables: `AGENT_VM_INPUT_<NAME>` (the file's path in the guest) and `AGENT_VM_PARAM_<NAME>` (the value), the name in capitals. A step's own `env` cannot change them.
 - **Mistakes are refused before anything is built**: a missing input or required parameter, a name the recipe does not declare, an input that is not a readable file.
+
+## Update steps
+
+```json
+{
+  "version": 1,
+  "description": "Agent command-line tools",
+  "steps":  [{ "run": "npm install --global @anthropic-ai/claude-code" }],
+  "update": [{ "run": "npm install --global @anthropic-ai/claude-code@latest" }],
+  "checks": ["claude --version"]
+}
+```
+
+`agent-vm image update <image>` runs the `update` steps of every recipe the image keeps, in the order the recipes were applied, and each recipe's `checks` after its update steps. An update step is written like any other step (`run` or `copy` + `to`, with `name`, `user`, `env`, `mode`, `timeoutSeconds`), and can rely on the same things.
+
+- **Write them to be run again and again**: an update step runs at every `image update`, on an image where it may have run before (`brew upgrade`, `npm install ...@latest`, `softwareupdate` is not needed: `image update` does macOS itself).
+- **Parameters** have the values the image recorded when it was built; `image update --set name=value` changes one and records it, so the next update uses it too. A recipe that pins a version as a parameter moves the pin that way.
+- **Inputs are not there**: an input was streamed in for the build and deleted after it, so update steps and checks see no `AGENT_VM_INPUT_` variables. What needs the file again (a newer Xcode `.xip`) is a new image.
+- **Nothing is kept from a failed update**: a failing update step or check leaves the image as it was before `image update`.
+- **The recipe is the one the image keeps**, as it was when the image was built (`Recipes/` in the image's folder): changing the recipe file later does not change what `image update` runs.
+- **The digest** covers the files update steps copy, after the files the steps copy.
 
 ## Several recipes
 

@@ -162,6 +162,39 @@ final class BoxScratch {
         #expect(recreated.record.disposable == true)
     }
 
+    /// A box records when its image was built and how often it was updated; once `image
+    /// update` changed the image, or another was built under its name, the box needs
+    /// recreating. A box from before that was recorded says nothing.
+    @Test func aBoxNeedsRecreatingAfterItsImageWasUpdatedOrRebuilt() throws {
+        let fixture = try BoxScratch()
+        let box = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images)
+        #expect(box.record.imageCreatedAt == fixture.image.record.createdAt)
+        #expect(box.record.imageRevision == 0)
+        #expect(box.record.needs(image: fixture.image.record).isEmpty)
+
+        let updated = try fixture.images.update(fixture.image) {
+            $0.revision = 1
+            $0.macOSBuild = "26A434"
+        }
+        #expect(box.record.needs(image: updated.record) == [BoxNeed(kind: .recreate, reason: .imageUpdated, macOSBuild: "26A434")])
+        let recreated = try fixture.boxes.recreate(name: "b1", from: updated, imageStore: fixture.images)
+        #expect(recreated.record.imageRevision == 1)
+        #expect(recreated.record.needs(image: updated.record).isEmpty)
+
+        var rebuilt = updated.record
+        rebuilt.createdAt = rebuilt.createdAt.addingTimeInterval(60)
+        rebuilt.revision = nil
+        #expect(recreated.record.needs(image: rebuilt) == [BoxNeed(kind: .recreate, reason: .imageRebuilt, macOSBuild: "26A434")])
+
+        var old = recreated.record
+        old.imageCreatedAt = nil
+        old.imageRevision = nil
+        #expect(old.needs(image: rebuilt).isEmpty)
+        // Its JSON says why.
+        let json = String(decoding: try SessionStore.encoder.encode(box.record.needs(image: updated.record)), as: UTF8.self)
+        #expect(json.contains("\"reason\" : \"image-updated\""))
+    }
+
     /// A box records the image's guest daemon; once the image's changes (image update-guest),
     /// the box needs recreating, and recreating it takes the new one.
     @Test func aBoxNeedsRecreatingAfterItsImagesGuestChanged() throws {
@@ -179,7 +212,7 @@ final class BoxScratch {
             $0.guestVersion = "0.4.3"
             $0.guestDigest = "bbbb"
         }
-        #expect(box.record.needs(image: updated.record) == [BoxNeed(kind: .recreate, guestVersion: "0.4.3")])
+        #expect(box.record.needs(image: updated.record) == [BoxNeed(kind: .recreate, guestVersion: "0.4.3", reason: .guestUpdate)])
         // Nothing to compare: the image is gone, or not ready, or either digest unknown.
         #expect(box.record.needs(image: nil).isEmpty)
         var building = updated.record

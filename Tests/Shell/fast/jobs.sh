@@ -21,7 +21,7 @@ wait_for_job() {
 test_a_job_runs_only_agent_vm_long_commands() {
     run_avm job start -- image list
     assert_status 64 || return 1
-    assert_err_contains "a job runs image create, image update-guest, image setup, image fetch-ipsw, box start and box stop; not \`image list\`" || return 1
+    assert_err_contains "a job runs image create, image update, image update-guest, image setup, image fetch-ipsw, box start and box stop; not \`image list\`" || return 1
     assert_err_contains "Usage: agent-vm job start" || return 1
 
     run_avm job start -- box stop
