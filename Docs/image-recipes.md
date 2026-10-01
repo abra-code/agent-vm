@@ -111,7 +111,7 @@ agent-vm image create dev-xcode --from dev --recipe recipe.json --input xcode=~/
 
 ```sh
 agent-vm image create dev --ipsw latest \
-    --recipe Recipes/homebrew-node/recipe.json --recipe Recipes/agent-clis/recipe.json \
+    --recipe Recipes/homebrew/recipe.json --recipe Recipes/node/recipe.json --recipe Recipes/agent-clis/recipe.json \
     --recipe Recipes/xcode/recipe.json --input xcode=~/Downloads/Xcode_27.xip --disk-gb 128
 ```
 

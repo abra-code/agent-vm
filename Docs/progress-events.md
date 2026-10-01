@@ -9,14 +9,14 @@ Commands that report progress: `image create` (from a restore image or `--from` 
 Run as a job (`agent-vm job start -- <command>`, see the README), a command's events are kept in the job's log: `job list --json` gives each job's last `progress` event and last notice, and `job log <id> --json` all of its events.
 
 ```sh
-agent-vm image create dev-node --from dev --recipe Recipes/homebrew-node/recipe.json --json 2> events.jsonl > record.json
+agent-vm image create dev-node --from dev --recipe Recipes/homebrew/recipe.json --json 2> events.jsonl > record.json
 ```
 
 ```json
 {"event":"progress","image":"dev-node","message":"Cloning dev (macOS 26A428)","step":"clone"}
 {"event":"progress","image":"dev-node","message":"Booting","step":"boot"}
 {"event":"log","image":"dev-node","message":"agent-vm-guest 0.1.8 answers over vsock"}
-{"event":"progress","image":"dev-node","message":"Recipe: Homebrew and Node (3 steps, 2 checks)","step":"recipe"}
+{"event":"progress","image":"dev-node","message":"Recipe: Homebrew (3 steps, 1 checks)","step":"recipe"}
 {"count":3,"event":"progress","fraction":0,"image":"dev-node","index":1,"message":"[1/3] Homebrew","step":"recipe-step"}
 {"event":"log","image":"dev-node","message":"==> Downloading and installing Homebrew...","output":true}
 {"event":"progress","image":"dev-node","message":"Shutting down","step":"shutdown"}

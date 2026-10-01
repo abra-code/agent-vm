@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Homebrew and Node",
+  "description": "Homebrew",
   "steps": [
     {
       "name": "Homebrew folder, owned by the box user",
@@ -11,12 +11,6 @@
       "name": "Homebrew",
       "run": "set -o pipefail; curl -fsSL https://github.com/Homebrew/brew/tarball/HEAD | tar xz --strip-components 1 -C /opt/homebrew && /opt/homebrew/bin/brew update --force --quiet",
       "env": { "HOMEBREW_NO_ANALYTICS": "1" }
-    },
-    {
-      "name": "Node",
-      "run": "/opt/homebrew/bin/brew install node",
-      "env": { "HOMEBREW_NO_ANALYTICS": "1", "HOMEBREW_NO_ENV_HINTS": "1" },
-      "timeoutSeconds": 3600
     },
     {
       "name": "Homebrew in login shells",
@@ -32,5 +26,5 @@
       "timeoutSeconds": 3600
     }
   ],
-  "checks": ["brew --version", "node --version", "npm --version"]
+  "checks": ["brew --version"]
 }

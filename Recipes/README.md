@@ -4,23 +4,25 @@ Recipes for `agent-vm image create --recipe`. The format is described in [../Doc
 
 | Recipe | Installs | Needs |
 |---|---|---|
-| [homebrew-node](homebrew-node/recipe.json) | Homebrew in `/opt/homebrew` (owned by the box user, so no `sudo`), Node and npm, and a `~/.zprofile` that puts Homebrew on the login shell's path | the Command Line Tools (default) |
-| [agent-clis](agent-clis/recipe.json) | Claude Code, Codex and opencode, from npm (what `avm` runs) | Node: an image built with homebrew-node |
-| [acp-agents](acp-agents/recipe.json) | The Agent Client Protocol (ACP) adapters that applications such as Cadabra drive: Claude Agent ACP (`claude-agent-acp`, built on the Claude Agent SDK, so it does not need the Claude Code package) and Codex ACP (`codex-acp`), plus opencode, which speaks ACP itself (`opencode acp`). Versions are pinned (`--set claude_acp=latest` and so on to change them), except what the adapters depend on in turn: Codex ACP takes any Codex CLI 0.156.x; the checks print the versions installed, and run each adapter's own program, which npm can skip without a word; `--set extras="@google/gemini-cli @github/copilot"` adds more packages | Node: an image built with homebrew-node |
+| [homebrew](homebrew/recipe.json) | Homebrew in `/opt/homebrew` (owned by the box user, so no `sudo`), and a `~/.zprofile` that puts it on the login shell's path. Nothing else: the recipes below install what they need with it | the Command Line Tools (default) |
+| [node](node/recipe.json) | Node and npm, from Homebrew | Homebrew: the homebrew recipe before it |
+| [python](python/recipe.json) | A current Python (3.14 at this writing) and uv, from Homebrew: `python3`, `pip3`, and `python` and `pip` without the 3, all ahead of Apple's on the path. Apple's own Python 3.9 stays at `/usr/bin/python3`, where Xcode and its debugger expect it. Homebrew's Python refuses `pip install` outside a virtual environment, so work in one (`python3 -m venv .venv`, or `uv venv`); boxes on the allowlist network need `--allow pack:pypi` | Homebrew: the homebrew recipe before it |
+| [agent-clis](agent-clis/recipe.json) | Claude Code, Codex and opencode, from npm (what `avm` runs) | Node: the homebrew and node recipes before it |
+| [acp-agents](acp-agents/recipe.json) | The Agent Client Protocol (ACP) adapters that applications such as Cadabra drive: Claude Agent ACP (`claude-agent-acp`, built on the Claude Agent SDK, so it does not need the Claude Code package) and Codex ACP (`codex-acp`), plus opencode, which speaks ACP itself (`opencode acp`). Versions are pinned (`--set claude_acp=latest` and so on to change them), except what the adapters depend on in turn: Codex ACP takes any Codex CLI 0.156.x; the checks print the versions installed, and run each adapter's own program, which npm can skip without a word; `--set extras="@google/gemini-cli @github/copilot"` adds more packages | Node: the homebrew and node recipes before it |
 | [xcode](xcode/recipe.json) | Xcode from a `.xip` you give (`--input xcode=...`), checked to be signed by Apple, selected with `xcode-select`, its license accepted and first-launch packages installed; debugging without an administrator prompt. The Command Line Tools stay too. | an Xcode `.xip` (see below) |
 | [xcode-platforms](xcode-platforms/recipe.json) | Simulator runtimes (`--set platforms="iOS watchOS"`, default `iOS`; `iOS@26.5` for an older one) and Xcode components (`--set components=...`, default `MetalToolchain`), downloaded from Apple in the guest, no Apple ID needed | Xcode: an image built with xcode |
 
-Put the ones you want into one image, in an order that satisfies "Needs" (`--recipe` is repeatable; `--input` and `--set` go to the recipes that declare the name):
+Put the ones you want into one image, in an order that satisfies "Needs" (`--recipe` is repeatable; `--input` and `--set` go to the recipes that declare the name): A recipe that needs another says so in its first step: without Homebrew or Node in the image it fails at once, naming the recipe to put before it.
 
 ```sh
 agent-vm image create dev --ipsw <restore image>                                        # macOS alone, about 6 minutes
-agent-vm image create tools --from dev --recipe Recipes/homebrew-node/recipe.json --recipe Recipes/agent-clis/recipe.json --recipe Recipes/acp-agents/recipe.json
+agent-vm image create tools --from dev --recipe Recipes/homebrew/recipe.json --recipe Recipes/node/recipe.json --recipe Recipes/python/recipe.json --recipe Recipes/agent-clis/recipe.json --recipe Recipes/acp-agents/recipe.json
 agent-vm box create work --image tools --allow pack:anthropic --allow pack:openai --allow pack:npm
 ```
 
 One image with every tool is the simplest to keep. While you are still working on a recipe, layers are quicker to try: build each from the one before (`image create dev-node --from dev --recipe ...`, then `image create dev-agents --from dev-node --recipe ...`), and a change to a later layer rebuilds in about a minute. Each layer is its own image, though, and does not follow the one below it.
 
-Keep the image current with `agent-vm image update tools`: besides macOS, it runs each recipe's update steps. homebrew-node upgrades Homebrew and everything installed with it; agent-clis installs the newest Claude Code, Codex and opencode; acp-agents installs the versions set (`image update tools --tools --set claude_acp=latest` moves a pin). The Xcode recipes have none: a newer Xcode is a new `.xip` and a new image.
+Keep the image current with `agent-vm image update tools`: besides macOS, it runs each recipe's update steps. homebrew upgrades Homebrew and everything installed with it, which covers the node and python recipes (they need no update steps of their own); agent-clis installs the newest Claude Code, Codex and opencode; acp-agents installs the versions set (`image update tools --tools --set claude_acp=latest` moves a pin). The Xcode recipes have none: a newer Xcode is a new `.xip` and a new image.
 
 The agents need their own logins or API keys inside the box: nothing from your Mac's Keychain reaches it.
 

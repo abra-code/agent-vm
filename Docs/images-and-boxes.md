@@ -77,7 +77,7 @@ agent-vm box start work
 Build an image with recipes instead of installing tools into a box you want to keep. One image can take several recipes, in the order given:
 
 ```sh
-agent-vm image create tools --from dev --recipe Recipes/homebrew-node/recipe.json --recipe Recipes/agent-clis/recipe.json
+agent-vm image create tools --from dev --recipe Recipes/homebrew/recipe.json --recipe Recipes/node/recipe.json --recipe Recipes/agent-clis/recipe.json
 agent-vm box create web --image tools
 ```
 
