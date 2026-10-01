@@ -95,7 +95,7 @@ struct ExecRunner {
                 guard status.guestFeatures != nil else {
                     throw AgentVMError.guestRefused("box \(box.name) was started by an older agent-vm; restart it (`agent-vm box stop \(box.name)`, then `box start`) to use a terminal")
                 }
-                throw AgentVMError.guestRefused("box \(box.name) was made from an image whose agent-vm-guest has no terminal support; update the image with `agent-vm image update-guest \(box.record.image)`, then `agent-vm box recreate \(box.name)`")
+                throw AgentVMError.guestRefused("box \(box.name) was made from an image whose agent-vm-guest has no terminal support; update the image with `agent-vm image update \(box.record.image) --guest`, then `agent-vm box recreate \(box.name)`")
             }
             size = Self.localTerminalSize(pixels: pixels)
             if environment["TERM"] == nil {

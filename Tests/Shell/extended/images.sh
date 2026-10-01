@@ -156,6 +156,14 @@ test_image_update_runs_update_steps_in_place() {
     assert_out_contains "needs recreate: image $_image was updated since this box was made" || return 1
 
     # A failing update step: reported, and nothing of it is kept.
+    # Nothing to do for the daemon: the image was just built with this agent-vm's. No boot is
+    # wasted on a second check, and the image keeps its revision.
+    run_avm image update "$_image" --guest
+    assert_status 0 || return 1
+    assert_out_contains "agent-vm-guest is already this agent-vm's" || return 1
+    assert_out_contains "Image $_image is up to date" || return 1
+    assert_not_contains "$OUT" "Booting again" "a second boot" || return 1
+
     run_avm image update "$_image" --tools --set mark=fail
     assert_status 1 || return 1
     assert_err_contains "recipe update step 1 (note again)" || return 1

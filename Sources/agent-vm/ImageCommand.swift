@@ -245,7 +245,7 @@ struct ImageCommand: ParsableCommand {
     struct Update: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "update",
-            abstract: "Bring ready images up to date in place: macOS, and the tools their recipes installed.",
+            abstract: "Bring ready images up to date in place: macOS, the tools their recipes installed, and the guest daemon.",
             discussion: """
                 macOS: installs the update Apple offers within the image's major version \
                 (softwareupdate in the guest, unattended; about 15 minutes, and about 15 GB \
@@ -253,8 +253,10 @@ struct ImageCommand: ParsableCommand {
                 Command Line Tools package when the image has the tools. Tools: runs the \
                 `update` steps of the recipes the image keeps, in the order they were applied, \
                 and each recipe's checks again, with the parameters the image recorded; --set \
-                changes one (a pinned version, say) and records it. With neither --macos nor \
-                --tools, both. The update works on a copy of the image's disk and puts it in \
+                changes one (a pinned version, say) and records it. Guest daemon: puts this \
+                agent-vm's agent-vm-guest into the image when it has another one, and boots once \
+                more to check it (what `image update-guest` does). With none of --macos, --tools \
+                and --guest, all three. The update works on a copy of the image's disk and puts it in \
                 place only when every step and check passed: a failure or a cancel leaves the \
                 image as it was, still ready. Boxes made from the image earlier keep what they \
                 have; `box list` says "needs recreate" for them. Several images are updated one \
@@ -273,6 +275,9 @@ struct ImageCommand: ParsableCommand {
         @Flag(name: .long, help: "Run the update steps of the image's recipes.")
         var tools = false
 
+        @Flag(name: .long, help: "Replace the image's agent-vm-guest with this agent-vm's, when they differ.")
+        var guest = false
+
         @Option(name: .customLong("set"), help: ArgumentHelp("A new value for a parameter of the image's recipes, for the tools update (repeatable).", valueName: "name=value"))
         var settings: [String] = []
 
@@ -282,8 +287,8 @@ struct ImageCommand: ParsableCommand {
             for pair in settings where !pair.contains("=") || pair.hasPrefix("=") {
                 throw ValidationError("\(pair): give name=value")
             }
-            if macOS && !tools && !settings.isEmpty {
-                throw ValidationError("--set changes a recipe's parameter for the tools update; add --tools, or leave out --macos")
+            if (macOS || guest) && !tools && !settings.isEmpty {
+                throw ValidationError("--set changes a recipe's parameter for the tools update; add --tools, or leave out --macos and --guest")
             }
         }
 
@@ -297,11 +302,12 @@ struct ImageCommand: ParsableCommand {
                 }
             }
             let parameters = try Create.pairs(settings, option: "--set")
-            // Neither flag: both.
-            let both = !macOS && !tools
+            // No flag: everything.
+            let both = !macOS && !tools && !guest
+            let guestDaemon = guest || both ? try ImageCommand.localGuestDaemon() : nil
             // A mistyped last name should not surface after the first images took minutes each.
             for name in names {
-                try builder.checkUpdate(ImageUpdateOptions(name: name, macOS: macOS || both, tools: tools || both, parameters: parameters))
+                try builder.checkUpdate(ImageUpdateOptions(name: name, macOS: macOS || both, tools: tools || both, parameters: parameters, guestDaemon: guestDaemon))
             }
             let signals = BuildCancellation.watchingSignals()
             defer { signals.stop() }
@@ -310,7 +316,7 @@ struct ImageCommand: ParsableCommand {
             for (index, name) in names.enumerated() {
                 let result: ImageUpdateResult
                 do {
-                    result = try await builder.update(ImageUpdateOptions(name: name, macOS: macOS || both, tools: tools || both, parameters: parameters))
+                    result = try await builder.update(ImageUpdateOptions(name: name, macOS: macOS || both, tools: tools || both, parameters: parameters, guestDaemon: guestDaemon))
                 } catch {
                     var canceledBy: Int32?
                     if case let AgentVMError.canceled(signal) = error {
@@ -361,6 +367,9 @@ struct ImageCommand: ParsableCommand {
             if !result.recipes.isEmpty {
                 parts.append("tools of \(result.recipes.joined(separator: ", "))")
             }
+            if let previous = result.previousGuestVersion {
+                parts.append("agent-vm-guest \(record.guestVersion ?? "?") (was \(previous))")
+            }
             if parts.isEmpty {
                 parts.append("the Command Line Tools")
             }
@@ -371,8 +380,11 @@ struct ImageCommand: ParsableCommand {
     struct UpdateGuest: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "update-guest",
-            abstract: "Put this agent-vm's guest daemon into ready images.",
+            abstract: "Deprecated: use `image update --guest`. Put this agent-vm's guest daemon into ready images.",
             discussion: """
+                Deprecated, and removed in a later version: `agent-vm image update <image> \
+                --guest` does the same on a copy of the image, so a failure leaves the image as \
+                it was, and `agent-vm image update <image>` updates macOS and the tools too. \
                 Boots the image, replaces its agent-vm-guest with the one next to agent-vm when \
                 they differ, and boots it once more to check the new one (a minute or two). \
                 Needed when a newer agent-vm brings guest features (`image list` names what an \
@@ -384,16 +396,24 @@ struct ImageCommand: ParsableCommand {
                 With --json: the image's record, or an array of them for several names (on a failure, the images updated before it). \
                 SIGINT or SIGTERM stops at the next safe point: the image is shut down, and stays \
                 ready unless its daemon was already being replaced; agent-vm exits with 128 + the signal.
-                """)
+                """,
+            shouldDisplay: false)
 
         @Argument(help: ArgumentHelp("The images to update.", valueName: "image"))
         var names: [String]
 
         @OptionGroup var options: StoreOptions
 
+        static let deprecation = "note: image update-guest is deprecated and will be removed; use `agent-vm image update <image> --guest`"
+
         @MainActor
         func run() async throws {
             let json = options.json
+            if json {
+                Events.emit(ProgressEvent(.notice, Self.deprecation, image: nil), json: true)
+            } else {
+                FileHandle.standardError.write(Data((Self.deprecation + "\n").utf8))
+            }
             let builder = ImageBuilder(store: options.imageStore, events: Events.handler(json: json))
             let names = names.reduce(into: [String]()) { unique, name in
                 if !unique.contains(name) {
@@ -528,7 +548,7 @@ struct ImageCommand: ParsableCommand {
                 for need in record.needs {
                     switch (need.kind, need.reason) {
                     case (.guestUpdate, _):
-                        lines.append("    agent-vm-guest lacks \((need.missing ?? []).joined(separator: ", ")); `agent-vm image update-guest \(record.name)` adds it")
+                        lines.append("    agent-vm-guest lacks \((need.missing ?? []).joined(separator: ", ")); `agent-vm image update \(record.name) --guest` adds it")
                     case (.fullDiskAccess, .notGranted?):
                         lines.append("    agent-vm-guest has no Full Disk Access: programs in boxes that open Desktop, Documents or Downloads wait on a hidden prompt; `agent-vm image setup \(record.name)`")
                     case (.fullDiskAccess, _):

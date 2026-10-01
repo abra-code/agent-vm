@@ -78,7 +78,7 @@ enum ConnectError: Error, CustomStringConvertible {
         case let .noFreeSlot(message):
             return message
         case let .imageNeedsUpdate(image):
-            return "image \(image)'s agent-vm-guest cannot run terminal sessions; update it with agent-vm image update-guest \(image)"
+            return "image \(image)'s agent-vm-guest cannot run terminal sessions; update it with agent-vm image update \(image) --guest"
         case let .temporaryNotRunning(box, name):
             let words = name == "avm" ? "avm" : "agent-vm connect"
             return "box \(box) is a temporary box that is not running, so it is not started again; make a new one with \(words) new <image>"
@@ -431,7 +431,7 @@ struct ConnectRunner {
         }
         return images.filter { $0.record.state == .ready }.map { image in
             let terminal = (image.record.guestFeatures ?? []).contains(GuestFeature.terminal)
-            return ConnectPickers.ImageOffer(image: image, reason: terminal ? nil : "needs agent-vm image update-guest \(image.name)")
+            return ConnectPickers.ImageOffer(image: image, reason: terminal ? nil : "needs agent-vm image update \(image.name) --guest")
         }
     }
 

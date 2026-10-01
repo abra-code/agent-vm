@@ -57,7 +57,7 @@ avm would:
 
 ## New boxes
 
-- **From the list:** its last section has `Temporary box from an image...` and `Kept box from an image...` (shown but not choosable when no image is ready). Either one shows the ready images (name, macOS version, what the recipe installed), preselecting the one remembered for the folder; an image whose `agent-vm-guest` cannot run terminal sessions is shown with `needs agent-vm image update-guest <image>`. A kept box then asks its name, suggesting the folder's name (`app`, or `app-2` when taken). Escape in the image list or at the name goes back to the box list.
+- **From the list:** its last section has `Temporary box from an image...` and `Kept box from an image...` (shown but not choosable when no image is ready). Either one shows the ready images (name, macOS version, what the recipe installed), preselecting the one remembered for the folder; an image whose `agent-vm-guest` cannot run terminal sessions is shown with `needs agent-vm image update <image> --guest`. A kept box then asks its name, suggesting the folder's name (`app`, or `app-2` when taken). Escape in the image list or at the name goes back to the box list.
 - **From the command line:** `avm new <image>` (temporary, `--temp` says so) or `avm new <image> --name <box>` (kept). The image, the name and `--allow`'s rules are checked before anything is made.
 - **Temporary boxes** are named `avm-<image>-<6 hex digits>`. avm is their owner: the box stops when avm exits, however it exits (even `kill -9`), and `agent-vm box gc` (or the next `box list` or avm) deletes it. After the session avm stops and deletes it itself.
 - **Kept boxes** stay, with no owner, as `agent-vm box create` makes them.

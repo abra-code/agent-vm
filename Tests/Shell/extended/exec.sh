@@ -170,7 +170,7 @@ test_a_terminal_needs_a_guest_that_has_one() {
     STATUS=$?
     printf '$ (on a terminal) exec -t\n%s\n[status %s]\n' "$OUT" "$STATUS"
     assert_status 125 || return 1
-    assert_out_contains "image update-guest $TEST_IMAGE" || return 1
+    assert_out_contains "image update $TEST_IMAGE --guest" || return 1
 }
 
 # box view: the supervisor opens a window on this Mac's screen (briefly, during the test; it goes

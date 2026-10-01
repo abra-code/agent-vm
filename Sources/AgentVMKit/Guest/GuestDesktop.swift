@@ -145,7 +145,7 @@ enum GuestDesktop {
                 lines.append("note: could not set the wallpaper: \(error)")
             }
         } else if png != nil {
-            lines.append("note: this agent-vm-guest predates wallpapers; boxes made after `agent-vm image update-guest` on their image get one")
+            lines.append("note: this agent-vm-guest predates wallpapers; boxes made after `agent-vm image update --guest` on their image get one")
         }
         if !widgetsOnce || newWallpaper {
             let widgets = try await hideWidgets(user: user, uid: uid, run: run)

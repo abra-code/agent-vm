@@ -57,7 +57,7 @@ test_connect_list_shows_what_the_picker_offers() {
     # The image, not usable for a new box: its guest daemon cannot run terminal sessions.
     assert_json images.0.name dev || return 1
     assert_json images.0.offered false || return 1
-    assert_contains "$(json_value images.0.reason)" "update-guest dev" "the image's reason" || return 1
+    assert_contains "$(json_value images.0.reason)" "image update dev --guest" "the image's reason" || return 1
     run_avm_link list --project "$SCRATCH/project"
     assert_status 0 || return 1
     assert_out_contains "Stopped" || return 1
@@ -318,7 +318,7 @@ test_connect_new_images_without_a_terminal_feature_are_refused() {
     fake_image old
     run_avm_link new old --shell --dry-run --no-project
     assert_status 1 || return 1
-    assert_err_contains "update it with agent-vm image update-guest old" || return 1
+    assert_err_contains "update it with agent-vm image update old --guest" || return 1
 }
 
 test_completion_scripts_name_avm() {

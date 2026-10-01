@@ -72,7 +72,9 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 | `command-line-tools` | A newer Command Line Tools package is installed. |
 | `tools-update` | One recipe's update steps begin, with `index` and `count` (which recipe of how many that have update steps). |
 | `recipe-step` | Each update step, as in `image create`. |
+| `replace-guest-daemon` | Putting this agent-vm's `agent-vm-guest` into the image, when it differs (unless `--macos` or `--tools` alone). |
 | `shutdown` | Shutting the guest down. |
+| `check-guest-daemon` | Booting again to check the new `agent-vm-guest` (only when it was replaced), then `shutdown` again. |
 | `commit` | The updated disk takes the image's place. Left out when there was nothing to update. |
 
 `image update-guest`: `boot`, then, when the daemon differs, `replace-guest-daemon`, `shutdown`, `check-guest-daemon` and `shutdown` again (otherwise just `shutdown`), for each image in turn. A failure in one image skips the rest, with a `notice` naming them.

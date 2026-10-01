@@ -166,12 +166,12 @@ test_images_name_missing_guest_features() {
     fake_image broken failed
     run_avm image list
     assert_status 0 || return 1
-    assert_out_contains "agent-vm-guest lacks terminal, prompt-notices, wallpaper, time-sync, user-session, terminal-pixels; \`agent-vm image update-guest dev\` adds it" || return 1
+    assert_out_contains "agent-vm-guest lacks terminal, prompt-notices, wallpaper, time-sync, user-session, terminal-pixels; \`agent-vm image update dev --guest\` adds it" || return 1
     assert_out_contains "Full Disk Access for agent-vm-guest is not checked; \`agent-vm image setup dev\`" || return 1
     run_avm image setup broken
     assert_status 1 || return 1
     assert_err_contains "cannot set up image broken: it is failed" || return 1
-    assert_not_contains "$OUT" "update-guest broken" "stdout" || return 1
+    assert_not_contains "$OUT" "image update broken" "stdout" || return 1
     run_avm image update-guest broken
     assert_status 1 || return 1
     assert_err_contains "cannot update the guest daemon of image broken: it is failed" || return 1
@@ -193,6 +193,10 @@ test_update_guest_checks_every_name_first() {
     assert_status 1 || return 1
     assert_err_contains "cannot update the guest daemon of image broken: it is failed" || return 1
     assert_not_contains "$OUT" "Booting" "stdout" || return 1
+    # Deprecated: it still works, and says what to use.
+    assert_err_contains "image update-guest is deprecated" || return 1
+    run_avm image --help
+    assert_not_contains "$OUT" "update-guest" "image --help" || return 1
     run_avm image update-guest
     assert_status 64 || return 1
     assert_err_contains "Missing expected argument '<image> ...'" || return 1
@@ -215,6 +219,9 @@ test_update_checks_every_name_first() {
     run_avm image update dev --macos --set channel=beta
     assert_status 64 || return 1
     assert_err_contains "--set changes a recipe's parameter for the tools update" || return 1
+    run_avm image update dev --guest --set channel=beta
+    assert_status 64 || return 1
+    assert_err_contains "leave out --macos and --guest" || return 1
     run_avm image update dev --tools --set channel
     assert_status 64 || return 1
     assert_err_contains "channel: give name=value" || return 1

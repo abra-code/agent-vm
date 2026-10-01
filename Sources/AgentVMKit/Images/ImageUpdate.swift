@@ -28,12 +28,15 @@ public struct ImageUpdateOptions: Sendable {
     public var tools: Bool
     /// New values for the recipes' parameters (`--set`), recorded with the image.
     public var parameters: [String: String]
+    /// The agent-vm-guest to put in the image when it has another one (nil: leave the image's).
+    public var guestDaemon: URL?
 
-    public init(name: String, macOS: Bool, tools: Bool, parameters: [String: String] = [:]) {
+    public init(name: String, macOS: Bool, tools: Bool, parameters: [String: String] = [:], guestDaemon: URL? = nil) {
         self.name = name
         self.macOS = macOS
         self.tools = tools
         self.parameters = parameters
+        self.guestDaemon = guestDaemon
     }
 }
 
@@ -46,6 +49,8 @@ public struct ImageUpdateResult: Sendable {
     public var previousMacOSBuild: String?
     /// The names of the recipes whose update steps ran.
     public var recipes: [String]
+    /// The image's agent-vm-guest version before it was replaced, when it was.
+    public var previousGuestVersion: String?
 }
 
 /// A macOS update as `softwareupdate --list` offers it.
@@ -181,6 +186,9 @@ extension ImageBuilder {
         // Read before anything boots: a recipe that no longer loads, or a --set no recipe
         // takes, fails in a second.
         let plans = try options.tools ? toolsPlans(image, set: options.parameters) : []
+        if let guestDaemon = options.guestDaemon, access(guestDaemon.path, X_OK) != 0 {
+            throw AgentVMError.hostNotReady("the guest daemon \(guestDaemon.path) is missing; Scripts/build.sh builds it next to agent-vm")
+        }
         if !options.tools, let name = options.parameters.keys.sorted().first {
             throw AgentVMError.invalidRecipe(path: image.recipesURL.path, reason: "--set \(name) changes a recipe's parameter; it needs the tools update (leave out --macos, or add --tools)")
         }
@@ -198,6 +206,7 @@ extension ImageBuilder {
         var changed = false
         var previousBuild: String?
         var updatedRecipes: [String] = []
+        var previousGuest: String?
         do {
             let files = MachineFiles(name: image.name, directory: image.directory, disk: work.appendingPathComponent(ImageStore.diskName),
                                      auxiliaryStorage: work.appendingPathComponent(ImageStore.auxiliaryStorageName),
@@ -228,16 +237,21 @@ extension ImageBuilder {
                     updatedRecipes.append(plan.recipe.name)
                     changed = true
                 }
-                if changed {
+                // Last, so macOS and the recipes were updated under the daemon that was there.
+                var replaced: (digest: String, requirement: String?, replaced: Bool)?
+                if let guestDaemon = options.guestDaemon {
+                    replaced = try await replaceGuestDaemon(guestDaemon, machine: machine)
+                }
+                if changed, replaced?.replaced != true {
                     // An update can change what macOS grants the daemon; boxes need to know.
-                    let granted = try await hasFullDiskAccess(machine)
-                    if !granted, record.hasFullDiskAccess == true {
-                        notice("  note: agent-vm-guest lost Full Disk Access in the update; run `agent-vm image setup \(image.name)` to grant it again")
-                    }
-                    record.fullDiskAccess = ImageRecord.FullDiskAccess(granted: granted, guestDigest: record.guestDigest, guestRequirement: record.guestRequirement,
-                                                                      checkedAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)))
+                    record.fullDiskAccess = try await probedFullDiskAccess(machine, record: record, image: image.name)
                 }
                 try await shutDownAfterUpdate(machine)
+                if let replaced, replaced.replaced {
+                    previousGuest = record.guestVersion ?? "?"
+                    record = try await checkReplacedGuestDaemon(files, image: image, record: record, digest: replaced.digest, requirement: replaced.requirement)
+                    changed = true
+                }
             } catch {
                 let error = canceledError(error)
                 await stopAfterFailure(machine)
@@ -246,7 +260,7 @@ extension ImageBuilder {
             guard changed else {
                 try FileSystem.removeTree(work.path)
                 log("Nothing to update in \(image.name)")
-                return ImageUpdateResult(image: image, changed: false, previousMacOSBuild: nil, recipes: [])
+                return ImageUpdateResult(image: image, changed: false, previousMacOSBuild: nil, recipes: [], previousGuestVersion: nil)
             }
             progress("commit", "Putting the updated disk in place")
             let own = (record.recipes ?? []).filter { $0.inheritedFrom == nil }
@@ -268,7 +282,56 @@ extension ImageBuilder {
             throw error
         }
         image = try store.image(named: image.name)
-        return ImageUpdateResult(image: image, changed: true, previousMacOSBuild: previousBuild, recipes: updatedRecipes)
+        return ImageUpdateResult(image: image, changed: true, previousMacOSBuild: previousBuild, recipes: updatedRecipes, previousGuestVersion: previousGuest)
+    }
+
+    /// Whether agent-vm-guest has Full Disk Access now, as the record keeps it; a grant the
+    /// record had and the guest lost is a notice.
+    private func probedFullDiskAccess(_ machine: MacMachine, record: ImageRecord, image: String) async throws -> ImageRecord.FullDiskAccess {
+        let granted = try await hasFullDiskAccess(machine)
+        if !granted, record.fullDiskAccess?.granted == true {
+            notice("  note: agent-vm-guest lost Full Disk Access in the update (macOS ties it to the daemon's code signature; one signed with a Developer ID keeps it); run `agent-vm image setup \(image)` to grant it again")
+        }
+        return ImageRecord.FullDiskAccess(granted: granted, guestDigest: record.guestDigest, guestRequirement: record.guestRequirement,
+                                          checkedAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)))
+    }
+
+    /// Boots the updated copy once more, now under its new agent-vm-guest: checks that it
+    /// answers with every feature this agent-vm knows, brings the desktop up to date, probes
+    /// Full Disk Access, and shuts down. Returns the record with the new daemon in it.
+    private func checkReplacedGuestDaemon(_ files: MachineFiles, image: GoldenImage, record: ImageRecord, digest: String, requirement: String?) async throws -> ImageRecord {
+        var record = record
+        let auxiliaryStorage = VZMacAuxiliaryStorage(url: files.auxiliaryStorage)
+        let machine = MacMachine(configuration: try spec(image).configuration(for: files, auxiliaryStorage: auxiliaryStorage))
+        try checkCanceled()
+        progress("check-guest-daemon", "Booting again to check the new agent-vm-guest")
+        try await machine.start(provisioning: nil)
+        do {
+            let hello = try await waitForDaemon(machine, attempts: 180)
+            let missing = GuestFeature.all.filter { !(hello.features ?? []).contains($0) }
+            guard missing.isEmpty else {
+                throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the new agent-vm-guest lacks \(missing.joined(separator: ", "))")
+            }
+            log("  agent-vm-guest \(hello.version ?? "?") answers (\((hello.features ?? []).joined(separator: ", ")))")
+            await prepareDesktop(image, machine: machine, features: hello.features)
+            record.guestVersion = hello.version
+            record.guestProtocol = hello.v
+            record.guestFeatures = hello.features
+            // The grant is asked about before the record names the new daemon: it was the old one's.
+            let had = record
+            record.guestDigest = digest
+            record.guestRequirement = requirement
+            var access = try await probedFullDiskAccess(machine, record: had, image: image.name)
+            access.guestDigest = digest
+            access.guestRequirement = requirement
+            record.fullDiskAccess = access
+            try await shutDownAfterUpdate(machine)
+            return record
+        } catch {
+            let error = canceledError(error)
+            await stopAfterFailure(machine)
+            throw error
+        }
     }
 
     /// The image's recipes that have update steps, loaded from its `Recipes/` folder with the

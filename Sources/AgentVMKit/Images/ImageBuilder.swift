@@ -787,7 +787,7 @@ public final class ImageBuilder {
     /// Puts `executable` in the guest in place of its agent-vm-guest when the two differ (by
     /// SHA-256), through the running daemon; the new one runs from the next boot.
     /// `willReplace` is called just before the guest's daemon file is changed.
-    private func replaceGuestDaemon(_ executable: URL, machine: MacMachine, willReplace: () -> Void = {}) async throws -> (digest: String, requirement: String?, replaced: Bool) {
+    func replaceGuestDaemon(_ executable: URL, machine: MacMachine, willReplace: () -> Void = {}) async throws -> (digest: String, requirement: String?, replaced: Bool) {
         let digest = try Self.sha256(of: executable)
         let requirement = CodeSignature.designatedRequirement(of: executable)
         let installed = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/shasum", "-a", "256", GuestDaemon.executablePath],

@@ -27,7 +27,7 @@ restore image (.ipsw)
 | What it is | A sealed template | A working copy of one image |
 | Made by | `image create` (from a restore image, or `--from` another image with a recipe) | `box create --image <image>`: an APFS clone, instant, free until the box writes |
 | Runs programs | Only while agent-vm builds or updates it | Yes: `exec`, `box shell`, `box view` |
-| Changed by | `image update-guest`, `image setup` | Whatever runs in it; `box network` for its network rules |
+| Changed by | `image update`, `image setup` | Whatever runs in it; `box network` for its network rules |
 | Its own settings | CPUs, memory, disk size, account name | CPUs and memory (default: the image's), network mode and rules |
 | Folder (shown by `image list`, `box list`; with its space by `image info`, `box info`) | `~/Library/Application Support/agent-vm/Images/<name>/` | `~/Library/Application Support/agent-vm/Boxes/<name>/` |
 
@@ -45,7 +45,7 @@ At `box create`, the box gets a copy of everything the image has at that moment:
 After that, the box does not follow its image. In particular, these do **not** reach an existing box:
 
 - `image update` (a newer macOS, newer tools);
-- `image update-guest` (a newer guest daemon and its features, such as the terminal or the wallpaper);
+- `image update --guest` (a newer guest daemon and its features, such as the terminal or the wallpaper);
 - `image setup` (Full Disk Access granted after the box was made);
 - a new derived image, or a rebuilt one with the same name.
 
@@ -88,23 +88,23 @@ The recipes record what was installed, so the image can be built again the same 
 ### Keeping an image up to date
 
 ```sh
-agent-vm image update tools                                # macOS and tools; about 15 minutes when macOS has an update
+agent-vm image update tools                                # macOS, tools and the guest daemon; about 15 minutes when macOS has an update
 agent-vm image update tools --tools                        # only the tools: what the recipes' update steps refresh
 agent-vm box recreate web                                  # each box, to get what the image now has
 ```
 
-`image update` installs the macOS update Apple offers (within the same major version) and runs the `update` steps of the recipes the image was built with, such as the newest agents. It works on a copy of the image's disk and puts it in place only when everything succeeded, so a failed update leaves the image as it was. `box list` then says "needs recreate" for the boxes made before. A macOS update costs about 15 GB of disk that the image no longer shares with its older boxes, until they are recreated or deleted.
+`image update` installs the macOS update Apple offers (within the same major version), runs the `update` steps of the recipes the image was built with, such as the newest agents, and puts in the guest daemon of the agent-vm you run, when the image has an older one. It works on a copy of the image's disk and puts it in place only when everything succeeded, so a failed update leaves the image as it was. `box list` then says "needs recreate" for the boxes made before. A macOS update costs about 15 GB of disk that the image no longer shares with its older boxes, until they are recreated or deleted.
 
 With one image this is the whole procedure. With layers, each image is updated by itself (`image update dev dev-node dev-agents`), and each then holds its own copy of the new macOS: one more reason to keep one image.
 
 ### After upgrading agent-vm
 
-A newer agent-vm can bring a newer guest daemon. `image list` names what each image's daemon lacks.
+A newer agent-vm can bring a newer guest daemon. `image list` names what each image's daemon lacks. `agent-vm image update <image>` brings it in along with everything else; to update only the daemon, quickly (`image update-guest`, the older command for this, is deprecated):
 
 ```sh
 Scripts/build.sh
 agent-vm image list                                        # "agent-vm-guest lacks ..." under each image
-agent-vm image update-guest dev dev-node dev-agents        # one after another, about 45 seconds each
+agent-vm image update dev dev-node dev-agents --guest      # one after another, about 45 seconds each
 agent-vm image setup dev                                   # again for each image: the update drops Full Disk Access
 ```
 
@@ -144,7 +144,7 @@ The second number changes as clones come and go: an image that a later image or 
 ## Questions and answers
 
 **How do I update a box's guest daemon?**
-You don't: update the image (`image update-guest`), then make the box again from it with `box recreate <box>`, which keeps the box's CPUs, memory, network rules and disposable flag (everything written in the old box is gone). A box has no update command on purpose: a replaced daemon would lose the box's Full Disk Access, and only an image can be set up again to grant it.
+You don't: update the image (`image update <image> --guest`), then make the box again from it with `box recreate <box>`, which keeps the box's CPUs, memory, network rules and disposable flag (everything written in the old box is gone). A box has no update command on purpose: a replaced daemon would lose the box's Full Disk Access, and only an image can be set up again to grant it.
 
 **How do I tell which guest daemon a box has?**
 While it runs, `agent-vm box status <name>` shows it (`agent-vm-guest 0.1.6 (terminal, prompt-notices, wallpaper)`). Its `supervisor.log` also says so at every start: `Ready in 20 s: agent-vm-guest 0.1.2`. The log is in `~/Library/Application Support/agent-vm/Boxes/<name>/`. `image list` shows what an image lacks; a box made from it before its update lacks at least that much.
