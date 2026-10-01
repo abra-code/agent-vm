@@ -183,3 +183,37 @@ test_unknown_session_ids_are_explained() {
     assert_status 1 || return 1
     assert_err_contains "is not a session id" || return 1
 }
+
+test_names_an_agent_chose_cannot_act_on_the_terminal() {
+    local _project="$SCRATCH/project"
+    make_project "$_project"
+    start_session "$_project" || return 1
+
+    # A name that erases the line above it and writes its own, one with a line end that would
+    # start a forged report line, and a link whose target does the same.
+    local _escape
+    _escape="$(printf '\033')"
+    local _return
+    _return="$(printf '\r')"
+    local _newline
+    _newline="$(printf '\nx')"
+    _newline="${_newline%x}"
+    printf 'x' > "$_project/zz${_escape}[1A${_escape}[2K${_return}HIGH   A forged"
+    printf 'x' > "$_project/.envrc${_newline}HIGH   D also-forged"
+    /bin/ln -s "/etc/passwd${_escape}]0;title${_return}" "$_project/link"
+
+    run_avm session report "$SESSION"
+    assert_status 0 || return 1
+    assert_printable "$OUT" "the report" || return 1
+    # The line end inside a name does not start a line: no line begins with the forged text.
+    local _forged
+    _forged="$(printf '%s\n' "$OUT" | /usr/bin/grep -c '^HIGH   D also-forged')"
+    assert_eq "$_forged" "0" "lines forged by a file name" || return 1
+    assert_out_contains "zz?[1A?[2K?HIGH   A forged" || return 1
+
+    # JSON keeps the names as they are, escaped as JSON does.
+    run_avm session report "$SESSION" --json
+    assert_status 0 || return 1
+    assert_printable "$OUT" "the JSON report" || return 1
+    assert_out_contains '\u001b[1A' || return 1
+}

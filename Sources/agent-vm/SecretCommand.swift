@@ -163,7 +163,7 @@ enum SecretOptions {
                 }
                 variables[variable] = text
             } catch {
-                FileHandle.standardError.write(Data("agent-vm: \(error)\n".utf8))
+                Stderr.write("agent-vm: \(error)\n")
                 Darwin.exit(ExecRunner.ownFailureStatus)
             }
         }

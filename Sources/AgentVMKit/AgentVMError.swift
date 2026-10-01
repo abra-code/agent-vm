@@ -127,7 +127,14 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
         return .virtualMachine(operation: operation, message: error.localizedDescription)
     }
 
+    /// What a person reads. Much of it is not agent-vm's own text (a guest's answer, a program's
+    /// output, a file's name), so it is made printable here, once, for every place that shows
+    /// an error: the command line, the supervisor's log, a control client.
     public var description: String {
+        return Printable.lines(text, limit: 8000)
+    }
+
+    private var text: String {
         switch self {
         case let .system(operation, code):
             return "\(operation) failed: \(String(cString: strerror(code))) (errno \(code))"

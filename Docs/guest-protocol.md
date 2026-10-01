@@ -50,10 +50,10 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 ```
 
 - `ok`: false with `error` (a message for a person) when the request is refused; the guest then closes the connection.
-- `version`, `osBuild`: hello only (agent-vm-guest's version, the guest's macOS build).
+- `version`, `osBuild`: hello only (agent-vm-guest's version, the guest's macOS build). Each is 1 to 32 ASCII letters, digits, `.`, `+`, `-` and `_`; so is every feature name, of which there are at most 64. A host refuses any other hello (since 0.5.10): it keeps and shows these.
 - `features`: hello only, what the daemon supports beyond this document's base (see Versioning). Today: `terminal`, `prompt-notices`, `wallpaper`, `time-sync`, `user-session` and `terminal-pixels`.
 - `pid`: exec only, the started process.
-- `status`: a refused exec only, the status a shell would give: 127 when the program is not found, 126 when it cannot be run (unknown account, missing folder).
+- `status`: a refused exec only, the status a shell would give: 127 when the program is not found, 126 when it cannot be run (unknown account, missing folder). A host takes anything outside 1 to 255 as 126, and shows `error` as one line of at most 500 characters.
 
 ## Operations
 
@@ -100,6 +100,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - **Keychain dialogs** (feature `user-session`): a program in the desktop session may make macOS ask, on the screen, whether it may use a Keychain item (one another program made, for example). securityd logs `displaying keychain prompt for <program>(<pid>)` (category `kcacl`), and the guest sends a notice. A dialog to unlock a locked keychain names no program, so it is not reported; images keep the login keychain unlocked. A program stopped while it waits may leave its dialog on the screen until someone answers it or the next one replaces it; nothing waits on it.
 - **How**: the daemon reads the privacy service's log (`log stream`, subsystem `com.apple.TCC`) from its start. An `AUTHREQ_ATTRIBUTION` line names the program that tried the access, and an `AUTHREQ_PROMPTING` line with the same message id (from the same tccd process) says a prompt went up. The program's session id is the exec's pid, since every exec starts a new session, so descendants count too. Only lines logged by tccd and securityd themselves count (checked by their executables' paths, which System Integrity Protection guards): any process may log under their subsystems, and a faked line could otherwise get another exec's program stopped.
 - **Frame**: `{"kind": "permission-prompt", "service": "kTCCServiceSystemPolicyDownloadsFolder", "program": "/bin/ls", "pid": 688}`. For a Keychain dialog: `{"kind": "keychain-prompt", "service": "keychain", "program": "/usr/bin/security", "pid": 806}`. It is advice, never output: a host that cannot read one drops it. None follows the `exit` frame.
+- **What a host takes** (since 0.5.10): a frame of at most 4096 bytes whose `service` is letters, digits, `.`, `_` and `-` (at most 128); `program` is shown as one line. A notice equal to an earlier one of the same minute is dropped, and so is every notice after the 32nd in a minute.
 
 **The wallpaper** (feature `wallpaper`): not a new operation, but a command the host runs with exec. `agent-vm-guest wallpaper` reads a PNG (at most 16 MB) on stdin and makes it the calling user's wallpaper on every screen. It must run in that user's desktop session, so the host runs it as root through `launchctl asuser UID sudo -u USER`; outside the session macOS reports success and changes nothing.
 - **File**: `~/Library/Application Support/agent-vm/wallpaper-<first 16 hex digits of its SHA-256>.png`, a new name for a new picture. The previous one is deleted once the desktop reports the new one.

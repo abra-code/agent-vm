@@ -118,7 +118,7 @@ final class RefreshProgress {
         // What print wrote before goes out first.
         fflush(stdout)
         // Short enough never to wrap, which would break the redraw.
-        terminal.write("\r" + String(text.prefix(max(1, terminal.size().columns - 1))) + "\u{1B}[K")
+        terminal.write("\r" + String(Printable.line(text).prefix(max(1, terminal.size().columns - 1))) + "\u{1B}[K")
         lineOpen = true
     }
 

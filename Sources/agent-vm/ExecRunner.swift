@@ -47,7 +47,7 @@ struct ExecRunner {
         } catch {
             // The terminal first, so the message is not printed in raw mode.
             ExecExit.shared.restoreTerminal()
-            FileHandle.standardError.write(Data("agent-vm: \(error)\n".utf8))
+            Stderr.write("agent-vm: \(error)\n")
             ExecExit.shared.exit(Self.ownFailureStatus)
         }
     }
@@ -111,7 +111,7 @@ struct ExecRunner {
         if let failure {
             // The program still runs, but its audit trail is missing (for example under a
             // sandbox profile that does not let agent-vm write the box's folder): say so.
-            FileHandle.standardError.write(Data("agent-vm: warning: cannot write the exec log \(log.url.path) (\(failure)); this run is not recorded in box execlog\n".utf8))
+            Stderr.write("agent-vm: warning: cannot write the exec log \(log.url.path) (\(failure)); this run is not recorded in box execlog\n")
         }
         ExecExit.shared.record(log: log, id: id, box: box.name)
 
@@ -122,7 +122,7 @@ struct ExecRunner {
                 notices: status.guestFeatures?.contains(GuestFeature.promptNotices) == true ? true : nil))
         } catch let refusal as ExecRefusal {
             // Like env(1) and shells: 127 when the program is not found, 126 when it cannot run.
-            FileHandle.standardError.write(Data("agent-vm: \(refusal.message)\n".utf8))
+            Stderr.write("agent-vm: \(refusal.message)\n")
             ExecExit.shared.exit(refusal.status)
         }
         ExecExit.shared.started(guestPid: session.pid)
@@ -220,10 +220,10 @@ struct ExecRunner {
                 let result = try GuestClient.capture(guest, GuestRequest(op: .exec, argv: ["/bin/kill", "-KILL", String(pid)], cwd: "/", user: "root"))
                 if result.report != ExitReport(status: 0) {
                     let reason = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                    writeAll(STDERR_FILENO, Array("agent-vm: could not stop process \(pid) in box \(box.name): \(reason)\(end)".utf8))
+                    writeAll(STDERR_FILENO, Array("agent-vm: could not stop process \(pid) in box \(box.name): \(Printable.line(reason, limit: 500))\(end)".utf8))
                 }
             } catch {
-                writeAll(STDERR_FILENO, Array("agent-vm: could not stop process \(pid) in box \(box.name): \(error)\(end)".utf8))
+                writeAll(STDERR_FILENO, Array("agent-vm: could not stop process \(pid) in box \(box.name): \(Printable.line("\(error)", limit: 500))\(end)".utf8))
             }
         }
     }

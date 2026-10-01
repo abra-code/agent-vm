@@ -624,3 +624,48 @@ test_a_box_needs_recreating_after_its_images_guest_changed() {
     assert_json 0.box.guestDigest bbbb || return 1
     assert_json 0.needs 0 || return 1
 }
+
+test_a_record_cannot_act_on_the_terminal() {
+    fake_image dev
+    # What a guest could have answered to an earlier agent-vm, which recorded it as it came.
+    local _record="$AGENT_VM_HOME/Images/dev/image.json"
+    local _changed
+    _changed="$(/usr/bin/jq '.macOSBuild = "26A428\u001b[2J\rspoofed" | .guestVersion = "0.1\u001b]0;title\u0007"' "$_record")"
+    [ -n "$_changed" ] || { fail "jq could not change $_record"; return 1; }
+    printf '%s\n' "$_changed" > "$_record"
+
+    run_avm image list
+    assert_status 0 || return 1
+    assert_printable "$OUT" "image list" || return 1
+    assert_out_contains "26A428?[2J?spoofed" || return 1
+    run_avm status
+    assert_status 0 || return 1
+    assert_printable "$OUT" "status" || return 1
+    run_avm image info dev
+    assert_printable "$OUT$ERR" "image info" || return 1
+}
+
+test_json_output_keeps_what_was_logged() {
+    fake_image dev
+    run_avm box create b1 --image dev
+    assert_status 0 || return 1
+    # A host name with characters the text form replaces (a C1 control, a line separator).
+    printf '%s\n' '{"time":"2026-10-01T10:00:00Z","method":"CONNECT","host":"a\u0085b c.example","port":443,"decision":"denied","reason":"no rule"}' \
+        > "$AGENT_VM_HOME/Boxes/b1/network.jsonl"
+
+    run_avm box netlog b1
+    assert_status 0 || return 1
+    assert_out_contains "a?b?c.example" || return 1
+
+    # Both JSON forms give the name as it was logged.
+    run_avm box netlog b1 --json
+    assert_status 0 || return 1
+    local _listed
+    _listed="$(printf '%s' "$OUT" | /usr/bin/jq -c '.[0].host')"
+    run_avm box netlog b1 --follow --json
+    assert_status 0 || return 1
+    local _followed
+    _followed="$(printf '%s' "$OUT" | /usr/bin/jq -c '.host')"
+    assert_eq "$_followed" "$_listed" "the host in netlog --follow --json" || return 1
+    assert_not_contains "$_followed" "?" "the host in netlog --follow --json" || return 1
+}

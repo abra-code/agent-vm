@@ -38,6 +38,28 @@ public struct GuestNotice: Codable, Equatable, Sendable {
         self.pid = pid
     }
 
+    /// The notice as a host takes it from a guest, or nil when it is not one a real daemon
+    /// sends: the service is a name (letters, digits, ".", "_", "-"), the program one line of
+    /// at most 1024 characters with nothing in it that acts on a terminal.
+    public var checked: GuestNotice? {
+        if let service {
+            let named = service.unicodeScalars.allSatisfy { scalar in
+                switch scalar {
+                case "a"..."z", "A"..."Z", "0"..."9", ".", "_", "-":
+                    return true
+                default:
+                    return false
+                }
+            }
+            guard named, !service.isEmpty, service.unicodeScalars.count <= 128 else {
+                return nil
+            }
+        }
+        var notice = self
+        notice.program = program.map { Printable.line($0, limit: 1024) }
+        return notice
+    }
+
     /// The `service` of a Keychain dialog: not a privacy service, a Keychain item.
     public static let keychainService = "keychain"
 

@@ -236,7 +236,7 @@ struct BoxCommand: ParsableCommand {
             GC.collect(options.boxStore)
             let (boxes, problems) = try options.boxStore.list()
             for problem in problems {
-                FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
+                Stderr.write("warning: \(problem)\n")
             }
             let images = Entry.images(options.imageStore)
             let entries = boxes.map { Entry($0, image: images[$0.record.image]) }
@@ -750,7 +750,8 @@ struct BoxCommand: ParsableCommand {
                 }
                 for entry in entries {
                     if options.json {
-                        print(String(decoding: try encoder.encode(entry), as: UTF8.self))
+                        // As it is, like every other JSON output: JSON's own escapes, no "?".
+                        Swift.print(String(decoding: try encoder.encode(entry), as: UTF8.self))
                     } else {
                         print(Self.text(entry))
                     }
@@ -925,7 +926,7 @@ struct BoxCommand: ParsableCommand {
                 print("Deleted disposable box \(name)")
             }
             for problem in problems {
-                FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
+                Stderr.write("warning: \(problem)\n")
             }
             if deleted.isEmpty && problems.isEmpty {
                 print("No disposable boxes to delete.")
@@ -937,10 +938,10 @@ struct BoxCommand: ParsableCommand {
         static func collect(_ store: BoxStore, except name: String? = nil) {
             let (deleted, problems) = store.collectGarbage(except: name)
             for name in deleted {
-                FileHandle.standardError.write(Data("note: deleted disposable box \(name), which had stopped\n".utf8))
+                Stderr.write("note: deleted disposable box \(name), which had stopped\n")
             }
             for problem in problems {
-                FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
+                Stderr.write("warning: \(problem)\n")
             }
         }
     }
@@ -968,11 +969,12 @@ struct BoxCommand: ParsableCommand {
             let windows = Self.runsAppKit
             let supervisor = BoxSupervisor(box: box, windows: windows, ownerPid: ownerPid) { line in
                 let formatter = ISO8601DateFormatter()
-                print("\(formatter.string(from: Date())) \(line)")
+                // One line per entry, whatever a guest's answer quoted in it holds.
+                print("\(formatter.string(from: Date())) \(Printable.line(line, limit: 4000))")
                 fflush(stdout)
             }
             guard windows else {
-                try await supervisor.run()
+                try await Self.run(supervisor)
                 return
             }
             // No App Nap for a background application that serves a VM, its proxy and execs.
@@ -982,7 +984,24 @@ struct BoxCommand: ParsableCommand {
             defer {
                 withExtendedLifetime((activity, delegate)) {}
             }
-            try await supervisor.run()
+            try await Self.run(supervisor)
+        }
+
+        /// Runs the supervisor. Why it failed is the log's last entry and may quote a guest's
+        /// answer of several lines: written as one line here, as the entries above it are,
+        /// instead of as the error is printed for a person.
+        @MainActor
+        private static func run(_ supervisor: BoxSupervisor) async throws {
+            do {
+                try await supervisor.run()
+            } catch let error as AgentVMError {
+                // Main gives this one its own exit status.
+                if case .noFreeVMSlot = error {
+                    throw error
+                }
+                Stderr.write("Error: \(Printable.line(error.description, limit: 4000))\n")
+                throw ExitCode.failure
+            }
         }
 
         /// Set by main when it runs AppKit's loop for this supervisor.

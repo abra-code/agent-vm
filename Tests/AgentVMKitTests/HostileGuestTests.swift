@@ -125,6 +125,78 @@ private final class FakeGuest {
         }
     }
 
+    @Test(arguments: [
+        #"{"v":1,"ok":true,"version":"0.5.9\u001b]52;c;eA==\u0007"}"#,
+        #"{"v":1,"ok":true,"version":"0.5.9\nforged line"}"#,
+        #"{"v":1,"ok":true,"version":"0.5.9","osBuild":"26A434\r"}"#,
+        #"{"v":1,"ok":true,"version":"0.5.9","features":["terminal","\u009b2J"]}"#,
+        #"{"v":1,"ok":true,"version":""}"#,
+    ])
+    func aHelloThatNamesNoVersionIsRefused(answer: String) throws {
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, Array(answer.utf8)))
+        }
+        #expect(throws: GuestProtocolError.self) { try GuestClient.hello(guest.host) }
+    }
+
+    @Test func aHelloTooLongToKeepIsRefused() throws {
+        let long = String(repeating: "9", count: 70_000)
+        let many = (0..<10_000).map { "\"f\($0)\"" }.joined(separator: ",")
+        for answer in [#"{"v":1,"ok":true,"version":"\#(long)"}"#, #"{"v":1,"ok":true,"version":"1","features":[\#(many)]}"#] {
+            let guest = try FakeGuest { channel in
+                try? channel.send(Frame(.response, Array(answer.utf8)))
+            }
+            #expect(throws: GuestProtocolError.self) { try GuestClient.hello(guest.host) }
+        }
+    }
+
+    @Test func aRealHelloIsTaken() throws {
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, Array(#"{"v":1,"ok":true,"version":"0.5.10","osBuild":"26A434","features":["terminal-pixels","user-session","time-sync"]}"#.utf8)))
+        }
+        let hello = try GuestClient.hello(guest.host)
+        #expect(hello.version == "0.5.10" && hello.osBuild == "26A434" && hello.features?.count == 3)
+    }
+
+    @Test func aRefusalIsOneLineAndAShellStatus() throws {
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, Array(#"{"v":1,"ok":false,"status":2147483647,"error":"no\r\u001b[2Kagent-vm: forged\nline"}"#.utf8)))
+        }
+        do {
+            _ = try ExecSession(descriptor: guest.host, request: GuestRequest(op: .exec, argv: ["x"]))
+            Issue.record("the refusal was not thrown")
+        } catch let refusal as ExecRefusal {
+            #expect(refusal.message == "no??[2Kagent-vm: forged?line")
+            #expect(refusal.status == 126)
+        }
+    }
+
+    /// Notices cost the caller a printed line, a log line and perhaps a stopped program each.
+    @Test func noticesAreCheckedCountedAndNotRepeated() throws {
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, FakeGuest.accepted))
+            func notice(_ json: String) {
+                try? channel.send(Frame(.notice, Array(json.utf8)))
+            }
+            // Not a service name; too large to be a notice; a repeat; then far too many.
+            notice(#"{"kind":"permission-prompt","service":"\u001b]52;c;eA==\u0007","program":"/bin/ls","pid":7}"#)
+            notice(#"{"kind":"permission-prompt","service":"kTCCServiceSystemPolicyDownloadsFolder","program":"\#(String(repeating: "p", count: 5000))","pid":7}"#)
+            notice(#"{"kind":"permission-prompt","service":"kTCCServiceSystemPolicyDownloadsFolder","program":"/bin/ls\r\u001b[2K","pid":7}"#)
+            notice(#"{"kind":"permission-prompt","service":"kTCCServiceSystemPolicyDownloadsFolder","program":"/bin/ls\r\u001b[2K","pid":7}"#)
+            for pid in 100..<1100 {
+                notice(#"{"kind":"keychain-prompt","service":"keychain","program":"/usr/bin/security","pid":\#(pid)}"#)
+            }
+            try? channel.send(Frame(.exit, Array(#"{"status":0}"#.utf8)))
+        }
+        let session = try ExecSession(descriptor: guest.host, request: GuestRequest(op: .exec, argv: ["x"]))
+        var notices: [GuestNotice] = []
+        let report = try session.run(stdout: { _ in }, stderr: { _ in }, notice: { notices.append($0) })
+        #expect(report == ExitReport(status: 0))
+        #expect(notices.count == ExecSession.maxNotices)
+        #expect(notices.first == GuestNotice(kind: .permissionPrompt, service: "kTCCServiceSystemPolicyDownloadsFolder", program: "/bin/ls??[2K", pid: 7))
+        #expect(notices.dropFirst().allSatisfy { $0.kind == .keychainPrompt })
+    }
+
     @Test func aDeadlineNotReachedChangesNothing() throws {
         let guest = try FakeGuest { channel in
             try? channel.send(Frame(.response, Array(#"{"v":1,"ok":true,"version":"9.9.9"}"#.utf8)))

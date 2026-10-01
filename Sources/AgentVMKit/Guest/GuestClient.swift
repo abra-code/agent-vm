@@ -41,8 +41,17 @@ public enum GuestClient {
         guard response.ok else {
             throw AgentVMError.guestRefused(response.error ?? "no reason given")
         }
+        // Kept in the box's status and records and shown by every list from then on: only what
+        // a version, a build and a feature name look like is taken.
+        guard response.version.map({ Printable.isToken($0) }) ?? true, response.osBuild.map({ Printable.isToken($0) }) ?? true,
+              (response.features ?? []).count <= maxFeatures, (response.features ?? []).allSatisfy({ Printable.isToken($0) }) else {
+            throw GuestProtocolError.malformed("the guest's hello names a version, build or feature that is not one")
+        }
         return response
     }
+
+    /// The most feature names a hello may list (agent-vm-guest has about ten).
+    public static let maxFeatures = 64
 
     /// Sets the guest's clock to this Mac's (feature `time-sync`); returns how far the guest
     /// was behind, in seconds (negative: ahead). The time is taken just before sending.
@@ -105,7 +114,10 @@ public final class ExecSession: @unchecked Sendable {
         try channel.sendRequest(request)
         let response = try channel.receive(.response, as: GuestResponse.self)
         guard response.ok, let pid = response.pid else {
-            throw ExecRefusal(message: response.error ?? "no reason given", status: response.status ?? 126)
+            // The reason is the guest's text, and is printed: one line of it. The status is what
+            // the client exits with: 126 unless it is one a shell could give.
+            let status = response.status.flatMap { (1...255).contains($0) ? $0 : nil } ?? 126
+            throw ExecRefusal(message: Printable.line(response.error ?? "no reason given", limit: 500), status: status)
         }
         self.pid = pid
     }
@@ -159,12 +171,25 @@ public final class ExecSession: @unchecked Sendable {
     /// notices (sent only when the request asked for them) to `notice`.
     public func run(stdout: ([UInt8]) throws -> Void, stderr: ([UInt8]) throws -> Void,
                     notice: (GuestNotice) -> Void = { _ in }) throws -> ExitReport {
+        var delivered: [GuestNotice] = []
+        var windowBegan = ContinuousClock.now
         while let frame = try channel.receive() {
             switch frame.type {
             case .notice:
-                // One the host cannot read is dropped: a notice is advice, never the output.
-                if let decoded = try? JSONDecoder().decode(GuestNotice.self, from: Data(frame.payload)) {
-                    notice(decoded)
+                // One the host cannot read is dropped: a notice is advice, never the output. So
+                // is one that repeats another of the same minute, and every one past
+                // `maxNotices` in a minute: each costs the caller a printed line, a log line
+                // and perhaps a stopped program. A run can last hours, so the count starts over
+                // every minute: a real program's prompt, much later, is still reported.
+                if ContinuousClock.now - windowBegan >= .seconds(60) {
+                    windowBegan = ContinuousClock.now
+                    delivered.removeAll()
+                }
+                if delivered.count < Self.maxNotices, frame.payload.count <= Self.maxNoticeBytes,
+                   let decoded = try? JSONDecoder().decode(GuestNotice.self, from: Data(frame.payload)),
+                   let checked = decoded.checked, !delivered.contains(checked) {
+                    delivered.append(checked)
+                    notice(checked)
                 }
             case .stdout:
                 try stdout(frame.payload)
@@ -181,6 +206,11 @@ public final class ExecSession: @unchecked Sendable {
         }
         throw GuestProtocolError.disconnected
     }
+
+    /// The most notices one program's run delivers in a minute, and the largest notice frame
+    /// read as one.
+    public static let maxNotices = 32
+    public static let maxNoticeBytes = 4096
 
     /// Copies `descriptor` (the local stdin) to the program until end of file, on a thread
     /// of its own; ends with stdin end-of-file.

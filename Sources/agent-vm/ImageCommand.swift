@@ -194,7 +194,7 @@ struct ImageCommand: ParsableCommand {
         if json {
             Events.emit(ProgressEvent(.notice, text, image: name), json: true)
         } else {
-            FileHandle.standardError.write(Data((text + "\n").utf8))
+            Stderr.write((text + "\n"))
         }
     }
 
@@ -351,7 +351,7 @@ struct ImageCommand: ParsableCommand {
                         if json {
                             Events.emit(ProgressEvent(.notice, text, image: name), json: true)
                         } else {
-                            FileHandle.standardError.write(Data((text + "\n").utf8))
+                            Stderr.write((text + "\n"))
                         }
                     }
                     if json && names.count > 1 {
@@ -441,7 +441,7 @@ struct ImageCommand: ParsableCommand {
             if json {
                 Events.emit(ProgressEvent(.notice, Self.deprecation, image: nil), json: true)
             } else {
-                FileHandle.standardError.write(Data((Self.deprecation + "\n").utf8))
+                Stderr.write((Self.deprecation + "\n"))
             }
             let builder = ImageBuilder(store: options.imageStore, events: Events.handler(json: json))
             let names = names.reduce(into: [String]()) { unique, name in
@@ -477,7 +477,7 @@ struct ImageCommand: ParsableCommand {
                         if json {
                             Events.emit(ProgressEvent(.notice, text, image: name), json: true)
                         } else {
-                            FileHandle.standardError.write(Data((text + "\n").utf8))
+                            Stderr.write((text + "\n"))
                         }
                     }
                     // The images before this one are updated; a program should not have to
@@ -628,7 +628,7 @@ struct ImageCommand: ParsableCommand {
         func run() throws {
             let (images, problems) = try options.imageStore.list()
             for problem in problems {
-                FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
+                Stderr.write("warning: \(problem)\n")
             }
             let store = options.imageStore
             let newest = NewestMacOS.read(root: store.root)

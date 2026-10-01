@@ -113,7 +113,7 @@ extension ImageCommand {
             if json {
                 Events.emit(ProgressEvent(.notice, text, image: nil), json: true)
             } else {
-                FileHandle.standardError.write(Data((text + "\n").utf8))
+                Stderr.write((text + "\n"))
             }
         }
 

@@ -257,7 +257,7 @@ final class SendMeter: @unchecked Sendable {
         }
         end()
         if kind == .notice {
-            FileHandle.standardError.write(Data(("note: " + text + "\n").utf8))
+            Stderr.write(("note: " + text + "\n"))
         } else {
             print(text)
             fflush(stdout)
@@ -274,7 +274,7 @@ final class SendMeter: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         // Short enough never to wrap, which would break the redraw.
-        write("\r" + String(text.prefix(max(1, columns - 1))) + "\u{1B}[K")
+        write("\r" + String(Printable.line(text).prefix(max(1, columns - 1))) + "\u{1B}[K")
         lineOpen = true
     }
 

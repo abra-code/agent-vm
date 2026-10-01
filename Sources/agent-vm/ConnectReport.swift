@@ -33,7 +33,7 @@ enum ConnectReport {
         }
         var lines = [line]
         for warning in report.warnings {
-            lines.append("  warning: \(warning)")
+            lines.append("  warning: \(Printable.line(warning))")
         }
         let flagged = report.changes.filter { $0.highestSeverity == .high || $0.highestSeverity == .medium }
         for change in flagged.prefix(flaggedLimit) {
@@ -77,7 +77,7 @@ enum ConnectReport {
             // snapshot stays.
             print("No changes found in \(project), but:")
             for warning in report.warnings {
-                print("  warning: \(warning)")
+                print("  warning: \(Printable.line(warning))")
             }
             return keep(session, store: store, warn: warn)
         }

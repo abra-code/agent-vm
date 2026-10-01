@@ -542,7 +542,8 @@ extension ImageBuilder {
         let request = MacOSUpdate.versionRequest
         let result = try await withGuest(machine, "sw_vers", readTimeout: 15, redeliver: !quiet) { try GuestClient.capture($0, request) }
         let lines = result.stdout.split(whereSeparator: \.isNewline).map(String.init)
-        guard result.report == ExitReport(status: 0), lines.count == 2 else {
+        // Recorded in the image and shown by every list: only what a version and a build look like.
+        guard result.report == ExitReport(status: 0), lines.count == 2, lines.allSatisfy({ Printable.isToken($0) }) else {
             throw AgentVMError.guestCommandFailed(command: "sw_vers", status: result.report.shellStatus, output: result.stdout + result.stderr)
         }
         return (lines[0], lines[1])

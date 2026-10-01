@@ -70,7 +70,7 @@ struct StatusCommand: AsyncParsableCommand {
                 _ = try await NewestMacOS.check(root: root)
             } catch {
                 newestError = "\(error)"
-                FileHandle.standardError.write(Data("warning: cannot check for the newest macOS: \(error)\n".utf8))
+                Stderr.write("warning: cannot check for the newest macOS: \(error)\n")
             }
         }
         let newest = NewestMacOS.read(root: root)
@@ -87,7 +87,7 @@ struct StatusCommand: AsyncParsableCommand {
             jobProblems = ["cannot list the jobs: \(error)"]
         }
         for problem in imageProblems + boxProblems + jobProblems {
-            FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
+            Stderr.write("warning: \(problem)\n")
         }
         let summary = Summary(
             images: images.map { ImageCommand.List.Entry(record: $0.record, path: $0.directory.path, updating: $0.record.state == .ready && options.imageStore.isBeingChanged($0), macOSUpdate: newest?.update(for: $0.record)) },

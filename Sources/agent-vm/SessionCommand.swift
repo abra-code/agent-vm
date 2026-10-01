@@ -54,7 +54,7 @@ struct SessionCommand: ParsableCommand {
         func run() throws {
             let (sessions, problems) = try options.store.listWithProblems()
             for problem in problems {
-                FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
+                Stderr.write("warning: \(problem)\n")
             }
             if options.json {
                 try Output.json(sessions.map(SessionOutput.init))
@@ -247,7 +247,7 @@ struct SessionCommand: ParsableCommand {
             }
             let outcome = try options.store.discard(olderThan: olderThan * 86400)
             for problem in outcome.unreadable {
-                FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
+                Stderr.write("warning: \(problem)\n")
             }
             if options.json {
                 try Output.json(outcome.discarded.map(SessionOutput.init))

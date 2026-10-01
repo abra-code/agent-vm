@@ -128,7 +128,7 @@ extension ImageCommand {
                     if json {
                         Events.emit(ProgressEvent(.notice, text), json: true)
                     } else {
-                        FileHandle.standardError.write(Data((text + "\n").utf8))
+                        Stderr.write((text + "\n"))
                     }
                     throw ExitCode(128 + signal)
                 }

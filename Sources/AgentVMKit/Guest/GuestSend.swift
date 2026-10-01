@@ -242,11 +242,13 @@ public final class GuestSend: @unchecked Sendable {
             throw Failure(message: "the box closed the connection: \(disconnected.map { "\($0)" } ?? "no answer")")
         }
         guard report == ExitReport(status: 0) else {
-            let reason = guestErrors.text.isEmpty ? "status \(report.shellStatus)" : guestErrors.text
+            let reason = guestErrors.text.isEmpty ? "status \(report.shellStatus)" : Printable.lines(guestErrors.text, limit: 2000)
             throw Failure(message: "the box could not unpack \(name): \(reason)")
         }
         let received = output.text
-        guard !received.isEmpty, !received.contains("/") else {
+        // A file name, as the box says it: no folder, no line end or control character, and no
+        // longer than a name can be.
+        guard !received.isEmpty, !received.contains("/"), received.utf8.count <= 255, Printable.line(received) == received else {
             throw Failure(message: "the box did not say where \(name) went")
         }
         return received

@@ -811,12 +811,12 @@ struct ConnectRunner {
         let text = error.description
         if !text.isEmpty {
             let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { "\(invokedAs): \($0)\n" }
-            FileHandle.standardError.write(Data(lines.joined().utf8))
+            Stderr.write(lines.joined())
         }
     }
 
     func warn(_ text: String) {
-        FileHandle.standardError.write(Data("\(invokedAs): warning: \(text)\n".utf8))
+        Stderr.write("\(invokedAs): warning: \(text)\n")
     }
 
     /// `path` with the home folder as "~".

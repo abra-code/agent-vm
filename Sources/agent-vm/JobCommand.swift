@@ -160,7 +160,7 @@ struct JobCommand: ParsableCommand {
         func run() throws {
             let (jobs, problems) = try options.jobStore.list(prune: true)
             for problem in problems {
-                FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
+                Stderr.write("warning: \(problem)\n")
             }
             if options.json {
                 try Output.json(jobs)

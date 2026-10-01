@@ -78,10 +78,22 @@ enum Main {
             guard case .noFreeVMSlot = error else {
                 Root.exit(withError: error)
             }
-            FileHandle.standardError.write(Data("Error: \(error)\n".utf8))
+            Stderr.write("Error: \(error)\n")
             exit(AgentVMError.noFreeVMSlotStatus)
         } catch {
-            Root.exit(withError: error)
+            // As Root.exit(withError:) does it (help and versions to standard output, errors to
+            // standard error), but through this program's own printing: an error of another
+            // type may quote text that is not agent-vm's as well.
+            let message = Root.fullMessage(for: error)
+            let code = Root.exitCode(for: error)
+            if !message.isEmpty {
+                if code == .success {
+                    print(message)
+                } else {
+                    Stderr.write(message + "\n")
+                }
+            }
+            exit(code.rawValue)
         }
     }
 }
@@ -154,7 +166,7 @@ enum Output {
             print("  review first: \(summary.flaggedHigh) high, \(summary.flaggedMedium) medium")
         }
         for warning in report.warnings {
-            print("  warning: \(warning)")
+            print("  warning: \(Printable.line(warning))")
         }
         if report.isEmpty {
             print("  no changes")
@@ -177,7 +189,9 @@ enum Output {
         case .medium?: severity = "medium"
         default: severity = "      "
         }
-        var line = "\(severity) \(marks[change.kind] ?? "?") \(change.path)"
+        // The names are the agent's: shown so that none can start a line of its own, erase the
+        // lines above it or act on the terminal.
+        var line = "\(severity) \(marks[change.kind] ?? "?") \(Printable.line(change.path))"
         if change.type == .directory, change.kind != .metadata {
             line += "/"
         }
@@ -185,12 +199,12 @@ enum Output {
             line += " (\(inside) entries inside)"
         }
         if let target = change.symlinkTarget {
-            line += " -> \(target)"
+            line += " -> \(Printable.line(target))"
         }
         if change.coveredByAncestor {
             line += " (inside a changed folder)"
         }
-        return [line] + change.flags.filter { $0.severity != .info }.map { "         \($0.reason)" }
+        return [line] + change.flags.filter { $0.severity != .info }.map { "         \(Printable.line($0.reason))" }
     }
 
     /// Bytes for a person, in decimal units as Finder shows them: "36.1 GB", "310 MB".

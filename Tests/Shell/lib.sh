@@ -100,6 +100,18 @@ assert_not_contains() {
     return 0
 }
 
+# assert_printable <text> <label>: fails when the text holds a control character other than a
+# line end or a tab (an escape sequence, a carriage return): what a terminal would act on.
+assert_printable() {
+    local _count
+    _count="$(printf '%s' "$1" | LC_ALL=C /usr/bin/tr -d '\n\t' | LC_ALL=C /usr/bin/tr -cd '\000-\037\177' | /usr/bin/wc -c)"
+    if [ "$_count" -ne 0 ]; then
+        fail "$2 holds $_count control characters: $(printf '%s' "$1" | /bin/cat -v | /usr/bin/head -5)"
+        return 1
+    fi
+    return 0
+}
+
 assert_out_contains() {
     assert_contains "$OUT" "$1" "stdout"
 }

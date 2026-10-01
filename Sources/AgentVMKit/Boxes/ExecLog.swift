@@ -44,6 +44,9 @@ public final class ExecLog: @unchecked Sendable {
         public var service: String?
         public var program: String?
         public var stopped: Bool?
+        /// True when the command line was too long to record whole: `argv` then holds the start
+        /// of each of its first arguments.
+        public var argvCut: Bool?
 
         public init(id: String, event: Event, time: Date, argv: [String]? = nil, user: String? = nil, cwd: String? = nil,
                     project: String? = nil, readOnly: Bool? = nil, terminal: Bool? = nil, hostPid: Int32? = nil,
@@ -95,6 +98,11 @@ public final class ExecLog: @unchecked Sendable {
     /// The size at which the log moves to `<name>.1` (replacing the previous one).
     public let maxBytes: Int64
 
+    /// The longest line `append` writes, and what is kept of a command line that would pass it.
+    public static let maxLineBytes = 64 << 10
+    static let maxArguments = 64
+    static let maxArgumentLength = 200
+
     public init(url: URL, maxBytes: Int64 = 16 << 20) {
         self.url = url
         self.maxBytes = maxBytes
@@ -113,7 +121,21 @@ public final class ExecLog: @unchecked Sendable {
         } catch {
             return error.localizedDescription
         }
+        // A record this long would push earlier records out. A long command line (a script or a
+        // prompt passed as an argument) is recorded by its start, so the run is still listed;
+        // nothing else in a record is long.
+        if line.count >= Self.maxLineBytes, let argv = entry.argv {
+            var cut = entry
+            cut.argv = argv.prefix(Self.maxArguments).map { $0.unicodeScalars.count > Self.maxArgumentLength ? String($0.unicodeScalars.prefix(Self.maxArgumentLength)) + "..." : $0 }
+            cut.argvCut = true
+            if let shorter = try? encoder.encode(cut) {
+                line = shorter
+            }
+        }
         line.append(10)
+        guard line.count <= Self.maxLineBytes else {
+            return "the record is \(line.count) bytes long"
+        }
         var info = stat()
         if lstat(url.path, &info) == 0, info.st_size + Int64(line.count) > maxBytes {
             _ = rename(url.path, url.path + ".1")
