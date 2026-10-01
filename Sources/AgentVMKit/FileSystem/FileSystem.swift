@@ -192,6 +192,13 @@ enum FileSystem {
 
     private static let userLockFlags = UInt32(UF_IMMUTABLE | UF_APPEND)
 
+    /// The file flags a session compares and puts back: the ones a person or a program sets
+    /// on purpose, which a clone carries (measured: hidden and nodump are on the snapshot's
+    /// copy). The rest of the user flags are the system's bookkeeping: UF_TRACKED (document
+    /// tracking; a clone does not get it, so an untouched file would differ from its snapshot
+    /// from the start), UF_COMPRESSED and UF_DATAVAULT.
+    static let comparedFlags = UInt32(UF_NODUMP | UF_IMMUTABLE | UF_APPEND | UF_OPAQUE | UF_HIDDEN)
+
     /// What `unlockEntry` changed on one entry, to put back afterwards.
     struct SavedEntry {
         let info: stat

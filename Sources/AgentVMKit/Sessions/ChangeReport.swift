@@ -216,7 +216,7 @@ enum ChangeScanner {
             if !changedDuringSession {
                 continue
             }
-            let metadataDiffers = new.mode != old.mode || (new.flags & 0xFFFF) != (old.flags & 0xFFFF)
+            let metadataDiffers = new.mode != old.mode || (new.flags & FileSystem.comparedFlags) != (old.flags & FileSystem.comparedFlags)
             switch new.type {
             case .directory:
                 if metadataDiffers {
@@ -269,7 +269,7 @@ enum ChangeScanner {
         if let rootBefore = try? FileSystem.status(session.snapshotPath),
            let rootAfter = rootNow,
            rootBefore.st_mode & 0o7777 != rootAfter.st_mode & 0o7777
-            || (rootBefore.st_flags & 0xFFFF) != (rootAfter.st_flags & 0xFFFF) {
+            || (rootBefore.st_flags & FileSystem.comparedFlags) != (rootAfter.st_flags & FileSystem.comparedFlags) {
             changes.append(Change(path: ".", kind: .metadata, type: .directory, previousType: nil, size: nil,
                                   previousSize: nil, symlinkTarget: nil, entriesInside: nil, coveredByAncestor: false,
                                   flags: [RiskFlag(rule: "project-folder", severity: .medium,

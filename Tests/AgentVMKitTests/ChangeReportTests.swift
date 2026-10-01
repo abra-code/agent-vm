@@ -37,6 +37,38 @@ import Testing
         #expect(try scratch.store.report(id: session.id).isEmpty)
     }
 
+    /// macOS marks files and folders it tracks as documents with UF_TRACKED, and a clone does
+    /// not get the flag: such entries are not changes, while a flag someone sets on purpose
+    /// (hidden) is one, and undo leaves the tracking flag where it was.
+    @Test func theDocumentTrackingFlagIsNotAChange() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let tracked = UInt32(UF_TRACKED)
+        #expect(chflags(scratch.path("README.md"), tracked) == 0)
+        #expect(chflags(scratch.path("Sources"), tracked) == 0)
+        #expect(chflags(scratch.project.path, tracked) == 0)
+        let session = try scratch.store.start(project: scratch.project.path)
+        // The snapshot's copies lack the flag, as on a real project.
+        #expect(try FileSystem.status(session.snapshotPath + "/README.md").st_flags & tracked == 0)
+        try scratch.write("notes.txt", "new\n") // the folder changed, so its entries are compared
+        var report = try scratch.store.report(id: session.id)
+        #expect(report.changes.map(\.path) == ["notes.txt"])
+
+        // Set during the session, it is still no change; a hidden flag is.
+        #expect(chflags(scratch.path("build.sh"), tracked) == 0)
+        #expect(chflags(scratch.path("Sources"), tracked | UInt32(UF_HIDDEN)) == 0)
+        report = try scratch.store.report(id: session.id)
+        #expect(change(report, "build.sh") == nil)
+        #expect(change(report, "Sources")?.kind == .metadata)
+        #expect(change(report, ".") == nil)
+
+        try scratch.store.undo(id: session.id)
+        let folder = try FileSystem.status(scratch.path("Sources")).st_flags
+        #expect(folder & UInt32(UF_HIDDEN) == 0)
+        #expect(folder & tracked != 0)
+        #expect(try FileSystem.status(scratch.project.path).st_flags & tracked != 0)
+    }
+
     @Test func basicChangesAreClassified() throws {
         let scratch = try Scratch()
         try scratch.populate()

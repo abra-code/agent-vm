@@ -155,8 +155,9 @@ enum ProjectRestorer {
         guard fchmodat(AT_FDCWD, folder, wanted.st_mode & 0o7777, AT_SYMLINK_NOFOLLOW) == 0 else {
             throw AgentVMError.system(operation: "restore permissions of \(folder)", code: errno)
         }
-        // User flags (the low 16 bits) come from the snapshot; system flags are left alone.
-        let flags = (current.st_flags & ~UInt32(0xFFFF)) | (wanted.st_flags & 0xFFFF)
+        // The flags a session compares come from the snapshot; the others are left as they
+        // are (the snapshot's copy never had the folder's document-tracking flag).
+        let flags = (current.st_flags & ~FileSystem.comparedFlags) | (wanted.st_flags & FileSystem.comparedFlags)
         guard lchflags(folder, flags) == 0 else {
             throw AgentVMError.system(operation: "restore flags of \(folder)", code: errno)
         }
