@@ -249,21 +249,64 @@ public final class MacMachine: NSObject, VZVirtualMachineDelegate {
         stopped = true
     }
 
+    /// How long the guest has to answer a connection request. It answers in milliseconds, or
+    /// refuses at once; the limit is for a guest that does neither, so that no caller (a box's
+    /// supervisor asked to stop, above all) waits on it for good.
+    public static let connectLimit: Duration = .seconds(20)
+
     /// Opens a vsock connection to `port` in the guest (the guest daemon listens on
-    /// `GuestProtocol.port`). Fails at once when nothing listens there yet.
+    /// `GuestProtocol.port`). Fails at once when nothing listens there yet, and after
+    /// `connectLimit` when the guest does not answer at all.
     public func connect(toPort port: UInt32) async throws -> GuestConnection {
         guard let device = machine.socketDevices.first as? VZVirtioSocketDevice else {
             throw AgentVMError.virtualMachine(operation: "connect to the guest", message: "the machine has no vsock device")
         }
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<GuestConnection, Error>) in
+            // The answer and the limit are both taken on the main queue; the first one counts,
+            // and a connection that comes after the limit is closed.
+            let waiting = ConnectWait(continuation)
             device.connect(toPort: port) { result in
+                let answer: Result<GuestConnection, Error>
                 switch result {
                 case let .success(connection):
-                    continuation.resume(returning: GuestConnection(connection))
+                    answer = .success(GuestConnection(connection))
                 case let .failure(error):
-                    continuation.resume(throwing: AgentVMError.guestUnreachable("vsock port \(port): \(error.localizedDescription)"))
+                    answer = .failure(AgentVMError.guestUnreachable("vsock port \(port): \(error.localizedDescription)"))
+                }
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        if !waiting.resume(answer), case let .success(guest) = answer {
+                            guest.close()
+                        }
+                    }
                 }
             }
+            let (seconds, attoseconds) = Self.connectLimit.components
+            DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(Int(seconds)) + .nanoseconds(Int(attoseconds / 1_000_000_000))) {
+                MainActor.assumeIsolated {
+                    _ = waiting.resume(.failure(AgentVMError.guestUnreachable("vsock port \(port): the guest did not answer the connection within \(Self.connectLimit)")))
+                }
+            }
+        }
+    }
+
+    /// One waiting `connect`: resumed once, by the answer or by the limit.
+    @MainActor
+    private final class ConnectWait {
+        private var continuation: CheckedContinuation<GuestConnection, Error>?
+
+        init(_ continuation: CheckedContinuation<GuestConnection, Error>) {
+            self.continuation = continuation
+        }
+
+        /// False when the other one came first.
+        func resume(_ result: Result<GuestConnection, Error>) -> Bool {
+            guard let continuation else {
+                return false
+            }
+            self.continuation = nil
+            continuation.resume(with: result)
+            return true
         }
     }
 

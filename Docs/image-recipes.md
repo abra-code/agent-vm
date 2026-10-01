@@ -33,7 +33,7 @@ Examples are in [../Recipes/](../Recipes/README.md).
 | `commandLineTools` | no | `false` skips Xcode's Command Line Tools (default `true` for a new image). With `--from`, `true` installs them only if the base image lacks them. `--[no-]command-line-tools` on the command line overrides it. |
 | `steps` | no | What to run, in order. |
 | `update` | no | Steps that bring what the recipe installed up to date, run by `agent-vm image update` in an image built with the recipe: see Update steps. Never run while an image is built. |
-| `checks` | no | Commands run as the box user after the steps, and again after the update steps; each must exit 0 within 300 seconds, and its first line of output is shown. |
+| `checks` | no | Commands run as the box user after the steps, and again after the update steps; each must exit 0 within 300 seconds, and its first line of output is shown. A check that prints more than 1 MB fails (since 0.5.9): send what it does not need to `/dev/null`. |
 | `inputs` | no | Files the builder gives with `--input NAME=PATH`: see Inputs and parameters. |
 | `parameters` | no | Values the builder may set with `--set NAME=VALUE`: see Inputs and parameters. |
 

@@ -235,7 +235,7 @@ public final class BoxSupervisor {
         log("Ready in \(Int(ImageBuilder.seconds(clock.now - began))) s: agent-vm-guest \(hello.version ?? "?")")
         prepareDesktop(machine, features: hello.features ?? [])
         let clockSync = (hello.features ?? []).contains(GuestFeature.timeSync)
-        if clockSync {
+        if clockSync, !state.stopRequested {
             _ = try? await syncClock(reason: "boot")
         } else {
             log("Clock: this agent-vm-guest cannot set the guest's clock (update the image with `agent-vm image update \(box.record.image) --guest`)")
@@ -300,7 +300,7 @@ public final class BoxSupervisor {
             defer { connection.close() }
             let descriptor = connection.descriptor
             setReadTimeout(descriptor, seconds: 60)
-            return try await Task.detached { try GuestClient.capture(descriptor, request, input: input) }.value
+            return try await Task.detached { try GuestClient.capture(descriptor, request, input: input, within: commandLimit) }.value
         }
     }
 
@@ -310,7 +310,7 @@ public final class BoxSupervisor {
             if let connection = try? await machine.connect(toPort: GuestProtocol.port) {
                 let descriptor = connection.descriptor
                 Self.setReadTimeout(descriptor, seconds: 10)
-                let hello = try? await Task.detached { try GuestClient.hello(descriptor) }.value
+                let hello = try? await Task.detached { try GuestClient.hello(descriptor, within: Self.answerLimit) }.value
                 connection.close()
                 if let hello, hello.v == AgentVM.guestProtocolVersion {
                     return hello
@@ -344,7 +344,7 @@ public final class BoxSupervisor {
             defer { connection.close() }
             let descriptor = connection.descriptor
             Self.setReadTimeout(descriptor, seconds: 10)
-            let offset = try await Task.detached { try GuestClient.syncTime(descriptor) }.value
+            let offset = try await Task.detached { try GuestClient.syncTime(descriptor, within: Self.answerLimit) }.value
             if reason != "interval" || abs(offset) >= 1 {
                 let direction = offset >= 0 ? "behind" : "ahead"
                 log(String(format: "Clock: set the guest's time (%@; it was %.1f s %@)", reason, abs(offset), direction))
@@ -460,7 +460,7 @@ public final class BoxSupervisor {
         defer { connection.close() }
         let descriptor = connection.descriptor
         Self.setReadTimeout(descriptor, seconds: 60)
-        return try await Task.detached { try GuestClient.capture(descriptor, request) }.value
+        return try await Task.detached { try GuestClient.capture(descriptor, request, within: Self.commandLimit) }.value
     }
 
     /// Applies the network mode inside the guest (address, DNS, system proxy) as root.
@@ -470,7 +470,7 @@ public final class BoxSupervisor {
         let descriptor = connection.descriptor
         Self.setReadTimeout(descriptor, seconds: 60)
         let request = GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestNetworkSetup.command(for: mode)], user: "root")
-        let result = try await Task.detached { try GuestClient.capture(descriptor, request) }.value
+        let result = try await Task.detached { try GuestClient.capture(descriptor, request, within: Self.commandLimit) }.value
         guard result.report == ExitReport(status: 0) else {
             throw AgentVMError.guestCommandFailed(command: "network setup", status: result.report.shellStatus, output: (result.stderr + result.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
         }
@@ -483,7 +483,8 @@ public final class BoxSupervisor {
         if let connection = try? await machine.connect(toPort: GuestProtocol.port) {
             let descriptor = connection.descriptor
             Self.setReadTimeout(descriptor, seconds: 10)
-            _ = try? await Task.detached { try GuestClient.shutdown(descriptor) }.value
+            // Asked, not waited for: what follows must not depend on the guest's answer.
+            _ = try? await Task.detached { try GuestClient.shutdown(descriptor, within: Self.answerLimit) }.value
             connection.close()
         }
         if await machine.waitUntilStopped(timeout: Self.shutdownTimeout) {
@@ -505,6 +506,13 @@ public final class BoxSupervisor {
             signalSources.append(source)
         }
     }
+
+    /// How long the guest has for a whole answer to hello, the clock and shutdown, and for a
+    /// whole command the supervisor runs for itself (network setup, mounting the project, the
+    /// desktop's settings). A read timeout alone bounds one read: a guest sending a byte now
+    /// and then would hold the supervisor, and with it `box stop`, for as long as it liked.
+    nonisolated static let answerLimit: Duration = .seconds(15)
+    nonisolated static let commandLimit: Duration = .seconds(90)
 
     nonisolated static func setReadTimeout(_ descriptor: Int32, seconds: Int) {
         var timeout = timeval(tv_sec: seconds, tv_usec: 0)

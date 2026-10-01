@@ -215,12 +215,30 @@ public struct ExitReport: Codable, Equatable, Sendable {
         }
     }
 
+    /// What a process can end with: an exit status of 0 to 255, or a signal the system has,
+    /// never both. A report from a guest is checked before it is used (ExecSession.run): the
+    /// numbers are the guest's.
+    public var isValid: Bool {
+        switch (status, signal) {
+        case let (status?, nil):
+            return (0...255).contains(status)
+        case let (nil, signal?):
+            return (1..<NSIG).contains(signal)
+        default:
+            return false
+        }
+    }
+
     /// The conventional shell status: the exit status, or 128 + the signal number.
     public var shellStatus: Int32 {
         if let status {
             return status
         }
-        return 128 + (signal ?? 0)
+        // Never a trap, whatever the number: 128 alone for a signal the system does not have.
+        guard let signal, (1..<NSIG).contains(signal) else {
+            return 128
+        }
+        return 128 + signal
     }
 }
 

@@ -79,6 +79,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
   ```json
   {"signal": 15}
   ```
+  Exactly one of the two, `status` from 0 to 255 or `signal` from 1 to 31: the host refuses any other report as a protocol error (since 0.5.9).
 
 - **Signals** go to the whole process group. Allowed: HUP, INT, QUIT, TERM, KILL, USR1, USR2, WINCH, CONT, STOP, TSTP; others are ignored.
 - **Host goes away** (the connection closes before `exit`): the process group gets SIGHUP, then SIGKILL 3 seconds later, as when a terminal closes. The same happens to background processes still in the group after the program exits.

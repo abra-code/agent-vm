@@ -8,6 +8,31 @@ import Darwin
 import Foundation
 
 public enum GuestClient {
+    /// The most output `capture` keeps of each stream. The commands the host runs for itself
+    /// print a few lines; a guest must not be able to fill the host's memory through one.
+    public static let captureLimit = 1 << 20
+
+    /// The same calls with a time limit for the whole exchange (GuestDeadline): for a process
+    /// that must not be held up by its guest, as a box's supervisor.
+    public static func hello(_ descriptor: Int32, within limit: Duration) throws -> GuestResponse {
+        return try GuestDeadline.run(descriptor, within: limit, what: "its hello") { try hello(descriptor) }
+    }
+
+    public static func syncTime(_ descriptor: Int32, within limit: Duration) throws -> Double {
+        return try GuestDeadline.run(descriptor, within: limit, what: "setting its clock") { try syncTime(descriptor) }
+    }
+
+    public static func shutdown(_ descriptor: Int32, within limit: Duration) throws {
+        try GuestDeadline.run(descriptor, within: limit, what: "accepting the shutdown") { try shutdown(descriptor) }
+    }
+
+    public static func capture(_ descriptor: Int32, _ request: GuestRequest, input: Data? = nil,
+                               within limit: Duration) throws -> (report: ExitReport, stdout: String, stderr: String) {
+        return try GuestDeadline.run(descriptor, within: limit, what: request.argv?.first ?? "a command") {
+            try capture(descriptor, request, input: input)
+        }
+    }
+
     /// Version and health check.
     public static func hello(_ descriptor: Int32) throws -> GuestResponse {
         let channel = FrameChannel(descriptor: descriptor)
@@ -42,8 +67,10 @@ public enum GuestClient {
     }
 
     /// Runs a program and collects its output (for short commands the host itself needs), with
-    /// `input` as its stdin.
-    public static func capture(_ descriptor: Int32, _ request: GuestRequest, input: Data? = nil) throws -> (report: ExitReport, stdout: String, stderr: String) {
+    /// `input` as its stdin. Output past `limit` bytes on either stream is an error: the caller
+    /// closes the connection, which makes the guest daemon end the program.
+    public static func capture(_ descriptor: Int32, _ request: GuestRequest, input: Data? = nil,
+                               limit: Int = GuestClient.captureLimit) throws -> (report: ExitReport, stdout: String, stderr: String) {
         let session = try ExecSession(descriptor: descriptor, request: request)
         // A program that ended first leaves its report to run() (see sendInput).
         if try input.map({ try session.sendInput(Array($0)) }) ?? true {
@@ -51,7 +78,13 @@ public enum GuestClient {
         }
         var stdout = Data()
         var stderr = Data()
-        let report = try session.run(stdout: { stdout.append(contentsOf: $0) }, stderr: { stderr.append(contentsOf: $0) })
+        func keep(_ bytes: [UInt8], in stream: inout Data) throws {
+            guard stream.count + bytes.count <= limit else {
+                throw GuestProtocolError.malformed("the program printed more than \(limit) bytes")
+            }
+            stream.append(contentsOf: bytes)
+        }
+        let report = try session.run(stdout: { try keep($0, in: &stdout) }, stderr: { try keep($0, in: &stderr) })
         return (report, String(decoding: stdout, as: UTF8.self), String(decoding: stderr, as: UTF8.self))
     }
 }
@@ -138,11 +171,10 @@ public final class ExecSession: @unchecked Sendable {
             case .stderr:
                 try stderr(frame.payload)
             case .exit:
-                do {
-                    return try JSONDecoder().decode(ExitReport.self, from: Data(frame.payload))
-                } catch {
+                guard let report = try? JSONDecoder().decode(ExitReport.self, from: Data(frame.payload)), report.isValid else {
                     throw GuestProtocolError.malformed("unreadable exit report")
                 }
+                return report
             default:
                 throw GuestProtocolError.malformed("unexpected \(frame.type) frame from the guest")
             }
