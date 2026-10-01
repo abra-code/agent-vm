@@ -50,9 +50,13 @@ enum GuestDesktop {
         }
         let sleep = try await run(GuestRequest(op: .exec, argv: ["/usr/bin/pmset", "-a", "displaysleep", "0"], cwd: "/", user: "root"), nil)
         let saver = try await defaults(["-currentHost", "write", "com.apple.screensaver", "idleTime", "-int", "0"], user: user, uid: uid, run: run)
-        // The password goes in on stdin, never in a command line outside the guest.
-        let script = "IFS= read -r password; exec /bin/launchctl asuser \(uid) /usr/bin/sudo -u \(user) /usr/sbin/sysadminctl -screenLock off -password \"$password\""
-        let lock = try await run(GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script], cwd: "/", user: "root"), Data((password + "\n").utf8))
+        // The password goes in on stdin and never into a command line, in the guest either:
+        // sysadminctl runs as the box user, whose programs can list its arguments. With "-" for
+        // the password it reads a line from stdin, terminal or not (measured on macOS 27; a
+        // wrong one is refused).
+        let lock = try await run(GuestRequest(op: .exec, argv: ["/bin/launchctl", "asuser", uid, "/usr/bin/sudo", "-u", user,
+                                                               "/usr/sbin/sysadminctl", "-screenLock", "off", "-password", "-"], cwd: "/", user: "root"),
+                                 Data((password + "\n").utf8))
         // Setting it prints nothing either way; its status says whether it took.
         let status = try await run(GuestRequest(op: .exec, argv: ["/bin/launchctl", "asuser", uid, "/usr/bin/sudo", "-u", user,
                                                                  "/usr/sbin/sysadminctl", "-screenLock", "status"], cwd: "/", user: "root"), nil)
