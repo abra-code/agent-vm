@@ -10,14 +10,15 @@ Recipes for `agent-vm image create --recipe`. The format is described in [../Doc
 | [xcode](xcode/recipe.json) | Xcode from a `.xip` you give (`--input xcode=...`), checked to be signed by Apple, selected with `xcode-select`, its license accepted and first-launch packages installed; debugging without an administrator prompt. The Command Line Tools stay too. | an Xcode `.xip` (see below) |
 | [xcode-platforms](xcode-platforms/recipe.json) | Simulator runtimes (`--set platforms="iOS watchOS"`, default `iOS`; `iOS@26.5` for an older one) and Xcode components (`--set components=...`, default `MetalToolchain`), downloaded from Apple in the guest, no Apple ID needed | Xcode: an image built with xcode |
 
-Build them as layers, each from the one before (`--from`), so a change to a later layer rebuilds in about a minute:
+Put the ones you want into one image, in an order that satisfies "Needs" (`--recipe` is repeatable; `--input` and `--set` go to the recipes that declare the name):
 
 ```sh
-agent-vm image create dev --ipsw <restore image>                                        # about 6 minutes
-agent-vm image create dev-node --from dev --recipe Recipes/homebrew-node/recipe.json    # about 2 minutes
-agent-vm image create dev-agents --from dev-node --recipe Recipes/agent-clis/recipe.json  # about 1 minute
-agent-vm box create work --image dev-agents --allow pack:anthropic --allow pack:openai --allow pack:npm
+agent-vm image create dev --ipsw <restore image>                                        # macOS alone, about 6 minutes
+agent-vm image create tools --from dev --recipe Recipes/homebrew-node/recipe.json --recipe Recipes/agent-clis/recipe.json --recipe Recipes/acp-agents/recipe.json
+agent-vm box create work --image tools --allow pack:anthropic --allow pack:openai --allow pack:npm
 ```
+
+One image with every tool is the simplest to keep. While you are still working on a recipe, layers are quicker to try: build each from the one before (`image create dev-node --from dev --recipe ...`, then `image create dev-agents --from dev-node --recipe ...`), and a change to a later layer rebuilds in about a minute. Each layer is its own image, though, and does not follow the one below it.
 
 The agents need their own logins or API keys inside the box: nothing from your Mac's Keychain reaches it.
 
@@ -26,9 +27,11 @@ The agents need their own logins or API keys inside the box: nothing from your M
 Apple offers Xcode's `.xip` only to someone signed in with an Apple ID (any Apple ID, no paid membership), so the image build cannot download it; you download it once and give it to the recipe. Everything after that downloads in the guest without an account: simulator runtimes and components come from Apple's public servers through `xcodebuild`.
 
 1. Download Xcode from [developer.apple.com/download/all](https://developer.apple.com/download/all/) (search for Xcode), for example `~/Downloads/Xcode_27.xip`. Any Xcode that runs on the image's macOS works.
-2. Build the layers:
+2. Build one image with Xcode and the simulators, or layers:
 
 ```sh
+agent-vm image create dev-xcode-ios --from dev --disk-gb 128 --recipe Recipes/xcode/recipe.json --recipe Recipes/xcode-platforms/recipe.json --input xcode=~/Downloads/Xcode_27.xip
+# or, as layers:
 agent-vm image create dev-xcode --from dev --disk-gb 128 --recipe Recipes/xcode/recipe.json --input xcode=~/Downloads/Xcode_27.xip
 agent-vm image create dev-xcode-ios --from dev-xcode --recipe Recipes/xcode-platforms/recipe.json                       # iOS and the Metal toolchain
 agent-vm image create dev-xcode-all --from dev-xcode --recipe Recipes/xcode-platforms/recipe.json --set platforms="iOS watchOS tvOS visionOS"

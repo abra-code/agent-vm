@@ -121,8 +121,15 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     }
     /// The Command Line Tools installed in the image (softwareupdate's label), if any.
     public var commandLineTools: String?
-    /// The recipe applied to the image, if any (its text is kept as recipe.json next to it).
+    /// What the image's own recipes installed, as one: a single recipe's entry, or for several
+    /// their descriptions joined, a digest of their digests, and their inputs and parameters
+    /// together (without a parameter that has different values in two of them). nil for an
+    /// image built without a recipe.
     public var recipe: RecipeInfo?
+    /// Every recipe whose steps ran on this disk, in the order they ran: those of the image it
+    /// was built from first (`inheritedFrom`), then its own. Each one's files are kept in the
+    /// image's `Recipes/` folder (`folder`). nil in images built before recipes were listed.
+    public var recipes: [RecipeInfo]?
 
     /// The image this one was built from (`image create --from`), and that image's recipe
     /// digest at the time, if any.
@@ -141,12 +148,55 @@ public struct ImageRecord: Codable, Equatable, Sendable {
         public var inputs: [InputInfo]?
         /// Every parameter's value, given or default.
         public var parameters: [String: String]?
+        /// In `recipes`: the recipe's name (its folder's, or its file's without the extension).
+        public var name: String?
+        /// In `recipes`: the folder in the image's `Recipes/` that keeps the recipe and the
+        /// files it copies.
+        public var folder: String?
+        /// In `recipes`: the image this one was built from, for a recipe that ran there.
+        public var inheritedFrom: String?
 
-        public init(description: String?, digest: String, inputs: [InputInfo]? = nil, parameters: [String: String]? = nil) {
+        public init(description: String?, digest: String, inputs: [InputInfo]? = nil, parameters: [String: String]? = nil,
+                    name: String? = nil, folder: String? = nil, inheritedFrom: String? = nil) {
             self.description = description
             self.digest = digest
             self.inputs = inputs
             self.parameters = parameters
+            self.name = name
+            self.folder = folder
+            self.inheritedFrom = inheritedFrom
+        }
+
+        /// Several recipes as one entry (see `ImageRecord.recipe`); nil for none. One recipe is
+        /// itself, without the keys that belong to the list.
+        public static func combined(_ recipes: [RecipeInfo]) -> RecipeInfo? {
+            guard let first = recipes.first else {
+                return nil
+            }
+            guard recipes.count > 1 else {
+                return RecipeInfo(description: first.description, digest: first.digest, inputs: first.inputs, parameters: first.parameters)
+            }
+            let descriptions = recipes.map { $0.description ?? $0.name ?? String($0.digest.prefix(12)) }
+            // An input two recipes share (`--input` gives the file to both) is listed once.
+            var inputs: [InputInfo] = []
+            for input in recipes.flatMap({ $0.inputs ?? [] }) where !inputs.contains(input) {
+                inputs.append(input)
+            }
+            // A name two recipes share has one value when `--set` gave it to both; left to
+            // their own defaults they can differ, and then only `recipes` says which is whose.
+            var parameters: [String: String] = [:]
+            var differing: Set<String> = []
+            for (name, value) in recipes.flatMap({ $0.parameters ?? [:] }) {
+                if let other = parameters.updateValue(value, forKey: name), other != value {
+                    differing.insert(name)
+                }
+            }
+            for name in differing {
+                parameters[name] = nil
+            }
+            return RecipeInfo(description: descriptions.joined(separator: "; "),
+                              digest: ImageRecipe.sha256(Data(recipes.map(\.digest).joined(separator: "\n").utf8)),
+                              inputs: inputs.isEmpty ? nil : inputs, parameters: parameters.isEmpty ? nil : parameters)
         }
     }
 
@@ -204,4 +254,5 @@ public struct GoldenImage: Sendable {
     public var passwordURL: URL { directory.appendingPathComponent(ImageStore.passwordName) }
     public var knownHostsURL: URL { directory.appendingPathComponent(ImageStore.knownHostsName) }
     public var recipeURL: URL { directory.appendingPathComponent(ImageStore.recipeName) }
+    public var recipesURL: URL { directory.appendingPathComponent(ImageStore.recipesName, isDirectory: true) }
 }

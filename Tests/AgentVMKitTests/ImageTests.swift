@@ -347,7 +347,7 @@ import Testing
         let builder = ImageBuilder(store: store) { (_: ProgressEvent) in }
         func refusal(_ base: String, name: String = "new") async -> AgentVMError? {
             do {
-                _ = try await builder.derive(ImageDeriveOptions(name: name, base: base, recipe: nil, commandLineTools: false))
+                _ = try await builder.derive(ImageDeriveOptions(name: name, base: base, commandLineTools: false))
                 return nil
             } catch {
                 return error as? AgentVMError
@@ -369,5 +369,13 @@ import Testing
         let record = try SessionStore.decoder.decode(ImageRecord.self, from: Data(json.utf8))
         #expect(record.derivedFrom == nil)
         #expect(record.recipe == nil)
+        #expect(record.recipes == nil)
+    }
+
+    @Test func recordsFromBeforeRecipeListsStillRead() throws {
+        let json = #"{"formatVersion":1,"name":"dev-node","state":"ready","createdAt":"2026-09-23T10:00:00Z","createdBy":"0.0.1","macOSVersion":"27.0","macOSBuild":"26A428","cpuCount":4,"memoryBytes":8589934592,"diskBytes":68719476736,"macAddress":"da:51:72:d4:e5:72","userName":"agent","recipe":{"description":"Homebrew and Node","digest":"edef"}}"#
+        let record = try SessionStore.decoder.decode(ImageRecord.self, from: Data(json.utf8))
+        #expect(record.recipe == ImageRecord.RecipeInfo(description: "Homebrew and Node", digest: "edef"))
+        #expect(record.recipes == nil)
     }
 }

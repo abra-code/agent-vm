@@ -49,6 +49,71 @@ test_derived_image_with_a_recipe() {
     assert_eq "$_output" $'hello from the image\nbuilt for agent' "the recipe's work" || return 1
 }
 
+# Two recipes in one image, in the order given, sharing a parameter; the image keeps each
+# recipe with the files it copies, and an image built from it lists them as inherited.
+test_several_recipes_in_one_image() {
+    require_image || return $(( $? == 1 ? 0 : 1 ))
+    local _image="shtest-multi-$$"
+    local _child="shtest-multichild-$$"
+    "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
+    "$AGENT_VM" image delete "$_child" > /dev/null 2>&1
+    cleanup_on_exit image "$_child"
+    cleanup_on_exit image "$_image"
+    write_recipe "$SCRATCH/first" '{
+      "version": 1,
+      "description": "first tools",
+      "parameters": {"who": {"default": "nobody"}},
+      "steps": [
+        { "name": "tool", "user": "root", "copy": "files/hello", "to": "/usr/local/bin/shtest-hello", "mode": "0755" },
+        { "name": "note", "run": "echo \"first for $AGENT_VM_PARAM_WHO\" > ~/shtest-order.txt" }
+      ],
+      "checks": ["shtest-hello"]
+    }'
+    printf '#!/bin/sh\necho hello from the image\n' > "$SCRATCH/first/files/hello"
+    write_recipe "$SCRATCH/second" '{
+      "version": 1,
+      "description": "second tools",
+      "parameters": {"who": {"default": "nobody"}},
+      "steps": [{ "name": "note", "run": "shtest-hello > /dev/null && echo \"second for $AGENT_VM_PARAM_WHO\" >> ~/shtest-order.txt" }],
+      "checks": ["cat ~/shtest-order.txt | tr \"\\n\" \",\""]
+    }'
+
+    run_avm image create "$_image" --from "$TEST_IMAGE" --recipe "$SCRATCH/first/recipe.json" --recipe "$SCRATCH/second/recipe.json" --set who=tests
+    assert_status 0 || return 1
+    assert_out_contains "Recipe 1 of 2: first tools" || return 1
+    assert_out_contains "Recipe 2 of 2: second tools" || return 1
+    assert_out_contains "first for tests,second for tests," || return 1
+    run_avm image list
+    assert_out_contains "from \"$TEST_IMAGE\" image  recipes first, second [who=tests]" || return 1
+    run_avm image info "$_image" --json
+    assert_json recipes.0.name "first" || return 1
+    assert_json recipes.1.name "second" || return 1
+    assert_json recipes.1.folder "2-second" || return 1
+    assert_json recipe.description "first tools; second tools" || return 1
+    local _folder
+    _folder="$(json_value path)"
+    assert_exists "$_folder/Recipes/1-first/recipe.json" || return 1
+    assert_exists "$_folder/Recipes/1-first/files/hello" || return 1
+    assert_exists "$_folder/Recipes/2-second/recipe.json" || return 1
+    assert_missing "$_folder/recipe.json" || return 1
+
+    write_recipe "$SCRATCH/third" '{"version": 1, "description": "third tools", "steps": [{"run": "echo third >> ~/shtest-order.txt"}]}'
+    run_avm image create "$_child" --from "$_image" --recipe "$SCRATCH/third/recipe.json"
+    assert_status 0 || return 1
+    run_avm image info "$_child" --json
+    assert_json recipes.0.inheritedFrom "$_image" || return 1
+    assert_json recipes.1.inheritedFrom "$_image" || return 1
+    assert_json recipes.2.name "third" || return 1
+    assert_json recipes.2.inheritedFrom "" || return 1
+    assert_json recipe.description "third tools" || return 1
+    _folder="$(json_value path)"
+    assert_exists "$_folder/Recipes/1-first/files/hello" || return 1
+    assert_exists "$_folder/Recipes/3-third/recipe.json" || return 1
+    assert_exists "$_folder/recipe.json" || return 1
+    "$AGENT_VM" image delete "$_child"
+    "$AGENT_VM" image delete "$_image"
+}
+
 test_a_failing_recipe_marks_the_image_failed() {
     require_image || return $(( $? == 1 ? 0 : 1 ))
     local _image="shtest-bad-$$"

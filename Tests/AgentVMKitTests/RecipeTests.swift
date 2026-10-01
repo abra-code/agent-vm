@@ -67,6 +67,138 @@ import Testing
         #expect(parsed.digest.count == 64)
     }
 
+    @Test func aRecipeIsNamedAfterItsFolderOrFile() {
+        #expect(ImageRecipe.name(for: URL(fileURLWithPath: "/r/Recipes/xcode/recipe.json")) == "xcode")
+        #expect(ImageRecipe.name(for: URL(fileURLWithPath: "/r/my tools.json")) == "my-tools")
+        #expect(ImageRecipe.name(for: URL(fileURLWithPath: "/r/xcode/../node/recipe.json")) == "node")
+        #expect(ImageRecipe.name(for: URL(fileURLWithPath: "/recipe.json")) == "recipe")
+        #expect(ImageRecipe.name(for: URL(fileURLWithPath: "/r/" + String(repeating: "a", count: 60) + ".json")).count == 40)
+    }
+
+    @Test func aStoredCopyLoadsWithTheSameDigest() throws {
+        let scratch = try Scratch()
+        let url = try recipe(#"{"version": 1, "steps": [{"copy": "files/a", "to": "/tmp/a"}, {"run": "true"}, {"copy": "sub/../b", "to": "/tmp/b"}]}"#,
+                             files: ["files/a": "one", "b": "two", "sub/other": ""], in: scratch)
+        let original = try ImageRecipe.load(from: url)
+        #expect(original.name == "recipe")
+        let folder = scratch.root.appendingPathComponent("kept/1-recipe", isDirectory: true)
+        try original.write(to: folder)
+        let copy = try ImageRecipe.load(from: folder.appendingPathComponent("recipe.json"))
+        #expect(copy.digest == original.digest)
+        #expect(copy.steps.count == 3)
+        #expect(try String(contentsOf: folder.appendingPathComponent("files/a"), encoding: .utf8) == "one")
+        #expect(try String(contentsOf: folder.appendingPathComponent("b"), encoding: .utf8) == "two")
+
+        // A file edited after the recipe was read is not stored under the old digest.
+        try Data("changed".utf8).write(to: url.deletingLastPathComponent().appendingPathComponent("b"))
+        #expect(throws: AgentVMError.self) { try original.write(to: scratch.root.appendingPathComponent("kept/2-recipe", isDirectory: true)) }
+    }
+
+    @Test func aStoredCopyKeepsAByteOrderMarkAndLinkedFiles() throws {
+        let scratch = try Scratch()
+        let url = try recipe("", files: ["tools/real": "one"], in: scratch)
+        let source = url.deletingLastPathComponent()
+        try FileManager.default.createSymbolicLink(atPath: source.appendingPathComponent("link").path, withDestinationPath: "tools/real")
+        try (Data([0xEF, 0xBB, 0xBF]) + Data(#"{"version": 1, "steps": [{"copy": "link", "to": "/tmp/a"}]}"#.utf8)).write(to: url)
+        let original = try ImageRecipe.load(from: url)
+        // A folder URL without the trailing slash is still the folder.
+        let folder = URL(fileURLWithPath: scratch.root.path + "/kept/1-recipe")
+        try original.write(to: folder)
+        let copy = try ImageRecipe.load(from: folder.appendingPathComponent("recipe.json"))
+        #expect(copy.digest == original.digest)
+        #expect(try Data(contentsOf: folder.appendingPathComponent("recipe.json")) == Data(contentsOf: url))
+        #expect(try String(contentsOf: folder.appendingPathComponent("link"), encoding: .utf8) == "one")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: scratch.root.appendingPathComponent("kept").path) == ["1-recipe"])
+    }
+
+    @Test func aCopySourceTheImageCouldNotKeepIsRefused() throws {
+        let scratch = try Scratch()
+        // Out of the folder and back in: the stored folder has another name.
+        var url = try recipe(#"{"version": 1, "steps": [{"copy": "../recipe/a", "to": "/tmp/a"}]}"#, files: ["a": "one", "sub/a": "two", "sub/deep/x": ""], in: scratch)
+        #expect(reason(url)?.contains("goes out of the recipe's folder and back") == true)
+        // Through a link, ".." is another folder than the name says.
+        let source = url.deletingLastPathComponent()
+        try FileManager.default.createSymbolicLink(atPath: source.appendingPathComponent("linked").path, withDestinationPath: "sub/deep")
+        url = try recipe(#"{"version": 1, "steps": [{"copy": "linked/../a", "to": "/tmp/a"}]}"#, in: scratch)
+        #expect(reason(url)?.contains("goes through a link") == true)
+        // Another file where the stored recipe goes.
+        let named = source.appendingPathComponent("tools.json")
+        try Data(#"{"version": 1, "steps": [{"copy": "recipe.json", "to": "/tmp/a"}]}"#.utf8).write(to: named)
+        #expect(reason(named)?.contains("the image keeps the recipe as recipe.json") == true)
+        // A recipe may copy itself.
+        url = try recipe(#"{"version": 1, "steps": [{"copy": "recipe.json", "to": "/tmp/a"}, {"copy": "./sub//a", "to": "/tmp/b"}]}"#, in: scratch)
+        #expect(reason(url) == nil)
+        #expect(ImageRecipe.pathInsideFolder("sub/../../x") == nil)
+        #expect(ImageRecipe.pathInsideFolder("sub/..") == nil)
+        #expect(ImageRecipe.pathInsideFolder("./sub//a/../b") == "sub/b")
+    }
+
+    @Test func severalRecipesShareInputsAndParameters() throws {
+        let scratch = try Scratch()
+        func load(_ name: String, _ json: String) throws -> ImageRecipe {
+            let url = scratch.root.appendingPathComponent(name + ".json")
+            try Data(json.utf8).write(to: url)
+            return try ImageRecipe.load(from: url)
+        }
+        func reason(_ body: () throws -> Any) -> String? {
+            do {
+                _ = try body()
+                return nil
+            } catch let AgentVMError.invalidRecipe(_, reason) {
+                return reason
+            } catch {
+                return "\(error)"
+            }
+        }
+        let node = try load("node", #"{"version": 1, "parameters": {"channel": {"default": "lts"}}}"#)
+        let agents = try load("agents", #"{"version": 1, "parameters": {"channel": {"default": "stable"}, "extras": {"default": ""}}}"#)
+        let xcode = try load("xcode", #"{"version": 1, "inputs": {"xcode": {}}}"#)
+        let xip = scratch.root.appendingPathComponent("Xcode.xip")
+        try Data("xip".utf8).write(to: xip)
+
+        let bound = try ImageRecipe.binding([node, agents, xcode], inputs: ["xcode": xip.path], parameters: ["channel": "beta"])
+        #expect(bound.map(\.name) == ["node", "agents", "xcode"])
+        #expect(bound[0].parameterValues == ["channel": "beta"])
+        #expect(bound[1].parameterValues == ["channel": "beta", "extras": ""])
+        #expect(bound[2].inputFiles["xcode"]?.lastPathComponent == "Xcode.xip")
+        // Without a value each keeps its own default.
+        let defaults = try ImageRecipe.binding([node, agents], inputs: [:], parameters: [:])
+        #expect(defaults[0].parameterValues["channel"] == "lts")
+        #expect(defaults[1].parameterValues["channel"] == "stable")
+
+        #expect(reason { try ImageRecipe.binding([node, agents], inputs: [:], parameters: ["size": "1"]) }?
+            .contains("none of the recipes has a parameter size (they have: channel, extras)") == true)
+        #expect(reason { try ImageRecipe.binding([node, agents], inputs: ["xcode": xip.path], parameters: [:]) }?
+            .contains("none of the recipes has an input xcode") == true)
+        #expect(reason { try ImageRecipe.binding([node, xcode], inputs: [:], parameters: [:]) }?.contains("needs --input xcode=PATH") == true)
+        #expect(reason { try ImageRecipe.binding([node, agents, node], inputs: [:], parameters: [:]) }?.contains("given twice") == true)
+        // One recipe refuses in its own words.
+        #expect(reason { try ImageRecipe.binding([node], inputs: [:], parameters: ["size": "1"]) }?.contains("it has no parameter size") == true)
+        #expect(try ImageRecipe.binding([], inputs: [:], parameters: [:]).isEmpty)
+    }
+
+    @Test func severalRecipesAreRecordedAsOne() {
+        typealias Info = ImageRecord.RecipeInfo
+        #expect(Info.combined([]) == nil)
+        let node = Info(description: "Node", digest: "aa", parameters: ["channel": "lts"], name: "node", folder: "1-node")
+        // One recipe is recorded as it always was.
+        #expect(Info.combined([node]) == Info(description: "Node", digest: "aa", parameters: ["channel": "lts"]))
+        let input = ImageRecord.InputInfo(name: "xcode", file: "Xcode.xip", bytes: 3, sha256: "cc")
+        let xcode = Info(description: nil, digest: "bb", inputs: [input], parameters: ["channel": "beta", "platforms": "iOS"], name: "xcode", folder: "2-xcode")
+        let both = Info.combined([node, xcode])
+        #expect(both?.description == "Node; xcode")
+        #expect(both?.digest == ImageRecipe.sha256(Data("aa\nbb".utf8)))
+        #expect(both?.digest != Info.combined([xcode, node])?.digest)
+        #expect(both?.inputs == [input])
+        // Each kept its own default for channel: the combined entry names neither.
+        #expect(both?.parameters == ["platforms": "iOS"])
+        let set = Info.combined([node, Info(description: nil, digest: "bb", inputs: [input], parameters: ["channel": "lts"]),
+                                 Info(description: nil, digest: "dd", inputs: [input])])
+        #expect(set?.parameters == ["channel": "lts"])
+        #expect(set?.inputs == [input])
+        #expect(both?.name == nil && both?.folder == nil)
+    }
+
     @Test func theDigestCoversCopiedFiles() throws {
         let first = try Scratch()
         let second = try Scratch()

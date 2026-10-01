@@ -69,6 +69,25 @@ test_inputs_and_parameters_are_checked_first() {
     assert_missing "$AGENT_VM_HOME/Images/x" || return 1
 }
 
+# Several recipes: a name goes to every recipe that declares it, and one none declares is refused.
+test_several_recipes_share_inputs_and_parameters() {
+    fake_image dev
+    /bin/mkdir -p "$SCRATCH/node" "$SCRATCH/xcode"
+    printf '%s\n' '{"version": 1, "parameters": {"channel": {"default": "lts"}}}' > "$SCRATCH/node/recipe.json"
+    printf '%s\n' '{"version": 1, "inputs": {"xcode": {"description": "an Xcode .xip"}}}' > "$SCRATCH/xcode/recipe.json"
+    run_avm image create x --from dev --recipe "$SCRATCH/node/recipe.json" --recipe "$SCRATCH/xcode/recipe.json"
+    assert_status 1 || return 1
+    assert_err_contains "needs --input xcode=PATH: an Xcode .xip" || return 1
+    printf 'xip' > "$SCRATCH/Xcode.xip"
+    run_avm image create x --from dev --recipe "$SCRATCH/node/recipe.json" --recipe "$SCRATCH/xcode/recipe.json" --input xcode="$SCRATCH/Xcode.xip" --set size=2
+    assert_status 1 || return 1
+    assert_err_contains "none of the recipes has a parameter size (they have: channel)" || return 1
+    run_avm image create x --from dev --recipe "$SCRATCH/node/recipe.json" --recipe "$SCRATCH/node/recipe.json"
+    assert_status 1 || return 1
+    assert_err_contains "it is given twice" || return 1
+    assert_missing "$AGENT_VM_HOME/Images/x" || return 1
+}
+
 test_a_bad_recipe_is_refused_before_anything_is_built() {
     fake_image dev
     write_recipe '{"version": 1, "steps": [{"run": "true", "usr": "root"}]}'

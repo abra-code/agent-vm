@@ -27,8 +27,9 @@ struct ImageCommand: ParsableCommand {
             abstract: "Build an image: install macOS from a restore image, or start from another image.",
             discussion: """
                 With --ipsw, macOS is installed and set up with no clicks (about 6 minutes). With \
-                --from, a ready image is cloned and the recipe applied to the clone (minutes, and \
-                one base image can carry several tool sets). SIGINT or SIGTERM stops the build at \
+                --from, a ready image is cloned and the recipes applied to the clone (minutes). \
+                Several --recipe options put several tool sets into one image, in the order \
+                given; --input and --set go to every recipe that declares the name. SIGINT or SIGTERM stops the build at \
                 the next safe point, shuts the guest down and marks the image failed (canceled); \
                 agent-vm then exits with 128 + the signal.
                 """)
@@ -61,13 +62,13 @@ struct ImageCommand: ParsableCommand {
               help: "Install Xcode's Command Line Tools (clang, swift, git, python3; about 530 MB, needs the internet). Default: yes for --ipsw, or what the recipe says; with --from, only if the base lacks them.")
         var commandLineTools: Bool?
 
-        @Option(name: .long, help: "A JSON recipe of steps to run in the image (see Docs/image-recipes.md).")
-        var recipe: String?
+        @Option(name: .long, help: "A JSON recipe of steps to run in the image (see Docs/image-recipes.md); repeatable, applied in the order given.")
+        var recipe: [String] = []
 
-        @Option(name: .customLong("input"), help: ArgumentHelp("A file the recipe asks for, streamed into the image while it is built (repeatable).", valueName: "name=path"))
+        @Option(name: .customLong("input"), help: ArgumentHelp("A file a recipe asks for, streamed into the image while it is built (repeatable).", valueName: "name=path"))
         var inputs: [String] = []
 
-        @Option(name: .customLong("set"), help: ArgumentHelp("A value for one of the recipe's parameters (repeatable).", valueName: "name=value"))
+        @Option(name: .customLong("set"), help: ArgumentHelp("A value for a recipe's parameter (repeatable).", valueName: "name=value"))
         var settings: [String] = []
 
         @OptionGroup var options: StoreOptions
@@ -76,7 +77,7 @@ struct ImageCommand: ParsableCommand {
             guard (ipsw == nil) != (from == nil) else {
                 throw ValidationError("give either --ipsw (install macOS) or --from (start from a ready image)")
             }
-            if recipe == nil && !(inputs.isEmpty && settings.isEmpty) {
+            if recipe.isEmpty && !(inputs.isEmpty && settings.isEmpty) {
                 throw ValidationError("--input and --set give values to a recipe's inputs and parameters; add --recipe")
             }
             for pair in inputs + settings where !pair.contains("=") || pair.hasPrefix("=") {
@@ -86,7 +87,7 @@ struct ImageCommand: ParsableCommand {
                 guard user == nil, guestDaemon == nil else {
                     throw ValidationError("--user and --guest-daemon come from the base image with --from")
                 }
-                guard recipe != nil || commandLineTools == true else {
+                guard !recipe.isEmpty || commandLineTools == true else {
                     throw ValidationError("with --from, give --recipe (or --command-line-tools): otherwise the new image would be a plain copy")
                 }
             }
@@ -101,10 +102,9 @@ struct ImageCommand: ParsableCommand {
         func run() async throws {
             let json = options.json
             // Checked before anything is built: a bad recipe fails in a second, not after install.
-            let loadedRecipe = try recipe.map {
-                try ImageRecipe.load(from: URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath))
-                    .binding(inputs: try Self.pairs(inputs, option: "--input"), parameters: try Self.pairs(settings, option: "--set"))
-            }
+            let recipes = try ImageRecipe.binding(
+                try recipe.map { try ImageRecipe.load(from: URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath)) },
+                inputs: try Self.pairs(inputs, option: "--input"), parameters: try Self.pairs(settings, option: "--set"))
             // With --json, progress goes to stderr as JSON lines, so stdout holds only the record.
             let builder = ImageBuilder(store: options.imageStore, events: Events.handler(json: json))
             // SIGINT or SIGTERM stops the build at the next safe point, with the guest shut down.
@@ -113,7 +113,7 @@ struct ImageCommand: ParsableCommand {
             builder.cancellation = signals.cancellation
             let image: GoldenImage
             do {
-                image = try await build(builder, recipe: loadedRecipe)
+                image = try await build(builder, recipes: recipes)
             } catch let AgentVMError.canceled(signal) {
                 ImageCommand.reportCanceled(name, signal: signal, store: options.imageStore, json: json)
                 throw ExitCode(128 + signal)
@@ -126,14 +126,18 @@ struct ImageCommand: ParsableCommand {
         }
 
         @MainActor
-        private func build(_ builder: ImageBuilder, recipe loadedRecipe: ImageRecipe?) async throws -> GoldenImage {
+        private func build(_ builder: ImageBuilder, recipes: [ImageRecipe]) async throws -> GoldenImage {
+            // The Command Line Tools: what the command line says, else yes when a recipe asks
+            // for them, no when the recipes that say anything say no.
+            let asked = recipes.compactMap(\.commandLineTools)
+            let recipesWantTools: Bool? = asked.isEmpty ? nil : asked.contains(true)
             let image: GoldenImage
             if let from {
                 image = try await builder.derive(ImageDeriveOptions(
                     name: name,
                     base: from,
-                    recipe: loadedRecipe,
-                    commandLineTools: commandLineTools ?? loadedRecipe?.commandLineTools ?? false,
+                    recipes: recipes,
+                    commandLineTools: commandLineTools ?? recipesWantTools ?? false,
                     cpuCount: cpus,
                     memoryBytes: memoryGB.map { UInt64($0) << 30 },
                     diskBytes: diskGB.map { UInt64($0) << 30 },
@@ -148,8 +152,8 @@ struct ImageCommand: ParsableCommand {
                     userName: user ?? "agent",
                     askpassProgram: try AskpassEntry.executablePath(),
                     guestDaemon: try guestDaemonURL(),
-                    commandLineTools: commandLineTools ?? loadedRecipe?.commandLineTools ?? true,
-                    recipe: loadedRecipe))
+                    commandLineTools: commandLineTools ?? recipesWantTools ?? true,
+                    recipes: recipes))
             }
             return image
         }
@@ -373,7 +377,12 @@ struct ImageCommand: ParsableCommand {
                     line += "  from \"\(base.image)\" image"
                 }
                 if let recipe = record.recipe {
-                    line += "  recipe \(recipe.description ?? String(recipe.digest.prefix(12)))"
+                    let own = (record.recipes ?? []).filter { $0.inheritedFrom == nil }
+                    if own.count > 1 {
+                        line += "  recipes \(own.map { $0.name ?? String($0.digest.prefix(12)) }.joined(separator: ", "))"
+                    } else {
+                        line += "  recipe \(recipe.description ?? String(recipe.digest.prefix(12)))"
+                    }
                     if let parameters = recipe.parameters, !parameters.isEmpty {
                         line += " [\(parameters.keys.sorted().map { "\($0)=\(parameters[$0] ?? "")" }.joined(separator: ", "))]"
                     }

@@ -5,6 +5,8 @@ A recipe is a JSON file that says what to install in an image besides macOS: Hom
 - `agent-vm image create <name> --ipsw <file> --recipe <recipe.json>` runs it while it builds a new image, after macOS is set up and the Command Line Tools are installed, and before the image is sealed.
 - `agent-vm image create <name> --from <image> --recipe <recipe.json>` runs it on a clone of a ready image. This takes minutes and leaves the base image untouched.
 
+Give `--recipe` more than once to put several recipes into one image: they run in the order given, each with its own steps and checks, so a later one can use what an earlier one installed (see Several recipes).
+
 Examples are in [../Recipes/](../Recipes/README.md).
 
 ```json
@@ -39,7 +41,7 @@ Each step does one of two things:
 | Key | Meaning |
 |---|---|
 | `run` | A shell command, run with `/bin/bash -c`. Its output appears in the build log line by line. |
-| `copy` + `to` | A file from the recipe's folder (a path relative to `recipe.json`, which must stay inside that folder) written to `to` in the image. `to` is absolute or starts with `~/` (the step user's home); missing folders are created. At most 256 MB: download bigger files in a `run` step. |
+| `copy` + `to` | A file from the recipe's folder (a path relative to `recipe.json`, which must stay inside that folder and name the file by its place there: not out of the folder and back in, and not through a linked folder and `..`) written to `to` in the image. `to` is absolute or starts with `~/` (the step user's home); missing folders are created. At most 256 MB: download bigger files in a `run` step. |
 
 Every step can also have:
 
@@ -83,6 +85,20 @@ agent-vm image create dev-xcode --from dev --recipe recipe.json --input xcode=~/
 - **Steps and checks see them** as environment variables: `AGENT_VM_INPUT_<NAME>` (the file's path in the guest) and `AGENT_VM_PARAM_<NAME>` (the value), the name in capitals. A step's own `env` cannot change them.
 - **Mistakes are refused before anything is built**: a missing input or required parameter, a name the recipe does not declare, an input that is not a readable file.
 
+## Several recipes
+
+```sh
+agent-vm image create dev --ipsw latest \
+    --recipe Recipes/homebrew-node/recipe.json --recipe Recipes/agent-clis/recipe.json \
+    --recipe Recipes/xcode/recipe.json --input xcode=~/Downloads/Xcode_27.xip --disk-gb 128
+```
+
+- **Order**: as given. Each recipe's checks run right after its steps, so a failure names the recipe that caused it.
+- **Inputs and parameters**: `--input` and `--set` go to every recipe that declares the name. Two recipes that declare the same parameter get the same value when it is set, and each its own default when it is not. A name that no recipe declares is refused before anything is built.
+- **The same recipe twice** is refused.
+- **The Command Line Tools** are installed when any of the recipes asks for them, and skipped only when the recipes that say anything all say `false` (`--[no-]command-line-tools` overrides both).
+- **A recipe's name** is its folder's name when the file is called `recipe.json` (`Recipes/xcode/recipe.json` is `xcode`), else the file's name without its extension.
+
 ## What steps can rely on
 
 - **The internet**: the image is built on NAT, so downloads work, but a box's allowlist does not apply to the build.
@@ -102,5 +118,9 @@ A step that exits with a non-zero status, or stays silent past its timeout, fail
 ## Provenance
 
 The image records the recipe's description and a SHA-256 digest of the recipe and every file it copies (`recipe` in `image.json`), and keeps the recipe itself as `recipe.json` in the image folder. The digest is of the recipe file followed by the copied files in step order, so `cat recipe.json <copied files in order> | shasum -a 256` reproduces it.
+
+Every recipe is also kept whole, with the files it copies, in the image's `Recipes/<n>-<name>/` folder (`n` counts from 1 in the order they ran), and listed in `recipes` in `image.json`: `name`, `folder`, `description`, `digest`, `inputs` and `parameters` for each. An image built with `--from` starts with its base's list and folders, each entry marked `inheritedFrom` with the base's name, and adds its own after them, so the list says everything that ran on the disk.
+
+For an image built with several recipes, `recipe` describes them together: the descriptions joined by "; ", the inputs one after another, the parameters merged (leaving out a name that has different values in two recipes), and as digest the SHA-256 of the recipes' digests joined by newlines (`printf '%s\n%s' <digest 1> <digest 2> | shasum -a 256`). There is no `recipe.json` beside `image.json` in that case; the recipes are in `Recipes/`. Images built before agent-vm 0.4.5 have no `recipes` list and no `Recipes/` folder.
 
 Inputs are not part of that digest: the same recipe can be built with another Xcode. `recipe.inputs` records each one's name, file name, size and SHA-256 (of the bytes sent, computed while sending), and `recipe.parameters` every parameter's value, given or default.

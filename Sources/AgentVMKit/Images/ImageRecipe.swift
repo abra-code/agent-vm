@@ -46,6 +46,8 @@ public struct ImageRecipe: Equatable, Sendable {
         /// Copy steps: the SHA-256 of the source when the recipe was read, so a file edited
         /// during the build is refused rather than recorded under the wrong digest.
         public var sourceDigest: String? = nil
+        /// Copy steps: the source as the recipe names it, relative to the recipe's folder.
+        public var sourcePath: String? = nil
     }
 
     /// A file the recipe needs from whoever builds the image (`--input NAME=PATH`).
@@ -73,6 +75,9 @@ public struct ImageRecipe: Equatable, Sendable {
     public var text: String
     /// The recipe file, for messages.
     public var path: String = ""
+    /// What the recipe is called in lists and in the image's `Recipes/` folder: its folder's
+    /// name when the file is recipe.json, else the file's name without its extension.
+    public var name: String = ""
     /// Declared inputs and parameters, sorted by name.
     public var inputs: [Input] = []
     public var parameters: [Parameter] = []
@@ -93,15 +98,70 @@ public struct ImageRecipe: Equatable, Sendable {
         } catch {
             throw AgentVMError.invalidRecipe(path: url.path, reason: "cannot read it: \(error.localizedDescription)")
         }
-        return try parse(data, folder: url.deletingLastPathComponent(), path: url.path)
+        var recipe = try parse(data, folder: url.deletingLastPathComponent(), path: url.path)
+        recipe.name = name(for: url)
+        return recipe
+    }
+
+    /// A recipe's name from its file: `Recipes/xcode/recipe.json` is "xcode", `tools.json` is
+    /// "tools". Only letters, digits, ".", "_" and "-" are kept (it names a folder), at most 40.
+    static func name(for url: URL) -> String {
+        let resolved = url.standardizedFileURL
+        let raw = resolved.lastPathComponent == ImageStore.recipeName
+            ? resolved.deletingLastPathComponent().lastPathComponent
+            : resolved.deletingPathExtension().lastPathComponent
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        let kept = String(raw.map { allowed.contains($0) ? $0 : "-" }.prefix(40))
+        return kept.allSatisfy({ $0 == "." || $0 == "-" }) ? "recipe" : kept
+    }
+
+    /// Writes the recipe and the files it copies into `folder` (created), each file where the
+    /// recipe names it, so the copy loads like the original and has its digest. A file that
+    /// changed since the recipe was read is refused.
+    public func write(to folder: URL) throws {
+        let root = folder.standardizedFileURL.path
+        try FileSystem.makeDirectories(root)
+        var files: [(URL, Data)] = [(folder.appendingPathComponent(ImageStore.recipeName), Data(text.utf8))]
+        for step in steps {
+            guard case let .copy(source, _, _) = step.action, let relative = step.sourcePath else {
+                continue
+            }
+            // Never a path that leaves `folder`, even one that comes back into it.
+            guard let inside = Self.pathInsideFolder(relative) else {
+                throw AgentVMError.invalidRecipe(path: path, reason: "\(step.name): \(relative) is outside the recipe's folder")
+            }
+            let target = URL(fileURLWithPath: root + "/" + inside)
+            // Every folder the path walks through, so "sub/../file" resolves in the copy too.
+            var walked = folder
+            for component in relative.split(separator: "/").dropLast() {
+                walked.appendPathComponent(String(component))
+                if component != ".." && component != "." {
+                    try FileSystem.makeDirectories(walked.path)
+                }
+            }
+            files.append((target, try Self.copyContents(step, source: source)))
+        }
+        for (target, contents) in files {
+            try FileSystem.makeDirectories(target.deletingLastPathComponent().path)
+            do {
+                try contents.write(to: target, options: .atomic)
+            } catch {
+                throw AgentVMError.system(operation: "write \(target.path)", code: FileSystem.posixCode(error))
+            }
+        }
     }
 
     static func parse(_ data: Data, folder: URL, path: String) throws -> ImageRecipe {
         func fail(_ reason: String) -> AgentVMError {
             return AgentVMError.invalidRecipe(path: path, reason: reason)
         }
-        guard let text = String(data: data, encoding: .utf8) else {
+        guard var text = String(data: data, encoding: .utf8) else {
             throw fail("it is not UTF-8 text")
+        }
+        // Decoding drops a byte order mark; kept, so the text written back is the bytes the
+        // digest covers.
+        if data.starts(with: [0xEF, 0xBB, 0xBF]), !text.hasPrefix("\u{FEFF}") {
+            text = "\u{FEFF}" + text
         }
         let root: [String: Any]
         do {
@@ -172,6 +232,7 @@ public struct ImageRecipe: Equatable, Sendable {
             let copy = try optionalString(step, "copy", at: place, fail)
             let action: Step.Action
             var sourceDigest: String?
+            var sourcePath: String?
             switch (run, copy) {
             case let (command?, nil):
                 guard step["to"] == nil, step["mode"] == nil else {
@@ -190,7 +251,7 @@ public struct ImageRecipe: Equatable, Sendable {
                 guard mode.range(of: "^0?[0-7]{3}$", options: .regularExpression) != nil else {
                     throw fail("\(place): \"mode\" must be octal, like \"0644\" or \"0755\"")
                 }
-                let file = try copySource(source, folder: canonicalFolder, place: place, fail)
+                let file = try copySource(source, folder: canonicalFolder, recipeFile: path, place: place, fail)
                 let contents: Data
                 do {
                     contents = try Data(contentsOf: file)
@@ -199,13 +260,14 @@ public struct ImageRecipe: Equatable, Sendable {
                 }
                 hasher.update(data: contents)
                 sourceDigest = sha256(contents)
+                sourcePath = source
                 action = .copy(source: file, destination: destination, mode: mode)
             case (nil, nil):
                 throw fail("\(place) needs \"run\" or \"copy\"")
             default:
                 throw fail("\(place) has both \"run\" and \"copy\"; use two steps")
             }
-            steps.append(Step(name: name, action: action, user: user, environment: environment, timeoutSeconds: timeout, sourceDigest: sourceDigest))
+            steps.append(Step(name: name, action: action, user: user, environment: environment, timeoutSeconds: timeout, sourceDigest: sourceDigest, sourcePath: sourcePath))
         }
 
         let rawChecks = root["checks"] ?? []
@@ -298,6 +360,34 @@ public struct ImageRecipe: Equatable, Sendable {
         return bound
     }
 
+    /// Several recipes for one image, with `--input` and `--set` values: each name goes to
+    /// every recipe that declares it (two recipes sharing a name get the same value), and a
+    /// name none declares is refused, as is the same recipe given twice.
+    public static func binding(_ recipes: [ImageRecipe], inputs given: [String: String], parameters set: [String: String]) throws -> [ImageRecipe] {
+        for (index, recipe) in recipes.enumerated() where recipes[..<index].contains(where: { $0.digest == recipe.digest }) {
+            throw AgentVMError.invalidRecipe(path: recipe.path, reason: "it is given twice")
+        }
+        // One recipe refuses in its own words.
+        guard recipes.count > 1 else {
+            return try recipes.map { try $0.binding(inputs: given, parameters: set) }
+        }
+        func undeclared(_ kind: String, _ name: String, _ declared: [String]) -> AgentVMError {
+            let names = Set(declared).sorted()
+            return AgentVMError.invalidRecipe(path: recipes.map(\.path).joined(separator: ", "),
+                                              reason: "none of the recipes has \(kind) \(name)\(names.isEmpty ? "" : " (they have: \(names.joined(separator: ", ")))")")
+        }
+        for name in given.keys.sorted() where !recipes.contains(where: { $0.inputs.contains { $0.name == name } }) {
+            throw undeclared("an input", name, recipes.flatMap { $0.inputs.map(\.name) })
+        }
+        for name in set.keys.sorted() where !recipes.contains(where: { $0.parameters.contains { $0.name == name } }) {
+            throw undeclared("a parameter", name, recipes.flatMap { $0.parameters.map(\.name) })
+        }
+        return try recipes.map { recipe in
+            try recipe.binding(inputs: given.filter { pair in recipe.inputs.contains { $0.name == pair.key } },
+                               parameters: set.filter { pair in recipe.parameters.contains { $0.name == pair.key } })
+        }
+    }
+
     /// Where an input is put in the guest while the recipe runs; the folder is deleted after.
     public static let guestInputsFolder = "/private/var/tmp/agent-vm-inputs"
 
@@ -326,9 +416,28 @@ public struct ImageRecipe: Equatable, Sendable {
         return result
     }
 
+    /// A relative path with "." and ".." worked out by name alone, or nil when it leaves the
+    /// folder it starts in at any point ("../x", and "../folder/x" that comes back) or names
+    /// the folder itself.
+    static func pathInsideFolder(_ relative: String) -> String? {
+        var components: [Substring] = []
+        for component in relative.split(separator: "/") where component != "." {
+            if component == ".." {
+                guard components.popLast() != nil else {
+                    return nil
+                }
+            } else {
+                components.append(component)
+            }
+        }
+        return components.isEmpty || relative.hasPrefix("/") ? nil : components.joined(separator: "/")
+    }
+
     /// A copy source: relative to the recipe's folder, a regular file, and still inside that
-    /// folder once symlinks are resolved.
-    private static func copySource(_ source: String, folder: String, place: String, _ fail: (String) -> AgentVMError) throws -> URL {
+    /// folder once symlinks are resolved. It must also be storable by `write(to:)`: the path
+    /// read by name alone stays in the folder and is the same file, and it is not another
+    /// file in the place of the stored recipe.
+    private static func copySource(_ source: String, folder: String, recipeFile: String, place: String, _ fail: (String) -> AgentVMError) throws -> URL {
         guard !source.hasPrefix("/") else {
             throw fail("\(place): \"copy\" must be relative to the recipe's folder")
         }
@@ -345,6 +454,16 @@ public struct ImageRecipe: Equatable, Sendable {
         }
         guard info.st_size <= maxCopyBytes else {
             throw fail("\(place): \(source) is larger than \(maxCopyBytes >> 20) MB; download big files in a run step")
+        }
+        // The image keeps the file under this path, next to the recipe (`write(to:)`).
+        guard let inside = pathInsideFolder(source) else {
+            throw fail("\(place): \(source) goes out of the recipe's folder and back; name the file by its path inside the folder")
+        }
+        guard (try? FileSystem.canonicalPath(folder + "/" + inside)) == resolved else {
+            throw fail("\(place): \(source) goes through a link and \"..\" to another file than \(inside); name the file by its path inside the folder")
+        }
+        if inside.lowercased() == ImageStore.recipeName, resolved != ((try? FileSystem.canonicalPath(recipeFile)) ?? recipeFile) {
+            throw fail("\(place): \(source) cannot be copied by a recipe with another file name: the image keeps the recipe as \(ImageStore.recipeName) in the same folder")
         }
         return URL(fileURLWithPath: resolved)
     }

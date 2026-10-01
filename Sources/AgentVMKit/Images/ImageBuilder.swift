@@ -26,12 +26,13 @@ public struct ImageBuildOptions: Sendable {
     public var guestDaemon: URL
     /// Install Xcode's Command Line Tools (clang, swift, git, python3) into the image.
     public var commandLineTools: Bool
-    /// Steps and checks run after the tools, before the image is sealed.
-    public var recipe: ImageRecipe?
+    /// Recipes whose steps and checks run after the tools, in this order, before the image is
+    /// sealed.
+    public var recipes: [ImageRecipe]
 
     public init(name: String, restoreImage: URL, cpuCount: Int, memoryBytes: UInt64, diskBytes: UInt64,
                 userName: String, askpassProgram: String, guestDaemon: URL, commandLineTools: Bool = true,
-                recipe: ImageRecipe? = nil) {
+                recipes: [ImageRecipe] = []) {
         self.name = name
         self.restoreImage = restoreImage
         self.cpuCount = cpuCount
@@ -41,7 +42,7 @@ public struct ImageBuildOptions: Sendable {
         self.askpassProgram = askpassProgram
         self.guestDaemon = guestDaemon
         self.commandLineTools = commandLineTools
-        self.recipe = recipe
+        self.recipes = recipes
     }
 
     public static let defaultCPUCount = 4
@@ -62,7 +63,8 @@ public struct ImageBuildOptions: Sendable {
 public struct ImageDeriveOptions: Sendable {
     public var name: String
     public var base: String
-    public var recipe: ImageRecipe?
+    /// Recipes applied to the clone, in this order.
+    public var recipes: [ImageRecipe]
     /// Install the Command Line Tools if the base lacks them.
     public var commandLineTools: Bool
     /// nil: the base image's.
@@ -75,13 +77,13 @@ public struct ImageDeriveOptions: Sendable {
     /// base's).
     public var guestDaemon: URL?
 
-    public init(name: String, base: String, recipe: ImageRecipe?, commandLineTools: Bool, cpuCount: Int? = nil, memoryBytes: UInt64? = nil,
+    public init(name: String, base: String, recipes: [ImageRecipe] = [], commandLineTools: Bool, cpuCount: Int? = nil, memoryBytes: UInt64? = nil,
                 diskBytes: UInt64? = nil, guestDaemon: URL? = nil) {
         self.guestDaemon = guestDaemon
         self.diskBytes = diskBytes
         self.name = name
         self.base = base
-        self.recipe = recipe
+        self.recipes = recipes
         self.commandLineTools = commandLineTools
         self.cpuCount = cpuCount
         self.memoryBytes = memoryBytes
@@ -351,6 +353,13 @@ public final class ImageBuilder {
         record.installSeconds = nil
         record.provisionSeconds = nil
         record.recipe = nil
+        // What ran on the base's disk ran on this one: kept, so an update can refresh it here.
+        let inherited = base.record.recipes?.map { recipe in
+            var recipe = recipe
+            recipe.inheritedFrom = recipe.inheritedFrom ?? base.name
+            return recipe
+        }
+        record.recipes = inherited
         record.derivedFrom = ImageRecord.DerivedFrom(image: base.name, recipeDigest: base.record.recipe?.digest)
         let created: (GoldenImage, ImageStore.Lock)
         do {
@@ -374,6 +383,13 @@ public final class ImageBuilder {
                 try BoxStore.cloneFile(base.auxiliaryStorageURL, to: image.auxiliaryStorageURL)
                 try BoxStore.cloneFile(base.hardwareModelURL, to: image.hardwareModelURL)
                 try BoxStore.cloneFile(base.passwordURL, to: image.passwordURL)
+                if inherited != nil, FileSystem.exists(base.recipesURL.path) {
+                    do {
+                        try FileManager.default.copyItem(at: base.recipesURL, to: image.recipesURL)
+                    } catch {
+                        throw AgentVMError.system(operation: "copy \(base.recipesURL.path)", code: FileSystem.posixCode(error))
+                    }
+                }
                 try VZMacMachineIdentifier().dataRepresentation.write(to: image.machineIdentifierURL)
             }
             let grown = options.diskBytes.map { $0 > base.record.diskBytes } ?? false
@@ -403,7 +419,7 @@ public final class ImageBuilder {
                 if grown {
                     try await growContainer(machine)
                 }
-                image = try await configure(image, machine: machine, commandLineTools: options.commandLineTools, recipe: options.recipe)
+                image = try await configure(image, machine: machine, commandLineTools: options.commandLineTools, recipes: options.recipes)
                 // Last, so the recipe ran under the daemon it was tested with.
                 if let guestDaemon = options.guestDaemon {
                     replacedDaemon = try await replaceGuestDaemon(guestDaemon, machine: machine)
@@ -631,7 +647,7 @@ public final class ImageBuilder {
                 record.guestRequirement = CodeSignature.designatedRequirement(of: options.guestDaemon)
             }
 
-            current = try await configure(current, machine: machine, commandLineTools: options.commandLineTools, recipe: options.recipe)
+            current = try await configure(current, machine: machine, commandLineTools: options.commandLineTools, recipes: options.recipes)
 
             // From here on the daemon is the only way in.
             let disabled = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDaemon.disableSSHCommand], user: "root"))
@@ -679,8 +695,8 @@ public final class ImageBuilder {
 
     /// What every image gets once its guest daemon answers: Spotlight indexing off, a desktop
     /// that never locks, names the image and hides its widgets, the Command Line Tools when
-    /// asked for and missing, then the recipe. Returns the updated image.
-    private func configure(_ image: GoldenImage, machine: MacMachine, commandLineTools: Bool, recipe: ImageRecipe?) async throws -> GoldenImage {
+    /// asked for and missing, then the recipes in order. Returns the updated image.
+    private func configure(_ image: GoldenImage, machine: MacMachine, commandLineTools: Bool, recipes: [ImageRecipe]) async throws -> GoldenImage {
         var current = image
         // Boxes have no use for Spotlight, and indexing the whole new disk competes with the
         // first boot's installs: the Command Line Tools took 26 minutes during the first
@@ -704,14 +720,28 @@ public final class ImageBuilder {
                 current = try store.update(current) { $0.commandLineTools = label }
             }
         }
-        if let recipe {
-            let inputs = try await apply(recipe, machine: machine, boxUser: current.record.userName)
-            try Data(recipe.text.utf8).write(to: current.recipeURL)
+        // After each recipe, so a failed build's record says which ones ran.
+        var own: [ImageRecord.RecipeInfo] = []
+        let inherited = current.record.recipes ?? []
+        for (index, recipe) in recipes.enumerated() {
+            // Kept before it runs, while its files are still the ones that were read: an edit
+            // during the build fails this recipe, not the end of the build.
+            let folder = "\(inherited.count + index + 1)-\(recipe.name.isEmpty ? "recipe" : recipe.name)"
+            try recipe.write(to: current.recipesURL.appendingPathComponent(folder, isDirectory: true))
+            let inputs = try await apply(recipe, machine: machine, boxUser: current.record.userName,
+                                         position: recipes.count > 1 ? (index + 1, recipes.count) : nil)
+            own.append(ImageRecord.RecipeInfo(description: recipe.description, digest: recipe.digest,
+                                              inputs: inputs.isEmpty ? nil : inputs,
+                                              parameters: recipe.parameterValues.isEmpty ? nil : recipe.parameterValues,
+                                              name: recipe.name.isEmpty ? nil : recipe.name, folder: folder))
+            let applied = own
             current = try store.update(current) { record in
-                record.recipe = ImageRecord.RecipeInfo(description: recipe.description, digest: recipe.digest,
-                                                       inputs: inputs.isEmpty ? nil : inputs,
-                                                       parameters: recipe.parameterValues.isEmpty ? nil : recipe.parameterValues)
+                record.recipe = ImageRecord.RecipeInfo.combined(applied)
+                record.recipes = inherited + applied
             }
+        }
+        if recipes.count == 1 {
+            try Data(recipes[0].text.utf8).write(to: current.recipeURL)
         }
         // Checked, so image list says whether boxes can open protected folders (image setup).
         return try await recordFullDiskAccess(current, machine: machine, digest: current.record.guestDigest, requirement: current.record.guestRequirement)
@@ -891,10 +921,11 @@ public final class ImageBuilder {
     /// Runs a recipe: streams its inputs into the guest, runs its steps, then its checks, and
     /// deletes the inputs again; any failure fails the build with the step's name and the end
     /// of its output. Returns what was sent as inputs.
-    func apply(_ recipe: ImageRecipe, machine: MacMachine, boxUser: String) async throws -> [ImageRecord.InputInfo] {
+    func apply(_ recipe: ImageRecipe, machine: MacMachine, boxUser: String, position: (index: Int, count: Int)? = nil) async throws -> [ImageRecord.InputInfo] {
         let clock = ContinuousClock()
         let began = clock.now
-        progress("recipe", "Recipe\(recipe.description.map { ": \($0)" } ?? "") (\(recipe.steps.count) steps, \(recipe.checks.count) checks)")
+        progress("recipe", "Recipe\(position.map { " \($0.index) of \($0.count)" } ?? "")\(recipe.description.map { ": \($0)" } ?? "") (\(recipe.steps.count) steps, \(recipe.checks.count) checks)",
+                 index: position?.index, count: position?.count)
         if !recipe.parameterValues.isEmpty {
             log("  parameters: \(recipe.parameterValues.keys.sorted().map { "\($0)=\(recipe.parameterValues[$0] ?? "")" }.joined(separator: ", "))")
         }
