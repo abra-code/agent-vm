@@ -432,3 +432,45 @@ test_image_rebuild_replays_the_kept_recipes() {
     [ "$_status" -eq 0 ] || { fail "exec in the rebuilt image's box failed ($_status)"; return 1; }
     assert_eq "$_output" $'hello from the image\nsecond input two' "the rebuilt image's work" || return 1
 }
+
+# A tools update also runs the checks of the recipes that have no update steps, after the
+# update steps: an update that breaks what another recipe relies on is refused, and the image
+# stays as it was.
+test_image_update_checks_every_recipe() {
+    require_image || return $(( $? == 1 ? 0 : 1 ))
+    local _image="shtest-chk-$$"
+    "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
+    cleanup_on_exit image "$_image"
+    write_recipe "$SCRATCH/base" '{
+      "version": 1,
+      "description": "base tools",
+      "parameters": {"mark": {"default": "ok"}},
+      "steps": [{ "name": "note", "run": "echo \"$AGENT_VM_PARAM_MARK\" > ~/shtest-chk.txt" }],
+      "update": [{ "name": "note again", "run": "echo \"$AGENT_VM_PARAM_MARK\" > ~/shtest-chk.txt" }]
+    }'
+    write_recipe "$SCRATCH/user" '{
+      "version": 1,
+      "description": "a tool that needs the base",
+      "steps": [{ "name": "nothing", "run": "true" }],
+      "checks": ["grep ok ~/shtest-chk.txt"]
+    }'
+    run_avm image create "$_image" --from "$TEST_IMAGE" --recipe "$SCRATCH/base/recipe.json" --recipe "$SCRATCH/user/recipe.json"
+    assert_status 0 || return 1
+
+    run_avm image update "$_image" --tools --set mark=bad
+    assert_status 1 || return 1
+    assert_out_contains "Checking user (1 of 1): a tool that needs the base" || return 1
+    assert_err_contains "recipe check grep ok ~/shtest-chk.txt" || return 1
+    assert_out_contains "$_image is unchanged" || return 1
+    run_avm image info "$_image" --json
+    assert_json state "ready" || return 1
+    assert_json recipes.0.parameters.mark "ok" || return 1
+    assert_json revision "" || return 1
+
+    run_avm image update "$_image" --tools --set mark=ok-again
+    assert_status 0 || return 1
+    assert_out_contains "Checking user (1 of 1)" || return 1
+    assert_out_contains "check grep ok ~/shtest-chk.txt: ok-again" || return 1
+    assert_out_contains "Image $_image is updated (revision 1): tools of base." || return 1
+    "$AGENT_VM" image delete "$_image"
+}

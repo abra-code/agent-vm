@@ -56,6 +56,9 @@ final class RefreshProgress {
         case .progress:
             if event.step == "tools-update", let index = event.index, let count = event.count {
                 recipe = count > 1 ? "recipe \(index) of \(count), " : nil
+            } else if event.step == "tools-check" {
+                // The checks that follow are another recipe's, not the last updated one's.
+                recipe = nil
             }
             doing = (event.step == "recipe-step" || event.step == "recipe-check" ? recipe ?? "" : "") + event.message
             if live {

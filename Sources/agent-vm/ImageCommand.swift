@@ -252,7 +252,8 @@ struct ImageCommand: ParsableCommand {
                 of disk the image then no longer shares with its older boxes), then a newer \
                 Command Line Tools package when the image has the tools. Tools: runs the \
                 `update` steps of the recipes the image keeps, in the order they were applied, \
-                and each recipe's checks again, with the parameters the image recorded; --set \
+                and each recipe's checks again, with the parameters the image recorded, then \
+                the checks of the recipes that have no update steps; --set \
                 changes one (a pinned version, say) and records it. Guest daemon: puts this \
                 agent-vm's agent-vm-guest into the image when it has another one, and boots once \
                 more to check it (what `image update-guest` does). With none of --macos, --tools \

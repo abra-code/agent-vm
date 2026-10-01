@@ -79,7 +79,7 @@ import Testing
         try Data("aux".utf8).write(to: image.auxiliaryStorageURL)
         let recipes = [
             "1-node": #"{"version": 1, "parameters": {"channel": {"default": "lts"}}, "update": [{"run": "brew upgrade"}]}"#,
-            "2-xcode": #"{"version": 1, "inputs": {"xcode": {}}, "steps": [{"run": "xip"}]}"#,
+            "2-xcode": #"{"version": 1, "inputs": {"xcode": {}}, "parameters": {"edition": {"default": "release"}}, "steps": [{"run": "xip"}], "checks": ["xcodebuild -version"]}"#,
             "3-agents": #"{"version": 1, "parameters": {"extras": {"default": ""}}, "update": [{"run": "npm install"}]}"#,
         ]
         for (folder, json) in recipes {
@@ -97,11 +97,18 @@ import Testing
         let builder = ImageBuilder(store: store) { (_: ProgressEvent) in }
         let plans = try builder.toolsPlans(image, set: ["extras": "gemini"])
         // In the order they ran, named as the record names them, with recorded values, then
-        // --set, then defaults; a recipe that needed an input is no obstacle.
-        #expect(plans.map(\.recipe.name) == ["node", "agents"])
-        #expect(plans.map(\.index) == [0, 2])
+        // --set, then defaults. A recipe without update steps is there for its checks alone
+        // (that it needed an input is no obstacle), and takes no --set.
+        #expect(plans.map(\.recipe.name) == ["node", "xcode", "agents"])
+        #expect(plans.map(\.checksOnly) == [false, true, false])
+        #expect(plans.map(\.index) == [0, 1, 2])
         #expect(plans[0].recipe.parameterValues == ["channel": "beta"])
-        #expect(plans[1].recipe.parameterValues == ["extras": "gemini"])
+        #expect(plans[1].recipe.parameterValues == ["edition": "release"])
+        #expect(plans[2].recipe.parameterValues == ["extras": "gemini"])
+        #expect(reason(["edition": "beta"], image)?.contains("no recipe with update steps in tools has that parameter (they have: channel, extras)") == true)
+        // Nothing to update means nothing to check either: no boot for checks alone.
+        let checksOnly = try store.update(image) { $0.recipes = [$0.recipes![1]] }
+        #expect(try builder.toolsPlans(checksOnly, set: [:]).isEmpty)
 
         func reason(_ set: [String: String], _ image: GoldenImage) -> String? {
             do {

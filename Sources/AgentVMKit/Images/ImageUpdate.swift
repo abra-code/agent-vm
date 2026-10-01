@@ -155,11 +155,14 @@ extension ImageBuilder {
     /// How long the second boot of a replaced guest daemon waits for a virtual machine slot.
     static let slotPatience: Duration = .seconds(900)
 
-    /// One recipe the image keeps, ready to run its update steps.
+    /// One recipe the image keeps, ready to run its update steps, or only its checks.
     struct ToolsPlan {
         /// Its place in the record's `recipes`.
         var index: Int
         var recipe: ImageRecipe
+        /// It has no update steps: its checks run after the others' updates, since those
+        /// can change what it installed (Homebrew's upgrade reaches Node and Python).
+        var checksOnly = false
     }
 
     /// What `update` would refuse without booting anything: no such image, one that is not
@@ -248,11 +251,20 @@ extension ImageBuilder {
                         changed = true
                     }
                 }
-                for (position, plan) in plans.enumerated() {
-                    try await runUpdate(plan.recipe, machine: machine, boxUser: record.userName, position: (position + 1, plans.count))
+                let updates = plans.filter { !$0.checksOnly }
+                for (position, plan) in updates.enumerated() {
+                    try await runUpdate(plan.recipe, machine: machine, boxUser: record.userName, position: (position + 1, updates.count))
                     record.recipes?[plan.index].parameters = plan.recipe.parameterValues.isEmpty ? nil : plan.recipe.parameterValues
                     updatedRecipes.append(plan.recipe.name)
                     changed = true
+                }
+                // Every other recipe's checks, once all updates ran: an update that breaks
+                // what another recipe installed fails here, and is not kept.
+                let checked = plans.filter(\.checksOnly)
+                for (position, plan) in checked.enumerated() {
+                    progress("tools-check", "Checking \(plan.recipe.name) (\(position + 1) of \(checked.count))\(plan.recipe.description.map { ": \($0)" } ?? "")",
+                             index: position + 1, count: checked.count)
+                    try await runSteps([], checks: plan.recipe.checks, variables: plan.recipe.variables, machine: machine, boxUser: record.userName)
                 }
                 // Last, so macOS and the recipes were updated under the daemon that was there.
                 var replaced: (digest: String, requirement: String?, replaced: Bool)?
@@ -411,9 +423,10 @@ extension ImageBuilder {
         }
     }
 
-    /// The image's recipes that have update steps, loaded from its `Recipes/` folder with the
-    /// parameters it recorded and `set` over them. A name in `set` must be a parameter of one
-    /// of them.
+    /// What a tools update runs: the image's recipes that have update steps, loaded from its
+    /// `Recipes/` folder with the parameters it recorded and `set` over them (a name in `set`
+    /// must be a parameter of one of them), and, when there is at least one, every other
+    /// recipe that has checks, for its checks alone. Empty when no recipe has update steps.
     func toolsPlans(_ image: GoldenImage, set: [String: String]) throws -> [ToolsPlan] {
         var plans: [ToolsPlan] = []
         for (index, info) in (image.record.recipes ?? []).enumerated() {
@@ -422,20 +435,23 @@ extension ImageBuilder {
             }
             let url = image.recipesURL.appendingPathComponent(folder, isDirectory: true).appendingPathComponent(ImageStore.recipeName)
             var recipe = try ImageRecipe.load(from: url)
+            recipe.name = info.name ?? recipe.name
             guard !recipe.updateSteps.isEmpty else {
+                if !recipe.checks.isEmpty {
+                    plans.append(ToolsPlan(index: index, recipe: try recipe.bindingForUpdate(recorded: info.parameters ?? [:], set: [:]), checksOnly: true))
+                }
                 continue
             }
-            recipe.name = info.name ?? recipe.name
             plans.append(ToolsPlan(index: index, recipe: try recipe.bindingForUpdate(recorded: info.parameters ?? [:], set: set)))
         }
-        let known = Set(plans.flatMap { $0.recipe.parameters.map(\.name) })
+        let known = Set(plans.filter { !$0.checksOnly }.flatMap { $0.recipe.parameters.map(\.name) })
         if let name = set.keys.sorted().first(where: { !known.contains($0) }) {
             let reason = known.isEmpty
                 ? "--set \(name): \(image.name) keeps no recipe with update steps"
                 : "--set \(name): no recipe with update steps in \(image.name) has that parameter (they have: \(known.sorted().joined(separator: ", ")))"
             throw AgentVMError.invalidRecipe(path: image.recipesURL.path, reason: reason)
         }
-        return plans
+        return plans.contains { !$0.checksOnly } ? plans : []
     }
 
     /// Installs the macOS update Apple offers within the image's major version, and waits for

@@ -1,5 +1,3 @@
-
-`image rebuild`: the steps of `image create` (with `--ipsw`, or with `--from`), their `image` being the image's own name and not the name it is built under, then `replace`: the rebuilt image takes the old one's place.
 # Progress events
 
 Long commands tell what they are doing as they go. For a person, that is lines of text on standard output. With `--json`, the same information goes to standard error as one JSON object per line, so a program can show the current step and a progress bar without reading prose. Standard output then holds only the command's result: the image record, the box's status.
@@ -30,7 +28,7 @@ agent-vm image create dev-node --from dev --recipe Recipes/homebrew/recipe.json 
 | `message` | every event | The text a person would see, without its indentation. |
 | `step` | `progress` | The step's name, from the tables below. Names are stable; the messages are not. |
 | `fraction` | some `progress` | How far the step is, from 0 to 1: the macOS install, and recipe steps (steps done out of all). |
-| `index`, `count` | `recipe-step`, `recipe-check`, `tools-update` | This step's (check's, recipe's) number, from 1, and how many there are. |
+| `index`, `count` | `recipe-step`, `recipe-check`, `tools-update`, `tools-check` | This step's (check's, recipe's) number, from 1, and how many there are. |
 | `expectedSeconds` | `boot` of `image update` | How long the last update of this image took that installed no macOS update, when one is on record: what this one will take unless it finds a macOS update. |
 | `image` | image commands | The image the event is about. `image update-guest` with several images names each one. |
 | `box` | box commands | The box the event is about. |
@@ -76,10 +74,13 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 | `tools-update` | One recipe's update steps begin, with `index` and `count` (which recipe of how many that have update steps). |
 | `recipe-step` | Each update step, as in `image create`. |
 | `recipe-check` | Each of the recipe's checks, with `index` and `count`. |
+| `tools-check` | The checks of a recipe that has no update steps begin (`index` and `count` among such recipes), after every recipe's update steps; `recipe-check` follows for each check. |
 | `replace-guest-daemon` | Putting this agent-vm's `agent-vm-guest` into the image, when it differs (unless `--macos` or `--tools` alone). |
 | `shutdown` | Shutting the guest down. |
 | `check-guest-daemon` | Booting again to check the new `agent-vm-guest` (only when it was replaced), then `shutdown` again. |
 | `commit` | The updated disk takes the image's place. Left out when there was nothing to update. |
+
+`image rebuild`: the steps of `image create` (with `--ipsw`, or with `--from`), their `image` being the image's own name and not the name it is built under, then `replace`: the rebuilt image takes the old one's place.
 
 `image update-guest`: `boot`, then, when the daemon differs, `replace-guest-daemon`, `shutdown`, `check-guest-daemon` and `shutdown` again (otherwise just `shutdown`), for each image in turn. A failure in one image skips the rest, with a `notice` naming them.
 
