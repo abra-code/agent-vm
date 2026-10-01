@@ -97,6 +97,9 @@ public final class ImageBuilder {
     let report: @MainActor (ProgressEvent) -> Void
     /// The image being built, updated or set up, named in every event.
     var subject: String?
+    /// The name events and the image's wallpaper carry instead of the name it is built under
+    /// (a rebuild builds `<name>.rebuild` and shows `<name>`).
+    var shownName: String?
     /// Set by the caller to stop a build or guest update at the next safe point (SIGINT,
     /// SIGTERM): the guest is shut down and the image recorded as canceled.
     public var cancellation: BuildCancellation?
@@ -233,7 +236,7 @@ public final class ImageBuilder {
         }
         try Self.checkHost(HostFacts.current(storeRoot: store.root))
 
-        subject = options.name
+        subject = shownName ?? options.name
         progress("restore-image", "Reading \(options.restoreImage.path)")
         let restore = try await RestoreImage.inspect(options.restoreImage)
         let cpuCount = max(options.cpuCount, restore.minimumCPUCount)
@@ -309,7 +312,7 @@ public final class ImageBuilder {
         guard ImageStore.isValidName(options.name) else {
             throw AgentVMError.invalidImageName(options.name)
         }
-        subject = options.name
+        subject = shownName ?? options.name
         if FileSystem.exists(store.imagesDirectory.appendingPathComponent(options.name).path) {
             let state = (try? store.image(named: options.name))?.record.state.rawValue ?? "unreadable"
             throw AgentVMError.imageExists(name: options.name, state: state)
@@ -1047,7 +1050,7 @@ public final class ImageBuilder {
             throw AgentVMError.invalidRecipe(path: file.path, reason: "input \(name) changed while it was sent; build the image again")
         }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        return ImageRecord.InputInfo(name: name, file: file.lastPathComponent, bytes: total, sha256: digest)
+        return ImageRecord.InputInfo(name: name, file: file.lastPathComponent, bytes: total, sha256: digest, path: file.path)
     }
 
     /// A recipe's steps (or its update steps), then its checks. `kind` names a step in errors.

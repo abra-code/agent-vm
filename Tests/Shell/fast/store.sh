@@ -400,6 +400,37 @@ test_status_names_a_macos_update_from_the_kept_answer() {
     assert_not_contains "$OUT" "macOSUpdate" "image list --json" || return 1
 }
 
+# image rebuild refuses what it can before anything is built.
+test_rebuild_checks_before_building() {
+    fake_image dev
+    run_avm image rebuild nosuch
+    assert_status 1 || return 1
+    assert_err_contains "nosuch" || return 1
+    run_avm image rebuild nosuch --ipsw nosuch.ipsw
+    assert_status 1 || return 1
+    assert_not_contains "$ERR" "restore image" "a missing image named before a missing restore image" || return 1
+    run_avm image rebuild dev
+    assert_status 1 || return 1
+    assert_err_contains "dev was installed from a restore image: give --ipsw" || return 1
+    run_avm image rebuild dev --ipsw a.ipsw --from other
+    assert_status 64 || return 1
+    assert_err_contains "give either --ipsw (install macOS) or --from" || return 1
+    run_avm image rebuild dev --from dev
+    assert_status 1 || return 1
+    assert_err_contains "cannot be rebuilt from itself" || return 1
+    fake_image other
+    run_avm image rebuild dev --from other
+    assert_status 1 || return 1
+    assert_err_contains "dev keeps no recipe that other lacks" || return 1
+    run_avm image rebuild dev --from other --set size
+    assert_status 64 || return 1
+    assert_missing "$AGENT_VM_HOME/Images/dev.rebuild" || return 1
+    # A job may run it.
+    run_avm job start -- image rebuild
+    assert_status 64 || return 1
+    assert_err_contains "the job's command" || return 1
+}
+
 test_box_execlog_needs_a_box() {
     run_avm box execlog nosuch
     assert_status 1 || return 1

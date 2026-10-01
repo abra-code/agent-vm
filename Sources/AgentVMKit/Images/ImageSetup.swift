@@ -190,7 +190,9 @@ extension ImageBuilder {
     func prepareDesktop(_ image: GoldenImage, machine: MacMachine, features: [String]?) async {
         let features = features ?? []
         do {
-            let png = features.contains(GuestFeature.wallpaper) ? try GuestWallpaper.png(for: image.record) : nil
+            var shown = image.record
+            shown.name = shownName ?? shown.name
+            let png = features.contains(GuestFeature.wallpaper) ? try GuestWallpaper.png(for: shown) : nil
             let lines = try await GuestDesktop.prepare(user: image.record.userName, png: png,
                                                        features: features, widgetsOnce: false, run: guestRunner(machine))
             for line in lines {

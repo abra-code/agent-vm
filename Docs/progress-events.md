@@ -1,3 +1,5 @@
+
+`image rebuild`: the steps of `image create` (with `--ipsw`, or with `--from`), their `image` being the image's own name and not the name it is built under, then `replace`: the rebuilt image takes the old one's place.
 # Progress events
 
 Long commands tell what they are doing as they go. For a person, that is lines of text on standard output. With `--json`, the same information goes to standard error as one JSON object per line, so a program can show the current step and a progress bar without reading prose. Standard output then holds only the command's result: the image record, the box's status.

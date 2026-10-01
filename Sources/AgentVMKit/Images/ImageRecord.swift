@@ -233,6 +233,9 @@ public struct ImageRecord: Codable, Equatable, Sendable {
         public var file: String
         public var bytes: Int64
         public var sha256: String
+        /// Where the file was on that Mac, so `image rebuild` can take it again; nil in images
+        /// built before it was recorded.
+        public var path: String? = nil
     }
 }
 

@@ -93,6 +93,17 @@ agent-vm image update tools --tools                        # only the tools: wha
 agent-vm box recreate web                                  # each box, to get what the image now has
 ```
 
+When an update in place is not enough (a new major macOS, a new Xcode, or simply a fresh disk), build the image again from its own recipes:
+
+```sh
+agent-vm image fetch-ipsw                                  # the newest restore image
+agent-vm image rebuild tools --ipsw latest                 # macOS installed anew, every recipe again, same name
+agent-vm image rebuild tools --ipsw latest --input xcode=~/Downloads/Xcode_28.xip   # with a newer Xcode
+agent-vm image setup tools                                 # Full Disk Access, once more
+```
+
+The old image stays ready and usable until the new one takes its place; a failed rebuild changes nothing. The recipes run with the parameters and input files the image recorded, unless `--set` or `--input` gives others.
+
 `image update` installs the macOS update Apple offers (within the same major version), runs the `update` steps of the recipes the image was built with, such as the newest agents, and puts in the guest daemon of the agent-vm you run, when the image has an older one. It works on a copy of the image's disk and puts it in place only when everything succeeded, so a failed update leaves the image as it was. `box list` then says "needs recreate" for the boxes made before. A macOS update costs about 15 GB of disk that the image no longer shares with its older boxes, until they are recreated or deleted.
 
 The image can be used while it is updated: boxes made meanwhile get it as it was. `--if-older-than <hours>` skips an image whose parts asked for were updated or checked within that time: `agent-vm image update tools --tools --if-older-than 24` refreshes the tools at most once a day and takes a minute or two when it does, so it can be run before a session; the full update, which can meet a macOS update of 15 minutes, belongs in a job (`agent-vm job start -- image update tools --if-older-than 24`).
@@ -171,7 +182,7 @@ What changes:
 - An image built from the deleted one no longer shows what it added over its base in `image info`, since there is no base to compare with.
 
 **Does changing an image change the images derived from it?**
-No. A derived image is a clone made at `image create --from`. To pass a change on, update the derived image too (`image update`), or delete it and build it again from the same recipes.
+No. A derived image is a clone made at `image create --from`. To pass a change on, update the derived image too (`image update`), or build it again on its base as it is now: `agent-vm image rebuild <image>` runs the image's own recipes on a fresh clone of the base and keeps the name.
 
 **Can I change a box's CPUs or memory, or rename a box or an image?**
 Not after creation. For a box, make it again with `box create --cpus N --memory-gb N`. The network is the exception: `box network` changes the rules at once, and the mode while the box is stopped.
@@ -180,7 +191,7 @@ Not after creation. For a box, make it again with `box create --cpus N --memory-
 `agent-vm status --check-updates` asks Apple for the newest macOS and names the images that are behind it, with the command that installs it. The answer is kept: until you ask again, plain `status` and `image list` repeat it without a network. Nothing is checked or installed by itself.
 
 **How do I update macOS in an image?**
-`agent-vm image update <image> --macos` installs the update Apple offers within the same major version, unattended, in about 15 minutes; then recreate the image's boxes. For a new major version, build a new image from its restore image (`image fetch-ipsw`, `image create --ipsw latest` with the same recipes).
+`agent-vm image update <image> --macos` installs the update Apple offers within the same major version, unattended, in about 15 minutes; then recreate the image's boxes. For a new major version, build the image again from the new restore image: `image fetch-ipsw`, then `agent-vm image rebuild <image> --ipsw latest`, which runs the image's recipes again and keeps its name.
 
 **How do I get the newest agents into my boxes?**
 `agent-vm image update <image> --tools` runs the update steps of the image's recipes (the shipped agent-clis recipe installs the newest Claude Code, Codex and opencode), then `box recreate` each box. A box does not update its agents by itself: their own updaters are off in boxes, and the allowlist does not reach the package registry.

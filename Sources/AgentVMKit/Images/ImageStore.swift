@@ -21,6 +21,8 @@
 //                                     auxiliary storage, then the new record
 //   Images/<name>/Update.commit/      that folder once the update succeeded, until its files
 //                                     have taken the image's files' place
+//   Images/<name>.rebuild/            `image rebuild` at work: the image being built again,
+//                                     an image like any other until it takes <name>'s place
 //
 // Creating the folder with mkdir is the atomic claim on a name; the lock keeps `delete` away
 // from an image that is being built. `image update` works on a copy for minutes and holds

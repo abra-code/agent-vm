@@ -102,7 +102,7 @@ agent-vm image create dev-xcode --from dev --recipe recipe.json --input xcode=~/
 
 - **Write them to be run again and again**: an update step runs at every `image update`, on an image where it may have run before (`brew upgrade`, `npm install ...@latest`, `softwareupdate` is not needed: `image update` does macOS itself).
 - **Parameters** have the values the image recorded when it was built; `image update --set name=value` changes one and records it, so the next update uses it too. A recipe that pins a version as a parameter moves the pin that way.
-- **Inputs are not there**: an input was streamed in for the build and deleted after it, so update steps and checks see no `AGENT_VM_INPUT_` variables. What needs the file again (a newer Xcode `.xip`) is a new image.
+- **Inputs are not there**: an input was streamed in for the build and deleted after it, so update steps and checks see no `AGENT_VM_INPUT_` variables. What needs the file again (a newer Xcode `.xip`) is a rebuild: `agent-vm image rebuild <image> --input xcode=<file>`.
 - **Nothing is kept from a failed update**: a failing update step or check leaves the image as it was before `image update`.
 - **The recipe is the one the image keeps**, as it was when the image was built (`Recipes/` in the image's folder): changing the recipe file later does not change what `image update` runs.
 - **The digest** covers the files update steps copy, after the files the steps copy.
@@ -141,7 +141,7 @@ A step that exits with a non-zero status, or stays silent past its timeout, fail
 
 The image records the recipe's description and a SHA-256 digest of the recipe and every file it copies (`recipe` in `image.json`), and keeps the recipe itself as `recipe.json` in the image folder. The digest is of the recipe file followed by the copied files in step order, so `cat recipe.json <copied files in order> | shasum -a 256` reproduces it.
 
-Every recipe is also kept whole, with the files it copies, in the image's `Recipes/<n>-<name>/` folder (`n` counts from 1 in the order they ran), and listed in `recipes` in `image.json`: `name`, `folder`, `description`, `digest`, `inputs` and `parameters` for each. An image built with `--from` starts with its base's list and folders, each entry marked `inheritedFrom` with the base's name, and adds its own after them, so the list says everything that ran on the disk.
+Every recipe is also kept whole, with the files it copies, in the image's `Recipes/<n>-<name>/` folder (`n` counts from 1 in the order they ran), and listed in `recipes` in `image.json`: `name`, `folder`, `description`, `digest`, `inputs` and `parameters` for each. Each input is recorded with its `name`, the `file`'s name, `bytes`, `sha256` and, since 0.5.6, its `path` on the Mac that built the image, which is where `image rebuild` looks for it again. An image built with `--from` starts with its base's list and folders, each entry marked `inheritedFrom` with the base's name, and adds its own after them, so the list says everything that ran on the disk.
 
 For an image built with several recipes, `recipe` describes them together: the descriptions joined by "; ", the inputs one after another, the parameters merged (leaving out a name that has different values in two recipes), and as digest the SHA-256 of the recipes' digests joined by newlines (`printf '%s\n%s' <digest 1> <digest 2> | shasum -a 256`). There is no `recipe.json` beside `image.json` in that case; the recipes are in `Recipes/`. Images built before agent-vm 0.4.5 have no `recipes` list and no `Recipes/` folder.
 

@@ -339,3 +339,96 @@ test_full_install_from_a_restore_image() {
     [ "$_status" -eq 0 ] || { fail "image create failed ($_status)"; return 1; }
     assert_eq "$_state" "ready" "the new image" || return 1
 }
+
+# image rebuild builds the image again beside itself, from its base and the recipes it keeps,
+# with the recorded parameters and the recorded input file, and puts it in the old one's
+# place: a box made before needs recreating. A failing rebuild leaves the image as it was,
+# and the next rebuild clears what it left.
+test_image_rebuild_replays_the_kept_recipes() {
+    require_image || return $(( $? == 1 ? 0 : 1 ))
+    local _image="shtest-rb-$$"
+    local _box="shtest-rbbox-$$"
+    "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
+    "$AGENT_VM" image delete "$_image.rebuild" > /dev/null 2>&1
+    cleanup_on_exit box "$_box"
+    cleanup_on_exit image "$_image.rebuild"
+    cleanup_on_exit image "$_image"
+    write_recipe "$SCRATCH/recipe" '{
+      "version": 1,
+      "description": "rebuild test",
+      "inputs": {"note": {}},
+      "parameters": {"mark": {"default": "one"}},
+      "steps": [
+        { "name": "tool", "user": "root", "copy": "files/hello", "to": "/usr/local/bin/shtest-hello", "mode": "0755" },
+        { "name": "note", "run": "[ \"$AGENT_VM_PARAM_MARK\" != fail ] && echo \"$(cat \"$AGENT_VM_INPUT_NOTE\") $AGENT_VM_PARAM_MARK\" > ~/shtest-rb.txt" }
+      ],
+      "checks": ["shtest-hello", "cat ~/shtest-rb.txt"]
+    }'
+    printf '#!/bin/sh\necho hello from the image\n' > "$SCRATCH/recipe/files/hello"
+    printf 'first input' > "$SCRATCH/note.txt"
+    run_avm image create "$_image" --from "$TEST_IMAGE" --recipe "$SCRATCH/recipe/recipe.json" --input "note=$SCRATCH/note.txt" --set mark=two
+    assert_status 0 || return 1
+    run_avm image info "$_image" --json
+    local _created
+    _created="$(json_value createdAt)"
+    assert_json recipes.0.inputs.0.path "$SCRATCH/note.txt" || return 1
+    run_avm box create "$_box" --image "$_image"
+    assert_status 0 || return 1
+    # The recipe's own file is taken from the image's copy from now on.
+    /bin/rm -r "$SCRATCH/recipe"
+
+    # A failing rebuild: the image is as it was, and what was built is kept beside it, failed.
+    run_avm image rebuild "$_image" --set mark=fail
+    assert_status 1 || return 1
+    assert_err_contains "Image $_image is unchanged; what was built is in $_image.rebuild" || return 1
+    run_avm image info "$_image" --json
+    assert_json state "ready" || return 1
+    assert_json createdAt "$_created" || return 1
+    assert_json recipes.0.parameters.mark "two" || return 1
+    run_avm image info "$_image.rebuild" --json
+    assert_json state "failed" || return 1
+    run_avm box list
+    assert_not_contains "$OUT" "needs recreate" "box list after a failed rebuild" || return 1
+
+    # A rebuild with nothing given: the base it was built from, the recorded parameter, and
+    # the input from where it was (its content is read again, so a new file there is used).
+    /bin/sleep 1
+    printf 'second input' > "$SCRATCH/note.txt"
+    run_avm image rebuild "$_image"
+    assert_status 0 || return 1
+    assert_out_contains "Rebuilding $_image as $_image.rebuild, from $TEST_IMAGE" || return 1
+    assert_out_contains "check cat ~/shtest-rb.txt: second input two" || return 1
+    assert_out_contains "Image $_image is rebuilt" || return 1
+    run_avm image info "$_image.rebuild"
+    assert_status 1 || return 1
+    run_avm image info "$_image" --json
+    assert_json state "ready" || return 1
+    assert_json name "$_image" || return 1
+    assert_json derivedFrom.image "$TEST_IMAGE" || return 1
+    assert_json recipes.0.parameters.mark "two" || return 1
+    [ "$(json_value createdAt)" != "$_created" ] || { fail "the rebuilt image has the old build time"; return 1; }
+    local _folder
+    _folder="$(json_value path)"
+    assert_exists "$_folder/Recipes/1-recipe/files/hello" || return 1
+    assert_missing "$_folder/.rebuild-of" || return 1
+    run_avm image list
+    assert_not_contains "$OUT" "warning" "image list after the rebuild" || return 1
+    run_avm box list
+    assert_out_contains "needs recreate" || return 1
+    run_avm box list --json
+    assert_contains "$OUT" '"reason" : "image-rebuilt"' "box list --json" || return 1
+
+    # The recreated box has the rebuilt image's work.
+    run_avm box recreate "$_box"
+    assert_status 0 || return 1
+    run_avm box start "$_box"
+    assert_status 0 || return 1
+    run_avm exec --box "$_box" -- /bin/sh -c 'shtest-hello; cat ~/shtest-rb.txt'
+    local _output="$OUT"
+    local _status="$STATUS"
+    "$AGENT_VM" box stop "$_box"
+    "$AGENT_VM" box delete "$_box"
+    "$AGENT_VM" image delete "$_image"
+    [ "$_status" -eq 0 ] || { fail "exec in the rebuilt image's box failed ($_status)"; return 1; }
+    assert_eq "$_output" $'hello from the image\nsecond input two' "the rebuilt image's work" || return 1
+}
