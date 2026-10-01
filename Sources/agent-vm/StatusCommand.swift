@@ -4,14 +4,14 @@
 // and what it lacks, every box with its state (and, while it runs, its supervisor's process id,
 // the process that owns it, its shared project and how many programs run in it), and how many
 // virtual machines run on this Mac, and the jobs that run, wait, or ended in the last hour. It
-// measures nothing (`image info` and `box info` give the space on disk) and changes nothing:
+// asks Apple for nothing unless told to (--check-updates), measures nothing (`image info` and `box info` give the space on disk) and changes nothing:
 // unlike `box list` it runs no `box gc`, and unlike `job list` it removes no old job.
 
 import AgentVMKit
 import ArgumentParser
 import Foundation
 
-struct StatusCommand: ParsableCommand {
+struct StatusCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "status",
         abstract: "Show a quick summary of images, boxes and what runs.",
@@ -25,8 +25,19 @@ struct StatusCommand: ParsableCommand {
             --json`, `box list --json` and `job list --json` give it (`jobsError` says why \
             when the jobs could not be listed, rather than `jobs` being taken for none), and \
             `runningVMs` (`count`, left out when processes cannot be listed, and `limit`, the \
-            macOS guests that can run at once).
+            macOS guests that can run at once). --check-updates asks Apple for the newest \
+            macOS this Mac's virtual machines can run (the lookup of `image fetch-ipsw \
+            --check`; it needs the internet) and keeps the answer in the store; from then on \
+            `status` and `image list` name, without a network, each ready image that is \
+            behind it within its major version (`macOSUpdate` with `version`, `build` and \
+            `checkedAt` in the image's --json entry, `newestMacOS` in the summary, and \
+            `newestMacOSError` when the lookup failed). An image whose own `image update \
+            --macos` asked Apple later is not named. Nothing is installed: `image update \
+            <image> --macos` does that.
             """)
+
+    @Flag(name: .customLong("check-updates"), help: "Ask Apple for the newest macOS first, and keep the answer for later `status` and `image list` runs.")
+    var checkUpdates = false
 
     @OptionGroup var options: StoreOptions
 
@@ -37,6 +48,11 @@ struct StatusCommand: ParsableCommand {
         /// Why the jobs could not be listed; absent when they were.
         var jobsError: String?
         var runningVMs: RunningVMs
+        /// The newest macOS for this Mac's virtual machines, as Apple last said; absent when
+        /// it was never asked.
+        var newestMacOS: NewestMacOS?
+        /// --check-updates: why Apple could not be asked.
+        var newestMacOSError: String?
 
         struct RunningVMs: Encodable {
             var count: Int?
@@ -44,7 +60,20 @@ struct StatusCommand: ParsableCommand {
         }
     }
 
-    func run() throws {
+    @MainActor
+    func run() async throws {
+        let root = options.imageStore.root
+        var newestError: String?
+        if checkUpdates {
+            // A failed lookup leaves the rest of the summary standing, with what was kept.
+            do {
+                _ = try await NewestMacOS.check(root: root)
+            } catch {
+                newestError = "\(error)"
+                FileHandle.standardError.write(Data("warning: cannot check for the newest macOS: \(error)\n".utf8))
+            }
+        }
+        let newest = NewestMacOS.read(root: root)
         let (images, imageProblems) = try options.imageStore.list()
         let (boxes, boxProblems) = try options.boxStore.list()
         // Jobs that cannot be listed leave the rest of the summary standing.
@@ -61,11 +90,12 @@ struct StatusCommand: ParsableCommand {
             FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
         }
         let summary = Summary(
-            images: images.map { ImageCommand.List.Entry(record: $0.record, path: $0.directory.path, updating: $0.record.state == .ready && options.imageStore.isBeingChanged($0)) },
+            images: images.map { ImageCommand.List.Entry(record: $0.record, path: $0.directory.path, updating: $0.record.state == .ready && options.imageStore.isBeingChanged($0), macOSUpdate: newest?.update(for: $0.record)) },
             boxes: boxes.map { box in BoxCommand.List.Entry(box, image: images.first { $0.name == box.record.image }?.record) },
             jobs: jobs,
             jobsError: jobsError,
-            runningVMs: .init(count: HostFacts.countVirtualMachineProcesses(), limit: HostReport.macOSGuestLimit))
+            runningVMs: .init(count: HostFacts.countVirtualMachineProcesses(), limit: HostReport.macOSGuestLimit),
+            newestMacOS: newest, newestMacOSError: newestError)
         if options.json {
             try Output.json(summary)
             return
@@ -105,6 +135,9 @@ struct StatusCommand: ParsableCommand {
             if entry.updating {
                 line += "  being updated"
             }
+            if let update = entry.macOSUpdate {
+                line += "  macOS \(update.version) available"
+            }
             lines.append(line)
         }
         lines.append(summary.boxes.isEmpty ? "Boxes: none" : "Boxes:")
@@ -141,6 +174,14 @@ struct StatusCommand: ParsableCommand {
             for job in summary.jobs {
                 lines += JobCommand.List.lines(job).map { "  " + $0 }
             }
+        }
+        if let newest = summary.newestMacOS {
+            let behind = summary.images.filter { $0.macOSUpdate != nil }.map(\.record.name)
+            var line = "Newest macOS: \(newest.version) (\(newest.build)), asked \(Output.time(newest.checkedAt))"
+            if !behind.isEmpty {
+                line += "; install with `agent-vm image update \(behind.joined(separator: " ")) --macos` (about 15 minutes\(behind.count > 1 ? " each" : ""))"
+            }
+            lines.append(line)
         }
         let limit = summary.runningVMs.limit
         if let count = summary.runningVMs.count {

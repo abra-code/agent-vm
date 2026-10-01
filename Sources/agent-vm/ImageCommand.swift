@@ -526,6 +526,8 @@ struct ImageCommand: ParsableCommand {
             var addedOverBase: Added?
             /// A command is changing the image now (update, update-guest, setup).
             var updating = false
+            /// A newer macOS the image can take, by what `status --check-updates` last learned.
+            var macOSUpdate: NewestMacOS.Update?
 
             private enum Keys: String, CodingKey {
                 case path
@@ -533,6 +535,7 @@ struct ImageCommand: ParsableCommand {
                 case addedOverBase
                 case needs
                 case updating
+                case macOSUpdate
             }
 
             func encode(to encoder: Encoder) throws {
@@ -545,6 +548,7 @@ struct ImageCommand: ParsableCommand {
                 if updating {
                     try container.encode(true, forKey: .updating)
                 }
+                try container.encodeIfPresent(macOSUpdate, forKey: .macOSUpdate)
             }
 
             /// The entry for a person: a line with the essentials, the folder (and with sizes,
@@ -592,6 +596,9 @@ struct ImageCommand: ParsableCommand {
                         lines.append("    Full Disk Access for agent-vm-guest is not checked\(record.fullDiskAccess == nil ? "" : " for its current version"); `agent-vm image setup \(record.name)`")
                     }
                 }
+                if let macOSUpdate {
+                    lines.append("    macOS \(macOSUpdate.version) (\(macOSUpdate.build)) is available; `agent-vm image update \(record.name) --macos` installs it (about 15 minutes)")
+                }
                 if let failure = record.failure {
                     lines.append("    failed: \(failure)")
                 }
@@ -623,7 +630,8 @@ struct ImageCommand: ParsableCommand {
                 FileHandle.standardError.write(Data("warning: \(problem)\n".utf8))
             }
             let store = options.imageStore
-            let entries = images.map { Entry(record: $0.record, path: $0.directory.path, updating: $0.record.state == .ready && store.isBeingChanged($0)) }
+            let newest = NewestMacOS.read(root: store.root)
+            let entries = images.map { Entry(record: $0.record, path: $0.directory.path, updating: $0.record.state == .ready && store.isBeingChanged($0), macOSUpdate: newest?.update(for: $0.record)) }
             if options.json {
                 try Output.json(entries)
                 return
@@ -667,7 +675,8 @@ struct ImageCommand: ParsableCommand {
             }
             let entry = List.Entry(record: image.record, path: image.directory.path,
                                    diskUsage: DiskUsage.of(image.directory), addedOverBase: added,
-                                   updating: image.record.state == .ready && options.imageStore.isBeingChanged(image))
+                                   updating: image.record.state == .ready && options.imageStore.isBeingChanged(image),
+                                   macOSUpdate: NewestMacOS.read(root: options.imageStore.root)?.update(for: image.record))
             if options.json {
                 try Output.json(entry)
                 return

@@ -176,6 +176,9 @@ No. A derived image is a clone made at `image create --from`. To pass a change o
 **Can I change a box's CPUs or memory, or rename a box or an image?**
 Not after creation. For a box, make it again with `box create --cpus N --memory-gb N`. The network is the exception: `box network` changes the rules at once, and the mode while the box is stopped.
 
+**How do I know that a macOS update exists?**
+`agent-vm status --check-updates` asks Apple for the newest macOS and names the images that are behind it, with the command that installs it. The answer is kept: until you ask again, plain `status` and `image list` repeat it without a network. Nothing is checked or installed by itself.
+
 **How do I update macOS in an image?**
 `agent-vm image update <image> --macos` installs the update Apple offers within the same major version, unattended, in about 15 minutes; then recreate the image's boxes. For a new major version, build a new image from its restore image (`image fetch-ipsw`, `image create --ipsw latest` with the same recipes).
 

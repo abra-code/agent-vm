@@ -211,6 +211,49 @@ import Testing
         #expect(event.jsonLine.contains("\"expectedSeconds\":85"))
     }
 
+    @Test func anImageBehindTheNewestMacOSIsNamed() throws {
+        let asked = Date(timeIntervalSince1970: 1_800_100_000)
+        let newest = NewestMacOS(version: "27.0.1", build: "26A434", checkedAt: asked)
+        var record = ImageStoreTests.record("tools", state: .ready)
+        record.macOSVersion = "27.0"
+        record.macOSBuild = "26A428"
+        #expect(newest.update(for: record) == NewestMacOS.Update(version: "27.0.1", build: "26A434", checkedAt: asked))
+        // The image asked Apple itself since: softwareupdate decides, and it offered nothing.
+        record.macOSCheckedAt = asked.addingTimeInterval(60)
+        #expect(newest.update(for: record) == nil)
+        record.macOSCheckedAt = asked.addingTimeInterval(-60)
+        #expect(newest.update(for: record) != nil)
+        // Up to date, ahead, another major version, or not ready: nothing to say.
+        record.macOSVersion = "27.0.1"
+        record.macOSBuild = "26A434"
+        #expect(newest.update(for: record) == nil)
+        record.macOSVersion = "27.1"
+        record.macOSBuild = "26B50"
+        #expect(newest.update(for: record) == nil)
+        record.macOSVersion = "26.4"
+        record.macOSBuild = "25E200"
+        #expect(newest.update(for: record) == nil)
+        #expect(NewestMacOS(version: "28.0", build: "27A300", checkedAt: asked).update(for: record) == nil)
+        record.macOSVersion = "27.0"
+        record.macOSBuild = "26A428"
+        record.state = .failed
+        #expect(newest.update(for: record) == nil)
+        // The same version built again is an update; an older build of it is not.
+        record.state = .ready
+        record.macOSVersion = "27.0.1"
+        record.macOSBuild = "26A430"
+        #expect(newest.update(for: record)?.build == "26A434")
+        record.macOSBuild = "26A1000"
+        #expect(newest.update(for: record) == nil)
+        // Kept in the store, and read back; a damaged file reads as never asked.
+        let scratch = try Scratch()
+        #expect(NewestMacOS.read(root: scratch.root) == nil)
+        try newest.write(root: scratch.root)
+        #expect(NewestMacOS.read(root: scratch.root) == newest)
+        try Data("{".utf8).write(to: NewestMacOS.file(root: scratch.root))
+        #expect(NewestMacOS.read(root: scratch.root) == nil)
+    }
+
     /// A box made after a killed update gets the finished image, not half of it.
     @Test func aNewBoxFinishesADecidedUpdateFirst() throws {
         let fixture = try BoxScratch()

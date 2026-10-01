@@ -366,6 +366,40 @@ test_status_summarizes_without_measuring_or_collecting() {
     assert_missing "$AGENT_VM_HOME/Jobs" || return 1
 }
 
+# status and image list name an image behind the newest macOS Apple was last asked about, from
+# the answer kept in the store: no network, nothing booted.
+test_status_names_a_macos_update_from_the_kept_answer() {
+    fake_image dev
+    fake_image broken failed
+    run_avm status
+    assert_status 0 || return 1
+    assert_not_contains "$OUT" "Newest macOS" "status before Apple was asked" || return 1
+    /bin/mkdir -p "$AGENT_VM_HOME/Cache"
+    printf '{"version":"27.0.1","build":"26A434","checkedAt":"2026-10-01T08:00:00Z"}' > "$AGENT_VM_HOME/Cache/newest-macos.json"
+    run_avm status
+    assert_status 0 || return 1
+    assert_out_contains "Full Disk Access  macOS 27.0.1 available" || return 1
+    assert_out_contains "Newest macOS: 27.0.1 (26A434), asked " || return 1
+    # Only the ready image is named in the command.
+    assert_out_contains "agent-vm image update dev --macos" || return 1
+    run_avm status --json
+    assert_json newestMacOS.build 26A434 || return 1
+    assert_json images.1.macOSUpdate.version 27.0.1 || return 1
+    assert_not_contains "$OUT" "newestMacOSError" "status --json" || return 1
+    run_avm image list
+    assert_out_contains "macOS 27.0.1 (26A434) is available; \`agent-vm image update dev --macos\` installs it" || return 1
+    run_avm image info dev --json
+    assert_json macOSUpdate.build 26A434 || return 1
+    # The image asked Apple itself later and was offered nothing: no hint.
+    /usr/bin/sed -i '' -e 's/"macOSBuild" : "26A428"/"macOSBuild" : "26A428", "macOSCheckedAt" : "2026-10-01T09:00:00Z"/' "$AGENT_VM_HOME/Images/dev/image.json"
+    run_avm status
+    assert_not_contains "$OUT" "available" "status after the image's own check" || return 1
+    assert_not_contains "$OUT" "image update" "status after the image's own check" || return 1
+    assert_out_contains "Newest macOS: 27.0.1 (26A434)" || return 1
+    run_avm image list --json
+    assert_not_contains "$OUT" "macOSUpdate" "image list --json" || return 1
+}
+
 test_box_execlog_needs_a_box() {
     run_avm box execlog nosuch
     assert_status 1 || return 1
