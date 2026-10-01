@@ -33,6 +33,8 @@ enum ConnectError: Error, CustomStringConvertible {
     case nothingToOffer
     /// No VM slot for the start; the running boxes are named.
     case noFreeSlot(String)
+    /// --refresh: the image's tools update failed; the image is as it was.
+    case refreshFailed(image: String, message: String, status: Int32)
     /// The image's guest daemon cannot run a terminal session.
     case imageNeedsUpdate(String)
     /// A named temporary box that is not running.
@@ -77,6 +79,13 @@ enum ConnectError: Error, CustomStringConvertible {
             return "no boxes and no ready images; build an image first (agent-vm image create, see the README)"
         case let .noFreeSlot(message):
             return message
+        case let .refreshFailed(image, _, status) where status > 128:
+            // A cancel: the update said so itself.
+            return "the tools update of image \(image) was canceled: the image is as it was, and no box was made"
+        case let .refreshFailed(image, message, _):
+            // The update's own words (they begin with "Error:"), then what it means here.
+            let said = message.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "\(said.isEmpty ? "the tools update of image \(image) failed" : said)\nimage \(image) is as it was, and no box was made; without --refresh the box is made from it as it is"
         case let .imageNeedsUpdate(image):
             return "image \(image)'s agent-vm-guest cannot run terminal sessions; update it with agent-vm image update \(image) --guest"
         case let .temporaryNotRunning(box, name):
@@ -105,6 +114,9 @@ enum ConnectError: Error, CustomStringConvertible {
             return 130
         case .noFreeSlot:
             return AgentVMError.noFreeVMSlotStatus
+        case let .refreshFailed(_, _, status):
+            // A cancel of the update (Control-C reaches it too) ends connect the same way.
+            return status > 128 ? status : 1
         case let .interrupted(signal):
             return 128 + signal
         case let .failed(error):
@@ -134,6 +146,8 @@ struct ConnectRunner {
         var allow: [String]
         var cpus: Int?
         var memoryBytes: UInt64?
+        /// Update the image's tools first (--refresh).
+        var refresh = false
     }
 
     /// Where the session runs.
@@ -296,7 +310,8 @@ struct ConnectRunner {
                 }
                 let request = ConnectRequest(target: target, launch: launch, project: project, readOnly: options.readOnly,
                                              snapshot: !options.noSnapshot, secrets: options.secrets, env: options.env,
-                                             extraAllow: newBox?.allow ?? [], cpus: newBox?.cpus, memoryBytes: newBox?.memoryBytes)
+                                             extraAllow: newBox?.allow ?? [], cpus: newBox?.cpus, memoryBytes: newBox?.memoryBytes,
+                                             refresh: newBox?.refresh ?? false)
                 var (facts, secretEntries) = try self.facts(for: launch, box: existing, running: runningBox != nil, probed: probed)
                 facts.temporaryName = temporaryName
                 let steps = ConnectPlanner.steps(for: request, facts: facts)
@@ -506,6 +521,28 @@ struct ConnectRunner {
         do {
             for step in steps {
                 switch step {
+                case let .refresh(image):
+                    // Asked for by the person, so a failure stops here: the box they wanted
+                    // is one with the tools updated.
+                    // Signals are held meanwhile and passed on to the update (RefreshProgress),
+                    // which shuts its virtual machine down and says so. Were connect to exit
+                    // first, the update's next line would find its pipe closed and SIGPIPE
+                    // would end it halfway.
+                    let executable = try AskpassEntry.executablePath()
+                    let (result, signal) = SignalHold.around {
+                        try RefreshProgress.run(image: image, executable: executable, terminal: terminal)
+                    }
+                    let ended = try result.get()
+                    if ended.status == AgentVMError.noFreeVMSlotStatus {
+                        throw ConnectError.noFreeSlot(noSlotMessage())
+                    }
+                    guard ended.status == 0 else {
+                        throw ConnectError.refreshFailed(image: image, message: ended.error, status: ended.status)
+                    }
+                    if let signal {
+                        // The update was done before the signal could stop it: no box.
+                        return 128 + signal
+                    }
                 case let .create(name, image, allow, isTemporary, cpus, memoryBytes):
                     print(isTemporary ? "Creating box \(name) from \(image) (temporary: deleted when you leave)" : "Creating box \(name) from \(image)")
                     let golden = try imageStore.image(named: image)

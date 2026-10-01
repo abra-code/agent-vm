@@ -298,6 +298,13 @@ test_connect_new_dry_run() {
     assert_out_contains "  start box $_name, stopping it when process " || return 1
     assert_out_contains "  stop and delete box $_name" || return 1
     # Kept: no owner, no stop.
+    # --refresh: the image's tools first; nothing of the kind without it.
+    assert_not_contains "$OUT" "update the tools" "a plan without --refresh" || return 1
+    run_avm_link new dev --shell --dry-run --no-project --refresh
+    assert_status 0 || return 1
+    assert_out_contains "  update the tools of image dev: agent-vm image update dev --tools" || return 1
+    run_avm_link dev1 --refresh --shell --dry-run
+    assert_status 64 || return 1
     run_avm_link new dev --name k1 --shell --dry-run --project "$SCRATCH/project" --cpus 2 --memory-gb 4
     assert_status 0 || return 1
     assert_out_contains "  create box k1 from image dev, 2 CPUs, 4 GB" || return 1

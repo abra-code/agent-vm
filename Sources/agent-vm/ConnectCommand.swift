@@ -43,6 +43,7 @@ enum ConnectHelp {
             (" --box <box>", "a box named like a subcommand"),
             (" new <image>", "a new temporary box from the image"),
             (" new <image> --name <box>", "a new box, kept under that name"),
+            (" new <image> --refresh", "update the image's tools first"),
             (" list [--json]", "the boxes, the remembered choice"),
             (" agents [--json]", "the agents, and their secrets"),
             (" ... --dry-run", "print the steps, take none"),
@@ -179,7 +180,11 @@ enum Connect {
                 A temporary box is named avm-<image>-<6 hex digits>; it stops when the session \
                 ends (or when this command exits, however it exits) and is deleted. It gets the \
                 agent's hosts, plus --allow. macOS runs at most two macOS virtual machines, and \
-                a new box needs one of them: when none is free this exits 75.
+                a new box needs one of them: when none is free this exits 75. --refresh updates \
+                the image's tools before the box is made (the update steps of the image's \
+                recipes, such as the newest agents; never macOS), showing each step and the \
+                time; if the update fails, the image is as it was and no box is made. Without \
+                it nothing is updated: the box gets the image as it is.
                 """)
 
         @Argument(help: "The image to make the box from.", completion: ConnectCompletion.images)
@@ -199,6 +204,9 @@ enum Connect {
 
         @Option(name: .customLong("memory-gb"), help: "Memory in GB (default: the image's).")
         var memoryGB: Int?
+
+        @Flag(name: .long, help: "Update the image's tools first (agent-vm image update <image> --tools: the newest agents; a minute or two), then make the box from it.")
+        var refresh = false
 
         @OptionGroup var options: ConnectOptions
 
@@ -221,7 +229,7 @@ enum Connect {
         func run() throws {
             var runner = ConnectRunner(options: options, root: SessionStore.defaultRoot(), invokedAs: Main.invokedName)
             runner.newBox = ConnectRunner.NewBox(image: image, name: name, allow: allow, cpus: cpus,
-                                                 memoryBytes: memoryGB.map { UInt64($0) << 30 })
+                                                 memoryBytes: memoryGB.map { UInt64($0) << 30 }, refresh: refresh)
             runner.run(boxName: nil)
         }
     }

@@ -7,7 +7,7 @@
 ```
 avm [to] [<box>] [--box <box>] [--agent <id> | --shell | -- <command> ...] [--project <folder> | --no-project]
     [--read-only] [--no-snapshot] [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
-avm new <image> [--temp | --name <box>] [--allow RULE ...] [--cpus N] [--memory-gb N]
+avm new <image> [--temp | --name <box>] [--refresh] [--allow RULE ...] [--cpus N] [--memory-gb N]
     [the same --agent, --shell, -- <command>, sharing and --dry-run options]
 avm list [--json] [--project <folder>]
 avm agents [--json]
@@ -64,6 +64,22 @@ avm would:
 - **Rules:** a new box's network is an allowlist of the agent's hosts (none for a shell or a command) plus `--allow`'s; nothing is asked. `--cpus N` and `--memory-gb N` set its size (default: the image's).
 - **Two VMs at most:** macOS runs at most two macOS virtual machines at once, in any application, and starting a box needs one of them. When none is free, avm says which of your boxes run (and whether a program uses one, or it is another avm's temporary box) and how to stop one, deletes the temporary box it just made, and exits 75; when you chose in the list, it shows the list again instead, where a running box can be joined without a slot.
 - If the start fails otherwise, a temporary box that never ran is deleted; a kept one stays (`avm <box>` tries again).
+
+## A box with the newest tools
+
+```sh
+avm new tools --refresh          # update the image's tools, then a temporary box from it
+```
+
+`--refresh` runs `agent-vm image update <image> --tools` before the box is made: the update steps of the image's recipes, such as the newest agents (a minute or two; never macOS, which takes a quarter of an hour and is updated with `agent-vm image update <image>`). One line shows what it is doing and for how long, with how long it took last time:
+
+```
+Updating the tools of tools  41 s (usually about 85 s): recipe 2 of 3, [1/1] Agent command-line tools, the newest
+```
+
+Control-C during the update cancels it: the update shuts its virtual machine down, the image is as it was, no box is made, and avm exits 130 once that is done (a few seconds).
+
+avm never updates anything unasked: without `--refresh` the box gets the image as it is. If the update fails, the image stays as it was, no box is made, and avm says why (exit status 1; 75 when no virtual machine slot was free for the update). Boxes made from the image earlier say "needs recreate" afterwards. A temporary box is new every time; a kept one is not, which is one more reason to keep boxes only for a short while.
 
 ## Agents
 

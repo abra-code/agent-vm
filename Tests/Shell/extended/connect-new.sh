@@ -30,6 +30,73 @@ test_connect_new_temporary_box_lives_as_long_as_the_session() {
     assert_err_contains "no box $_name" || return 1
 }
 
+# --refresh updates the image's tools (its recipes' update steps) before the box is made: the
+# box holds what the update wrote, the image's revision moved, and each step was shown.
+test_connect_new_refresh_updates_the_image_first() {
+    require_image || return $(( $? == 1 ? 0 : 1 ))
+    avm_link || return 1
+    local _image="shtest-refresh-$$"
+    "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
+    cleanup_on_exit image "$_image"
+    /bin/mkdir -p "$SCRATCH/recipe"
+    printf '%s\n' '{
+      "version": 1,
+      "description": "refresh test",
+      "steps": [{ "name": "note", "run": "echo built > ~/shtest-refresh.txt" }],
+      "update": [{ "name": "note again", "run": "echo refreshed >> ~/shtest-refresh.txt" }],
+      "checks": ["wc -l < ~/shtest-refresh.txt"]
+    }' > "$SCRATCH/recipe/recipe.json"
+    run_avm image create "$_image" --from "$TEST_IMAGE" --recipe "$SCRATCH/recipe/recipe.json"
+    assert_status 0 || return 1
+
+    on_terminal ':' "$SCRATCH/avm" new "$_image" --refresh --no-project -- /bin/cat shtest-refresh.txt
+    printf '%s\n' "$OUT" > "$SCRATCH/avm.out"
+    local _name
+    _name="$(created_box "$SCRATCH/avm.out")"
+    [ -n "$_name" ] && cleanup_on_exit box "$_name"
+    assert_status 0 || return 1
+    assert_out_contains "Updated the tools of $_image (" || return 1
+    assert_out_contains "refreshed" || return 1
+    # The update came before the box.
+    local _order
+    _order="$(/usr/bin/grep -n -e "Updated the tools of" -e "Creating box" "$SCRATCH/avm.out" | /usr/bin/head -n 1)"
+    assert_contains "$_order" "Updated the tools of" "the first of the two lines" || return 1
+    run_avm image info "$_image" --json
+    assert_json revision "1" || return 1
+    "$AGENT_VM" image delete "$_image"
+}
+
+# Control-C during --refresh cancels the update cleanly: its virtual machine is shut down, the
+# image is as it was, and no box is made.
+test_connect_new_refresh_is_canceled_cleanly() {
+    require_image || return $(( $? == 1 ? 0 : 1 ))
+    avm_link || return 1
+    local _image="shtest-refreshc-$$"
+    "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
+    cleanup_on_exit image "$_image"
+    /bin/mkdir -p "$SCRATCH/recipe"
+    printf '%s\n' '{"version": 1, "steps": [{"run": "true"}], "update": [{"name": "slow", "run": "sleep 120"}]}' > "$SCRATCH/recipe/recipe.json"
+    run_avm image create "$_image" --from "$TEST_IMAGE" --recipe "$SCRATCH/recipe/recipe.json"
+    assert_status 0 || return 1
+
+    # The terminal's interrupt character, once the update is in its slow step.
+    on_terminal '/bin/sleep 45; printf "\003"; /bin/sleep 30' "$SCRATCH/avm" new "$_image" --refresh --no-project -- /usr/bin/true
+    assert_status 130 || return 1
+    assert_out_contains "Updating the tools of $_image was canceled" || return 1
+    assert_out_contains "the image is as it was, and no box was made" || return 1
+    assert_not_contains "$OUT" "Creating box" "the output" || return 1
+    run_avm image info "$_image" --json
+    assert_json state "ready" || return 1
+    assert_json revision "" || return 1
+    local _folder
+    _folder="$(json_value path)"
+    assert_missing "$_folder/Update" || return 1
+    # The update's virtual machine is gone, not left running.
+    run_avm image update "$_image" --guest
+    assert_status 0 || return 1
+    "$AGENT_VM" image delete "$_image"
+}
+
 test_connect_new_kept_box_stays() {
     require_image || return $(( $? == 1 ? 0 : 1 ))
     avm_link || return 1

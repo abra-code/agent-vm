@@ -205,6 +205,14 @@ import Testing
         #expect(Array(steps[(run + 1)...]) == [.stopAndDelete(box: name), .report(project: "/p")])
         #expect(steps[0].text == "create box \(name) from image dev-agents (temporary), allowing pack:anthropic, github.com")
         #expect(ConnectStep.stopAndDelete(box: name).text == "stop and delete box \(name)")
+        // --refresh: the image's tools are updated before the box is made, and only then.
+        var refreshed = request
+        refreshed.refresh = true
+        let withRefresh = ConnectPlanner.steps(for: refreshed, facts: ConnectFacts(boxRunning: false, setSecrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
+                                                                                   ownPid: pid, temporaryName: name))
+        #expect(withRefresh.first == .refresh(image: "dev-agents"))
+        #expect(Array(withRefresh.dropFirst()) == steps)
+        #expect(ConnectStep.refresh(image: "dev").text == "update the tools of image dev: agent-vm image update dev --tools")
         // Without an agent: --allow's rules only.
         let shell = ConnectPlanner.steps(for: ConnectRequest(target: .newTemporary(image: "dev"), launch: .shell, project: nil),
                                          facts: ConnectFacts(boxRunning: false, ownPid: pid, temporaryName: "avm-dev-000001"))

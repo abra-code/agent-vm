@@ -49,9 +49,13 @@ public struct ConnectRequest: Equatable, Sendable {
     /// A new box's CPUs and memory; nil: the image's.
     public var cpus: Int?
     public var memoryBytes: UInt64?
+    /// Update the image's tools before a new box is made from it (--refresh).
+    public var refresh: Bool
 
     public init(target: ConnectTarget, launch: ConnectLaunch, project: String?, readOnly: Bool = false, snapshot: Bool = false,
-                secrets: [String] = [], env: [String] = [], extraAllow: [String] = [], cpus: Int? = nil, memoryBytes: UInt64? = nil) {
+                secrets: [String] = [], env: [String] = [], extraAllow: [String] = [], cpus: Int? = nil, memoryBytes: UInt64? = nil,
+                refresh: Bool = false) {
+        self.refresh = refresh
         self.target = target
         self.launch = launch
         self.project = project
@@ -119,6 +123,9 @@ public enum ConnectStep: Equatable, Sendable {
     /// Report what changed in the folder since the snapshot, then keep it or undo it.
     case report(project: String)
 
+    /// The tools update of an image a new box is about to be made from, when asked for.
+    case refresh(image: String)
+
     /// A question asked before the other steps (they are planned again with its answer).
     public var isQuestion: Bool {
         switch self {
@@ -148,6 +155,8 @@ public enum ConnectStep: Equatable, Sendable {
                 text += ", allowing " + allow.joined(separator: ", ")
             }
             return text
+        case let .refresh(image):
+            return "update the tools of image \(image): agent-vm image update \(image) --tools"
         case let .stopAndDelete(box):
             return "stop and delete box \(box)"
         case let .probe(_, command):
@@ -220,6 +229,9 @@ public enum ConnectPlanner {
             env = AgentCatalog.envArguments(for: agent) + env
         }
         if let image {
+            if request.refresh {
+                steps.append(.refresh(image: image))
+            }
             steps.append(.create(box: name, image: image, allow: allow, temporary: temporary, cpus: request.cpus,
                                  memoryBytes: request.memoryBytes))
             // Only a temporary box connect made gets connect as its owner: it stops when this
