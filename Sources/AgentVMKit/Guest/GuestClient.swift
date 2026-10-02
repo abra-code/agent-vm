@@ -113,11 +113,16 @@ public final class ExecSession: @unchecked Sendable {
         channel = FrameChannel(descriptor: descriptor)
         try channel.sendRequest(request)
         let response = try channel.receive(.response, as: GuestResponse.self)
-        guard response.ok, let pid = response.pid else {
+        guard response.ok else {
             // The reason is the guest's text, and is printed: one line of it. The status is what
             // the client exits with: 126 unless it is one a shell could give.
             let status = response.status.flatMap { (1...255).contains($0) ? $0 : nil } ?? 126
             throw ExecRefusal(message: Printable.line(response.error ?? "no reason given", limit: 500), status: status)
+        }
+        // Kept in the exec log and shown as the program's: a process id, never 0 or a negative
+        // number (which name process groups).
+        guard let pid = response.pid, pid > 0 else {
+            throw GuestProtocolError.malformed("the guest started a program without saying which process it is")
         }
         self.pid = pid
     }

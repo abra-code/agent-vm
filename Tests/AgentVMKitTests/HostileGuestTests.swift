@@ -197,6 +197,177 @@ private final class FakeGuest {
         #expect(notices.dropFirst().allSatisfy { $0.kind == .keychainPrompt })
     }
 
+    /// Frames only a host sends, and a second answer: none is taken as output or skipped.
+    @Test(arguments: [FrameType.request, .response, .stdin, .stdinEnd, .signal, .resize])
+    func aFrameOnlyAHostSendsEndsTheRun(type: FrameType) throws {
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, FakeGuest.accepted))
+            try? channel.send(Frame(.stdout, Array("before".utf8)))
+            try? channel.send(Frame(type, FakeGuest.accepted))
+            try? channel.send(Frame(.stdout, Array("after".utf8)))
+            try? channel.send(Frame(.exit, Array(#"{"status":0}"#.utf8)))
+        }
+        let session = try ExecSession(descriptor: guest.host, request: GuestRequest(op: .exec, argv: ["x"]))
+        var output = ""
+        #expect(throws: GuestProtocolError.malformed("unexpected \(type) frame from the guest")) {
+            _ = try session.run(stdout: { output += String(decoding: $0, as: UTF8.self) }, stderr: { _ in })
+        }
+        #expect(output == "before")
+    }
+
+    /// The first exit report ends the run: what a guest sends after it is never read.
+    @Test func nothingIsReadAfterTheExitReport() throws {
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, FakeGuest.accepted))
+            try? channel.send(Frame(.exit, Array(#"{"status":3}"#.utf8)))
+            try? channel.send(Frame(.stdout, Array("late".utf8)))
+            try? channel.send(Frame(.notice, Array(#"{"kind":"keychain-prompt","service":"keychain","program":"/bin/ls","pid":7}"#.utf8)))
+            try? channel.send(Frame(.exit, Array(#"{"status":0}"#.utf8)))
+        }
+        let session = try ExecSession(descriptor: guest.host, request: GuestRequest(op: .exec, argv: ["x"]))
+        var output = 0
+        var notices = 0
+        let report = try session.run(stdout: { output += $0.count }, stderr: { output += $0.count }, notice: { _ in notices += 1 })
+        #expect(report == ExitReport(status: 3))
+        #expect(output == 0 && notices == 0)
+    }
+
+    /// A notice that is empty, not a notice, or as large as a frame can be costs nothing and
+    /// does not end the run; the real one after it still arrives.
+    @Test func noticesThatAreNotNoticesAreDropped() throws {
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, FakeGuest.accepted))
+            try? channel.send(Frame(.notice))
+            try? channel.send(Frame(.notice, Array("[".utf8)))
+            try? channel.send(Frame(.notice, [UInt8](repeating: 0x5b, count: GuestProtocol.maxPayload)))
+            let large = String(repeating: "p", count: GuestProtocol.maxPayload - 200)
+            try? channel.send(Frame(.notice, Array(#"{"kind":"permission-prompt","service":"kTCCServiceCamera","program":"\#(large)","pid":7}"#.utf8)))
+            try? channel.send(Frame(.notice, Array(#"{"kind":"something-new","service":"x","pid":7}"#.utf8)))
+            try? channel.send(Frame(.notice, Array(#"{"kind":"permission-prompt","service":"kTCCServiceCamera","program":"/bin/ls","pid":7}"#.utf8)))
+            try? channel.send(Frame(.exit, Array(#"{"status":0}"#.utf8)))
+        }
+        let session = try ExecSession(descriptor: guest.host, request: GuestRequest(op: .exec, argv: ["x"]))
+        var notices: [GuestNotice] = []
+        let report = try session.run(stdout: { _ in }, stderr: { _ in }, notice: { notices.append($0) })
+        #expect(report == ExitReport(status: 0))
+        #expect(notices == [GuestNotice(kind: .permissionPrompt, service: "kTCCServiceCamera", program: "/bin/ls", pid: 7)])
+    }
+
+    /// The largest answer a frame can hold, made to cost a JSON reader the most: refused, and
+    /// the caller is still there to say so.
+    @Test(arguments: ["[", #"{"a":"#, #"{"v":1,"ok":true,"features":"#])
+    func anAnswerOfNothingButNestingIsRefused(unit: String) throws {
+        let answer = Array(String(repeating: unit, count: GuestProtocol.maxPayload / unit.utf8.count).utf8)
+        for request in ["hello", "exec", "time-sync", "shutdown"] {
+            let guest = try FakeGuest { channel in
+                try? channel.send(Frame(.response, answer))
+            }
+            #expect(throws: GuestProtocolError.self, "\(request)") {
+                switch request {
+                case "hello": _ = try GuestClient.hello(guest.host)
+                case "exec": _ = try ExecSession(descriptor: guest.host, request: GuestRequest(op: .exec, argv: ["x"]))
+                case "time-sync": _ = try GuestClient.syncTime(guest.host)
+                default: try GuestClient.shutdown(guest.host)
+                }
+            }
+        }
+    }
+
+    @Test(arguments: [
+        #"{"v":1,"ok":true,"version":"1","features":"terminal"}"#,
+        #"{"v":1,"ok":true,"version":"1","features":{"terminal":true}}"#,
+        #"{"v":1,"ok":true,"version":"1","features":[1,2]}"#,
+        #"{"v":1,"ok":true,"version":7}"#,
+        #"{"v":1,"ok":"yes","version":"1"}"#,
+    ])
+    func aHelloOfTheWrongShapeIsRefused(answer: String) throws {
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, Array(answer.utf8)))
+        }
+        #expect(throws: GuestProtocolError.self) { try GuestClient.hello(guest.host) }
+    }
+
+    /// A started program is a process: the id goes into the exec log and names what a prompt
+    /// stops, so 0 and negative numbers (process groups) are not taken.
+    @Test(arguments: [
+        #"{"v":1,"ok":true}"#, #"{"v":1,"ok":true,"pid":0}"#, #"{"v":1,"ok":true,"pid":-1}"#,
+        #"{"v":1,"ok":true,"pid":-2147483648}"#, #"{"v":1,"ok":true,"pid":4294967296}"#, #"{"v":1,"ok":true,"pid":"7"}"#,
+    ])
+    func aProgramStartedWithoutAProcessIsRefused(answer: String) throws {
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, Array(answer.utf8)))
+        }
+        #expect(throws: GuestProtocolError.self) {
+            _ = try ExecSession(descriptor: guest.host, request: GuestRequest(op: .exec, argv: ["x"]))
+        }
+    }
+
+    /// `box send` prints the name the box says the item got: only a file name is one.
+    static let notNames = ["", "\n", "a\nb", "a\u{1b}[2Kb", "a\rb", "a/b", "..", ".", "\u{9b}2J", String(repeating: "n", count: 256),
+                           String(repeating: "n", count: 1 << 20)]
+
+    // By index: a megabyte of name would be printed with every result.
+    @Test(arguments: notNames.indices)
+    func aSentItemsNameIsAFileNameOrNothing(index: Int) throws {
+        let name = Self.notNames[index]
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("hostile-send-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("x.txt")
+        try Data("x".utf8).write(to: file)
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, FakeGuest.accepted))
+            // The archive, to its end, as the real script reads it.
+            while let frame = try? channel.receive(), frame.type != .stdinEnd {}
+            var rest = Array(name.utf8)[...]
+            while !rest.isEmpty {
+                try? channel.send(Frame(.stdout, Array(rest.prefix(GuestProtocol.maxPayload))))
+                rest = rest.dropFirst(GuestProtocol.maxPayload)
+            }
+            try? channel.send(Frame(.exit, Array(#"{"status":0}"#.utf8)))
+        }
+        #expect(throws: GuestSend.Failure(message: "the box did not say where x.txt went")) {
+            _ = try GuestSend(source: file).run(descriptor: guest.host) { _ in }
+        }
+    }
+
+    @Test func aSentItemsRealNameIsReturned() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("hostile-send-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("x.txt")
+        try Data("x".utf8).write(to: file)
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, FakeGuest.accepted))
+            while let frame = try? channel.receive(), frame.type != .stdinEnd {}
+            try? channel.send(Frame(.stdout, Array("x 2.txt\n".utf8)))
+            try? channel.send(Frame(.exit, Array(#"{"status":0}"#.utf8)))
+        }
+        #expect(try GuestSend(source: file).run(descriptor: guest.host) { _ in } == "x 2.txt")
+    }
+
+    /// What a failed unpack printed is shown as lines of text, nothing else.
+    @Test func aFailedSendsReasonIsPrintable() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("hostile-send-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("x.txt")
+        try Data("x".utf8).write(to: file)
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, FakeGuest.accepted))
+            while let frame = try? channel.receive(), frame.type != .stdinEnd {}
+            try? channel.send(Frame(.stderr, Array("no\u{1b}]52;c;eA==\u{07}\r\u{1b}[2Kroom\u{7f}\u{9b}2J\n".utf8)))
+            try? channel.send(Frame(.exit, Array(#"{"status":1}"#.utf8)))
+        }
+        do {
+            _ = try GuestSend(source: file).run(descriptor: guest.host) { _ in }
+            Issue.record("the send succeeded")
+        } catch let failure as GuestSend.Failure {
+            #expect(failure.message.hasPrefix("the box could not unpack x.txt: no"), "\(failure)")
+            #expect(failure.message.unicodeScalars.allSatisfy { $0 == "\n" || ($0.value >= 0x20 && $0.value != 0x7f && !(0x80...0x9f).contains($0.value)) })
+        }
+    }
+
     @Test func aDeadlineNotReachedChangesNothing() throws {
         let guest = try FakeGuest { channel in
             try? channel.send(Frame(.response, Array(#"{"v":1,"ok":true,"version":"9.9.9"}"#.utf8)))

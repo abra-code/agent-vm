@@ -52,7 +52,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - `ok`: false with `error` (a message for a person) when the request is refused; the guest then closes the connection.
 - `version`, `osBuild`: hello only (agent-vm-guest's version, the guest's macOS build). Each is 1 to 32 ASCII letters, digits, `.`, `+`, `-` and `_`; so is every feature name, of which there are at most 64. A host refuses any other hello (since 0.5.10): it keeps and shows these.
 - `features`: hello only, what the daemon supports beyond this document's base (see Versioning). Today: `terminal`, `prompt-notices`, `wallpaper`, `time-sync`, `user-session` and `terminal-pixels`.
-- `pid`: exec only, the started process.
+- `pid`: exec only, the started process: a positive number. A host treats an accepted exec without one as a protocol error (since 0.6.3).
 - `status`: a refused exec only, the status a shell would give: 127 when the program is not found, 126 when it cannot be run (unknown account, missing folder). A host takes anything outside 1 to 255 as 126, and shows `error` as one line of at most 500 characters.
 
 ## Operations

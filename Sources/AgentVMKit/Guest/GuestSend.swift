@@ -248,7 +248,8 @@ public final class GuestSend: @unchecked Sendable {
         let received = output.text
         // A file name, as the box says it: no folder, no line end or control character, and no
         // longer than a name can be.
-        guard !received.isEmpty, !received.contains("/"), received.utf8.count <= 255, Printable.line(received) == received else {
+        guard !received.isEmpty, received != ".", received != "..", !received.contains("/"), received.utf8.count <= 255,
+              Printable.line(received) == received else {
             throw Failure(message: "the box did not say where \(name) went")
         }
         return received
