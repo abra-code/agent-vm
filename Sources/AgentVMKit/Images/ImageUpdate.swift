@@ -199,6 +199,10 @@ extension ImageBuilder {
         }
         try Self.checkHost(HostFacts.current(storeRoot: store.root),
                            minimumFree: options.macOS ? Self.minimumFreeBytesForMacOSUpdate : Self.minimumFreeBytesForToolsUpdate)
+        // A macOS update is given the account's password, minutes in.
+        if options.macOS {
+            try image.requireAccountPassword(keychain: store.passwords)
+        }
         // Read before anything boots: a recipe that no longer loads, or a --set no recipe
         // takes, fails in a second.
         let plans = try options.tools ? toolsPlans(image, set: options.parameters) : []
@@ -472,7 +476,7 @@ extension ImageBuilder {
             return nil
         }
         progress("macos-download", "Updating macOS \(before.version) (\(before.build)) to \(update.version) (\(update.build)): downloading and preparing")
-        let password = try String(contentsOf: image.passwordURL, encoding: .utf8)
+        let password = try image.accountPassword(keychain: store.passwords)
         let label = "softwareupdate --install \(update.label)"
         let emit = LineEmitter(report: report, image: subject)
         let percent = DownloadPercent()

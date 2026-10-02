@@ -93,6 +93,9 @@ public struct ImageDeriveOptions: Sendable {
 @MainActor
 public final class ImageBuilder {
     public let store: ImageStore
+    /// Whether the password of an image installed here goes into the Keychain (a `Password`
+    /// file otherwise): see AccountPassword.
+    var keepsPasswordsInKeychain = AccountPasswordStore.keepsNewPasswords
     /// Where progress, log lines and notices go (ProgressEvent).
     let report: @MainActor (ProgressEvent) -> Void
     /// The image being built, updated or set up, named in every event.
@@ -202,6 +205,7 @@ public final class ImageBuilder {
     private func removeNeverRun(_ image: GoldenImage, refusal: Error) {
         do {
             try FileSystem.removeTree(image.directory.path)
+            store.passwords.removeUnused(store: store.root)
             log("  \(image.name) was not kept: its VM never ran")
         } catch {
             _ = try? store.update(image) { record in
@@ -247,12 +251,16 @@ public final class ImageBuilder {
         }
         log("macOS \(restore.version) (\(restore.build)); \(cpuCount) CPUs, \(memoryBytes >> 30) GB memory, \(options.diskBytes >> 30) GB disk")
 
-        let record = ImageRecord(
+        var record = ImageRecord(
             formatVersion: ImageRecord.currentFormatVersion, name: options.name, state: .installing, failure: nil,
             createdAt: Date(), createdBy: AgentVM.version, macOSVersion: restore.version, macOSBuild: restore.build,
             cpuCount: cpuCount, memoryBytes: memoryBytes, diskBytes: options.diskBytes,
             macAddress: VZMACAddress.randomLocallyAdministered().string, userName: options.userName,
             installSeconds: nil, provisionSeconds: nil)
+        // Named in the record before the item exists: an item no record names is a leftover,
+        // and is removed as one.
+        record.passwordID = keepsPasswordsInKeychain ? UUID().uuidString.lowercased() : nil
+        record.formatVersion = ImageRecord.formatVersion(passwordID: record.passwordID)
         // A cancel while the restore image was read: nothing is created. Past this point no
         // await comes before the installer starts, so its progress is never canceled early.
         try checkCanceled()
@@ -350,9 +358,17 @@ public final class ImageBuilder {
             baseLock.release()
             throw error
         }
+        // The build needs the account's password only once its guest runs: asked for now,
+        // before anything is cloned.
+        do {
+            try base.requireAccountPassword(keychain: store.passwords)
+        } catch {
+            baseLock.release()
+            throw error
+        }
         var record = base.record
         // Written by this agent-vm, so in its format, whatever format the base was written in.
-        record.formatVersion = ImageRecord.currentFormatVersion
+        record.formatVersion = ImageRecord.formatVersion(passwordID: record.passwordID)
         record.name = options.name
         record.state = .installing
         record.failure = nil
@@ -396,7 +412,10 @@ public final class ImageBuilder {
                 try BoxStore.cloneFile(base.diskURL, to: image.diskURL)
                 try BoxStore.cloneFile(base.auxiliaryStorageURL, to: image.auxiliaryStorageURL)
                 try BoxStore.cloneFile(base.hardwareModelURL, to: image.hardwareModelURL)
-                try BoxStore.cloneFile(base.passwordURL, to: image.passwordURL)
+                // A password in the Keychain is shared by its identifier, in the record.
+                if base.record.passwordID == nil {
+                    try BoxStore.cloneFile(base.passwordURL, to: image.passwordURL)
+                }
                 if inherited != nil, FileSystem.exists(base.recipesURL.path) {
                     do {
                         try FileManager.default.copyItem(at: base.recipesURL, to: image.recipesURL)
@@ -583,7 +602,11 @@ public final class ImageBuilder {
         let began = clock.now
         try restore.hardwareModel.write(to: image.hardwareModelURL)
         try VZMacMachineIdentifier().dataRepresentation.write(to: image.machineIdentifierURL)
-        try Self.writePassword(Self.newPassword(), to: image.passwordURL)
+        if let id = image.record.passwordID {
+            try store.passwords.add(id: id, password: Self.newPassword(), label: "agent-vm account password (\(shownName ?? image.name))", store: store.root)
+        } else {
+            try Self.writePassword(Self.newPassword(), to: image.passwordURL)
+        }
         try Self.createSparseDisk(at: image.diskURL, bytes: image.record.diskBytes)
         guard let hardwareModel = VZMacHardwareModel(dataRepresentation: restore.hardwareModel) else {
             throw AgentVMError.virtualMachine(operation: "install macOS", message: "the restore image's hardware model is unreadable")
@@ -632,7 +655,7 @@ public final class ImageBuilder {
         let began = clock.now
         try checkCanceled()
         var current = try store.update(image) { $0.state = .provisioning }
-        let password = try String(contentsOf: image.passwordURL, encoding: .utf8)
+        let password = try image.accountPassword(keychain: store.passwords)
 
         let provisioning = VZMacGuestProvisioningOptions()
         provisioning.fullName = "Agent"
@@ -646,7 +669,8 @@ public final class ImageBuilder {
 
         do {
             let host = try await waitForSSH(machine, macAddress: image.record.macAddress)
-            let ssh = GuestSSH(host: host, user: image.record.userName, passwordFile: image.passwordURL,
+            let ssh = GuestSSH(host: host, user: image.record.userName,
+                               password: image.record.passwordID.map { .item($0) } ?? .file(image.passwordURL),
                                knownHostsFile: image.knownHostsURL, askpassProgram: options.askpassProgram)
             let facts = try await checkAccount(ssh, image: image)
             log("Guest \(host): \(facts)")
@@ -730,7 +754,7 @@ public final class ImageBuilder {
         }
         // A window on a box (box view) must never meet a lock screen that asks for the password.
         try await keepDesktopUnlocked(machine, user: current.record.userName,
-                                      password: try String(contentsOf: current.passwordURL, encoding: .utf8))
+                                      password: try current.accountPassword(keychain: store.passwords))
         await prepareDesktop(current, machine: machine, features: current.record.guestFeatures)
 
         if commandLineTools {

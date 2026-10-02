@@ -187,7 +187,13 @@ test_typing_into_the_screen() {
             run_avm box view "$BOX" --type-password
             assert_status 0 || return 1
             run_avm box view "$BOX" --type $'\r'
-            _expected="$(/bin/cat "${AGENT_VM_HOME:-$HOME/Library/Application Support/agent-vm}/Boxes/$BOX/Password")"
+            # Only a box that keeps its password in a file can be compared with what was typed.
+            local _file="${AGENT_VM_HOME:-$HOME/Library/Application Support/agent-vm}/Boxes/$BOX/Password"
+            if [ ! -f "$_file" ]; then
+                skip "box $BOX keeps its password in the Keychain; use a test image with a Password file"
+                return 0
+            fi
+            _expected="$(/bin/cat "$_file")"
         else
             run_avm box view "$BOX" --type "$_text"$'\r'
             _expected="$_text"

@@ -196,7 +196,7 @@ import Testing
 
 @Suite struct GuestSSHTests {
     let ssh = GuestSSH(host: "192.168.64.9", user: "agent",
-                       passwordFile: URL(fileURLWithPath: "/store/Images/dev/Password"),
+                       password: .file(URL(fileURLWithPath: "/store/Images/dev/Password")),
                        knownHostsFile: URL(fileURLWithPath: "/store/Images/dev/known_hosts"),
                        askpassProgram: "/usr/local/bin/agent-vm")
 
@@ -217,11 +217,20 @@ import Testing
         #expect(environment["SSH_ASKPASS"] == "/usr/local/bin/agent-vm")
         #expect(environment["SSH_ASKPASS_REQUIRE"] == "force")
         #expect(environment[GuestSSH.askpassFileVariable] == "/store/Images/dev/Password")
+        #expect(environment[GuestSSH.askpassItemVariable] == nil)
+
+        // A password in the Keychain: ssh's environment names the item, never a file, whatever
+        // the caller's environment held.
+        var keyed = ssh
+        keyed.password = .item("0b1c2d3e-0000-4000-8000-000000000001")
+        let named = keyed.environment(base: [GuestSSH.askpassFileVariable: "/tmp/planted", "PATH": "/usr/bin"])
+        #expect(named[GuestSSH.askpassItemVariable] == "0b1c2d3e-0000-4000-8000-000000000001")
+        #expect(named[GuestSSH.askpassFileVariable] == nil)
     }
 
     @Test func knownHostsPathIsNotExpandedBySSH() throws {
         func sshWith(_ path: String) -> GuestSSH {
-            return GuestSSH(host: "192.168.64.9", user: "agent", passwordFile: URL(fileURLWithPath: "/store/Password"),
+            return GuestSSH(host: "192.168.64.9", user: "agent", password: .file(URL(fileURLWithPath: "/store/Password")),
                             knownHostsFile: URL(fileURLWithPath: path), askpassProgram: "/usr/local/bin/agent-vm")
         }
         #expect(try sshWith("/a b/100%d/known_hosts").arguments("true").contains("UserKnownHostsFile=\"/a b/100%%d/known_hosts\""))

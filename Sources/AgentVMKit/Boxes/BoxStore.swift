@@ -13,7 +13,8 @@
 //   Boxes/<name>/AuxiliaryStorage    APFS clone of the image's auxiliary storage
 //   Boxes/<name>/HardwareModel       copy of the image's
 //   Boxes/<name>/MachineIdentifier   the box's own
-//   Boxes/<name>/Password            copy of the image's (the account is the same)
+//   Boxes/<name>/Password            copy of the image's (the account is the same); not there
+//                                    when the record names a Keychain item (AccountPassword)
 //   Boxes/<name>/tombstone           a disposable box that stopped; `box gc` deletes the folder
 //   Boxes/.gc.lock                   held while `box gc` runs, so only one collects at a time
 //
@@ -26,7 +27,8 @@ import Foundation
 import Virtualization
 
 public struct BoxRecord: Codable, Equatable, Sendable {
-    public static let currentFormatVersion = 1
+    /// 2: the record names its password's Keychain item (see `ImageRecord.formatVersion`).
+    public static let currentFormatVersion = 2
 
     public var formatVersion: Int
     public var name: String
@@ -54,6 +56,9 @@ public struct BoxRecord: Codable, Equatable, Sendable {
     /// update` had changed it (0: never). Absent in boxes made before 0.5.0.
     public var imageCreatedAt: Date?
     public var imageRevision: Int?
+    /// The image's `passwordID` when the box was made: the Keychain item with the account's
+    /// password, shared with the image. Nil when the box has a `Password` file.
+    public var passwordID: String?
 
     public var effectiveNetwork: BoxNetwork {
         return network ?? .legacy
@@ -168,6 +173,8 @@ public struct BoxStore: Sendable {
     public static let unstartedDisposableAge: TimeInterval = 600
 
     public let root: URL
+    /// The Keychain items of account passwords; a test names its own service.
+    public var passwords = AccountPasswordStore()
     /// The built-in host packs file (NetworkPacks): next to the executable unless given.
     public let builtInPacks: URL?
 
@@ -216,7 +223,7 @@ public struct BoxStore: Sendable {
             throw AgentVMError.system(operation: "create \(directory.path)", code: code)
         }
         let record = BoxRecord(
-            formatVersion: BoxRecord.currentFormatVersion, name: name, image: current.name,
+            formatVersion: ImageRecord.formatVersion(passwordID: current.record.passwordID), name: name, image: current.name,
             macOSVersion: current.record.macOSVersion, macOSBuild: current.record.macOSBuild,
             // Whole seconds: the record is stored with ISO 8601 dates, which drop fractions.
             guestProtocol: current.record.guestProtocol, createdAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)),
@@ -224,13 +231,17 @@ public struct BoxStore: Sendable {
             macAddress: VZMACAddress.randomLocallyAdministered().string, userName: current.record.userName,
             network: network, disposable: disposable ? true : nil,
             guestVersion: current.record.guestVersion, guestDigest: current.record.guestDigest,
-            imageCreatedAt: current.record.createdAt, imageRevision: current.record.revision ?? 0)
+            imageCreatedAt: current.record.createdAt, imageRevision: current.record.revision ?? 0,
+            passwordID: current.record.passwordID)
         let box = Box(record: record, directory: directory)
         do {
             try Self.cloneFile(current.diskURL, to: box.diskURL)
             try Self.cloneFile(current.auxiliaryStorageURL, to: box.auxiliaryStorageURL)
             try Self.cloneFile(current.hardwareModelURL, to: box.hardwareModelURL)
-            try Self.cloneFile(current.passwordURL, to: box.passwordURL)
+            // A password in the Keychain is shared by its identifier, in the record.
+            if current.record.passwordID == nil {
+                try Self.cloneFile(current.passwordURL, to: box.passwordURL)
+            }
             try VZMacMachineIdentifier().dataRepresentation.write(to: box.machineIdentifierURL)
             try save(box)
         } catch {
@@ -402,6 +413,8 @@ public struct BoxStore: Sendable {
         // that check and booting a box whose files are vanishing.
         _ = unlink(directory.appendingPathComponent(Self.recordName).path)
         try FileSystem.removeTree(directory.path)
+        // The account password goes with the last image or box that names it.
+        passwords.removeUnused(store: root)
     }
 
     /// Deletes stopped disposable boxes: those with a tombstone, and those without one created

@@ -12,9 +12,9 @@ import Virtualization
 /// A scratch store with a fake "ready" image (small files standing in for the disk).
 final class BoxScratch {
     let scratch: Scratch
-    let images: ImageStore
-    let boxes: BoxStore
-    let image: GoldenImage
+    var images: ImageStore
+    var boxes: BoxStore
+    var image: GoldenImage
 
     init(state: ImageRecord.State = .ready) throws {
         scratch = try Scratch()

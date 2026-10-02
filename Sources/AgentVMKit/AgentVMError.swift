@@ -94,6 +94,10 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case secretNotFound(String)
     case secretUnreadable(name: String, reason: String)
     case keychain(operation: String, message: String)
+    /// The account password of an image or box is nowhere to be had (`owner` names it).
+    case accountPasswordMissing(owner: String, reason: String)
+    /// It is there, and the Keychain did not give it.
+    case accountPasswordUnreadable(owner: String, reason: String)
     /// A job id that is not the form `job start` makes ("20260929-101500-a1b2c3").
     case invalidJobID(String)
     case jobNotFound(String)
@@ -215,6 +219,10 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "`\(command)` failed in the guest (status \(status))\(detail)"
         case let .invalidSecret(name, reason):
             return "secret \(name): \(reason)"
+        case let .accountPasswordMissing(owner, reason):
+            return "the account password of \(owner) is missing: \(reason). Boxes still start and run programs; what needs the password (the Type Password button, `image setup`, a macOS update, building from it) works again once the image is rebuilt from a restore file, which makes a new password (`agent-vm image rebuild <image> --ipsw latest`), and its boxes are made again (`agent-vm box recreate`)"
+        case let .accountPasswordUnreadable(owner, reason):
+            return "the account password of \(owner) could not be read: \(reason)"
         case let .secretNotFound(name):
             return "no secret \(name) in the Keychain; store it with `agent-vm secret set \(name)` (the value is read from stdin)"
         case let .secretUnreadable(name, reason):

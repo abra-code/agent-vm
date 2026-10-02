@@ -21,7 +21,15 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     }
 
     /// Bumped on incompatible changes to this record.
-    public static let currentFormatVersion = 1
+    public static let currentFormatVersion = 2
+
+    /// The format a new record is written in. 2 is a record that names its password's Keychain
+    /// item: an agent-vm before 0.6.0 would look for a `Password` file that is not there, and
+    /// drop the identifier when it rewrote the record, so it must refuse the record instead.
+    /// A record with a file stays in format 1, which those read.
+    public static func formatVersion(passwordID: String?) -> Int {
+        return passwordID == nil ? 1 : currentFormatVersion
+    }
 
     public var formatVersion: Int
     public var name: String
@@ -52,7 +60,7 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     }
     /// The guest's network card address; the host's DHCP server keys its lease on it.
     public var macAddress: String
-    /// The account created at first boot. Its password is in the `Password` file (mode 0600).
+    /// The account created at first boot. For its password see `passwordID`.
     public var userName: String
     public var installSeconds: Double?
     public var provisionSeconds: Double?
@@ -148,6 +156,9 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     /// A box records the revision it was cloned at, so it can tell that its image moved on.
     public var revision: Int?
     public var updatedAt: Date?
+    /// The Keychain item that holds the account's password (AccountPassword); nil when it is in
+    /// the image's `Password` file. Derived images and boxes carry the same identifier.
+    public var passwordID: String?
     /// When `image update` last looked for a macOS update, and when it last ran the recipes'
     /// update steps, and ended well, whether or not anything changed; nil when it never did.
     /// Kept apart: a quick tools update before a session says nothing about macOS.

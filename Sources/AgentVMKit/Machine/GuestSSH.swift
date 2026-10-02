@@ -2,12 +2,15 @@
 //
 // Commands in a guest over SSH, used only while an image is built: the zero-click first boot
 // turns on Remote Login for the new account, and SSH is the one way in until the guest daemon
-// is installed. Password authentication only; the password comes from the image's 0600
-// `Password` file through SSH_ASKPASS, never through the command line or the environment.
+// is installed. Password authentication only; the password comes from the image's Keychain
+// item or its 0600 `Password` file through SSH_ASKPASS, never through the command line or the
+// environment (which name only the item or the file).
 //
 // The askpass program is agent-vm itself: ssh runs `$SSH_ASKPASS "<prompt>"` with this
-// process's environment, and agent-vm answers when AGENT_VM_ASKPASS_FILE is set (see
-// `askpassAnswer`). Nothing from the user's own SSH setup is used: no ~/.ssh/config, no keys,
+// process's environment, and agent-vm answers when AGENT_VM_ASKPASS_ITEM or
+// AGENT_VM_ASKPASS_FILE is set (see `askpassAnswer`). ssh closes the descriptors it inherits,
+// so the password cannot be handed to the askpass program over a pipe; it reads the item
+// itself, as the same program. Nothing from the user's own SSH setup is used: no ~/.ssh/config, no keys,
 // no ssh-agent, no known_hosts outside the image folder.
 
 import Darwin
@@ -15,18 +18,26 @@ import Foundation
 
 public struct GuestSSH: Sendable {
     public static let askpassFileVariable = "AGENT_VM_ASKPASS_FILE"
+    public static let askpassItemVariable = "AGENT_VM_ASKPASS_ITEM"
+
+    /// Where the askpass side finds the password.
+    public enum Password: Sendable, Equatable {
+        case file(URL)
+        /// The identifier of a Keychain item (AccountPasswordStore).
+        case item(String)
+    }
 
     public var host: String
     public var user: String
-    public var passwordFile: URL
+    public var password: Password
     public var knownHostsFile: URL
     /// Absolute path of an executable that implements `askpassAnswer` (the agent-vm binary).
     public var askpassProgram: String
 
-    public init(host: String, user: String, passwordFile: URL, knownHostsFile: URL, askpassProgram: String) {
+    public init(host: String, user: String, password: Password, knownHostsFile: URL, askpassProgram: String) {
         self.host = host
         self.user = user
-        self.passwordFile = passwordFile
+        self.password = password
         self.knownHostsFile = knownHostsFile
         self.askpassProgram = askpassProgram
     }
@@ -85,7 +96,15 @@ public struct GuestSSH: Sendable {
         }
         environment["SSH_ASKPASS"] = askpassProgram
         environment["SSH_ASKPASS_REQUIRE"] = "force"
-        environment[Self.askpassFileVariable] = passwordFile.path
+        // Only one of the two, whatever the caller's environment held.
+        environment[Self.askpassFileVariable] = nil
+        environment[Self.askpassItemVariable] = nil
+        switch password {
+        case let .file(file):
+            environment[Self.askpassFileVariable] = file.path
+        case let .item(id):
+            environment[Self.askpassItemVariable] = id
+        }
         return environment
     }
 
@@ -162,7 +181,7 @@ public struct GuestSSH: Sendable {
     public enum AskpassAnswer: Equatable, Sendable {
         /// This process was not started as ssh's askpass program.
         case notAskpass
-        /// Started as askpass, but the prompt is not a password prompt (or the file is unreadable).
+        /// Started as askpass, but the prompt is not a password prompt (or the password cannot be read).
         case refuse
         case password(String)
     }
@@ -170,14 +189,18 @@ public struct GuestSSH: Sendable {
     /// The askpass side: what agent-vm answers when ssh starts it as SSH_ASKPASS. Only
     /// password prompts are answered; anything else (a host key question) gets no answer, so
     /// ssh gives up.
-    public static func askpassAnswer(arguments: [String], environment: [String: String]) -> AskpassAnswer {
-        guard let path = environment[askpassFileVariable], !path.isEmpty else {
+    public static func askpassAnswer(arguments: [String], environment: [String: String],
+                                     keychain: AccountPasswordStore = AccountPasswordStore()) -> AskpassAnswer {
+        let item = environment[askpassItemVariable] ?? ""
+        let path = environment[askpassFileVariable] ?? ""
+        guard !item.isEmpty || !path.isEmpty else {
             return .notAskpass
         }
         guard arguments.count == 2, arguments[1].lowercased().contains("password") else {
             return .refuse
         }
-        guard let password = try? String(contentsOfFile: path, encoding: .utf8) else {
+        let stored = item.isEmpty ? try? String(contentsOfFile: path, encoding: .utf8) : try? keychain.read(id: item, owner: "the image")
+        guard let password = stored else {
             return .refuse
         }
         return .password(password.trimmingCharacters(in: .newlines))

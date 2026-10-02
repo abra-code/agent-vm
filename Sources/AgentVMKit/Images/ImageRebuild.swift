@@ -152,6 +152,9 @@ extension ImageStore {
         // failure, it is removed by the next rebuild, or by `image delete`.
         try? FileManager.default.removeItem(at: image.directory.appendingPathComponent(Self.rebuildMarkerName))
         try? FileSystem.removeTree(current.directory.path)
+        // A rebuild from a restore file made a new password; the old one goes once no box of
+        // the old image is left.
+        passwords.removeUnused(store: root)
         return try self.image(named: image.name)
     }
 }

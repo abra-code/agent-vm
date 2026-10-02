@@ -59,21 +59,24 @@ public final class BoxSupervisor {
         guard let machine, state.snapshot.state != .stopping, !state.stopRequested else {
             throw AgentVMError.boxNotRunning(box.name)
         }
-        let password = try? String(contentsOf: box.passwordURL, encoding: .utf8)
+        // The password is read when it is needed, and never on the main actor, which runs the
+        // VM: from the Keychain, the read waits when macOS asks the person about it.
+        let box = self.box
         let firstShow = self.viewer == nil
-        let viewer = self.viewer ?? BoxViewer(name: box.name, machine: machine, password: password, log: { [weak self] in self?.log($0) })
+        let viewer = self.viewer ?? BoxViewer(name: box.name, machine: machine, password: { try box.accountPassword() }, log: { [weak self] in self?.log($0) })
         self.viewer = viewer
         viewer.show(interactive: interactive)
         log("Showing the screen\(interactive ? " (interactive)" : " (view only)")")
         // The screen saver and screen lock are per machine, so a box starts with them on
         // (GuestDesktop): off while someone may be looking, without holding up the window.
-        if firstShow, let password {
+        if firstShow {
             let user = box.record.userName
             Task { @MainActor [weak self] in
                 guard let self else {
                     return
                 }
                 do {
+                    let password = try await Task.detached { try box.accountPassword() }.value
                     let note = try await GuestDesktop.keepUnlocked(user: user, password: password, desktopWait: 5, run: Self.guestRunner(machine))
                     self.log(note.map { "Screen lock: \($0)" } ?? "Screen lock, screen saver and display sleep off")
                 } catch {
@@ -96,7 +99,8 @@ public final class BoxSupervisor {
             try await viewer.type(text)
             log("Typed \(text.count) characters into the screen")
         } else {
-            let password = try String(contentsOf: box.passwordURL, encoding: .utf8)
+            let box = self.box
+            let password = try await Task.detached { try box.accountPassword() }.value
             try await viewer.type(password)
             log("Typed the password into the screen")
         }

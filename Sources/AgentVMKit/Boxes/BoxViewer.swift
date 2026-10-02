@@ -20,8 +20,10 @@ import Virtualization
 final class BoxViewer: NSObject, NSWindowDelegate {
     private let name: String
     private let machine: MacMachine
-    /// The guest account's password, typed by the Type Password button (interactive only).
-    private let password: String?
+    /// Gives the guest account's password, typed by the Type Password button (interactive
+    /// only). Asked when the button is pressed, away from the main actor: read from the
+    /// Keychain, it can wait for the person's answer to a question from macOS.
+    private let password: (@Sendable () throws -> String)?
     /// A line of instructions under the title bar.
     private let note: String?
     private let onClose: (@MainActor () -> Void)?
@@ -42,7 +44,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     /// Stop was pressed or the window closed: no further item starts.
     private var stopRequested = false
 
-    init(name: String, machine: MacMachine, password: String? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil,
+    init(name: String, machine: MacMachine, password: (@Sendable () throws -> String)? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil,
          log: (@MainActor (String) -> Void)? = nil) {
         self.name = name
         self.machine = machine
@@ -276,7 +278,12 @@ final class BoxViewer: NSObject, NSWindowDelegate {
             return
         }
         Task { @MainActor in
-            try? await self.type(password)
+            do {
+                try await self.type(try await Task.detached { try password() }.value)
+            } catch {
+                self.log?("Type Password: \(error)")
+                self.setSendStatus("Type Password: \(error)", failed: true)
+            }
         }
     }
 

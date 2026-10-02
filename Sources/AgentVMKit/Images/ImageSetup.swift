@@ -46,7 +46,7 @@ extension ImageBuilder {
         // `updating`: this command holds the update lock itself, so an `Update/` folder is a killed
         // update's leftover.
         image = try store.settle(image, updating: true)
-        let password = try String(contentsOf: image.passwordURL, encoding: .utf8)
+        let password = try image.accountPassword(keychain: store.passwords)
 
         let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
         let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
@@ -106,7 +106,7 @@ extension ImageBuilder {
 
     /// The window part: shows the screen, opens the settings, and waits for the window to close.
     private func grantFullDiskAccess(_ machine: MacMachine, image: GoldenImage, password: String, done: SetupDone) async throws -> Bool {
-        let viewer = BoxViewer(name: "image \(image.name)", machine: machine, password: password,
+        let viewer = BoxViewer(name: "image \(image.name)", machine: machine, password: { password },
                                note: "Full Disk Access for agent-vm-guest: in Settings, drag agent-vm-guest from the Finder window into the list (or use +), turn it on, and use Type Password when asked. Close this window when done.",
                                onClose: { done.finish() }, log: { [weak self] in self?.log($0) })
         viewer.show(interactive: true)

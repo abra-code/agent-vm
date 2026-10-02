@@ -12,7 +12,8 @@
 //   Images/<name>/AuxiliaryStorage    NVRAM and boot state (Apple format)
 //   Images/<name>/HardwareModel       VZMacHardwareModel.dataRepresentation
 //   Images/<name>/MachineIdentifier   VZMacMachineIdentifier.dataRepresentation
-//   Images/<name>/Password            the guest account's password (0600)
+//   Images/<name>/Password            the guest account's password (0600); not there when the
+//                                     record names a Keychain item (AccountPassword)
 //   Images/<name>/known_hosts         the guest's SSH host key, recorded at first contact
 //   Images/<name>/recipe.json         the recipe applied to the image, when it was one
 //   Images/<name>/Recipes/<n>-<name>/ each recipe that ran on the disk, in order: recipe.json
@@ -48,6 +49,8 @@ public struct ImageStore: Sendable {
     static let updateCommitName = "Update.commit"
 
     public let root: URL
+    /// The Keychain items of account passwords; a test names its own service.
+    public var passwords = AccountPasswordStore()
 
     public init(root: URL) {
         self.root = FileSystem.canonicalRoot(root)
@@ -233,6 +236,8 @@ public struct ImageStore: Sendable {
             lock.release()
         }
         try FileSystem.removeTree(directory.path)
+        // The account password goes with the last image or box that names it.
+        passwords.removeUnused(store: root)
     }
 
     private func save(_ image: GoldenImage) throws {
