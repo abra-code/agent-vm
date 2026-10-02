@@ -151,6 +151,39 @@ test_undo_is_not_blocked_by_a_locked_tree() {
     /bin/chmod -R u+w "$_project" 2>/dev/null
 }
 
+test_what_a_session_left_does_not_stop_the_next_one() {
+    local _project="$SCRATCH/project"
+    make_project "$_project"
+    start_session "$_project" || return 1
+    local _first="$SESSION"
+
+    # A file nobody can read, and a git hook under a spelling the volume takes for `.git`.
+    printf 'secret\n' > "$_project/closed.txt"
+    /bin/chmod 000 "$_project/closed.txt"
+    /bin/mkdir -p "$_project/sub/.GIT/hooks"
+    printf '#!/bin/sh\n' > "$_project/sub/.GIT/hooks/pre-commit"
+
+    run_avm session report "$SESSION"
+    assert_status 0 || return 1
+    assert_out_contains "HIGH" || return 1
+    assert_out_contains "sub/.GIT/hooks/pre-commit" || return 1
+    run_avm session end "$SESSION"
+    assert_status 0 || return 1
+
+    # The changes are kept, and the next session snapshots them as they are.
+    start_session "$_project" || return 1
+    local _mode="$(/usr/bin/stat -f '%Lp' "$_project/closed.txt")"
+    assert_eq "$_mode" "0" "mode of the unreadable file after the snapshot" || return 1
+    run_avm session report "$SESSION"
+    assert_status 0 || return 1
+    assert_out_contains "no changes" || return 1
+    run_avm session discard "$SESSION"
+    assert_status 0 || return 1
+    run_avm session discard "$_first"
+    assert_status 0 || return 1
+    /bin/chmod 600 "$_project/closed.txt"
+}
+
 test_one_active_session_per_project() {
     local _project="$SCRATCH/project"
     make_project "$_project"

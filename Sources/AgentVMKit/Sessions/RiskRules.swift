@@ -5,6 +5,10 @@
 // and config, build scripts, package install scripts, editor tasks, and - most likely of all -
 // the configuration of the agents themselves (`.mcp.json`, `.claude/`, `AGENTS.md`), which the
 // next unboxed agent run would load. These flags are a review aid, not a security boundary.
+//
+// Names are compared the way the default macOS volume compares them: without regard to case or
+// to how an accented letter is composed. `.GIT/hooks/pre-commit` is git's hook there, and
+// `makefile` is read by make on any volume.
 
 import Foundation
 
@@ -32,7 +36,8 @@ public struct RiskFlag: Codable, Equatable, Hashable, Sendable {
     public let reason: String
 }
 
-/// Matches a path relative to the project root (components separated by "/").
+/// Matches a path relative to the project root (components separated by "/"). The path and the
+/// matcher's own text are both in the form `RiskRules.folded` gives.
 enum PathMatcher: Sendable {
     /// Exactly this relative path.
     case path(String)
@@ -40,6 +45,9 @@ enum PathMatcher: Sendable {
     case folder(String)
     /// The last component equals this name, at any depth.
     case name(String)
+    /// The same, for an entry that is not a folder: with case set aside, the name is also an
+    /// everyday folder name (`BUILD` and `build/`).
+    case fileName(String)
     /// The last component ends with this suffix, at any depth.
     case suffix(String)
     /// Any component (a folder or the entry itself) equals this name, at any depth.
@@ -51,7 +59,9 @@ enum PathMatcher: Sendable {
     /// Inside a git folder at any depth, the last component equals this name.
     case gitFile(String)
 
-    func matches(_ relative: String, components: [Substring]) -> Bool {
+    /// `gitComponents` are the components as the git matchers see them: for an entry of a
+    /// repository whose folder is not named `.git`, that folder reads as `.git`.
+    func matches(_ relative: String, components: [Substring], gitComponents: [Substring], isFolder: Bool) -> Bool {
         switch self {
         case let .path(path):
             return relative == path
@@ -59,17 +69,33 @@ enum PathMatcher: Sendable {
             return RelativePath.isWithin(relative, folder)
         case let .name(name):
             return components.last.map { $0 == name } ?? false
+        case let .fileName(name):
+            return !isFolder && components.last.map { $0 == name } ?? false
         case let .suffix(suffix):
             return components.last.map { $0.hasSuffix(suffix) } ?? false
         case let .component(name):
             return components.contains { $0 == name }
         case let .insideGit(name):
-            guard let git = components.firstIndex(of: ".git") else {
+            guard let git = gitComponents.firstIndex(of: ".git") else {
                 return false
             }
-            return components[(git + 1)...].contains { $0 == name }
+            return gitComponents[(git + 1)...].contains { $0 == name }
         case let .gitFile(name):
-            return components.count > 1 && components.last == Substring(name) && components.dropLast().contains(".git")
+            return gitComponents.count > 1 && gitComponents.last == Substring(name) && gitComponents.dropLast().contains(".git")
+        }
+    }
+
+    /// The matcher with its text folded, as the paths it is compared with are.
+    var folded: PathMatcher {
+        switch self {
+        case let .path(text): return .path(RiskRules.folded(text))
+        case let .folder(text): return .folder(RiskRules.folded(text))
+        case let .name(text): return .name(RiskRules.folded(text))
+        case let .fileName(text): return .fileName(RiskRules.folded(text))
+        case let .suffix(text): return .suffix(RiskRules.folded(text))
+        case let .component(text): return .component(RiskRules.folded(text))
+        case let .insideGit(text): return .insideGit(RiskRules.folded(text))
+        case let .gitFile(text): return .gitFile(RiskRules.folded(text))
         }
     }
 }
@@ -79,6 +105,13 @@ struct PathRule: Sendable {
     let severity: RiskFlag.Severity
     let reason: String
     let matchers: [PathMatcher]
+
+    init(id: String, severity: RiskFlag.Severity, reason: String, matchers: [PathMatcher]) {
+        self.id = id
+        self.severity = severity
+        self.reason = reason
+        self.matchers = matchers.map(\.folded)
+    }
 }
 
 public enum RiskRules {
@@ -128,7 +161,7 @@ public enum RiskRules {
                  reason: "build or task definition: runs when the project is built",
                  matchers: [.name("Makefile"), .name("GNUmakefile"), .suffix(".mk"), .name("CMakeLists.txt"), .suffix(".cmake"),
                             .name("configure"), .name("build.rs"), .name("Justfile"), .name("justfile"), .name("Taskfile.yml"),
-                            .name("Rakefile"), .name("meson.build"), .name("BUILD"), .name("BUILD.bazel"), .name("WORKSPACE"),
+                            .name("Rakefile"), .name("meson.build"), .fileName("BUILD"), .name("BUILD.bazel"), .fileName("WORKSPACE"),
                             .name("build.gradle"), .name("build.gradle.kts"), .name("settings.gradle"),
                             .name("settings.gradle.kts"), .name("gradle-wrapper.properties"), .name("pom.xml")]),
         PathRule(id: "package-manifest", severity: .medium,
@@ -149,19 +182,47 @@ public enum RiskRules {
                             .suffix(".scpt"), .suffix(".applescript")]),
     ]
 
+    /// The form names are compared in: case folded, accented letters composed. Two names with
+    /// the same folded form are one file on the default (case-insensitive) macOS volume.
+    static func folded(_ text: String) -> String {
+        if text.utf8.allSatisfy({ $0 < 0x80 }) {
+            return text.lowercased()
+        }
+        return text.folding(options: .caseInsensitive, locale: nil).precomposedStringWithCanonicalMapping
+    }
+
     /// Flags for one changed entry. `kind` and the modes describe the change; `symlinkTarget` is
-    /// the new target when the entry is (now) a symlink.
-    static func flags(for relative: String,
+    /// the new target when the entry is (now) a symlink. `repositories` are the folders that
+    /// hold a git repository without being named `.git` (`ChangeScanner.repositories`), folded;
+    /// the project folder itself is "".
+    static func flags(for path: String,
                       kind: ChangeKind,
                       type: EntryType,
                       mode: UInt16?,
                       previousMode: UInt16?,
                       symlinkTarget: String?,
-                      linkCount: UInt16?) -> [RiskFlag] {
+                      linkCount: UInt16?,
+                      repositories: Set<String> = []) -> [RiskFlag] {
+        let relative = folded(path)
         let components = RelativePath.components(relative)
+        var gitComponents = components
+        var isRepository = false
+        if !repositories.isEmpty {
+            isRepository = repositories.contains(relative)
+            // The innermost repository the entry is in, or is.
+            for depth in stride(from: components.count, through: 0, by: -1)
+            where repositories.contains(components[..<depth].joined(separator: "/")) {
+                gitComponents = [".git"] + components[depth...]
+                break
+            }
+        }
         var result: [RiskFlag] = []
 
-        for rule in pathRules where rule.matchers.contains(where: { $0.matches(relative, components: components) }) {
+        for rule in pathRules {
+            let matched = rule.matchers.contains { $0.matches(relative, components: components, gitComponents: gitComponents, isFolder: type == .directory) }
+            guard matched || (rule.id == "git-dir" && isRepository) else {
+                continue
+            }
             // Git's own sample hooks are inert.
             if rule.id == "git-hook" && relative.hasSuffix(".sample") {
                 continue
@@ -171,7 +232,7 @@ public enum RiskRules {
 
         if kind != .deleted {
             if type == .symlink, let target = symlinkTarget {
-                if escapesProject(link: relative, target: target) {
+                if escapesProject(link: path, target: target) {
                     result.append(RiskFlag(rule: "symlink-escape", severity: .high,
                                            reason: "symlink pointing outside the project (\(target)): host tools that follow it read or write elsewhere"))
                 } else {

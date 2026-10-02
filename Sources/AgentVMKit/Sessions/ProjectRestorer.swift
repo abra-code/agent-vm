@@ -245,19 +245,13 @@ enum ProjectRestorer {
             parentSaved.free()
         }
         // A folder that is read-only or locked cannot change parents: the clone is opened up
-        // for the move and gets the snapshot's state back where it lands.
-        let entry = open(staged, O_SYMLINK | O_EVTONLY | O_CLOEXEC)
-        defer {
-            if entry >= 0 {
-                close(entry)
-            }
-        }
-        let entrySaved = entry >= 0 ? try FileSystem.unlockEntry(descriptor: entry, name: place.path) : nil
-        defer { entrySaved?.free() }
+        // for the move and gets the snapshot's state back where it lands. It is named by its
+        // identity for that (a folder without any permission cannot be opened, and its path
+        // in the project may not be used).
+        let entrySaved = try FileSystem.unlockEntry(staged)
+        defer { entrySaved.free() }
         code = try put(staged, at: place, replacedPath: replacedPath)
-        if let entrySaved {
-            FileSystem.restoreEntry(descriptor: entry, entrySaved)
-        }
+        FileSystem.restoreEntry(FileSystem.pathByIdentity(device: entrySaved.info.st_dev, inode: entrySaved.info.st_ino), entrySaved)
         guard code == 0 else {
             throw AgentVMError.system(operation: "restore \(place.path)", code: code)
         }
@@ -307,18 +301,10 @@ enum ProjectRestorer {
         }
     }
 
-    /// Clones one snapshot entry to `target`, a path in the session folder. A symlink is cloned
-    /// with clonefile(2): copyfile's recursive mode looks at a symlink given as the root through
-    /// the link, and fails (ENOENT) when the link dangles.
+    /// Clones one snapshot entry (a file, a symlink as itself, or a folder with everything in
+    /// it) to `target`, a path in the session folder.
     private static func cloneEntry(_ source: String, to target: String) throws {
-        let info = try FileSystem.status(source)
-        guard info.st_mode & S_IFMT == S_IFLNK else {
-            try FileSystem.cloneTree(source, to: target)
-            return
-        }
-        guard clonefile(source, target, UInt32(CLONE_NOFOLLOW)) == 0 else {
-            throw AgentVMError.system(operation: "clone \(source) to \(target)", code: errno)
-        }
+        try FileSystem.cloneTree(source, to: target)
     }
 
     /// Gives a folder the snapshot's permissions and user flags. An immutable folder accepts no

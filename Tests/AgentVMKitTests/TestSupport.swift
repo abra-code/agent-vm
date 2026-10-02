@@ -95,12 +95,61 @@ func describeTree(_ root: String) throws -> [TreeEntry] {
     return entries.sorted { $0.path < $1.path }
 }
 
+/// Creates `levels` folders named `name`, one inside the other, below `folder`, and a file
+/// `bottom.txt` holding `text` in the innermost. With 20 levels of 200 characters the innermost
+/// is about four times deeper than a path may be long, so nothing here goes by path.
+func makeChain(in folder: String, name: String, levels: Int, text: String) throws {
+    var current = open(folder, O_RDONLY | O_DIRECTORY)
+    try #require(current >= 0)
+    defer { close(current) }
+    for _ in 0..<levels {
+        try #require(mkdirat(current, name, 0o755) == 0)
+        let next = openat(current, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        try #require(next >= 0)
+        close(current)
+        current = next
+    }
+    let file = openat(current, "bottom.txt", O_WRONLY | O_CREAT | O_EXCL, 0o644)
+    try #require(file >= 0)
+    defer { close(file) }
+    try #require(text.withCString { write(file, $0, strlen($0)) } == text.utf8.count)
+}
+
+/// How many folders named `name` are nested below `folder`, and what the innermost one's
+/// `bottom.txt` holds (nil when it has none).
+func describeChain(in folder: String, name: String) -> (levels: Int, text: String?) {
+    var current = open(folder, O_RDONLY | O_DIRECTORY)
+    guard current >= 0 else {
+        return (0, nil)
+    }
+    defer { close(current) }
+    var levels = 0
+    while true {
+        let next = openat(current, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard next >= 0 else {
+            break
+        }
+        close(current)
+        current = next
+        levels += 1
+    }
+    let file = openat(current, "bottom.txt", O_RDONLY)
+    guard file >= 0 else {
+        return (levels, nil)
+    }
+    defer { close(file) }
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    let count = read(file, &buffer, buffer.count)
+    return (levels, count >= 0 ? String(decoding: buffer[..<count], as: UTF8.self) : nil)
+}
+
 /// Adds an access control entry with `/bin/chmod +a` (for example "everyone deny delete"),
-/// the way an agent would; `-h` changes a symlink itself.
-func addACL(_ entry: String, to path: String) throws {
+/// the way an agent would; `-h` changes a symlink itself. `chmod -h` opens the entry, which
+/// waits forever on a FIFO: for one, pass `itself` false.
+func addACL(_ entry: String, to path: String, itself: Bool = true) throws {
     let chmod = Process()
     chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
-    chmod.arguments = ["-h", "+a", entry, path]
+    chmod.arguments = (itself ? ["-h"] : []) + ["+a", entry, path]
     try chmod.run()
     chmod.waitUntilExit()
     #expect(chmod.terminationStatus == 0, "chmod +a \(entry) \(path)")

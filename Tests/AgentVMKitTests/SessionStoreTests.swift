@@ -548,6 +548,28 @@ import Testing
         #expect(hasACL(scratch.path("shared")) && hasACL(scratch.path("shared/notes.txt")))
     }
 
+    @Test func aFolderKeepsItsAttributesInTheSnapshot() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        try scratch.write("assets/logo.txt", "logo\n")
+        #expect(setxattr(scratch.path("assets"), "com.example.note", "kept", 4, 0, 0) == 0)
+        #expect(setxattr(scratch.path("assets/logo.txt"), "com.example.note", "kept", 4, 0, 0) == 0)
+        chmod(scratch.path("assets"), 0o750)
+        chflags(scratch.path("assets"), UInt32(UF_HIDDEN))
+        var times = [timespec(tv_sec: 1_600_000_000, tv_nsec: 0), timespec(tv_sec: 1_600_000_000, tv_nsec: 0)]
+        #expect(utimensat(AT_FDCWD, scratch.path("assets"), &times, 0) == 0)
+
+        let session = try scratch.store.start(project: scratch.project.path)
+        let copy = try FileSystem.status(session.snapshotPath + "/assets")
+        #expect(copy.st_mode & 0o7777 == 0o750)
+        #expect(copy.st_flags & UInt32(UF_HIDDEN) != 0)
+        #expect(copy.st_mtimespec.tv_sec == 1_600_000_000)
+        var value = [UInt8](repeating: 0, count: 16)
+        #expect(getxattr(session.snapshotPath + "/assets", "com.example.note", &value, value.count, 0, 0) == 4)
+        #expect(getxattr(session.snapshotPath + "/assets/logo.txt", "com.example.note", &value, value.count, 0, 0) == 4)
+        #expect(try scratch.store.report(id: session.id).isEmpty)
+    }
+
     @Test func socketsAndFIFOsAreLeftOutOfTheSnapshot() throws {
         let scratch = try Scratch()
         try scratch.populate()
@@ -559,19 +581,244 @@ import Testing
         #expect(try describeTree(session.snapshotPath) == original)
     }
 
-    @Test func failedSnapshotReportsTheCauseAndLeavesNothingBehind() throws {
+    @Test func aFailedCloneReportsTheCauseAndLeavesNothingBehind() throws {
         let scratch = try Scratch()
         try scratch.populate()
-        chmod(scratch.path("README.md"), 0o000)
-        #expect(throws: AgentVMError.self) { try scratch.store.start(project: scratch.project.path) }
+        let missing = scratch.root.appendingPathComponent("missing/copy").path
         do {
-            try scratch.store.start(project: scratch.project.path)
+            try FileSystem.cloneTree(scratch.project.path, to: missing)
+            Issue.record("cloning into a folder that does not exist succeeded")
         } catch let AgentVMError.system(_, code) {
-            #expect(code == EACCES)
+            #expect(code == ENOENT)
         }
-        #expect(try scratch.store.list().isEmpty)
-        let leftovers = try FileManager.default.contentsOfDirectory(atPath: scratch.store.sessionsDirectory.path)
-        #expect(leftovers.filter(SessionStore.isValidID).isEmpty)
+        #expect(!FileSystem.exists(missing))
+        // The same for a single file: a clone that made nothing is not a success.
+        do {
+            try FileSystem.cloneTree(scratch.path("README.md"), to: missing)
+            Issue.record("cloning a file into a folder that does not exist succeeded")
+        } catch let AgentVMError.system(_, code) {
+            #expect(code == ENOENT)
+        }
+        // What is already there is not the clone's to replace, or to remove.
+        let taken = scratch.root.appendingPathComponent("taken").path
+        try FileSystem.makeDirectory(taken)
+        do {
+            try FileSystem.cloneTree(scratch.project.path, to: taken)
+            Issue.record("cloning over an existing folder succeeded")
+        } catch let AgentVMError.system(_, code) {
+            #expect(code == EEXIST)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: taken).isEmpty)
+    }
+
+    // MARK: - what an agent leaves to stop the next snapshot, or the cleanup
+
+    /// A tree nested deeper than a path may be long (PATH_MAX): copyfile, fts with full paths
+    /// and FileManager all stop there. Left in the project it made every later `start` fail,
+    /// and moved into the session folder by an undo it could not be discarded.
+    @Test(.timeLimit(.minutes(2)))
+    func aTreeDeeperThanAPathMayBeIsSnapshottedRestoredAndDiscarded() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let name = String(repeating: "d", count: 200)
+        try makeChain(in: scratch.project.path, name: name, levels: 20, text: "at session start\n")
+
+        let session = try scratch.store.start(project: scratch.project.path)
+        #expect(describeChain(in: session.snapshotPath, name: name) == (20, "at session start\n"))
+
+        // The agent removes the tree and leaves a deeper one of its own.
+        try FileSystem.removeTree(scratch.path(name))
+        #expect(!FileSystem.exists(scratch.path(name)))
+        let other = String(repeating: "e", count: 200)
+        try makeChain(in: scratch.project.path, name: other, levels: 30, text: "the agent's\n")
+
+        let outcome = try scratch.store.undo(id: session.id)
+        #expect(outcome.restore?.failed.isEmpty == true)
+        #expect(describeChain(in: scratch.project.path, name: name) == (20, "at session start\n"))
+        #expect(!FileSystem.exists(scratch.path(other)))
+        let replaced = try #require(outcome.session.replacedTreePath)
+        #expect(describeChain(in: replaced, name: other) == (30, "the agent's\n"))
+
+        // The next session starts with the deep tree in place, and the old one can be discarded.
+        try scratch.store.end(id: session.id)
+        let next = try scratch.store.start(project: scratch.project.path)
+        #expect(describeChain(in: next.snapshotPath, name: name).levels == 20)
+        try scratch.store.discard(id: session.id)
+        #expect(!FileSystem.exists(replaced))
+        #expect(!FileSystem.exists(session.snapshotPath))
+        try scratch.store.undo(id: next.id, mode: .wholeTree)
+        #expect(describeChain(in: scratch.project.path, name: name) == (20, "at session start\n"))
+        try scratch.store.discard(id: next.id)
+        #expect(!FileSystem.exists(next.snapshotPath))
+    }
+
+    /// Hundreds of folders deep: the walk keeps no descriptor and no stack frame per level.
+    @Test(.timeLimit(.minutes(2)))
+    func aTreeHundredsOfFoldersDeepIsClonedAndRemoved() throws {
+        let scratch = try Scratch()
+        try makeChain(in: scratch.project.path, name: "n", levels: 500, text: "bottom\n")
+        let copy = scratch.root.appendingPathComponent("copy").path
+        try FileSystem.cloneTree(scratch.project.path, to: copy)
+        #expect(describeChain(in: copy, name: "n") == (500, "bottom\n"))
+        try FileSystem.removeTree(copy)
+        #expect(!FileSystem.exists(copy))
+    }
+
+    /// Entries their owner cannot read. Each one stopped `start` (a clone needs to read its
+    /// source), so one `chmod 000` in a session took the snapshot away from every later one.
+    @Test func entriesNobodyCanReadAreSnapshottedAsTheyAre() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        try scratch.write("secret.txt", "nobody reads this\n")
+        try scratch.write("closed/inner/file.txt", "inside\n")
+        try scratch.write("denied/file.txt", "inside\n")
+        try scratch.write("denied.txt", "denied\n")
+        try scratch.write("locked/file.txt", "inside\n")
+        try scratch.write("hidden.txt", "hidden\n")
+        chmod(scratch.path("secret.txt"), 0o000)
+        chmod(scratch.path("closed/inner"), 0o000)
+        chmod(scratch.path("closed"), 0o000)
+        try addACL("everyone deny list,search", to: scratch.path("denied"))
+        try addACL("everyone deny read", to: scratch.path("denied.txt"))
+        try addACL("everyone deny readsecurity,readattr", to: scratch.path("hidden.txt"))
+        chflags(scratch.path("locked/file.txt"), UInt32(UF_IMMUTABLE))
+        chflags(scratch.path("locked"), UInt32(UF_IMMUTABLE))
+
+        let session = try scratch.store.start(project: scratch.project.path)
+        // The project is as it was, and the snapshot is the same.
+        for root in [scratch.project.path, session.snapshotPath] {
+            #expect(try FileSystem.status(root + "/secret.txt").st_mode & 0o7777 == 0o000, "\(root)")
+            #expect(try FileSystem.status(root + "/closed").st_mode & 0o7777 == 0o000, "\(root)")
+            #expect(hasACL(root + "/denied") && hasACL(root + "/denied.txt"), "\(root)")
+            #expect(try FileSystem.status(root + "/locked").st_flags & UInt32(UF_IMMUTABLE) != 0, "\(root)")
+            #expect(try FileSystem.status(root + "/locked/file.txt").st_flags & UInt32(UF_IMMUTABLE) != 0, "\(root)")
+        }
+        // What nobody could read is in the snapshot all the same.
+        let copy = scratch.root.appendingPathComponent("readable").path
+        try FileSystem.cloneTree(session.snapshotPath, to: copy)
+        chmod(copy + "/secret.txt", 0o600)
+        chmod(copy + "/closed", 0o700)
+        chmod(copy + "/closed/inner", 0o700)
+        #expect(try String(contentsOfFile: copy + "/secret.txt", encoding: .utf8) == "nobody reads this\n")
+        #expect(try String(contentsOfFile: copy + "/closed/inner/file.txt", encoding: .utf8) == "inside\n")
+        try FileSystem.removeTree(copy)
+        #expect(!FileSystem.exists(copy))
+
+        // The agent replaces the unreadable file and removes the closed folder: undo brings
+        // both back, closed as they were.
+        chmod(scratch.path("secret.txt"), 0o600)
+        try scratch.write("secret.txt", "the agent's\n")
+        try FileSystem.removeTree(scratch.path("closed"))
+        let outcome = try scratch.store.undo(id: session.id, paths: ["secret.txt", "closed"])
+        #expect(outcome.restore?.failed.isEmpty == true)
+        #expect(try FileSystem.status(scratch.path("secret.txt")).st_mode & 0o7777 == 0o000)
+        #expect(try FileSystem.status(scratch.path("closed")).st_mode & 0o7777 == 0o000)
+        chmod(scratch.path("secret.txt"), 0o600)
+        #expect(try scratch.read("secret.txt") == "nobody reads this\n")
+        try scratch.store.discard(id: session.id)
+        #expect(!FileSystem.exists(session.snapshotPath))
+    }
+
+    /// Locked, with an ACL that hides even the lock: neither can be read to be saved, so both
+    /// go, and the entry is snapshotted and can be deleted.
+    @Test func aLockedEntryThatHidesItsAttributesIsSnapshottedAndRemoved() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        try scratch.write("hidden.txt", "hidden\n")
+        try addACL("everyone deny readattr,readsecurity,delete", to: scratch.path("hidden.txt"))
+        #expect(lchflags(scratch.path("hidden.txt"), UInt32(UF_IMMUTABLE)) == 0)
+
+        let session = try scratch.store.start(project: scratch.project.path)
+        #expect(try String(contentsOfFile: session.snapshotPath + "/hidden.txt", encoding: .utf8) == "hidden\n")
+        try addACL("everyone deny readattr,readsecurity,delete", to: session.snapshotPath + "/hidden.txt")
+        #expect(lchflags(session.snapshotPath + "/hidden.txt", UInt32(UF_IMMUTABLE)) == 0)
+        try scratch.store.discard(id: session.id)
+        #expect(!FileSystem.exists(session.snapshotPath))
+    }
+
+    /// Locked entries below the depth a path reaches: they are opened up through their identity
+    /// on the volume, the only name left for them.
+    @Test(.timeLimit(.minutes(1)))
+    func lockedEntriesInADeepTreeAreRemoved() throws {
+        let scratch = try Scratch()
+        try scratch.write("closed/file.txt", "x")
+        try scratch.write("denied/file.txt", "x")
+        try scratch.write("locked.txt", "x")
+        try scratch.write("denied.txt", "x")
+        let name = String(repeating: "d", count: 200)
+        try makeChain(in: scratch.project.path, name: name, levels: 12, text: "bottom\n")
+        // Moved to the bottom first: the calls that lock them take paths.
+        var bottom = open(scratch.project.path, O_RDONLY | O_DIRECTORY)
+        for _ in 0..<12 {
+            let next = openat(bottom, name, O_RDONLY | O_DIRECTORY)
+            close(bottom)
+            bottom = next
+        }
+        defer { close(bottom) }
+        let top = open(scratch.project.path, O_RDONLY | O_DIRECTORY)
+        defer { close(top) }
+        try addACL("everyone deny list,search,readsecurity,readattr", to: scratch.path("denied"))
+        try addACL("everyone deny read,readsecurity,readattr", to: scratch.path("denied.txt"))
+        for entry in ["closed", "denied", "denied.txt"] {
+            #expect(renameat(top, entry, bottom, entry) == 0, "\(entry): \(String(cString: strerror(errno)))")
+        }
+        #expect(renameat(top, "locked.txt", bottom, "locked.txt") == 0)
+        #expect(fchmodat(bottom, "closed", 0o000, 0) == 0)
+        let locked = openat(bottom, "locked.txt", O_RDONLY)
+        #expect(fchflags(locked, UInt32(UF_IMMUTABLE)) == 0)
+        close(locked)
+
+        try FileSystem.removeTree(scratch.project.path)
+        #expect(!FileSystem.exists(scratch.project.path))
+    }
+
+    /// A symlink has permissions of its own (`chmod -h`), and one without any cannot be cloned
+    /// as it is either.
+    @Test func aSymlinkNobodyCanReadIsSnapshottedAsItIs() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        #expect(symlink("README.md", scratch.path("closed-link")) == 0)
+        #expect(lchmod(scratch.path("closed-link"), 0o000) == 0)
+
+        let session = try scratch.store.start(project: scratch.project.path)
+        let copy = session.snapshotPath + "/closed-link"
+        #expect(try FileSystem.status(scratch.path("closed-link")).st_mode & 0o7777 == 0o000)
+        #expect(try FileSystem.status(copy).st_mode == S_IFLNK)
+        #expect(try scratch.store.report(id: session.id).isEmpty)
+        #expect(lchmod(copy, 0o700) == 0)
+        var target = [CChar](repeating: 0, count: 64)
+        #expect(readlink(copy, &target, target.count - 1) == 9)
+        #expect(String(cString: target) == "README.md")
+    }
+
+    /// Opening a FIFO waits for a writer, even an open made only to change its ACL: without
+    /// care, one FIFO with an ACL makes `start` wait forever.
+    @Test(.timeLimit(.minutes(1)))
+    func aFIFOWithAnACLDoesNotStopTheSnapshot() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        #expect(mkfifo(scratch.path("unseen"), 0o600) == 0)
+        try addACL("everyone deny readattr,readsecurity", to: scratch.path("unseen"), itself: false)
+        #expect(mkfifo(scratch.path("Sources/kept"), 0o600) == 0)
+        try addACL("everyone deny delete", to: scratch.path("Sources/kept"), itself: false)
+
+        let session = try scratch.store.start(project: scratch.project.path)
+        #expect(!FileSystem.exists(session.snapshotPath + "/unseen"))
+        #expect(!FileSystem.exists(session.snapshotPath + "/Sources/kept"))
+        #expect(hasACL(scratch.path("Sources/kept")))
+    }
+
+    /// The same for the cleanup: the ACL of a FIFO that denies deleting it is removed.
+    @Test(.timeLimit(.minutes(1)))
+    func aFIFOWithAnACLIsRemoved() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        #expect(mkfifo(scratch.path("Sources/kept"), 0o600) == 0)
+        try addACL("everyone deny delete", to: scratch.path("Sources/kept"), itself: false)
+        #expect(unlink(scratch.path("Sources/kept")) != 0)
+
+        try FileSystem.removeTree(scratch.project.path)
+        #expect(!FileSystem.exists(scratch.project.path))
     }
 
     enum Lock: String, CaseIterable {

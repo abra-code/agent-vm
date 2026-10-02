@@ -124,6 +124,7 @@ enum ChangeScanner {
         var warnings: [String] = []
         let before = try walk(session.snapshotPath, warnings: &warnings)
         let after = try walk(record.project, warnings: &warnings)
+        let repositories = repositories(in: after)
         let nowSeconds = Int64(now.timeIntervalSince1970)
 
         var changes: [Change] = []
@@ -177,7 +178,7 @@ enum ChangeScanner {
                 // Still surface flagged entries inside an added or replaced folder.
                 let target = new.type == .symlink ? symlinkTarget(record.project, path) : nil
                 let flags = RiskRules.flags(for: path, kind: .added, type: new.type, mode: new.mode, previousMode: nil,
-                                            symlinkTarget: target, linkCount: new.linkCount)
+                                            symlinkTarget: target, linkCount: new.linkCount, repositories: repositories)
                 if flags.contains(where: { $0.severity != .info }) {
                     changes.append(Change(path: path, kind: .added, type: new.type, previousType: nil, size: new.size,
                                           previousSize: nil, symlinkTarget: target, entriesInside: nil,
@@ -195,7 +196,7 @@ enum ChangeScanner {
                 if new.type == .directory {
                     coveringRoots[path] = 0
                 }
-                changes.append(makeChange(path, .added, new: new, old: nil, target: target))
+                changes.append(makeChange(repositories, path, .added, new: new, old: nil, target: target))
                 continue
             }
 
@@ -207,7 +208,7 @@ enum ChangeScanner {
                 if new.unreadable || old.unreadable {
                     warnings.append("\(path) is a folder that cannot be read; undo replaces it as a whole")
                 }
-                changes.append(makeChange(path, old.type != new.type ? .typeChanged : .modified, new: new, old: old, target: target))
+                changes.append(makeChange(repositories, path, old.type != new.type ? .typeChanged : .modified, new: new, old: old, target: target))
                 continue
             }
 
@@ -220,17 +221,17 @@ enum ChangeScanner {
             switch new.type {
             case .directory:
                 if metadataDiffers {
-                    changes.append(makeChange(path, .metadata, new: new, old: old, target: nil))
+                    changes.append(makeChange(repositories, path, .metadata, new: new, old: old, target: nil))
                 }
             case .symlink:
                 let newTarget = symlinkTarget(record.project, path)
                 if newTarget != symlinkTarget(session.snapshotPath, path) {
-                    changes.append(makeChange(path, .modified, new: new, old: old, target: newTarget))
+                    changes.append(makeChange(repositories, path, .modified, new: new, old: old, target: newTarget))
                 }
             case .other:
                 // FIFOs and devices have no content to compare (and opening a FIFO blocks).
                 if metadataDiffers {
-                    changes.append(makeChange(path, .metadata, new: new, old: old, target: nil))
+                    changes.append(makeChange(repositories, path, .metadata, new: new, old: old, target: nil))
                 }
             case .file:
                 let snapshotFile = session.snapshotPath + "/" + path
@@ -240,9 +241,9 @@ enum ChangeScanner {
                     contentDiffers = try !sameContents(snapshotFile, projectFile)
                 }
                 if contentDiffers {
-                    changes.append(makeChange(path, .modified, new: new, old: old, target: nil))
+                    changes.append(makeChange(repositories, path, .modified, new: new, old: old, target: nil))
                 } else if metadataDiffers {
-                    changes.append(makeChange(path, .metadata, new: new, old: old, target: nil))
+                    changes.append(makeChange(repositories, path, .metadata, new: new, old: old, target: nil))
                 }
             }
         }
@@ -261,7 +262,7 @@ enum ChangeScanner {
             if old.type == .directory {
                 deletedRoots[path] = 0
             }
-            changes.append(makeChange(path, .deleted, new: nil, old: old, target: nil))
+            changes.append(makeChange(repositories, path, .deleted, new: nil, old: old, target: nil))
         }
 
         // The project folder itself (the walks skip their roots): permissions or flags the agent
@@ -309,15 +310,45 @@ enum ChangeScanner {
                             summary: summary, changes: changes, warnings: warnings)
     }
 
-    private static func makeChange(_ path: String, _ kind: ChangeKind, new: TreeEntryInfo?, old: TreeEntryInfo?,
-                                   target: String?) -> Change {
+    private static func makeChange(_ repositories: Set<String>, _ path: String, _ kind: ChangeKind, new: TreeEntryInfo?,
+                                   old: TreeEntryInfo?, target: String?) -> Change {
         let type = (new ?? old)!.type
         let flags = RiskRules.flags(for: path, kind: kind, type: type, mode: new?.mode ?? old?.mode,
-                                    previousMode: old?.mode, symlinkTarget: target, linkCount: new?.linkCount)
+                                    previousMode: old?.mode, symlinkTarget: target, linkCount: new?.linkCount,
+                                    repositories: repositories)
         return Change(path: path, kind: kind, type: type,
                       previousType: kind == .typeChanged ? old?.type : nil,
                       size: new?.size, previousSize: old?.size, symlinkTarget: target,
                       entriesInside: nil, coveredByAncestor: false, flags: flags)
+    }
+
+    /// The folders that hold a git repository without being named `.git`: a bare repository, or
+    /// one made with `--separate-git-dir`. Recognized the way git recognizes one, by `HEAD` next
+    /// to `objects/` and `refs/`; its hooks and configuration run like any other repository's.
+    /// Paths are folded (`RiskRules.folded`); the project folder itself is "".
+    static func repositories(in entries: [String: TreeEntryInfo]) -> Set<String> {
+        var result = Set<String>()
+        // Only when a candidate turns up: every folder of the tree, folded.
+        var folders: Set<String>?
+        for (path, info) in entries where info.type != .directory {
+            let components = RelativePath.components(path)
+            guard let last = components.last, last.utf8.count == 4, last.lowercased() == "head" else {
+                continue
+            }
+            let folder = RiskRules.folded(components.dropLast().joined(separator: "/"))
+            // Inside a `.git` folder the rules apply already.
+            guard !RelativePath.components(folder).contains(".git") else {
+                continue
+            }
+            if folders == nil {
+                folders = Set(entries.filter { $0.value.type == .directory }.keys.map(RiskRules.folded))
+            }
+            let prefix = folder.isEmpty ? "" : folder + "/"
+            if folders!.contains(prefix + "objects"), folders!.contains(prefix + "refs") {
+                result.insert(folder)
+            }
+        }
+        return result
     }
 
     /// Every entry under `root` keyed by path relative to it. Symlinks are not followed and the
@@ -382,6 +413,10 @@ enum ChangeScanner {
     static func sameContents(_ first: String, _ second: String) throws -> Bool {
         let a = open(first, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard a >= 0 else {
+            // The snapshot keeps a file nobody can read as it was, unreadable.
+            if errno == EACCES {
+                return false
+            }
             throw AgentVMError.system(operation: "open \(first)", code: errno)
         }
         defer { close(a) }

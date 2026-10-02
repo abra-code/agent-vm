@@ -285,6 +285,82 @@ import Testing
         #expect(!rules(".git/modules/sub/hooks/pre-commit.sample").contains("git-hook"))
     }
 
+    /// The default macOS volume takes names that differ only in case for the same file, so
+    /// `.GIT/hooks/pre-commit` is git's hook; and make reads `makefile` on any volume.
+    @Test func namesAreMatchedWithoutRegardToCase() {
+        func rules(_ path: String, _ type: EntryType = .file) -> Set<String> {
+            return Set(RiskRules.flags(for: path, kind: .added, type: type, mode: 0o644, previousMode: nil,
+                                       symlinkTarget: nil, linkCount: 1).map(\.rule))
+        }
+        #expect(rules(".GIT/hooks/pre-commit").contains("git-hook"))
+        #expect(!rules(".GIT/hooks/pre-commit.SAMPLE").contains("git-hook"))
+        #expect(rules("vendor/.Git/Config").contains("git-config"))
+        #expect(rules(".GIT", .directory).contains("git-dir"))
+        #expect(rules(".GIT/objects/ab/cdef").isEmpty)
+        #expect(rules(".MCP.JSON").contains("agent-config"))
+        #expect(rules(".Claude/settings.json").contains("agent-config"))
+        #expect(rules("claude.md").contains("agent-instructions"))
+        #expect(rules("docs/Agents.MD").contains("agent-instructions"))
+        #expect(rules(".GitHub/Workflows/ci.yml").contains("ci-workflow"))
+        #expect(rules(".ENVRC").contains("auto-run-on-open"))
+        #expect(rules("lib/hook.PTH").contains("interpreter-auto-load"))
+        #expect(rules("makefile").contains("build-script"))
+        #expect(rules("PACKAGE.JSON").contains("package-manifest"))
+        #expect(rules("Run.Command").contains("double-click-runnable"))
+        // A letter and its combining accent are the same name as the composed letter.
+        #expect(RiskRules.folded("Caf\u{C9}/x") == RiskRules.folded("cafe\u{301}/x"))
+        // `BUILD` and `WORKSPACE` are Bazel's files; `build/` and `workspace/` are folders
+        // every other project has.
+        #expect(rules("build").contains("build-script"))
+        #expect(rules("BUILD").contains("build-script"))
+        #expect(rules("build", .directory).isEmpty)
+        #expect(rules("pkg/workspace", .directory).isEmpty)
+        // The reason still names the target as it is spelled.
+        let link = RiskRules.flags(for: "Link", kind: .added, type: .symlink, mode: nil, previousMode: nil,
+                                   symlinkTarget: "/Etc/Passwd", linkCount: 1)
+        #expect(link.first?.reason.contains("/Etc/Passwd") == true)
+    }
+
+    /// A repository whose folder is not named `.git` (a bare one, or `--separate-git-dir`) runs
+    /// its hooks and reads its configuration like any other.
+    @Test func aRepositoryWithoutAGitFolderIsFlaggedToo() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        try scratch.write("mirror.git/HEAD", "ref: refs/heads/main\n")
+        try scratch.write("mirror.git/objects/info/packs", "")
+        try scratch.write("mirror.git/refs/heads/main", "0000\n")
+        try scratch.write("mirror.git/config", "[core]\n\tbare = true\n")
+        // Not repositories: HEAD without the rest, and the rest inside a `.git` folder.
+        try scratch.write("notes/HEAD", "a file called HEAD\n")
+        try scratch.write("notes/config", "x\n")
+        let session = try scratch.store.start(project: scratch.project.path)
+
+        try scratch.write("mirror.git/config", "[core]\n\tfsmonitor = /tmp/x\n")
+        try scratch.write("mirror.git/hooks/post-update", "#!/bin/sh\n")
+        try scratch.write("mirror.git/hooks/post-update.sample", "#!/bin/sh\n")
+        try scratch.write("mirror.git/objects/ab/cdef", "x")
+        try scratch.write("notes/config", "y\n")
+        // A new one, spelled the way a case-insensitive volume lets git find it.
+        try scratch.write("vendor/Store/head", "ref: refs/heads/main\n")
+        try scratch.write("vendor/Store/Objects/info/packs", "")
+        try scratch.write("vendor/Store/Refs/heads/main", "0000\n")
+        try scratch.write("vendor/Store/hooks/pre-receive", "#!/bin/sh\n")
+
+        let report = try scratch.store.report(id: session.id)
+        var warnings: [String] = []
+        let found = ChangeScanner.repositories(in: try ChangeScanner.walk(scratch.project.path, warnings: &warnings))
+        #expect(found == ["mirror.git", "vendor/store"])
+        #expect(rules(change(report, "mirror.git/config")).contains("git-config"))
+        #expect(rules(change(report, "mirror.git/hooks")).contains("git-hook"))
+        #expect(rules(change(report, "mirror.git/hooks/post-update")).contains("git-hook"))
+        #expect(!rules(change(report, "mirror.git/hooks/post-update.sample")).contains("git-hook"))
+        #expect(rules(change(report, "mirror.git/objects/ab")).isEmpty)
+        #expect(rules(change(report, "notes/config")).isEmpty)
+        // Inside the added folder, the repository and its hook are listed with their flags.
+        #expect(rules(change(report, "vendor/Store")).contains("git-dir"))
+        #expect(rules(change(report, "vendor/Store/hooks/pre-receive")).contains("git-hook"))
+    }
+
     @Test func escapeCheckIsLexical() {
         #expect(RiskRules.escapesProject(link: "a", target: "/x"))
         #expect(RiskRules.escapesProject(link: "a", target: "../x"))
