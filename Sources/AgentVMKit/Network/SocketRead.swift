@@ -22,8 +22,9 @@ enum SocketRead {
     /// alone, so other threads' writes still block. SO_RCVTIMEO applies as it does to one
     /// blocking read: -1 with EAGAIN once nothing has arrived for that long, counted from the
     /// call's first wait (the kernel also restarts it after a wakeup that brought nothing).
-    /// `count` must be above 0: 0 would read as end of file.
-    static func read(_ descriptor: Int32, _ buffer: UnsafeMutableRawPointer, _ count: Int) -> Int {
+    /// `count` must be above 0: 0 would read as end of file. `giveUp` is asked after every wait
+    /// that brought nothing (so about once a slice): when it says yes, -1 with ETIMEDOUT.
+    static func read(_ descriptor: Int32, _ buffer: UnsafeMutableRawPointer, _ count: Int, giveUp: (() -> Bool)? = nil) -> Int {
         var deadline: ContinuousClock.Instant?
         var waited = false
         while true {
@@ -37,6 +38,10 @@ enum SocketRead {
             }
             guard code == EAGAIN else {
                 errno = code
+                return -1
+            }
+            if waited, let giveUp, giveUp() {
+                errno = ETIMEDOUT
                 return -1
             }
             if !waited {

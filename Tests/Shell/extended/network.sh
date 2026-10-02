@@ -50,6 +50,36 @@ test_rules_change_on_a_running_box() {
     assert_err_contains "is running" || return 1
 }
 
+# An open tunnel is closed when its rule goes, and the log says who closed it.
+test_a_removed_rule_closes_open_connections() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    run_avm box network "$BOX" --allow www.iana.org
+    assert_status 0 || return 1
+    # A tunnel that sends nothing and stays open for as long as its input does.
+    "$AGENT_VM" exec --box "$BOX" -- /bin/sh -c '/bin/sleep 12 | /usr/bin/nc -X connect -x 127.0.0.1:3128 www.iana.org 443' >/dev/null 2>&1 &
+    local _tunnel=$!
+    local _open=""
+    local _tries=0
+    while [ -z "$_open" ] && [ "$_tries" -lt 40 ]; do
+        /bin/sleep 0.25
+        _tries=$((_tries + 1))
+        run_avm box netlog "$BOX" --last 20 --json
+        _open="$(printf '%s' "$OUT" | /usr/bin/jq -r '[.[] | select(.host == "www.iana.org" and .open == true)] | length | select(. > 0)')"
+    done
+    assert_eq "$_open" "1" "the tunnel is open in the log" || return 1
+    run_avm box network "$BOX" --disallow www.iana.org
+    assert_status 0 || return 1
+    /bin/sleep 1
+    run_avm box netlog "$BOX" --last 20 --json
+    assert_status 0 || return 1
+    local _ended
+    _ended="$(printf '%s' "$OUT" | /usr/bin/jq -r '[.[] | select(.host == "www.iana.org" and .decision == "allowed")] | last | "\(.open) \(.reason)"')"
+    assert_eq "$_ended" "null closed by agent-vm: the box's rules no longer allow it" "the tunnel's end in the log" || return 1
+    # However nc ends once its tunnel is closed.
+    wait "$_tunnel"
+    return 0
+}
+
 test_the_public_rule_allows_public_names_only() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     run_avm box network "$BOX" --allow public
@@ -65,7 +95,7 @@ test_the_public_rule_allows_public_names_only() {
     assert_contains "$_code" "502" "rebinding defense under public" || return 1
     # The log (one object per line, sorted keys) names the rule that let each through: public,
     # or the named rule that comes before it.
-    local _log="${AGENT_VM_HOME:-$HOME/Library/Application Support/agent-vm}/Boxes/$BOX/network.jsonl"
+    local _log="${AGENT_VM_HOME:-$HOME/Library/Application Support/agent-vm}/Boxes/$BOX/network-allowed.jsonl"
     local _iana
     _iana="$(/usr/bin/grep '"host":"www.iana.org"' "$_log" | /usr/bin/tail -1)"
     assert_contains "$_iana" '"rule":"public"' "www.iana.org logged under public" || return 1

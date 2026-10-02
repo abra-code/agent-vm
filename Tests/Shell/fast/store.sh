@@ -645,6 +645,36 @@ test_a_record_cannot_act_on_the_terminal() {
     assert_printable "$OUT$ERR" "image info" || return 1
 }
 
+# The log's two files are one list, and an open connection shows the bytes last noted.
+test_netlog_reads_allowed_and_refused_files() {
+    fake_image dev
+    run_avm box create b1 --image dev
+    assert_status 0 || return 1
+    local _box="$AGENT_VM_HOME/Boxes/b1"
+    printf '%s\n' \
+        '{"time":"2026-10-01T10:00:01Z","timeMilliseconds":500,"method":"CONNECT","host":"refused.example","port":443,"decision":"denied","reason":"not in the allowlist"}' \
+        > "$_box/network.jsonl"
+    printf '%s\n' \
+        '{"time":"2026-10-01T10:00:01Z","timeMilliseconds":100,"method":"CONNECT","host":"ended.example","port":443,"decision":"allowed","rule":"public","id":"a","open":true}' \
+        '{"time":"2026-10-01T10:00:02Z","timeMilliseconds":0,"method":"CONNECT","host":"running.example","port":443,"decision":"allowed","rule":"public","id":"b","open":true}' \
+        '{"time":"2026-10-01T10:00:02Z","timeMilliseconds":0,"method":"CONNECT","host":"running.example","port":443,"decision":"allowed","rule":"public","id":"b","open":true,"partial":true,"bytesUp":700,"bytesDown":90}' \
+        '{"time":"2026-10-01T10:00:01Z","timeMilliseconds":100,"method":"CONNECT","host":"ended.example","port":443,"decision":"allowed","rule":"public","id":"a","bytesUp":5,"bytesDown":6}' \
+        > "$_box/network-allowed.jsonl"
+
+    run_avm box netlog b1 --json
+    assert_status 0 || return 1
+    assert_eq "$(printf '%s' "$OUT" | /usr/bin/jq -r '[.[].host] | join(" ")')" "ended.example refused.example running.example" "the order" || return 1
+    # The box is stopped: the connection last seen open ended unlogged, and keeps its bytes.
+    run_avm box netlog b1
+    assert_status 0 || return 1
+    assert_out_contains "ended.example:443  [public]  5 up, 6 down" || return 1
+    assert_out_contains "running.example:443  [public]  end not logged (the box stopped); 700 up, 90 down before that" || return 1
+    run_avm box netlog b1 --denied
+    assert_status 0 || return 1
+    assert_out_contains "refused.example" || return 1
+    assert_not_contains "$OUT" "ended.example" "netlog --denied" || return 1
+}
+
 test_json_output_keeps_what_was_logged() {
     fake_image dev
     run_avm box create b1 --image dev

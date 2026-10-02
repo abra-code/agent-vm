@@ -198,8 +198,11 @@ public enum AddressCheck {
         }
         var result: UnsafeMutablePointer<addrinfo>?
         let status = getaddrinfo(name, String(port), &hints, &result)
+        // The box is told the same for a name that does not resolve and for one that resolves to
+        // addresses it may not reach: else it could list the names of networks it cannot reach.
+        let forClient = "\(host) has no address the proxy may use (the box's network log on the Mac says why)"
         guard status == 0, let first = result else {
-            throw ProxyRefusal("cannot resolve \(host): \(String(cString: gai_strerror(status)))")
+            throw ProxyRefusal("cannot resolve \(host): \(String(cString: gai_strerror(status)))", forClient: forClient)
         }
         defer { freeaddrinfo(result) }
         // Without the interfaces, nothing is known to be off this Mac's networks: refuse.
@@ -237,7 +240,7 @@ public enum AddressCheck {
             }
         }
         guard !usable.isEmpty else {
-            throw ProxyRefusal("\(host) resolves only to non-public addresses (\(refused.joined(separator: ", ")))")
+            throw ProxyRefusal("\(host) resolves only to non-public addresses (\(refused.joined(separator: ", ")))", forClient: forClient)
         }
         return usable
     }
@@ -270,12 +273,16 @@ public enum AddressCheck {
     }
 }
 
-/// Why the proxy refused a request; the message goes to the log and to the client.
+/// Why the proxy refused a request; the message goes to the log, and to the client unless
+/// there is another text for it.
 public struct ProxyRefusal: Error, CustomStringConvertible {
     public var message: String
+    /// What the client is told.
+    public var forClient: String
 
-    public init(_ message: String) {
+    public init(_ message: String, forClient: String? = nil) {
         self.message = message
+        self.forClient = forClient ?? message
     }
 
     public var description: String {

@@ -92,7 +92,11 @@ private final class Race: @unchecked Sendable {
             let into = sink[0]
             // 0 to 100 microseconds in steps of 20 ns.
             let delay = UInt64(round) * 20
-            let outcome = Race.run(delay: delay, read: { "\(Splice.copy(own, into)) bytes" }, trigger: { _ = shutdown(peer, SHUT_WR) })
+            let outcome = Race.run(delay: delay, read: {
+                var bytes = 0
+                _ = Splice.copy(own, into) { bytes += $0 }
+                return "\(bytes) bytes"
+            }, trigger: { _ = shutdown(peer, SHUT_WR) })
             try #require(outcome != nil, "round \(round): a copy missed the peer's SHUT_WR \(delay) ns after it started")
             for descriptor in [peer, own, sink[0], sink[1]] {
                 close(descriptor)

@@ -113,7 +113,7 @@
   "FORMAT_VERSION" : 1,
   "PROJECT" : {
     "NAME" : "agent-vm",
-    "VERSION" : "0.5.11",
+    "VERSION" : "0.5.12",
     "OUTPUT_DIR" : "..\/.build\/package",
     "PACKAGE_NAME" : "${NAME}_${VERSION}.pkg",
     "MIN_OS_VERSION" : "27.0",

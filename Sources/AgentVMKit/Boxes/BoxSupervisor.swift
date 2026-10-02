@@ -245,14 +245,20 @@ public final class BoxSupervisor {
         // few minutes, and at once after the Mac slept: a suspending clock stops during sleep,
         // a continuous one does not, so their difference grows by the time slept.
         var lastSync = ContinuousClock.now
+        var lastProgress = ContinuousClock.now
         var continuousMark = ContinuousClock.now
         var suspendingMark = SuspendingClock.now
         while machine.isRunning && !state.stopRequested {
             try? await Task.sleep(for: .milliseconds(250))
+            let continuousNow = ContinuousClock.now
+            if continuousNow - lastProgress >= ProxyServer.progressInterval {
+                // The bytes of open connections, off this loop: the log is a file.
+                lastProgress = continuousNow
+                Task.detached { proxy.logProgress() }
+            }
             guard clockSync else {
                 continue
             }
-            let continuousNow = ContinuousClock.now
             let suspendingNow = SuspendingClock.now
             let slept = (continuousNow - continuousMark) - (suspendingNow - suspendingMark)
             continuousMark = continuousNow
@@ -269,6 +275,8 @@ public final class BoxSupervisor {
                 }
             }
         }
+        // Before the guest goes: a connection whose end is not logged in time keeps these bytes.
+        proxy.logProgress()
         if machine.isRunning {
             await shutDown(machine)
         } else {
@@ -751,7 +759,8 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         return box.directory.deletingLastPathComponent().deletingLastPathComponent()
     }
 
-    /// Rereads the network rules from box.json; a mode change needs a restart.
+    /// Rereads the network rules from box.json, and closes the open connections they no longer
+    /// allow; a mode change needs a restart.
     func controlReload() throws {
         let fresh = try BoxStore(root: storeRoot).box(named: box.name)
         let network = fresh.record.effectiveNetwork

@@ -483,7 +483,8 @@ struct BoxCommand: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Show or change what a box may reach.",
             discussion: """
-                Rules can change while the box runs (the proxy rereads them at once); the mode \
+                Rules can change while the box runs: the proxy rereads them at once, and closes \
+                every open connection the new rules no longer allow. The mode \
                 decides the box's network card, so it changes only while the box is stopped. \
                 Rules: a host (github.com), subdomains (*.example.com), host:port, pack:<name>, or \
                 public - any public host name (not an IP address or a local name), still logged, \
@@ -685,7 +686,14 @@ struct BoxCommand: ParsableCommand {
     struct NetLog: ParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "netlog",
-            abstract: "Show a box's network log: every connection the proxy allowed or refused.")
+            abstract: "Show a box's network log: every connection the proxy allowed or refused.",
+            discussion: """
+                Connections are listed in the order they were made. An allowed one shows its \
+                bytes once it has ended; while it is open, the bytes it had carried when the \
+                proxy last noted them (once a minute). Allowed connections are kept in a file of \
+                their own (Boxes/<name>/network-allowed.jsonl, refusals in network.jsonl), so a \
+                box that floods the log with refused requests cannot push them out.
+                """)
 
         @Argument(help: "The box name.")
         var name: String
@@ -716,7 +724,7 @@ struct BoxCommand: ParsableCommand {
                 try runFollowing(box)
                 return
             }
-            let entries = NetworkLog(url: box.networkLogURL).entries(last: last, liveSince: Self.liveSince(box), matching: matching)
+            let entries = NetworkLog(url: box.networkLogURL).entries(last: last, liveSince: Self.liveSince(box), includeAllowed: !denied, matching: matching)
             if options.json {
                 try Output.json(entries)
                 return
@@ -734,7 +742,7 @@ struct BoxCommand: ParsableCommand {
         /// stops. The box is checked before each read, so the lines a stopping box logged last
         /// are printed before the command ends.
         private func runFollowing(_ box: Box) throws {
-            let follower = NetworkLogFollower(url: box.networkLogURL)
+            let follower = NetworkLogFollower(url: box.networkLogURL, includeAllowed: !denied)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
@@ -791,12 +799,14 @@ struct BoxCommand: ParsableCommand {
             if let reason = entry.reason {
                 line += "  \(reason)"
             }
-            if let up = entry.bytesUp, let down = entry.bytesDown {
-                line += "  \(up) up, \(down) down"
-            } else if entry.open == true {
-                line += "  open"
+            // The bytes of a line logged while the connection ran are not its total.
+            let bytes = entry.bytesUp.flatMap { up in entry.bytesDown.map { "\(up) up, \($0) down" } }
+            if entry.open == true {
+                line += "  open" + (bytes.map { ", \($0) so far" } ?? "")
             } else if entry.endNotLogged {
-                line += "  end not logged (the box stopped)"
+                line += "  end not logged (the box stopped)" + (bytes.map { "; \($0) before that" } ?? "")
+            } else if let bytes {
+                line += "  \(bytes)"
             }
             return line
         }

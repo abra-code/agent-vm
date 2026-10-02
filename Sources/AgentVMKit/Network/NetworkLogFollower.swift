@@ -1,22 +1,55 @@
 // Sources/AgentVMKit/Network/NetworkLogFollower.swift
 //
-// `box netlog --follow`: reads a box's network log as the proxy appends to it. Each `read()`
-// returns the entries completed since the last one (the first returns what is there). The
-// proxy moves a full log to `<name>.1` and starts a new file; the follower finishes the old
-// file, then goes on with the new one from its start. A line still being written waits for its
-// end, and unreadable lines are skipped, as `NetworkLog.entries` does.
+// `box netlog --follow`: reads a box's network log as the proxy appends to it, both of its
+// files (`NetworkLog`). Each `read()` returns the entries completed since the last one (the
+// first returns what is there). The proxy moves a full file to `<name>.1` and starts a new one;
+// the follower finishes the old file, then goes on with the new one from its start. A line still
+// being written waits for its end, and unreadable lines are skipped, as `NetworkLog.entries` does.
 
 import Darwin
 import Foundation
 
 public final class NetworkLogFollower {
     public let url: URL
+    private let refused: FileFollower
+    private let allowed: FileFollower?
+
+    /// `url` is the box's `network.jsonl`. Without `includeAllowed` the file of allowed
+    /// connections is not followed, for a caller that shows only refusals.
+    public init(url: URL, includeAllowed: Bool = true) {
+        self.url = url
+        refused = FileFollower(url: url)
+        allowed = includeAllowed ? FileFollower(url: NetworkLog.allowedURL(for: url)) : nil
+    }
+
+    /// The last `count` connections as `NetworkLog.entries` gives them, each once; later calls
+    /// to `read()` return the lines logged after them. Call it first, instead of `read()`: it
+    /// reads only the end of the log, where a first `read()` reads all of it.
+    public func start(last count: Int, liveSince: Date = .distantPast, matching: (NetworkLog.Entry) -> Bool = { _ in true }) -> [NetworkLog.Entry] {
+        let first = refused.start(last: count, liveSince: liveSince, matching: matching)
+        guard let allowed else {
+            return first
+        }
+        return NetworkLog.merged(first, allowed.start(last: count, liveSince: liveSince, matching: matching), last: count)
+    }
+
+    /// The lines completed since the last call, each as logged: an allowed connection comes
+    /// when it opens (`open`), with its bytes so far while it runs (`open` and `partial`), and
+    /// with its bytes when it ends. Refusals first, then the lines of allowed connections.
+    public func read() -> [NetworkLog.Entry] {
+        return refused.read() + (allowed?.read() ?? [])
+    }
+}
+
+/// Follows one of the log's files.
+private final class FileFollower {
+    let url: URL
     private var descriptor: Int32 = -1
     private var inode: ino_t = 0
     private var pending = Data()
     private let decoder: JSONDecoder
 
-    public init(url: URL) {
+    init(url: URL) {
         self.url = url
         decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -28,27 +61,26 @@ public final class NetworkLogFollower {
         }
     }
 
-    /// The last `count` connections as `NetworkLog.entries` gives them, each once; later calls
-    /// to `read()` return the lines logged after them. Call it first, instead of `read()`: it
-    /// reads only the end of the log, where a first `read()` reads all of it.
-    public func start(last count: Int, liveSince: Date = .distantPast, matching: (NetworkLog.Entry) -> Bool = { _ in true }) -> [NetworkLog.Entry] {
+    /// The file's last `count` connections (and those of its `.1` when it holds fewer); `read()`
+    /// then goes on after them. With no file yet, those of its `.1` alone.
+    func start(last count: Int, liveSince: Date, matching: (NetworkLog.Entry) -> Bool) -> [NetworkLog.Entry] {
         if descriptor < 0 {
             open()
         }
         var info = stat()
         guard descriptor >= 0, fstat(descriptor, &info) == 0 else {
-            return []
+            return NetworkLog.entries(at: url, last: count, liveSince: liveSince, matching: matching)
         }
-        let (entries, complete) = NetworkLog.Tail.read(descriptor, end: info.st_size, last: count, liveSince: liveSince, matching: matching)
+        let (entries, complete) = NetworkLog.Tail.read(descriptor, end: info.st_size, previous: url.path + ".1", last: count, liveSince: liveSince,
+                                                       matching: matching)
         // A last line still being written is read whole by the next read().
         lseek(descriptor, complete, SEEK_SET)
         pending.removeAll()
         return entries
     }
 
-    /// The lines completed since the last call, each as logged: an allowed connection comes
-    /// twice, with `open` when it opens and with its bytes when it ends.
-    public func read() -> [NetworkLog.Entry] {
+    /// The lines completed since the last call, each as logged.
+    func read() -> [NetworkLog.Entry] {
         var entries: [NetworkLog.Entry] = []
         if descriptor < 0 {
             open()

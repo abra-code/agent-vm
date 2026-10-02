@@ -8,8 +8,12 @@
 //
 // Every request is checked against the policy by host name and port, the name is resolved on
 // the host, and only public addresses are used (so an allowed name cannot lead to this Mac or
-// the local network). Every attempt, allowed or not, is one line in the box's network log, and
-// an allowed connection has a second line when it opens (see `NetworkLog`).
+// the local network). Every attempt, allowed or not, is in the box's network log: one line for
+// a refusal, and for an allowed connection a line when it opens, one a minute with its bytes
+// while it carries data, and one when it ends (see `NetworkLog`).
+//
+// The proxy knows its open connections: a rule change closes the ones the new rules no longer
+// allow, and a server that stays silent after the box closed its side is not waited for.
 
 import Darwin
 import Foundation
@@ -24,17 +28,40 @@ public final class ProxyServer: @unchecked Sendable {
     /// must not be able to open them without limit.
     private var active = 0
     private let maxConnections: Int
+    /// Allowed connections being relayed, by log id.
+    private var open: [String: Open] = [:]
+    /// How long a server may stay silent once the box has closed its side.
+    private let silenceLimit: Duration
+
+    private struct Open {
+        var request: Request
+        /// The line logged when it opened.
+        var entry: NetworkLog.Entry
+        var began: ContinuousClock.Instant
+        var progress: Splice.Progress
+        /// Bytes sent on before the relay started: a plain request's head, and what came with it.
+        var sentBefore: Int
+        /// The counts of the last progress line, so a quiet connection adds no lines.
+        var logged: (up: Int, down: Int)
+    }
 
     static let maxHead = 16384
     static let headTimeoutSeconds = 30
     static let connectTimeoutMilliseconds: Int32 = 10_000
+    static let keepAliveIdleSeconds: Int32 = 600
     public static let defaultMaxConnections = 256
+    public static let defaultSilenceLimit: Duration = .seconds(60)
+    /// How often the supervisor calls `logProgress`.
+    public static let progressInterval: Duration = .seconds(60)
+    static let ruleRemovedReason = "closed by agent-vm: the box's rules no longer allow it"
 
-    public init(policy: CompiledPolicy, log: NetworkLog?, allowPrivate: Bool = false, maxConnections: Int = defaultMaxConnections) {
+    public init(policy: CompiledPolicy, log: NetworkLog?, allowPrivate: Bool = false, maxConnections: Int = defaultMaxConnections,
+                silenceLimit: Duration = defaultSilenceLimit) {
         self.policy = policy
         self.log = log
         self.allowPrivate = allowPrivate
         self.maxConnections = maxConnections
+        self.silenceLimit = silenceLimit
     }
 
     /// Serves `client` on its own thread and then calls `done` (which closes it), or refuses
@@ -47,6 +74,9 @@ public final class ProxyServer: @unchecked Sendable {
         }
         lock.unlock()
         guard admitted else {
+            var entry = NetworkLog.Entry(arrived: Date(), method: "?", host: "?", port: 0, decision: .denied)
+            entry.reason = "more than \(maxConnections) connections at once"
+            log?.append(entry)
             // A fresh socket's send buffer is empty: this short write does not block.
             Self.respond(client, status: "503 Service Unavailable", message: "agent-vm: more than \(maxConnections) connections through the proxy at once")
             done()
@@ -61,11 +91,52 @@ public final class ProxyServer: @unchecked Sendable {
         }
     }
 
-    /// Replaces the policy; connections already open keep going.
+    /// Replaces the policy, and closes every open connection the new one does not allow (its
+    /// end is logged with the reason). One still allowed, by any rule, keeps going.
     public func update(_ policy: CompiledPolicy) {
         lock.lock()
         self.policy = policy
+        for connection in open.values where policy.allows(host: connection.request.host, port: connection.request.port, tunnel: connection.request.tunnel) == nil {
+            connection.progress.cut(reason: Self.ruleRemovedReason)
+        }
         lock.unlock()
+    }
+
+    /// Logs the bytes so far of every open connection that carried any since its last line, so
+    /// the log shows the volume of a connection that never ends, or whose end is never logged
+    /// (the supervisor killed). Called once a minute, and when the box begins to stop.
+    public func logProgress() {
+        let now = ContinuousClock.now
+        var lines: [NetworkLog.Entry] = []
+        lock.lock()
+        for (id, connection) in open {
+            let (up, down) = connection.progress.counts
+            let counts = (up: up + connection.sentBefore, down: down)
+            guard counts != connection.logged else {
+                continue
+            }
+            open[id]?.logged = counts
+            var line = connection.entry
+            line.partial = true
+            line.bytesUp = counts.up
+            line.bytesDown = counts.down
+            line.milliseconds = Int(ImageBuilder.seconds(now - connection.began) * 1000)
+            lines.append(line)
+        }
+        // Written under the lock: a connection leaves the table before its end line is logged,
+        // so no line of this kind can follow its end line (which readers would take for a
+        // connection that is open again).
+        for line in lines.sorted(by: { $0.time < $1.time }) {
+            log?.append(line)
+        }
+        lock.unlock()
+    }
+
+    /// The number of allowed connections being relayed.
+    var openCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return open.count
     }
 
     private var currentPolicy: CompiledPolicy {
@@ -89,7 +160,7 @@ public final class ProxyServer: @unchecked Sendable {
     public func handle(client: Int32) {
         let clock = ContinuousClock()
         let began = clock.now
-        var entry = NetworkLog.Entry(time: Date(), method: "?", host: "?", port: 0, decision: .denied)
+        var entry = NetworkLog.Entry(arrived: Date(), method: "?", host: "?", port: 0, decision: .denied)
         defer {
             entry.milliseconds = Int(ImageBuilder.seconds(clock.now - began) * 1000)
             log?.append(entry)
@@ -128,7 +199,8 @@ public final class ProxyServer: @unchecked Sendable {
         } catch {
             entry.decision = .failed
             entry.reason = "\(error)"
-            Self.respond(client, status: "502 Bad Gateway", message: "agent-vm: \(error)")
+            // Not the reason: it names the addresses a name has on this Mac's networks.
+            Self.respond(client, status: "502 Bad Gateway", message: "agent-vm: \((error as? ProxyRefusal)?.forClient ?? "\(error)")")
             return
         }
         defer { close(upstream) }
@@ -152,13 +224,29 @@ public final class ProxyServer: @unchecked Sendable {
         entry.decision = .allowed
         // A line now as well as at the end: a tunnel can stay open for hours (an agent's own
         // connection to its provider), and readers of the log should see it meanwhile.
-        entry.id = NetworkLog.newID()
+        let id = NetworkLog.newID()
+        entry.id = id
         var opening = entry
         opening.open = true
         log?.append(opening)
-        let (up, down) = Splice.run(client, upstream)
-        entry.bytesUp = up + leftover.count
+        // A plain request's head is data the box chose too (its target and header lines).
+        let sentBefore = leftover.count + (request.tunnel ? 0 : request.upstreamHead.utf8.count)
+        let progress = Splice.Progress()
+        lock.lock()
+        open[id] = Open(request: request, entry: opening, began: began, progress: progress, sentBefore: sentBefore, logged: (0, 0))
+        // The rules may have changed while the name was resolved and the server connected to.
+        if self.policy.allows(host: request.host, port: request.port, tunnel: request.tunnel) == nil {
+            progress.cut(reason: Self.ruleRemovedReason)
+        }
+        lock.unlock()
+        let (up, down) = Splice.run(client, upstream, progress: progress, silenceLimit: silenceLimit)
+        // Out of the table before either descriptor is closed: `update` shuts them down.
+        lock.lock()
+        open[id] = nil
+        lock.unlock()
+        entry.bytesUp = up + sentBefore
         entry.bytesDown = down
+        entry.reason = progress.reason
     }
 
     // MARK: - Parsing
@@ -355,6 +443,10 @@ public final class ProxyServer: @unchecked Sendable {
             }
             if connected {
                 _ = fcntl(descriptor, F_SETFL, flags)
+                // A server that vanished without a word is noticed, and the connection ended.
+                _ = setsockopt(descriptor, SOL_SOCKET, SO_KEEPALIVE, &one, socklen_t(MemoryLayout<Int32>.size))
+                var idle = keepAliveIdleSeconds
+                _ = setsockopt(descriptor, IPPROTO_TCP, TCP_KEEPALIVE, &idle, socklen_t(MemoryLayout<Int32>.size))
                 return (descriptor, resolved.text)
             }
             close(descriptor)
@@ -371,10 +463,15 @@ public final class ProxyServer: @unchecked Sendable {
     }
 }
 
-/// The box's network log: one JSON object per line. A refused or failed connection is one
-/// line. An allowed one is two lines with the same `id`: one with `open` when it is connected,
-/// and one with the bytes when it ends. Logs from before 0.3.8 have only the second, with no
-/// `id`. `entries` pairs the two, so a reader sees each connection once.
+/// The box's network log: one JSON object per line, in two files. Refused and failed
+/// connections are one line each in `network.jsonl`. Allowed connections are in
+/// `network-allowed.jsonl`, so that refusals, which cost a box nothing to cause, can never push
+/// them out: a line with `open` when it is connected, a line with `partial` and its bytes so far
+/// about once a minute while it carries data, and a line with its bytes when it ends, all with
+/// the same `id`. `entries` puts the two files together by time and gives each connection once.
+///
+/// Logs from before 0.5.12 have both kinds in `network.jsonl` and no `partial` lines; those from
+/// before 0.3.8 have only an allowed connection's last line, with no `id`.
 public final class NetworkLog: @unchecked Sendable {
     public enum Decision: String, Codable, Sendable {
         case allowed
@@ -384,29 +481,42 @@ public final class NetworkLog: @unchecked Sendable {
     }
 
     public struct Entry: Codable, Equatable, Sendable {
+        /// When the request arrived, on every line of a connection. Written in whole seconds.
         public var time: Date
+        /// The milliseconds of `time` (0 to 999), so that the entries of one second keep their
+        /// order when the log's two files are put together (agent-vm 0.5.12 and later).
+        public var timeMilliseconds: Int?
         public var method: String
         public var host: String
         public var port: Int
         public var decision: Decision
         /// The rule or pack that allowed it.
         public var rule: String?
+        /// Why it was refused or failed; on an allowed connection, why agent-vm ended it.
         public var reason: String?
         /// The address connected to.
         public var address: String?
         public var bytesUp: Int?
         public var bytesDown: Int?
         public var milliseconds: Int?
-        /// Pairs an allowed connection's two lines (agent-vm 0.3.8 and later).
+        /// Pairs an allowed connection's lines (agent-vm 0.3.8 and later).
         public var id: String?
-        /// True on the line logged when an allowed connection opens; from `entries`, true
-        /// on a connection whose end is not logged yet.
+        /// True on the lines logged when an allowed connection opens and while it runs; from
+        /// `entries`, true on a connection whose end is not logged yet.
         public var open: Bool?
+        /// True when the bytes are those of a line logged while the connection ran: what it
+        /// had carried by then, not its total (agent-vm 0.5.12 and later).
+        public var partial: Bool?
+
+        /// Whether this entry's request arrived before `other`'s.
+        func arrivedBefore(_ other: Entry) -> Bool {
+            return time != other.time ? time < other.time : (timeMilliseconds ?? 0) < (other.timeMilliseconds ?? 0)
+        }
 
         /// An allowed connection whose end was never logged, because its supervisor stopped
-        /// first: no bytes, and not open.
+        /// first: not open, and no bytes or only those of a line logged while it ran.
         public var endNotLogged: Bool {
-            return decision == .allowed && open != true && bytesUp == nil
+            return decision == .allowed && open != true && (bytesUp == nil || partial == true)
         }
     }
 
@@ -415,14 +525,24 @@ public final class NetworkLog: @unchecked Sendable {
         return String(UInt64.random(in: 0...UInt64.max), radix: 16)
     }
 
+    /// The file of refused and failed connections; the box's `network.jsonl`.
     public let url: URL
-    /// The size at which the log moves to `<name>.1` (replacing the previous one).
+    /// The file of allowed connections, next to it: `network-allowed.jsonl`.
+    public let allowedURL: URL
+    /// The size at which each file moves to `<name>.1` (replacing the previous one).
     public let maxBytes: Int64
     private let lock = NSLock()
 
     public init(url: URL, maxBytes: Int64 = 64 << 20) {
         self.url = url
+        self.allowedURL = Self.allowedURL(for: url)
         self.maxBytes = maxBytes
+    }
+
+    /// `network.jsonl` gives `network-allowed.jsonl`.
+    static func allowedURL(for url: URL) -> URL {
+        let name = url.deletingPathExtension().lastPathComponent + "-allowed." + url.pathExtension
+        return url.deletingLastPathComponent().appendingPathComponent(name)
     }
 
     /// Longest text kept per field: the guest chooses these, and must not be able to write
@@ -441,15 +561,16 @@ public final class NetworkLog: @unchecked Sendable {
             return
         }
         line.append(10)
+        let path = (entry.decision == .allowed ? allowedURL : url).path
         lock.lock()
         defer { lock.unlock() }
         // An idle macOS guest is refused 2-4 times a second (its background services), and a
         // hostile one can go much faster: keep one previous file, about `maxBytes` each.
         var info = stat()
-        if lstat(url.path, &info) == 0, info.st_size + Int64(line.count) > maxBytes {
-            _ = rename(url.path, url.path + ".1")
+        if lstat(path, &info) == 0, info.st_size + Int64(line.count) > maxBytes {
+            _ = rename(path, path + ".1")
         }
-        let descriptor = open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        let descriptor = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else {
             return
         }
@@ -462,19 +583,59 @@ public final class NetworkLog: @unchecked Sendable {
     }
 
     /// The last `count` connections (all when nil) that `matching` accepts, oldest first, each
-    /// once; see `Tail.read`. `liveSince` is when the box's supervisor started (`.distantFuture`
-    /// when none runs): a connection opened before it has ended unlogged, so it is not `open`.
-    public func entries(last count: Int? = nil, liveSince: Date = .distantPast, matching: (Entry) -> Bool = { _ in true }) -> [Entry] {
+    /// once; see `Tail.read`. Both files are read, each with its `.1`, and put together by the
+    /// time the requests arrived. `liveSince` is when the box's supervisor started
+    /// (`.distantFuture` when none runs): a connection opened before it has ended unlogged, so
+    /// it is not `open`. Without `includeAllowed` the file of allowed connections is left
+    /// unread, for a caller whose `matching` accepts none of them.
+    public func entries(last count: Int? = nil, liveSince: Date = .distantPast, includeAllowed: Bool = true,
+                        matching: (Entry) -> Bool = { _ in true }) -> [Entry] {
+        let refused = Self.entries(at: url, last: count, liveSince: liveSince, matching: matching)
+        guard includeAllowed else {
+            return refused
+        }
+        return Self.merged(refused, Self.entries(at: allowedURL, last: count, liveSince: liveSince, matching: matching), last: count)
+    }
+
+    /// The same, from one file and its `.1`.
+    static func entries(at url: URL, last count: Int?, liveSince: Date, matching: (Entry) -> Bool) -> [Entry] {
         let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard descriptor >= 0 else {
-            return []
+            // Only the previous file is there: between the move and the next line.
+            let previous = open(url.path + ".1", O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+            guard previous >= 0 else {
+                return []
+            }
+            defer { close(previous) }
+            var info = stat()
+            guard fstat(previous, &info) == 0 else {
+                return []
+            }
+            return Tail.read(previous, end: info.st_size, last: count, liveSince: liveSince, matching: matching).entries
         }
         defer { close(descriptor) }
         var info = stat()
         guard fstat(descriptor, &info) == 0 else {
             return []
         }
-        return Tail.read(descriptor, end: info.st_size, last: count, liveSince: liveSince, matching: matching).entries
+        return Tail.read(descriptor, end: info.st_size, previous: url.path + ".1", last: count, liveSince: liveSince, matching: matching).entries
+    }
+
+    /// Two lists, each in its own order, as one in order of arrival; then its last `count`. An
+    /// entry of `first` comes before one of `second` that arrived in the same millisecond.
+    static func merged(_ first: [Entry], _ second: [Entry], last count: Int?) -> [Entry] {
+        var result: [Entry] = []
+        result.reserveCapacity(first.count + second.count)
+        var index = 0
+        for entry in first {
+            while index < second.count && second[index].arrivedBefore(entry) {
+                result.append(second[index])
+                index += 1
+            }
+            result.append(entry)
+        }
+        result.append(contentsOf: second[index...])
+        return count.map { Array(result.suffix($0)) } ?? result
     }
 
     /// Reads a log from its end, so the last few connections of a large log cost only the
@@ -485,27 +646,57 @@ public final class NetworkLog: @unchecked Sendable {
         static let maxLineLength = 64 * 1024
 
         /// The connections in `descriptor` up to `end` (see `entries`), and the offset just past
-        /// the last complete line. Unreadable lines are skipped, and so is a last line still
-        /// being written (no newline yet).
+        /// its last complete line. Unreadable lines are skipped, and so is a last line still
+        /// being written (no newline yet). When the file does not hold `count` of them, the
+        /// reading goes on in the file at `previous` (the log's `.1`), if there is one.
         ///
         /// A connection's place is its open line, so the order is the order connections were
-        /// made, and the end line replaces the open line. An end line whose open line is not in
-        /// this file (it moved to `.1`) counts as older than every line in the file.
-        static func read(_ descriptor: Int32, end: off_t, last count: Int?, liveSince: Date = .distantPast,
+        /// made, and its newest later line (its end, else its bytes so far) replaces the open
+        /// line. A later line whose open line is in neither file counts as older than every
+        /// line read.
+        static func read(_ descriptor: Int32, end: off_t, previous: String? = nil, last count: Int?, liveSince: Date = .distantPast,
                          matching: (Entry) -> Bool) -> (entries: [Entry], complete: off_t) {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            var found: [Entry] = []  // newest first
-            var ended: [String: Entry] = [:]  // end lines waiting for their open line
-            var complete: off_t?
-            var position = end
-            var carry: [UInt8] = []  // the end of a line that starts in the chunk read next
-            var buffer = [UInt8](repeating: 0, count: chunkSize)
+            var scan = Scan(count: count, liveSince: liveSince)
+            let (complete, whole) = scan.file(descriptor, end: end, matching: matching)
+            var reachedStart = whole
+            if whole, !scan.full, let previous {
+                let older = open(previous, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+                if older >= 0 {
+                    defer { close(older) }
+                    var current = stat()
+                    var info = stat()
+                    // The same file: the log moved to `.1` after it was opened here.
+                    if fstat(descriptor, &current) == 0, fstat(older, &info) == 0, info.st_ino != current.st_ino {
+                        reachedStart = scan.file(older, end: info.st_size, matching: matching).whole
+                    }
+                }
+            }
+            if reachedStart {
+                scan.finish(matching: matching)
+            }
+            return (scan.found.reversed(), complete)
+        }
 
-            func full() -> Bool {
+        /// What reading backward has gathered, across a log's files.
+        struct Scan {
+            let count: Int?
+            let liveSince: Date
+            var found: [Entry] = []  // newest first
+            var later: [String: Entry] = [:]  // end and progress lines waiting for their open line
+            let decoder: JSONDecoder
+
+            init(count: Int?, liveSince: Date) {
+                self.count = count
+                self.liveSince = liveSince
+                decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+            }
+
+            var full: Bool {
                 return count.map { found.count >= $0 } ?? false
             }
-            func take(_ entry: Entry) {
+
+            mutating func take(_ entry: Entry, matching: (Entry) -> Bool) {
                 var entry = entry
                 if entry.open == true, entry.time < liveSince {
                     entry.open = nil
@@ -514,82 +705,108 @@ public final class NetworkLog: @unchecked Sendable {
                     found.append(entry)
                 }
             }
-            func line(_ bytes: ArraySlice<UInt8>) {
+
+            mutating func line(_ bytes: ArraySlice<UInt8>, matching: (Entry) -> Bool) {
                 guard !bytes.isEmpty, let entry = try? decoder.decode(Entry.self, from: Data(bytes)) else {
                     return
                 }
                 guard let id = entry.id else {
-                    take(entry)
+                    take(entry, matching: matching)
                     return
                 }
-                if entry.open == true {
-                    take(ended.removeValue(forKey: id) ?? entry)
-                } else {
-                    ended[id] = entry
+                if entry.open == true && entry.partial != true {
+                    take(later.removeValue(forKey: id) ?? entry, matching: matching)
+                } else if later[id] == nil || (later[id]?.partial == true && entry.partial != true) {
+                    // Read backward: the first one met is the newest. An end line still wins
+                    // over a progress line after it, which the proxy never writes.
+                    later[id] = entry
                 }
             }
 
-            // Until the last complete line is found even when no entry is wanted (--last 0):
-            // the follower goes on from there.
-            while position > 0 && (complete == nil || !full()) {
-                let size = Int(min(off_t(chunkSize), position))
-                position -= off_t(size)
-                var got = 0
-                while got < size {
-                    let bytes = buffer.withUnsafeMutableBytes { pread(descriptor, $0.baseAddress! + got, size - got, position + off_t(got)) }
-                    if bytes < 0 && errno == EINTR {
+            /// Reads `descriptor` backward from `end` until `count` are found. Returns the offset
+            /// just past its last complete line (0 when it has none), and whether the reading
+            /// reached the start of the file with room for more.
+            mutating func file(_ descriptor: Int32, end: off_t, matching: (Entry) -> Bool) -> (complete: off_t, whole: Bool) {
+                var complete: off_t?
+                var position = end
+                var carry: [UInt8] = []  // the end of a line that starts in the chunk read next
+                var buffer = [UInt8](repeating: 0, count: chunkSize)
+
+                // Until the last complete line is found even when no entry is wanted (--last 0):
+                // the follower goes on from there.
+                while position > 0 && (complete == nil || !full) {
+                    let size = Int(min(off_t(chunkSize), position))
+                    position -= off_t(size)
+                    var got = 0
+                    while got < size {
+                        let bytes = buffer.withUnsafeMutableBytes { pread(descriptor, $0.baseAddress! + got, size - got, position + off_t(got)) }
+                        if bytes < 0 && errno == EINTR {
+                            continue
+                        }
+                        guard bytes > 0 else {
+                            // Cut short under us: what was read is all there is.
+                            return (complete ?? 0, false)
+                        }
+                        got += bytes
+                    }
+                    var data = Array(buffer[0..<size])
+                    data.append(contentsOf: carry)
+                    // Everything after the last newline in the file is a line still being written.
+                    var stop = data.endIndex
+                    if complete == nil {
+                        guard let newline = data.lastIndex(of: 10) else {
+                            carry = data.count > maxLineLength ? [] : data
+                            continue
+                        }
+                        complete = position + off_t(newline + 1)
+                        stop = newline
+                    }
+                    // Before the first newline is the end of a line that began in an earlier chunk,
+                    // unless this chunk starts the file.
+                    let first = position > 0 ? data[..<stop].firstIndex(of: 10) : nil
+                    if position > 0 && first == nil {
+                        carry = data.count > maxLineLength ? [] : Array(data[..<stop])
                         continue
                     }
-                    guard bytes > 0 else {
-                        // Cut short under us: what was read is all there is.
-                        return (found.reversed(), complete ?? 0)
+                    var lineEnd = stop
+                    var index = stop
+                    let floor = first.map { $0 + 1 } ?? 0
+                    while index > floor && !full {
+                        index -= 1
+                        if data[index] == 10 {
+                            line(data[(index + 1)..<lineEnd], matching: matching)
+                            lineEnd = index
+                        }
                     }
-                    got += bytes
-                }
-                var data = Array(buffer[0..<size])
-                data.append(contentsOf: carry)
-                // Everything after the last newline in the file is a line still being written.
-                var stop = data.endIndex
-                if complete == nil {
-                    guard let newline = data.lastIndex(of: 10) else {
-                        carry = data.count > maxLineLength ? [] : data
-                        continue
+                    if !full {
+                        line(data[floor..<lineEnd], matching: matching)
                     }
-                    complete = position + off_t(newline + 1)
-                    stop = newline
-                }
-                // Before the first newline is the end of a line that began in an earlier chunk,
-                // unless this chunk starts the file.
-                let first = position > 0 ? data[..<stop].firstIndex(of: 10) : nil
-                if position > 0 && first == nil {
-                    carry = data.count > maxLineLength ? [] : Array(data[..<stop])
-                    continue
-                }
-                var lineEnd = stop
-                var index = stop
-                let floor = first.map { $0 + 1 } ?? 0
-                while index > floor && !full() {
-                    index -= 1
-                    if data[index] == 10 {
-                        line(data[(index + 1)..<lineEnd])
-                        lineEnd = index
+                    carry = first.map { Array(data[..<$0]) } ?? []
+                    if carry.count > maxLineLength {
+                        carry = []
                     }
                 }
-                if !full() {
-                    line(data[floor..<lineEnd])
-                }
-                carry = first.map { Array(data[..<$0]) } ?? []
-                if carry.count > maxLineLength {
-                    carry = []
-                }
+                return (complete ?? 0, position == 0 && !full)
             }
-            // The start of the file: end lines left over opened before it, oldest last.
-            if position == 0 && !full() {
-                for entry in ended.values.sorted(by: { $0.time > $1.time }) where !full() {
-                    take(entry)
+
+            /// The start of the oldest file: the later lines left over opened before it, oldest
+            /// last.
+            mutating func finish(matching: (Entry) -> Bool) {
+                for entry in later.values.sorted(by: { $0.time > $1.time }) where !full {
+                    take(entry, matching: matching)
                 }
+                later = [:]
             }
-            return (found.reversed(), complete ?? 0)
         }
+    }
+}
+
+extension NetworkLog.Entry {
+    /// An entry for a request that arrived at `arrived`. (Here, so that the memberwise
+    /// initializer stays.)
+    init(arrived: Date, method: String, host: String, port: Int, decision: NetworkLog.Decision) {
+        let seconds = arrived.timeIntervalSince1970.rounded(.down)
+        self.init(time: Date(timeIntervalSince1970: seconds), method: method, host: host, port: port, decision: decision)
+        timeMilliseconds = min(999, Int((arrived.timeIntervalSince1970 - seconds) * 1000))
     }
 }

@@ -131,8 +131,10 @@ public struct AllowRule: Equatable, Sendable, CustomStringConvertible {
     }
 
     /// Names that only a local resolver answers (mDNS, RFC 6762; RFC 6761; ICANN's private-use
-    /// "internal"; RFC 8375): never public, and looking them up could reach the local network.
-    static let localSuffixes = ["local", "localhost", "internal", "home.arpa"]
+    /// "internal"; RFC 8375; the top-level names home and office networks use, none of them
+    /// delegated; RFC 7686): never public, and looking them up could reach the local network.
+    static let localSuffixes = ["local", "localhost", "internal", "home.arpa", "lan", "home", "corp", "intranet", "private", "localdomain",
+                                "test", "invalid", "example", "onion"]
 
     /// Whether `name` (normalized) can be a public DNS name, as the "public" rule requires: at
     /// least two labels, a top-level label starting with a letter (so no IP literal in any

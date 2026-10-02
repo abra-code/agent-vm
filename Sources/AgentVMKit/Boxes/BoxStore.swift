@@ -6,7 +6,8 @@
 //   Boxes/<name>/.lock               held by the box's supervisor while it runs
 //   Boxes/<name>/control.sock        the supervisor's control socket (0600) while it runs
 //   Boxes/<name>/supervisor.log      the supervisor's output
-//   Boxes/<name>/network.jsonl       one line per proxied connection (allowlist and off modes)
+//   Boxes/<name>/network.jsonl       the proxy's refused and failed connections (allowlist and off modes)
+//   Boxes/<name>/network-allowed.jsonl  the connections it allowed (see NetworkLog)
 //   Boxes/<name>/exec.jsonl          what agent-vm exec and box shell ran (start and end lines)
 //   Boxes/<name>/Disk.img            APFS clone of the image's disk
 //   Boxes/<name>/AuxiliaryStorage    APFS clone of the image's auxiliary storage
