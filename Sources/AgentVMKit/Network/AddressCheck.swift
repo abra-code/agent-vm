@@ -22,6 +22,7 @@ public enum AddressCheck {
     public static func isPublic(ipv4 address: UInt32) -> Bool {
         let a = address >> 24
         let b = (address >> 16) & 0xff
+        let c = (address >> 8) & 0xff
         switch a {
         case 0, 10, 127:
             return false // "this network", private, loopback
@@ -33,10 +34,16 @@ public enum AddressCheck {
             return false // private
         case 192 where b == 168:
             return false // private
-        case 192 where b == 0 && (address >> 8) & 0xff == 0:
-            return false // IETF protocol assignments
+        case 192 where b == 0 && (c == 0 || c == 2):
+            return false // IETF protocol assignments, documentation
+        case 192 where b == 88 && c == 99:
+            return false // the retired 6to4 relay range
         case 198 where b == 18 || b == 19:
             return false // benchmarking
+        case 198 where b == 51 && c == 100:
+            return false // documentation
+        case 203 where b == 0 && c == 113:
+            return false // documentation
         case 224...255:
             return false // multicast, reserved, broadcast
         default:
@@ -59,6 +66,21 @@ public enum AddressCheck {
             return false
         }
         if bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0x0d && bytes[3] == 0xb8 {
+            return false
+        }
+        // 6to4 (2002::/16) and Teredo (2001::/32) addresses carry an IPv4 address that a relay
+        // would connect to, unjudged; nothing on today's internet needs either.
+        if bytes[0] == 0x20 && bytes[1] == 0x02 {
+            return false
+        }
+        if bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0 {
+            // 2001::/32 Teredo, 2001:10::/28 and 2001:20::/28 (ORCHID, not routed).
+            if bytes[3] == 0 || bytes[3] & 0xf0 == 0x10 || bytes[3] & 0xf0 == 0x20 {
+                return false
+            }
+        }
+        // Documentation, 3fff::/20.
+        if bytes[0] == 0x3f && bytes[1] == 0xff && bytes[2] & 0xf0 == 0 {
             return false
         }
         return true
@@ -189,15 +211,20 @@ public enum AddressCheck {
         // gateway instead of the address given.
         var v4 = in_addr()
         var v6 = in6_addr()
+        // A name is looked up as written, with a final dot: without one the resolver may try
+        // it with this Mac's search domains appended, and `db` would become `db.corp.example`.
+        var lookedUp = name + "."
         if inet_pton(AF_INET, name, &v4) == 1 {
             hints.ai_family = AF_INET
             hints.ai_flags = AI_NUMERICHOST
+            lookedUp = name
         } else if inet_pton(AF_INET6, name, &v6) == 1 {
             hints.ai_family = AF_INET6
             hints.ai_flags = AI_NUMERICHOST
+            lookedUp = name
         }
         var result: UnsafeMutablePointer<addrinfo>?
-        let status = getaddrinfo(name, String(port), &hints, &result)
+        let status = getaddrinfo(lookedUp, String(port), &hints, &result)
         // The box is told the same for a name that does not resolve and for one that resolves to
         // addresses it may not reach: else it could list the names of networks it cannot reach.
         let forClient = "\(host) has no address the proxy may use (the box's network log on the Mac says why)"

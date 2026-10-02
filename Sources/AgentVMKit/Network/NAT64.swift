@@ -32,7 +32,8 @@ public enum NAT64 {
         static let lengths = [32, 40, 48, 56, 64, 96]
 
         /// Where RFC 6052 puts the IPv4 address after a prefix of `length` bits: byte 8 (bits
-        /// 64-71) is always skipped and must be zero.
+        /// 64-71) is always skipped. Senders set it to zero; nothing says a gateway checks it,
+        /// so an address with another value there is judged by the IPv4 address all the same.
         static func positions(_ length: Int) -> [Int] {
             let start = length / 8
             return Array((start..<16).filter { $0 != 8 }.prefix(4))
@@ -41,9 +42,6 @@ public enum NAT64 {
         /// The IPv4 address `address` (16 bytes) stands for, when it is under this prefix.
         public func embeddedIPv4(_ address: [UInt8]) -> [UInt8]? {
             guard address.count == 16, Array(address.prefix(bytes.count)) == bytes else {
-                return nil
-            }
-            if length < 96 && address[8] != 0 {
                 return nil
             }
             return Self.positions(length).map { address[$0] }

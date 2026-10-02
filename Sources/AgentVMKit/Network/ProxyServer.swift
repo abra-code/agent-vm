@@ -48,6 +48,7 @@ public final class ProxyServer: @unchecked Sendable {
     static let maxHead = 16384
     static let headTimeoutSeconds = 30
     static let connectTimeoutMilliseconds: Int32 = 10_000
+    static let connectTotalMilliseconds: Int32 = 30_000
     static let keepAliveIdleSeconds: Int32 = 600
     public static let defaultMaxConnections = 256
     public static let defaultSilenceLimit: Duration = .seconds(60)
@@ -154,6 +155,10 @@ public final class ProxyServer: @unchecked Sendable {
         var tunnel: Bool
         /// The head to send upstream (plain HTTP only).
         var upstreamHead: String
+        /// How many bytes after the head are the request's (plain HTTP only): its
+        /// Content-Length, 0 without one. nil for a tunnel, and for a body in chunks, whose
+        /// end only its own framing tells.
+        var bodyLength: Int? = nil
     }
 
     /// Serves one client connection to the end. Does not close `client`.
@@ -170,7 +175,7 @@ public final class ProxyServer: @unchecked Sendable {
         _ = setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
 
         let head: [UInt8]
-        let leftover: [UInt8]
+        var leftover: [UInt8]
         let request: Request
         do {
             (head, leftover) = try Self.readHead(client)
@@ -213,6 +218,11 @@ public final class ProxyServer: @unchecked Sendable {
             } else {
                 try FrameChannel.writeAll(upstream, Array(request.upstreamHead.utf8))
             }
+            // A plain request is one request: what follows its body (a second request, with a
+            // Host of its own choosing, for the same server address) is not passed on.
+            if let length = request.bodyLength, leftover.count > length {
+                leftover = Array(leftover[..<length])
+            }
             if !leftover.isEmpty {
                 try FrameChannel.writeAll(upstream, leftover)
             }
@@ -239,7 +249,8 @@ public final class ProxyServer: @unchecked Sendable {
             progress.cut(reason: Self.ruleRemovedReason)
         }
         lock.unlock()
-        let (up, down) = Splice.run(client, upstream, progress: progress, silenceLimit: silenceLimit)
+        let (up, down) = Splice.run(client, upstream, progress: progress, silenceLimit: silenceLimit,
+                                    forwardLimit: request.bodyLength.map { $0 - leftover.count })
         // Out of the table before either descriptor is closed: `update` shuts them down.
         lock.lock()
         open[id] = nil
@@ -348,15 +359,38 @@ public final class ProxyServer: @unchecked Sendable {
         // no proxy headers, one request per connection.
         let hostHeader = (host.contains(":") ? "[\(host)]" : host) + (port == 80 ? "" : ":\(port)")
         var upstream = ["\(method) \(path) \(parts[2])", "Host: \(hostHeader)"]
+        // Where the request ends: its Content-Length, or its chunks. Both, or two lengths, is
+        // how one request is made to look like two to the server.
+        var lengths: [String] = []
+        var chunked = false
         for line in lines.dropFirst() {
             let name = line.split(separator: ":", maxSplits: 1).first.map { $0.lowercased() } ?? ""
+            if name == "content-length" {
+                lengths.append(line.split(separator: ":", maxSplits: 1).dropFirst().first.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: " \t")) } ?? "")
+            } else if name == "transfer-encoding" {
+                chunked = true
+            }
             if name == "host" || name == "proxy-connection" || name == "proxy-authorization" || name == "connection" || name == "keep-alive" {
                 continue
             }
             upstream.append(line)
         }
         upstream.append("Connection: close")
-        return Request(method: method, host: host, port: port, tunnel: false, upstreamHead: upstream.joined(separator: "\r\n") + "\r\n\r\n")
+        var bodyLength: Int? = 0
+        if chunked {
+            guard lengths.isEmpty else {
+                throw ProxyRefusal("a request with both Content-Length and Transfer-Encoding is not proxied")
+            }
+            bodyLength = nil
+        } else if let first = lengths.first {
+            guard lengths.allSatisfy({ $0 == first }), !first.isEmpty, first.utf8.count <= 18, first.utf8.allSatisfy({ $0 >= 0x30 && $0 <= 0x39 }),
+                  let length = Int(first) else {
+                throw ProxyRefusal("malformed Content-Length")
+            }
+            bodyLength = length
+        }
+        return Request(method: method, host: host, port: port, tunnel: false, upstreamHead: upstream.joined(separator: "\r\n") + "\r\n\r\n",
+                       bodyLength: bodyLength)
     }
 
     /// An HTTP token character (RFC 9110 5.6.2).
@@ -387,10 +421,16 @@ public final class ProxyServer: @unchecked Sendable {
         } else if let colon = authority.lastIndex(of: ":") {
             host = String(authority[..<colon])
             portText = String(authority[authority.index(after: colon)...])
+            // An address with colons goes in brackets; without, `example.com:80:80` would be
+            // the host `example.com:80`.
+            guard !host.contains(":") else {
+                throw ProxyRefusal("malformed address \(authority)")
+            }
         }
         let port: UInt16
         if let portText {
-            guard let parsed = UInt16(portText), parsed > 0 else {
+            // Digits only, as written: `+443` and `0443` are not ports.
+            guard let parsed = UInt16(portText), parsed > 0, String(parsed) == portText else {
                 throw ProxyRefusal("bad port in \(authority)")
             }
             port = parsed
@@ -402,15 +442,36 @@ public final class ProxyServer: @unchecked Sendable {
         guard !host.isEmpty, host.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "." || $0 == ":") }) else {
             throw ProxyRefusal("malformed host \(host)")
         }
-        return (AllowRule.normalized(host), port)
+        // No empty labels: `.github.com` and `x..github.com` would match `*.github.com`, and
+        // `.` alone is no name at all.
+        let name = AllowRule.normalized(host)
+        guard !name.isEmpty, name.contains(":") || name.split(separator: ".", omittingEmptySubsequences: false).allSatisfy({ !$0.isEmpty }) else {
+            throw ProxyRefusal("malformed host \(host)")
+        }
+        // With a colon it is an IPv6 address, or nothing: `[:.github.com]` would match
+        // `*.github.com` as a name.
+        var v6 = in6_addr()
+        guard !name.contains(":") || inet_pton(AF_INET6, name, &v6) == 1 else {
+            throw ProxyRefusal("malformed address \(host)")
+        }
+        return (name, port)
     }
 
     // MARK: - Upstream
 
-    /// Connects to the first address that answers within the timeout.
+    /// Connects to the first address that answers within the timeout. All attempts together
+    /// get `connectTotalMilliseconds`: a name with many dead addresses does not hold its slot
+    /// for ten seconds each.
     static func connect(_ addresses: [AddressCheck.Resolved]) throws -> (Int32, String) {
         var lastError = "no address"
+        let deadline = ContinuousClock.now + .milliseconds(Int(connectTotalMilliseconds))
         for resolved in addresses {
+            let left = (deadline - ContinuousClock.now).components
+            let leftMilliseconds = Int32(clamping: left.seconds * 1000 + left.attoseconds / 1_000_000_000_000_000)
+            guard leftMilliseconds > 0 else {
+                lastError = "connection timed out"
+                break
+            }
             var storage = resolved.storage
             let descriptor = socket(Int32(storage.ss_family), SOCK_STREAM, 0)
             guard descriptor >= 0 else {
@@ -428,7 +489,7 @@ public final class ProxyServer: @unchecked Sendable {
             var connected = started == 0
             if !connected && errno == EINPROGRESS {
                 var watched = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
-                if poll(&watched, 1, connectTimeoutMilliseconds) == 1 {
+                if poll(&watched, 1, min(connectTimeoutMilliseconds, leftMilliseconds)) == 1 {
                     var socketError: Int32 = 0
                     var length = socklen_t(MemoryLayout<Int32>.size)
                     connected = getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &socketError, &length) == 0 && socketError == 0

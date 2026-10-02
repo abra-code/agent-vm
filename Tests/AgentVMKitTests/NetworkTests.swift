@@ -165,8 +165,8 @@ enum TestPacks {
     }
 
     @Test func localNetworksContainTheirAddresses() {
-        let lan = AddressCheck.LocalNetwork(address: [203, 0, 113, 7], mask: [255, 255, 255, 0])
-        #expect(lan.contains([203, 0, 113, 200]))
+        let lan = AddressCheck.LocalNetwork(address: [93, 184, 216, 7], mask: [255, 255, 255, 0])
+        #expect(lan.contains([93, 184, 216, 200]))
         #expect(!lan.contains([203, 0, 114, 1]))
         #expect(!lan.contains(v6("2001:db8::1")))
         let v6lan = AddressCheck.LocalNetwork(address: v6("2a01:4f8:1:2::10"), mask: v6("ffff:ffff:ffff:ffff::"))
@@ -185,21 +185,50 @@ enum TestPacks {
         #expect(!wide.contains([100, 71, 102, 29]))
         #expect(!AddressCheck.LocalNetwork(address: v6("2a01::1"), mask: v6("ffff::")).contains(v6("2a01::2")))
         // IPv4-mapped IPv6 is judged as IPv4.
-        #expect(AddressCheck.isOnLocalNetwork(v6("::ffff:203.0.113.9"), networks: [lan]))
+        #expect(AddressCheck.isOnLocalNetwork(v6("::ffff:93.184.216.9"), networks: [lan]))
         #expect(!AddressCheck.isOnLocalNetwork(v6("::ffff:198.51.100.9"), networks: [lan]))
+    }
+
+    /// Ranges that reach nothing public, or that carry another address inside for a relay to
+    /// connect to.
+    @Test func documentationAndRelayRangesAreNotPublic() {
+        func v4(_ text: String) -> UInt32 {
+            return text.split(separator: ".").reduce(0) { $0 << 8 | UInt32($1)! }
+        }
+        for address in ["192.0.2.1", "198.51.100.7", "203.0.113.9", "192.88.99.1", "192.0.0.8"] {
+            #expect(!AddressCheck.isPublic(ipv4: v4(address)), "\(address)")
+        }
+        for address in ["192.0.3.1", "198.51.101.1", "203.0.114.1", "192.88.98.1", "93.184.216.34"] {
+            #expect(AddressCheck.isPublic(ipv4: v4(address)), "\(address)")
+        }
+        // 6to4 for 192.168.1.1 and 127.0.0.1, Teredo, ORCHID, documentation.
+        for address in ["2002:c0a8:101::1", "2002:7f00:1::1", "2002:5db8:d822::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "2001:10::1", "2001:1f:ffff::1", "2001:20::1", "2001:2f::1", "3fff::1", "3fff:fff::1", "2001:db8::1"] {
+            #expect(!AddressCheck.isPublic(ipv6: v6(address)), "\(address)")
+        }
+        for address in ["2606:4700::1111", "2001:4860:4860::8888", "2001:1::1", "2001:f::1", "2001:30::1", "2001:100::1", "2003::1", "3ffe::1", "3fff:1000::1"] {
+            #expect(AddressCheck.isPublic(ipv6: v6(address)), "\(address)")
+        }
+    }
+
+    /// An address under a rule that names it, in any spelling: what is not public stays refused.
+    @Test func aNamedRuleLetsNoSpecialAddressThrough() {
+        for host in ["0x7f.1", "2130706433", "017700000001", "127.1", "0", "::", "::7f00:1", "::ffff:10.0.0.1", "169.254.169.254", "fd00:ec2::254",
+                     "2002:c0a8:101::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "192.0.2.1"] {
+            #expect(throws: ProxyRefusal.self, "\(host)") { _ = try AddressCheck.resolve(host, port: 443, localNetworks: [], nat64: []) }
+        }
     }
 
     /// Public addresses on this Mac's own networks (its IPv6 prefix, or a public IPv4 LAN) are
     /// refused like private ones.
     @Test func addressesOnThisMacsNetworksAreRefused() throws {
-        let lan = AddressCheck.LocalNetwork(address: [203, 0, 113, 7], mask: [255, 255, 255, 0])
-        #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("203.0.113.9", port: 443, localNetworks: [lan]) }
+        let lan = AddressCheck.LocalNetwork(address: [93, 184, 216, 7], mask: [255, 255, 255, 0])
+        #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("93.184.216.9", port: 443, localNetworks: [lan]) }
         do {
-            _ = try AddressCheck.resolve("203.0.113.9", port: 443, localNetworks: [lan])
+            _ = try AddressCheck.resolve("93.184.216.9", port: 443, localNetworks: [lan])
         } catch let refusal as ProxyRefusal {
-            #expect(refusal.message.contains("203.0.113.9 on this Mac's network"))
+            #expect(refusal.message.contains("93.184.216.9 on this Mac's network"))
         }
-        #expect((try? AddressCheck.resolve("203.0.113.9", port: 443, localNetworks: []))?.first?.text == "203.0.113.9")
+        #expect((try? AddressCheck.resolve("93.184.216.9", port: 443, localNetworks: []))?.first?.text == "93.184.216.9")
         let v6lan = AddressCheck.LocalNetwork(address: v6("2a01:4f8:1:2::10"), mask: v6("ffff:ffff:ffff:ffff::"))
         #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("2a01:4f8:1:2::99", port: 443, localNetworks: [v6lan]) }
         #expect((try? AddressCheck.resolve("2a01:4f8:1:100::99", port: 443, localNetworks: [v6lan]))?.first?.text == "2a01:4f8:1:100::99")
@@ -226,6 +255,46 @@ enum TestPacks {
         #expect(request.tunnel)
         #expect(try parse("CONNECT [2606:4700::1]:443 HTTP/1.1\r\n\r\n").host == "2606:4700::1")
         #expect(throws: ProxyRefusal.self) { _ = try parse("CONNECT github.com HTTP/1.1\r\n\r\n") }
+    }
+
+    /// Spellings that name no host, another host, or a port by other means than its digits.
+    @Test func hostsAndPortsAreTakenOnlyAsWritten() {
+        for target in [".:443", ".github.com:443", "x..github.com:443", "github.com.:+443", "github.com:+443", "github.com:0443",
+                       "github.com: 443", "[::1%lo0]:443", "::1:443", "github.com:443:443", "[::1]443", ":443", "[:.github.com]:443", "[github.com]:443x"] {
+            #expect(throws: ProxyRefusal.self, "\(target)") { _ = try parse("CONNECT \(target) HTTP/1.1\r\n\r\n") }
+        }
+        for target in ["http://example.com:80:80/", "http://.example.com/", "http://example..com/", "http://example.com:+80/", "http://:80/"] {
+            #expect(throws: ProxyRefusal.self, "\(target)") { _ = try parse("GET \(target) HTTP/1.1\r\n\r\n") }
+        }
+        // A final dot is the same name, and brackets hold an address with colons.
+        #expect((try? parse("CONNECT github.com.:443 HTTP/1.1\r\n\r\n"))?.host == "github.com")
+        #expect((try? parse("CONNECT [2606:4700::1111]:443 HTTP/1.1\r\n\r\n"))?.host == "2606:4700::1111")
+        // Header names are plain ASCII tokens: a look-alike of "Host" is not a header line.
+        for name in ["Host\u{301}", "Ho\u{17F}t", "H\u{43E}st"] {
+            #expect(throws: ProxyRefusal.self, "\(name)") { _ = try parse("GET http://example.com/ HTTP/1.1\r\n\(name): other.example\r\n\r\n") }
+        }
+    }
+
+    /// Where a plain request ends decides what is passed on after its head.
+    @Test func aPlainRequestsBodyHasOneLength() throws {
+        func length(_ lines: String) throws -> Int? {
+            return try parse("POST http://example.com/ HTTP/1.1\r\n\(lines)\r\n").bodyLength
+        }
+        #expect(try length("") == 0)
+        #expect(try length("Content-Length: 5\r\n") == 5)
+        #expect(try length("content-length:\t0\r\n") == 0)
+        #expect(try length("Content-Length: 5\r\nContent-Length: 5\r\n") == 5)
+        #expect(try length("Transfer-Encoding: chunked\r\n") == nil)
+        #expect(try length("transfer-encoding: gzip, chunked\r\n") == nil)
+        #expect(try length("Content-Length: 007\r\n") == 7)
+        #expect(try length("Content-Length: 5 \t\r\nExpect: 100-continue\r\n") == 5)
+        #expect(try parse("CONNECT example.com:443 HTTP/1.1\r\n\r\n").bodyLength == nil)
+        for lines in ["Content-Length: 5\r\nContent-Length: 6\r\n", "Content-Length: 5\r\nTransfer-Encoding: chunked\r\n", "Content-Length: +5\r\n",
+                      "Content-Length: 5, 5\r\n", "Content-Length: \r\n", "Content-Length: -1\r\n", "Content-Length: 99999999999999999999\r\n",
+                      "Content-Length: 5\r\ncontent-length: 05\r\n", "Content-Length : 5\r\n", "Content-Length: 5\r\n 6\r\n", "Content-Length: 0x5\r\n",
+                      "Transfer-Encoding: chunked\r\nContent-Length: 0\r\n"] {
+            #expect(throws: ProxyRefusal.self, "\(lines)") { _ = try length(lines) }
+        }
     }
 
     @Test func plainHTTPIsRewrittenToOriginForm() throws {
@@ -834,6 +903,73 @@ final class HoldingServer: @unchecked Sendable {
         #expect(log.entries().first?.bytesUp == sent.utf8.count)
     }
 
+    /// A plain request is one request. What follows it on the connection (a second request,
+    /// with a Host of its own choosing, for whatever answers at the allowed name's address) is
+    /// not passed on, whether it arrives with the head or later.
+    @Test func nothingAfterAPlainRequestReachesTheServer() throws {
+        let server = try HoldingServer()
+        defer { server.closeConnections() }
+        let allowed = BoxNetwork(mode: .allowlist, allow: ["127.0.0.1:\(server.port)"])
+        let proxy = ProxyServer(policy: try CompiledPolicy(allowed, packs: TestPacks.builtIn), log: nil, allowPrivate: true)
+        let second = "GET /two HTTP/1.1\r\nHost: another-site.example\r\n\r\n"
+        for (request, body) in [("GET http://127.0.0.1:\(server.port)/one HTTP/1.1\r\n\r\n", ""),
+                                ("POST http://127.0.0.1:\(server.port)/one HTTP/1.1\r\nContent-Length: 3\r\n\r\n", "abc")] {
+            let before = server.received
+            let head = try ProxyServer.parse(Array(request.utf8)).upstreamHead
+            var pair: [Int32] = [-1, -1]
+            #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+            let (client, served) = (pair[0], pair[1])
+            let done = DispatchSemaphore(value: 0)
+            Thread.detachNewThread {
+                proxy.handle(client: served)
+                close(served)
+                done.signal()
+            }
+            // The second request in the same write as the first, and once more afterwards.
+            _ = (request + body + second).withCString { write(client, $0, strlen($0)) }
+            #expect(eventually { server.received - before == head.utf8.count + body.utf8.count })
+            _ = second.withCString { write(client, $0, strlen($0)) }
+            usleep(300_000)
+            #expect(server.received - before == head.utf8.count + body.utf8.count)
+            close(client)
+            server.closeConnections()
+            #expect(done.wait(timeout: .now() + 10) == .success)
+        }
+    }
+
+    /// A body in pieces: the part that came with the head and the part that came later add up
+    /// to its length, and no more.
+    @Test func aBodyThatArrivesInPiecesIsPassedOnWhole() throws {
+        let server = try HoldingServer()
+        defer { server.closeConnections() }
+        let allowed = BoxNetwork(mode: .allowlist, allow: ["127.0.0.1:\(server.port)"])
+        let scratch = try Scratch()
+        let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
+        let proxy = ProxyServer(policy: try CompiledPolicy(allowed, packs: TestPacks.builtIn), log: log, allowPrivate: true)
+        let request = "POST http://127.0.0.1:\(server.port)/ HTTP/1.1\r\nContent-Length: 10\r\n\r\n"
+        let head = try ProxyServer.parse(Array(request.utf8)).upstreamHead
+        var pair: [Int32] = [-1, -1]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+        let (client, served) = (pair[0], pair[1])
+        let done = DispatchSemaphore(value: 0)
+        Thread.detachNewThread {
+            proxy.handle(client: served)
+            close(served)
+            done.signal()
+        }
+        _ = (request + "abcd").withCString { write(client, $0, strlen($0)) }
+        #expect(eventually { server.received == head.utf8.count + 4 })
+        _ = "efghijKLMNOP".withCString { write(client, $0, strlen($0)) }
+        #expect(eventually { server.received == head.utf8.count + 10 })
+        usleep(200_000)
+        #expect(server.received == head.utf8.count + 10)
+        close(client)
+        server.closeConnections()
+        #expect(done.wait(timeout: .now() + 10) == .success)
+        // The log counts what was passed on, not what was dropped.
+        #expect(log.entries().first?.bytesUp == head.utf8.count + 10)
+    }
+
     /// The box closed its side and the server never answers that: the connection is given up
     /// after the limit, and its slot is free again.
     @Test func aSilentServerDoesNotHoldASlot() throws {
@@ -985,6 +1121,15 @@ final class HoldingServer: @unchecked Sendable {
         notARP[13] = 0x00 // IPv4 ethertype
         #expect(DeadEndLink.arpReply(to: notARP) == nil)
         #expect(DeadEndLink.arpReply(to: [1, 2, 3]) == nil)
+        // Frames of any size, a reply instead of a request, and ARP for the asker's own address.
+        #expect(DeadEndLink.arpReply(to: []) == nil)
+        #expect(DeadEndLink.arpReply(to: Array(arpRequest(target: [10, 254, 0, 1]).prefix(41))) == nil)
+        #expect(DeadEndLink.arpReply(to: [UInt8](repeating: 0xff, count: 65535)) == nil)
+        var answer = arpRequest(target: [10, 254, 0, 1])
+        answer[21] = 0x02
+        #expect(DeadEndLink.arpReply(to: answer) == nil)
+        #expect(DeadEndLink.arpReply(to: arpRequest(target: [10, 254, 0, 2])) == nil)
+        #expect(DeadEndLink.arpReply(to: arpRequest(target: [10, 254, 0, 1]) + [UInt8](repeating: 0, count: 2000))?.count == 42)
     }
 
     @Test func theLinkAnswersOverItsSocket() throws {
@@ -1385,9 +1530,13 @@ final class HoldingServer: @unchecked Sendable {
             let nat64 = NAT64.Prefix(bytes: v6(prefix), length: length)
             #expect(nat64.embeddedIPv4(v6(address)) == [192, 0, 2, 33], "/\(length)")
         }
-        // Not under the prefix, or a nonzero byte 8 below /96.
+        // Not under the prefix.
         #expect(NAT64.Prefix(bytes: v6("2001:db8::"), length: 32).embeddedIPv4(v6("2001:db9:c000:221::")) == nil)
-        #expect(NAT64.Prefix(bytes: v6("2001:db8::"), length: 32).embeddedIPv4(v6("2001:db8:c000:221:100::")) == nil)
+        // Byte 8 is skipped whatever it holds: a gateway may not look at it either.
+        #expect(NAT64.Prefix(bytes: v6("2001:db8::"), length: 32).embeddedIPv4(v6("2001:db8:c000:221:100::")) == [192, 0, 2, 33])
+        let wide = NAT64.Prefix(bytes: v6("2607:7700:0:33::"), length: 64)
+        #expect(wide.embeddedIPv4(v6("2607:7700:0:33:10a:0:100:0")) == [10, 0, 0, 1])
+        #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("2607:7700:0:33:10a:0:100:0", port: 443, localNetworks: [], nat64: [wide]) }
         #expect(NAT64.Prefix.wellKnown.embeddedIPv4(v6("64:ff9b::a00:1")) == [10, 0, 0, 1])
     }
 
@@ -1411,11 +1560,11 @@ final class HoldingServer: @unchecked Sendable {
         }
         #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("2607:7700:0:33:0:1:7f00:1", port: 443, localNetworks: [], nat64: [prefix]) }
         #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("64:ff9b::c0a8:105", port: 443, localNetworks: [], nat64: [.wellKnown]) }
-        let lan = AddressCheck.LocalNetwork(address: [203, 0, 113, 7], mask: [255, 255, 255, 0])
-        #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("2607:7700:0:33:0:1:cb00:7109", port: 443, localNetworks: [lan], nat64: [prefix]) }
+        let lan = AddressCheck.LocalNetwork(address: [93, 184, 216, 7], mask: [255, 255, 255, 0])
+        #expect(throws: ProxyRefusal.self) { _ = try AddressCheck.resolve("2607:7700:0:33:0:1:5db8:d809", port: 443, localNetworks: [lan], nat64: [prefix]) }
         // A public IPv4 address behind the prefix is fine, and the log gets the plain address.
-        let allowed = try AddressCheck.resolve("2607:7700:0:33:0:1:cb00:7109", port: 443, localNetworks: [], nat64: [prefix])
-        #expect(allowed.map(\.text) == ["2607:7700:0:33:0:1:cb00:7109"])
+        let allowed = try AddressCheck.resolve("2607:7700:0:33:0:1:5db8:d809", port: 443, localNetworks: [], nat64: [prefix])
+        #expect(allowed.map(\.text) == ["2607:7700:0:33:0:1:5db8:d809"])
     }
 
     /// A prefix from a hostile ipv4only.arpa answer can only refuse more: outside the space
@@ -1434,7 +1583,7 @@ final class HoldingServer: @unchecked Sendable {
 
     /// An IP address given as the host is used as given, never translated.
     @Test func addressesStayAsGiven() throws {
-        #expect(try AddressCheck.resolve("203.0.113.9", port: 443, localNetworks: [], nat64: []).map(\.text) == ["203.0.113.9"])
+        #expect(try AddressCheck.resolve("93.184.216.9", port: 443, localNetworks: [], nat64: []).map(\.text) == ["93.184.216.9"])
         #expect(try AddressCheck.resolve("[2001:4860::1]", port: 443, localNetworks: [], nat64: []).map(\.text) == ["2001:4860::1"])
     }
 }

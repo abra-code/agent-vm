@@ -87,12 +87,15 @@ public enum Splice {
     /// Blocks until both directions are done; returns the bytes copied each way. Closes
     /// neither descriptor. Writes never raise SIGPIPE (SO_NOSIGPIPE is set on both).
     ///
+    /// With `forwardLimit`, at most that many bytes from `a` reach `b`; what `a` sends beyond
+    /// is read and dropped, so the splice still ends when `a` does.
+    ///
     /// `progress` gets the counts as they grow and can end the splice. With `silenceLimit`,
     /// once `a` has finished sending, `b` may stay silent that long at most; then both are shut
     /// down. Without it a peer of `b` that never answers a half-close keeps the splice, its
     /// threads and its descriptors for good.
     @discardableResult
-    public static func run(_ a: Int32, _ b: Int32, progress: Progress? = nil, silenceLimit: Duration? = nil) -> (aToB: Int, bToA: Int) {
+    public static func run(_ a: Int32, _ b: Int32, progress: Progress? = nil, silenceLimit: Duration? = nil, forwardLimit: Int? = nil) -> (aToB: Int, bToA: Int) {
         var one: Int32 = 1
         _ = setsockopt(a, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
         _ = setsockopt(b, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
@@ -109,7 +112,7 @@ public enum Splice {
                 if index == 1, let silenceLimit {
                     giveUp = { forwardEnded.since.map { ContinuousClock.now - $0 > silenceLimit } ?? false }
                 }
-                let silent = copy(from, to, giveUp: giveUp) { count in
+                let silent = copy(from, to, giveUp: giveUp, limit: index == 0 ? forwardLimit : nil) { count in
                     progress.add(index, count)
                     if index == 1 {
                         // Data from `b`: its silence starts over.
@@ -131,11 +134,13 @@ public enum Splice {
         return progress.counts
     }
 
-    /// Copies until end of file or an error, reporting each chunk written to `copied`. Returns
+    /// Copies until end of file or an error, reporting each chunk written to `copied`; with
+    /// `limit`, only that many bytes are written. Returns
     /// true when it stopped because `giveUp` said so (asked about once a second while nothing
     /// arrives).
-    static func copy(_ from: Int32, _ to: Int32, giveUp: (() -> Bool)? = nil, copied: (Int) -> Void) -> Bool {
+    static func copy(_ from: Int32, _ to: Int32, giveUp: (() -> Bool)? = nil, limit: Int? = nil, copied: (Int) -> Void) -> Bool {
         var buffer = [UInt8](repeating: 0, count: 65536)
+        var remaining = limit
         // Noted here, not read from errno: the socket's own ETIMEDOUT (a server that stopped
         // answering, found by keepalive) is an error like any other, not `giveUp`'s answer.
         var gaveUp = false
@@ -151,9 +156,12 @@ public enum Splice {
             if count <= 0 {
                 return gaveUp
             }
+            // Past the limit, what was read is dropped.
+            let passed = min(count, remaining ?? count)
+            remaining = remaining.map { $0 - passed }
             var offset = 0
-            while offset < count {
-                let written = buffer.withUnsafeBytes { write(to, $0.baseAddress! + offset, count - offset) }
+            while offset < passed {
+                let written = buffer.withUnsafeBytes { write(to, $0.baseAddress! + offset, passed - offset) }
                 if written < 0 {
                     if errno == EINTR {
                         continue
@@ -164,7 +172,9 @@ public enum Splice {
                 }
                 offset += written
             }
-            copied(count)
+            if passed > 0 {
+                copied(passed)
+            }
         }
     }
 
