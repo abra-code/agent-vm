@@ -10,7 +10,7 @@
 // in its store that names it is gone.
 //
 // A record without `passwordID` keeps the password in a `Password` file (mode 0600) in its
-// folder, as every image did before 0.6.0. That is also what an ad hoc build makes: the
+// folder, as every image did before 0.6.0 (AccountPasswordMove moves those). That is also what an ad hoc build makes: the
 // Keychain ties an item to the program that stored it, and an ad hoc build is a new program
 // after every rebuild, so macOS would ask about every image the previous build made.
 //
@@ -145,7 +145,18 @@ public struct AccountPasswordStore: Sendable {
     /// read, nothing is removed: its password may be one of them. Returns the identifiers
     /// removed.
     @discardableResult
-    public func removeUnused(store root: URL) -> [String] {
+    public func removeUnused(store root: URL, lockPatience: Duration = AccountPasswordStore.lockPatience) -> [String] {
+        guard !identifiers(storedFor: root).isEmpty else {
+            return []
+        }
+        // Not while passwords are moved into the Keychain: a record that joins an item that is
+        // there names it only then, so this could list the item, miss the record, and remove
+        // the item after its file is gone. When the lock cannot be had, the next sweep removes
+        // what this one would have.
+        guard let lock = try? FolderLock.tryAcquire(Self.lockPath(store: root), patience: lockPatience) else {
+            return []
+        }
+        defer { lock.release() }
         // The items first, the records after: a build names its identifier in its record before
         // it adds the item, so the record of every item listed here is there to be read.
         let stored = identifiers(storedFor: root)
@@ -160,6 +171,14 @@ public struct AccountPasswordStore: Sendable {
         }
         return removed.sorted()
     }
+
+    /// In the store's folder: held while unused items are removed, and for as long as
+    /// AccountPasswordMove runs (one move at a time).
+    static func lockPath(store root: URL) -> String {
+        return root.appendingPathComponent(".passwords.lock").path
+    }
+
+    public static let lockPatience: Duration = .seconds(5)
 
     /// The items this build stored for the store at `root`. Reads attributes only.
     private func identifiers(storedFor root: URL) -> [String] {
@@ -272,7 +291,19 @@ public enum AccountPassword {
     /// The password of an image or a box: the Keychain item its record names, or its file.
     static func read(id: String?, file: URL, owner: String, keychain: AccountPasswordStore) throws -> String {
         if let id {
-            return try keychain.read(id: id, owner: owner)
+            do {
+                return try keychain.read(id: id, owner: owner)
+            } catch let missing as AgentVMError {
+                guard case .accountPasswordMissing = missing else {
+                    throw missing
+                }
+                // A move into the Keychain that was killed after the record was written and
+                // before the item was: the file is still there (AccountPasswordMove).
+                guard let password = try? String(contentsOf: file, encoding: .utf8), !password.isEmpty else {
+                    throw missing
+                }
+                return password
+            }
         }
         guard let password = try? String(contentsOf: file, encoding: .utf8), !password.isEmpty else {
             throw AgentVMError.accountPasswordMissing(owner: owner, reason: "its file \(file.path) is missing or empty")
@@ -290,7 +321,7 @@ extension GoldenImage {
     /// for a command that needs it only minutes in, after cloning disks and booting a guest.
     func requireAccountPassword(keychain: AccountPasswordStore) throws {
         if let id = record.passwordID {
-            guard keychain.contains(id) else {
+            guard keychain.contains(id) || FileSystem.exists(passwordURL.path) else {
                 throw AgentVMError.accountPasswordMissing(owner: "image \(name)", reason: AccountPasswordStore.notInKeychain)
             }
         } else if !FileSystem.exists(passwordURL.path) {

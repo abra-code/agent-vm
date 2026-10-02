@@ -307,6 +307,13 @@ public struct BoxStore: Sendable {
     @discardableResult
     public func updateNetwork(named name: String, to network: BoxNetwork) throws -> Box {
         _ = try CompiledPolicy(network, packs: try NetworkPacks.needed(for: network, store: root, builtIn: builtInPacks))
+        // A rule change takes no box lock (the box may be running), and the record is read,
+        // changed and written back here. Not while account passwords are moved into the
+        // Keychain: that writes the same record, and a copy read before would undo it.
+        guard let recordLock = try FolderLock.tryAcquire(AccountPasswordStore.lockPath(store: root), patience: AccountPasswordStore.lockPatience) else {
+            throw AgentVMError.system(operation: "change the rules of box \(name) while account passwords are moved into the Keychain", code: EBUSY)
+        }
+        defer { recordLock.release() }
         let current = try box(named: name)
         // A mode change holds the box lock while saving, so no start can slip in between the
         // check and the write.
@@ -452,6 +459,15 @@ public struct BoxStore: Sendable {
             }
         }
         return (deleted, problems)
+    }
+
+    /// Records the Keychain item that holds the box's password (AccountPasswordMove); the
+    /// caller holds the box's lock.
+    func setPasswordID(_ id: String, of box: Box) throws {
+        var record = box.record
+        record.passwordID = id
+        record.formatVersion = ImageRecord.formatVersion(passwordID: id)
+        try save(Box(record: record, directory: box.directory))
     }
 
     private func save(_ box: Box) throws {

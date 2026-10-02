@@ -150,6 +150,7 @@ struct BoxCommand: ParsableCommand {
                 case path
                 case diskUsage
                 case needs
+                case passwordStorage
             }
 
             func encode(to encoder: Encoder) throws {
@@ -160,6 +161,8 @@ struct BoxCommand: ParsableCommand {
                 try container.encode(path, forKey: .path)
                 try container.encodeIfPresent(diskUsage, forKey: .diskUsage)
                 try container.encode(needs, forKey: .needs)
+                // Where the account's password is: keychain or file.
+                try container.encode(box.passwordID == nil ? AccountPassword.Storage.file : .keychain, forKey: .passwordStorage)
             }
 
             /// Every image's record by name, for the entries' needs; images that cannot be

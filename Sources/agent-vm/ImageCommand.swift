@@ -537,6 +537,7 @@ struct ImageCommand: ParsableCommand {
                 case needs
                 case updating
                 case macOSUpdate
+                case passwordStorage
             }
 
             func encode(to encoder: Encoder) throws {
@@ -550,6 +551,8 @@ struct ImageCommand: ParsableCommand {
                     try container.encode(true, forKey: .updating)
                 }
                 try container.encodeIfPresent(macOSUpdate, forKey: .macOSUpdate)
+                // Where the account's password is: keychain or file.
+                try container.encode(record.passwordID == nil ? AccountPassword.Storage.file : .keychain, forKey: .passwordStorage)
             }
 
             /// The entry for a person: a line with the essentials, the folder (and with sizes,

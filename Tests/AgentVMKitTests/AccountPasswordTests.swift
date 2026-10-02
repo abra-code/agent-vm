@@ -177,6 +177,177 @@ import Testing
         #expect(GuestSSH.askpassAnswer(arguments: ["agent-vm", "image", "list"], environment: [:], keychain: passwords) == .notAskpass)
     }
 
+    // MARK: - moving what was made before
+
+    /// A store as 0.5 left it: `dev` with a box, `tools` derived from it (the same password),
+    /// and `other`, installed on its own.
+    func oldStore() throws -> (BoxScratch, AccountPasswordStore) {
+        let fixture = try BoxScratch()
+        let passwords = AccountPasswordStore(memory: AccountPasswordStore.Memory())
+        fixture.images.passwords = passwords
+        fixture.boxes.passwords = passwords
+        for (name, password) in [("tools", "secret"), ("other", "another")] {
+            let (image, lock) = try fixture.images.create(ImageStoreTests.record(name, state: .ready))
+            lock.release()
+            try ImageBuilder.writePassword(password, to: image.passwordURL)
+        }
+        _ = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images)
+        return (fixture, passwords)
+    }
+
+    @Test func aLineageEndsUpNamingOneItem() throws {
+        let (fixture, passwords) = try oldStore()
+        #expect(AccountPasswordMove.fileCount(store: fixture.images.root) == 4)
+        let result = try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes)
+        #expect(result.moved == ["image dev", "image other", "image tools", "box b1"])
+        #expect(result.skipped.isEmpty)
+        #expect(result.items == 2)
+        #expect(AccountPasswordMove.fileCount(store: fixture.images.root) == 0)
+
+        let dev = try fixture.images.image(named: "dev")
+        let id = try #require(dev.record.passwordID)
+        #expect(dev.record.formatVersion == 2)
+        #expect(try fixture.images.image(named: "tools").record.passwordID == id)
+        let box = try fixture.boxes.box(named: "b1")
+        #expect(box.record.passwordID == id && box.record.formatVersion == 2)
+        #expect(try box.accountPassword(keychain: passwords) == "secret")
+        let other = try fixture.images.image(named: "other")
+        #expect(other.record.passwordID != id)
+        #expect(try other.accountPassword(keychain: passwords) == "another")
+        // Nothing left to do, and nothing the sweep would take for a leftover.
+        #expect(try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes) == AccountPasswordMove.Result())
+        #expect(passwords.removeUnused(store: fixture.images.root).isEmpty)
+    }
+
+    @Test func whatIsInUseOrLeftOutKeepsItsFileAndJoinsLater() throws {
+        let (fixture, passwords) = try oldStore()
+        // A running box: its supervisor holds the lock.
+        let box = try fixture.boxes.box(named: "b1")
+        let running = try #require(try FolderLock.tryAcquire(box.lockPath))
+        var result = try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes, except: ["other"])
+        #expect(result.moved == ["image dev", "image tools"])
+        #expect(result.skipped.map(\.name) == ["image other", "box b1"])
+        #expect(result.skipped.last?.reason.contains("running") == true)
+        #expect(result.items == 1)
+        #expect(try String(contentsOf: box.passwordURL, encoding: .utf8) == "secret")
+        #expect(try fixture.boxes.box(named: "b1").record.passwordID == nil)
+        #expect(try fixture.images.image(named: "other").record.passwordID == nil)
+
+        running.release()
+        result = try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes, except: ["other"])
+        #expect(result.moved == ["box b1"])
+        #expect(result.items == 0)
+        #expect(try fixture.boxes.box(named: "b1").record.passwordID == fixture.images.image(named: "dev").record.passwordID)
+        #expect(try fixture.boxes.box(named: "b1").accountPassword(keychain: passwords) == "secret")
+        #expect(AccountPasswordMove.fileCount(store: fixture.images.root) == 1)
+    }
+
+    /// Killed after the record was written and before the item was added: the password is
+    /// still read, from the file, and the next run finishes the move.
+    @Test func aMoveKilledHalfwayLosesNothing() throws {
+        let (fixture, passwords) = try oldStore()
+        let half = try fixture.images.update(try fixture.images.image(named: "other")) { record in
+            record.passwordID = "0b1c2d3e-0000-4000-8000-0000000000ff"
+            record.formatVersion = 2
+        }
+        #expect(!passwords.contains("0b1c2d3e-0000-4000-8000-0000000000ff"))
+        #expect(try half.accountPassword(keychain: passwords) == "another")
+        try half.requireAccountPassword(keychain: passwords)
+        #expect(passwords.removeUnused(store: fixture.images.root).isEmpty)
+
+        let result = try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes)
+        #expect(result.moved.contains("image other"))
+        #expect(!FileSystem.exists(half.passwordURL.path))
+        #expect(try passwords.read(id: "0b1c2d3e-0000-4000-8000-0000000000ff", owner: "image other") == "another")
+    }
+
+    /// An update that was killed once it was decided left its record, written before the
+    /// move, in `Update.commit`: it is put in place first, not over the record the move wrote.
+    @Test func anUpdateLeftDecidedIsFinishedBeforeItsImageIsMoved() throws {
+        let (fixture, passwords) = try oldStore()
+        let dev = try fixture.images.image(named: "dev")
+        try FileSystem.makeDirectories(dev.updateCommitURL.path)
+        var updated = dev.record
+        updated.revision = 7
+        try SessionStore.encoder.encode(updated).write(to: dev.updateCommitURL.appendingPathComponent(ImageStore.recordName))
+
+        let result = try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes)
+        #expect(result.moved.contains("image dev"))
+        #expect(!FileSystem.exists(dev.updateCommitURL.path))
+        // What every later command on the image does first.
+        let settled = try fixture.images.settle(dev)
+        #expect(settled.record.revision == 7)
+        #expect(settled.record.passwordID != nil && settled.record.formatVersion == 2)
+        #expect(try settled.accountPassword(keychain: passwords) == "secret")
+    }
+
+    @Test func aNameLeftOutMustBeAnImage() throws {
+        let (fixture, _) = try oldStore()
+        #expect(throws: AgentVMError.imageNotFound("dve")) {
+            try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes, except: ["dve"])
+        }
+        #expect(AccountPasswordMove.fileCount(store: fixture.images.root) == 4)
+        #expect(try fixture.images.image(named: "dev").record.passwordID == nil)
+        // An image that is gone is named for the boxes made from it.
+        try fixture.images.delete(named: "dev")
+        let result = try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes, except: ["dev"])
+        #expect(result.skipped.map(\.name) == ["box b1"])
+        #expect(try fixture.boxes.box(named: "b1").record.passwordID == nil)
+    }
+
+    /// A record that names an item and still has a file with another password: the item is
+    /// what is read, and the file stays.
+    @Test func aFileThatDiffersFromItsItemIsKept() throws {
+        let (fixture, passwords) = try oldStore()
+        try passwords.add(id: Self.id, password: "s3cret", label: "x", store: fixture.images.root)
+        let other = try fixture.images.update(try fixture.images.image(named: "other")) { record in
+            record.passwordID = Self.id
+            record.formatVersion = 2
+        }
+        #expect(try other.accountPassword(keychain: passwords) == "s3cret")
+        let result = try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes)
+        #expect(result.skipped.map(\.name) == ["image other"])
+        #expect(try String(contentsOf: other.passwordURL, encoding: .utf8) == "another")
+        #expect(try passwords.read(id: Self.id, owner: "image other") == "s3cret")
+    }
+
+    /// The sweep of unused items and a move never run at once (a record that joins an item
+    /// names it only during the move), and neither do two moves.
+    @Test func aMoveKeepsTheSweepAndASecondMoveOut() throws {
+        let (fixture, passwords) = try oldStore()
+        try passwords.add(id: Self.id, password: "unused", label: "x", store: fixture.images.root)
+        let moving = try #require(try FolderLock.tryAcquire(AccountPasswordStore.lockPath(store: fixture.images.root)))
+        #expect(passwords.removeUnused(store: fixture.images.root, lockPatience: .milliseconds(50)).isEmpty)
+        #expect(passwords.contains(Self.id))
+        #expect(throws: AgentVMError.self) {
+            try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes, lockPatience: .milliseconds(50))
+        }
+        #expect(AccountPasswordMove.fileCount(store: fixture.images.root) == 4)
+        moving.release()
+        #expect(passwords.removeUnused(store: fixture.images.root) == [Self.id])
+        #expect(try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes).moved.count == 4)
+    }
+
+    /// One record that cannot be written is reported with its error, and the others are moved.
+    @Test func aRecordThatFailsDoesNotStopTheOthers() throws {
+        let (fixture, passwords) = try oldStore()
+        let box = try fixture.boxes.box(named: "b1")
+        chmod(box.directory.path, 0o500)
+        defer { chmod(box.directory.path, 0o700) }
+        let result = try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes)
+        #expect(result.moved == ["image dev", "image other", "image tools"])
+        #expect(result.failed.map(\.name) == ["box b1"])
+        #expect(try String(contentsOf: box.passwordURL, encoding: .utf8) == "secret")
+        #expect(try fixture.boxes.box(named: "b1").accountPassword(keychain: passwords) == "secret")
+    }
+
+    /// With no file left there is nothing to lock and no item to read.
+    @Test func aStoreWithoutFilesIsLeftAlone() throws {
+        let (fixture, _) = try fixture()
+        #expect(try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes) == AccountPasswordMove.Result())
+        #expect(!FileSystem.exists(AccountPasswordStore.lockPath(store: fixture.images.root)))
+    }
+
     /// The same calls against the login Keychain, under a service of its own. Off by default.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["AGENT_VM_TEST_KEYCHAIN"] == "1"))
     func theLoginKeychainKeepsAndRemovesItems() throws {

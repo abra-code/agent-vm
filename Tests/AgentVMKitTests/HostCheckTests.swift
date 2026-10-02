@@ -33,7 +33,7 @@ import Virtualization
         let report = HostReport.evaluate(Self.goodFacts())
         #expect(report.canRunBoxes)
         #expect(report.checks.allSatisfy { $0.status == .ok })
-        #expect(report.checks.map(\.name) == ["macOS", "virtualization", "entitlement", "signature", "disk space", "store folder", "running VMs"])
+        #expect(report.checks.map(\.name) == ["macOS", "virtualization", "entitlement", "signature", "disk space", "store folder", "account passwords", "running VMs"])
     }
 
     @Test func theStoreFolderMustBeYourOwnAndPrivate() {
@@ -48,6 +48,24 @@ import Virtualization
         #expect(check(StoreRoot.State(isFolder: true, ownedByUser: true, mode: 0o700, ignoresOwnership: true)) == (.warning, true))
         #expect(check(StoreRoot.State(isFolder: true, ownedByUser: false, mode: 0o700, ignoresOwnership: false)) == (.failure, false))
         #expect(check(StoreRoot.State(isFolder: false, ownedByUser: true, mode: 0o600, ignoresOwnership: false)) == (.failure, false))
+    }
+
+    @Test func passwordsStillInFilesAreMentioned() {
+        func check(files: Int?, keychain: Bool) -> HostCheck? {
+            var facts = Self.goodFacts()
+            facts.passwordFiles = files
+            facts.keepsPasswordsInKeychain = keychain
+            let report = HostReport.evaluate(facts)
+            #expect(report.canRunBoxes)
+            return report.checks.first { $0.name == "account passwords" }
+        }
+        #expect(check(files: 0, keychain: true)?.status == .ok)
+        #expect(check(files: 3, keychain: true)?.status == .info)
+        #expect(check(files: 3, keychain: true)?.detail.contains("agent-vm store secure-passwords") == true)
+        #expect(check(files: 1, keychain: true)?.detail.hasPrefix("1 image or box keeps its") == true)
+        // An ad hoc build cannot move them, so it does not say to.
+        #expect(check(files: 3, keychain: false)?.detail.contains("secure-passwords") == false)
+        #expect(check(files: nil, keychain: true)?.status == .info)
     }
 
     /// A store folder made before agent-vm set the mode, or by hand, or by someone else.

@@ -29,6 +29,11 @@ public struct HostFacts: Sendable {
     public var runningVirtualMachines: Int?
     /// The store's own folder; nil when it does not exist yet.
     public var store: StoreRoot.State?
+    /// Images and boxes that keep their account password in a plain-text file; nil when the
+    /// store could not be listed.
+    public var passwordFiles: Int?
+    /// Whether this agent-vm keeps passwords in the Keychain (not an ad hoc build).
+    public var keepsPasswordsInKeychain = true
 
     public struct Signature: Sendable, Equatable, Codable {
         public var isAdHoc: Bool
@@ -45,7 +50,8 @@ public struct HostFacts: Sendable {
     public init(osVersion: OperatingSystemVersion, isAppleSilicon: Bool, virtualizationSupported: Bool,
                 hasVirtualizationEntitlement: Bool?, signature: Signature?, cpuCount: Int,
                 memoryBytes: UInt64, storeRoot: String, storeFreeBytes: Int64?,
-                runningVirtualMachines: Int?, store: StoreRoot.State? = nil) {
+                runningVirtualMachines: Int?, store: StoreRoot.State? = nil,
+                passwordFiles: Int? = 0, keepsPasswordsInKeychain: Bool = true) {
         self.osVersion = osVersion
         self.isAppleSilicon = isAppleSilicon
         self.virtualizationSupported = virtualizationSupported
@@ -57,6 +63,8 @@ public struct HostFacts: Sendable {
         self.storeFreeBytes = storeFreeBytes
         self.runningVirtualMachines = runningVirtualMachines
         self.store = store
+        self.passwordFiles = passwordFiles
+        self.keepsPasswordsInKeychain = keepsPasswordsInKeychain
     }
 
     static let virtualizationEntitlement = "com.apple.security.virtualization"
@@ -75,7 +83,9 @@ public struct HostFacts: Sendable {
             storeRoot: storeRoot.path,
             storeFreeBytes: freeBytes(nearest: storeRoot),
             runningVirtualMachines: countVirtualMachineProcesses(),
-            store: StoreRoot.state(storeRoot)
+            store: StoreRoot.state(storeRoot),
+            passwordFiles: AccountPasswordMove.fileCount(store: FileSystem.canonicalRoot(storeRoot)),
+            keepsPasswordsInKeychain: AccountPasswordStore.keepsNewPasswords
         )
     }
 
@@ -280,6 +290,20 @@ public struct HostReport: Sendable, Equatable, Codable {
             }
         } else {
             checks.append(HostCheck(name: "store folder", status: .info, detail: "\(facts.storeRoot) does not exist yet; the first command that needs it creates it, private to you"))
+        }
+
+        switch facts.passwordFiles {
+        case 0?:
+            checks.append(HostCheck(name: "account passwords", status: .ok, detail: "none is kept in a plain-text file"))
+        case let count?:
+            let text = "\(count) image\(count == 1 ? " or box keeps its" : "s and boxes keep their") account password in a plain-text file"
+            if facts.keepsPasswordsInKeychain {
+                checks.append(HostCheck(name: "account passwords", status: .info, detail: "\(text); `agent-vm store secure-passwords` moves them into your login Keychain"))
+            } else {
+                checks.append(HostCheck(name: "account passwords", status: .info, detail: "\(text), where an ad hoc build of agent-vm keeps them"))
+            }
+        case nil:
+            checks.append(HostCheck(name: "account passwords", status: .info, detail: "could not list \(facts.storeRoot)"))
         }
 
         if let running = facts.runningVirtualMachines {

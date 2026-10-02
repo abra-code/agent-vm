@@ -315,6 +315,7 @@ test_lists_show_folders_and_info_shows_space() {
     run_avm image info dev --json
     assert_status 0 || return 1
     assert_json name dev || return 1
+    assert_json passwordStorage file || return 1
     assert_out_contains '"unsharedBytes"' || return 1
     run_avm box info b1
     assert_status 0 || return 1
@@ -322,6 +323,7 @@ test_lists_show_folders_and_info_shows_space() {
     run_avm box info b1 --json
     assert_status 0 || return 1
     assert_json box.name b1 || return 1
+    assert_json passwordStorage file || return 1
     assert_json state stopped || return 1
     assert_out_contains '"diskUsage"' || return 1
     run_avm image info nosuch
