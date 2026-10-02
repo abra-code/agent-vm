@@ -27,6 +27,8 @@ public struct HostFacts: Sendable {
     public var storeFreeBytes: Int64?
     /// Virtualization framework VM processes on this Mac, from any application.
     public var runningVirtualMachines: Int?
+    /// The store's own folder; nil when it does not exist yet.
+    public var store: StoreRoot.State?
 
     public struct Signature: Sendable, Equatable, Codable {
         public var isAdHoc: Bool
@@ -43,7 +45,7 @@ public struct HostFacts: Sendable {
     public init(osVersion: OperatingSystemVersion, isAppleSilicon: Bool, virtualizationSupported: Bool,
                 hasVirtualizationEntitlement: Bool?, signature: Signature?, cpuCount: Int,
                 memoryBytes: UInt64, storeRoot: String, storeFreeBytes: Int64?,
-                runningVirtualMachines: Int?) {
+                runningVirtualMachines: Int?, store: StoreRoot.State? = nil) {
         self.osVersion = osVersion
         self.isAppleSilicon = isAppleSilicon
         self.virtualizationSupported = virtualizationSupported
@@ -54,6 +56,7 @@ public struct HostFacts: Sendable {
         self.storeRoot = storeRoot
         self.storeFreeBytes = storeFreeBytes
         self.runningVirtualMachines = runningVirtualMachines
+        self.store = store
     }
 
     static let virtualizationEntitlement = "com.apple.security.virtualization"
@@ -71,7 +74,8 @@ public struct HostFacts: Sendable {
             memoryBytes: ProcessInfo.processInfo.physicalMemory,
             storeRoot: storeRoot.path,
             storeFreeBytes: freeBytes(nearest: storeRoot),
-            runningVirtualMachines: countVirtualMachineProcesses()
+            runningVirtualMachines: countVirtualMachineProcesses(),
+            store: StoreRoot.state(storeRoot)
         )
     }
 
@@ -259,6 +263,23 @@ public struct HostReport: Sendable, Equatable, Codable {
             }
         } else {
             checks.append(HostCheck(name: "disk space", status: .warning, detail: "could not read free space for \(facts.storeRoot)"))
+        }
+
+        if let store = facts.store {
+            let mode = String(store.mode, radix: 8)
+            if !store.isFolder {
+                checks.append(HostCheck(name: "store folder", status: .failure, detail: "\(facts.storeRoot) is not a folder; set AGENT_VM_HOME to a folder of your own"))
+            } else if !store.ownedByUser {
+                checks.append(HostCheck(name: "store folder", status: .failure, detail: "\(facts.storeRoot) belongs to another user, who could replace what agent-vm keeps there; set AGENT_VM_HOME to a folder of your own"))
+            } else if store.ignoresOwnership {
+                checks.append(HostCheck(name: "store folder", status: .warning, detail: "the volume of \(facts.storeRoot) ignores ownership, so every user of this Mac can read the store, account passwords included; keep the store on a volume that honors permissions"))
+            } else if store.mode & 0o077 != 0 {
+                checks.append(HostCheck(name: "store folder", status: .warning, detail: "\(facts.storeRoot) can be listed by other users (mode \(mode)); the next command that writes to the store makes it private"))
+            } else {
+                checks.append(HostCheck(name: "store folder", status: .ok, detail: "\(facts.storeRoot) is private to you (mode \(mode))"))
+            }
+        } else {
+            checks.append(HostCheck(name: "store folder", status: .info, detail: "\(facts.storeRoot) does not exist yet; the first command that needs it creates it, private to you"))
         }
 
         if let running = facts.runningVirtualMachines {

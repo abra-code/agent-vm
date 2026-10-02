@@ -50,8 +50,11 @@ public enum GuestDisk {
         guard bytes > oldBytes else {
             throw fail("it is \(oldBytes >> 30) GB already; a disk can only grow")
         }
-        guard bytes % 4096 == 0, oldBytes % UInt64(sectorSize) == 0 else {
-            throw fail("sizes must be whole 4 KB blocks")
+        guard bytes % 4096 == 0, oldBytes % UInt64(sectorSize) == 0, bytes <= RecordNumbers.maximumBytes else {
+            throw fail("sizes must be whole 4 KB blocks, of 1 PB at most")
+        }
+        guard oldBytes >= 1 << 20 else {
+            throw fail("it is too small to hold a macOS installation")
         }
         let file = DiskFile(descriptor: descriptor, path: url.path)
 
@@ -84,6 +87,11 @@ public enum GuestDisk {
               used[used.count - 2].lastLBA < recovery.firstLBA, recovery.firstLBA <= recovery.lastLBA,
               recovery.lastLBA <= primary.lastUsableLBA else {
             throw fail("its last partition is not a recovery container after an APFS container")
+        }
+        // The table is the guest's to write, and its checksums prove nothing about it: what it
+        // calls usable must end before the backup table, inside the file.
+        guard primary.lastUsableLBA < oldSectors - 1 - entrySectors else {
+            throw fail("its partition table names space past the end of the disk")
         }
 
         // The new geometry: the backup table at the new end, the recovery container right

@@ -21,6 +21,8 @@ final class RangeServer: @unchecked Sendable {
     var cutAfter: Int?
     var ignoreRanges = false
     var sendLength = true
+    /// Sent as the Content-Length instead of the real one.
+    var claimedLength: String?
 
     init(body: Data) throws {
         self.body = body
@@ -83,6 +85,7 @@ final class RangeServer: @unchecked Sendable {
         let cutAfter = self.cutAfter
         let ignoreRanges = self.ignoreRanges
         let sendLength = self.sendLength
+        let claimedLength = self.claimedLength
         lock.unlock()
         var start = 0
         if !ignoreRanges, let line = text.components(separatedBy: "\r\n").first(where: { $0.lowercased().hasPrefix("range: bytes=") }) {
@@ -90,7 +93,7 @@ final class RangeServer: @unchecked Sendable {
         }
         var lines = [start > 0 ? "HTTP/1.1 206 Partial Content" : "HTTP/1.1 200 OK", "Connection: close", "Accept-Ranges: bytes"]
         if sendLength {
-            lines.append("Content-Length: \(body.count - start)")
+            lines.append("Content-Length: \(claimedLength ?? String(body.count - start))")
         }
         if start > 0 {
             lines.append("Content-Range: bytes \(start)-\(body.count - 1)/\(body.count)")
@@ -296,6 +299,19 @@ final class RangeServer: @unchecked Sendable {
             Issue.record("a download of unknown size ran")
         } catch let AgentVMError.download(_, reason) {
             #expect(reason.contains("did not say how large"))
+        }
+
+        // A length that is no length (the sums done with one would stop the program).
+        server.set { $0.sendLength = true }
+        for claim in ["-9223372036854775808", "-5", "0", "many"] {
+            server.set { $0.claimedLength = claim }
+            #expect(try await RestoreImageDownload.remote(server.url).length == nil, "\(claim)")
+            do {
+                try await download(server, file, cache)
+                Issue.record("a download of \(claim) bytes ran")
+            } catch let AgentVMError.download(_, reason) {
+                #expect(reason.contains("did not say how large"))
+            }
         }
 
         for name in ["x.dmg", ".ipsw", "..ipsw", "a b.ipsw", "evil%2F.ipsw"] {

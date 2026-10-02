@@ -148,6 +148,16 @@ final class JobScratch {
         let info = try #require(scratch.store.runnerInfo(id))
         #expect(info.commandPid != nil)
         #expect(info.pid != getpid())
+
+        // A damaged runner file names no process: a signal to 0 or -1 would go to every
+        // process of the user.
+        for pid in ["0", "1", "-1"] {
+            try Data("{\"pid\": \(pid)}".utf8).write(to: URL(fileURLWithPath: scratch.store.path(id, JobStore.runnerName)))
+            #expect(scratch.store.runnerInfo(id) == nil, "pid \(pid)")
+        }
+        #expect(throws: AgentVMError.self) { try scratch.store.cancel(id) }
+        try Data("{\"pid\": \(info.pid), \"commandPid\": -1}".utf8).write(to: URL(fileURLWithPath: scratch.store.path(id, JobStore.runnerName)))
+        #expect(scratch.store.runnerInfo(id) == nil)
     }
 
     @Test func theRunnerIsASessionLeaderAndHoldsTheLock() throws {

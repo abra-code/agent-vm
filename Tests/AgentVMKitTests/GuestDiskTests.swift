@@ -16,7 +16,8 @@ import Testing
 
     /// A disk of `sectors` sectors with a valid table; the recovery container (`recovery`
     /// sectors, last) holds a pattern except for an all-zero 8 MB stretch in its middle.
-    private func makeDisk(_ url: URL, sectors: UInt64, recovery: UInt64, lastType: [UInt8] = GuestDisk.recoveryType) throws -> UInt64 {
+    private func makeDisk(_ url: URL, sectors: UInt64, recovery: UInt64, lastType: [UInt8] = GuestDisk.recoveryType,
+                          claimedLastUsable: UInt64? = nil, claimedRecoveryLast: UInt64? = nil) throws -> UInt64 {
         let descriptor = open(url.path, O_RDWR | O_CREAT | O_TRUNC, 0o600)
         #expect(descriptor >= 0)
         defer { close(descriptor) }
@@ -33,7 +34,7 @@ import Testing
         }
         entry(0, Self.iscType, 40, 2087)
         entry(1, GuestDisk.apfsType, 2088, recoveryFirst - 1024)
-        entry(2, lastType, recoveryFirst, recoveryFirst + recovery - 1)
+        entry(2, lastType, recoveryFirst, claimedRecoveryLast ?? (recoveryFirst + recovery - 1))
 
         var header = [UInt8](repeating: 0, count: 92)
         header.replaceSubrange(0..<8, with: Array("EFI PART".utf8))
@@ -43,7 +44,7 @@ import Testing
         header.replaceSubrange(56..<72, with: (0..<16).map { _ in UInt8.random(in: 0...255) })
         LittleEndian.put(UInt32(128), into: &header, at: 80)
         LittleEndian.put(UInt32(128), into: &header, at: 84)
-        let primary = try GuestDisk.Header(signed(header, current: 1, backup: sectors - 1, lastUsable: lastUsable, entriesLBA: 2, entries: entries),
+        let primary = try GuestDisk.Header(signed(header, current: 1, backup: sectors - 1, lastUsable: claimedLastUsable ?? lastUsable, entriesLBA: 2, entries: entries),
                                            { AgentVMError.invalidRecipe(path: "", reason: $0) })
         var backup = primary
         backup.currentLBA = sectors - 1
@@ -180,6 +181,26 @@ import Testing
             #expect("\(error)".contains("partition table header does not match its checksum"), "\(error)")
         }
         #expect(stat(badBackup.path, &info) == 0 && info.st_size == 128 << 20)
+
+        // A table the guest rewrote, checksums and all, to name space past the end of the disk:
+        // refused, where the sums done with its numbers would stop the program.
+        for (index, claim) in [(UInt64(1) << 40, UInt64(1) << 40), (UInt64.max, UInt64.max), (UInt64(262_144 - 33), UInt64(262_144 - 33))].enumerated() {
+            let forged = scratch.root.appendingPathComponent("Forged\(index).img")
+            _ = try makeDisk(forged, sectors: 262_144, recovery: 49_152, claimedLastUsable: claim.0, claimedRecoveryLast: claim.1)
+            do {
+                _ = try GuestDisk.grow(forged, to: 384 << 20)
+                Issue.record("a disk whose table names space past its end was grown")
+            } catch {
+                #expect("\(error)".contains("past the end of the disk"), "\(error)")
+            }
+            #expect(stat(forged.path, &info) == 0 && info.st_size == 128 << 20)
+        }
+        // A size no file can have, on a disk that could otherwise grow.
+        #expect(throws: AgentVMError.self) { try GuestDisk.grow(disk, to: 1 << 63) }
+        #expect(stat(disk.path, &info) == 0 && info.st_size == 128 << 20)
+        let empty = scratch.root.appendingPathComponent("Empty.img")
+        #expect(FileManager.default.createFile(atPath: empty.path, contents: Data()))
+        #expect(throws: AgentVMError.self) { try GuestDisk.grow(empty, to: 2 << 20) }
 
         let blank = scratch.root.appendingPathComponent("Blank.img")
         #expect(FileManager.default.createFile(atPath: blank.path, contents: Data(count: 1 << 20)))

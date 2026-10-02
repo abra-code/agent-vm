@@ -111,7 +111,7 @@ public struct ConnectChoices: Sendable {
     /// it. Anything else in its place (a folder) is removed first.
     private func write(_ data: Data) throws {
         let directory = url.deletingLastPathComponent().path
-        try FileSystem.makeDirectories(directory)
+        try StoreRoot.prepare(url.deletingLastPathComponent())
         var info = stat()
         if lstat(url.path, &info) == 0, info.st_mode & S_IFMT != S_IFREG {
             try FileSystem.removeTree(url.path)

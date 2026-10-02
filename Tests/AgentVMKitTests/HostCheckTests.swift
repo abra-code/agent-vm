@@ -20,7 +20,8 @@ import Virtualization
             memoryBytes: 24 << 30,
             storeRoot: "/Users/someone/Library/Application Support/agent-vm",
             storeFreeBytes: 100 << 30,
-            runningVirtualMachines: 0
+            runningVirtualMachines: 0,
+            store: StoreRoot.State(isFolder: true, ownedByUser: true, mode: 0o700, ignoresOwnership: false)
         )
     }
 
@@ -32,7 +33,57 @@ import Virtualization
         let report = HostReport.evaluate(Self.goodFacts())
         #expect(report.canRunBoxes)
         #expect(report.checks.allSatisfy { $0.status == .ok })
-        #expect(report.checks.map(\.name) == ["macOS", "virtualization", "entitlement", "signature", "disk space", "running VMs"])
+        #expect(report.checks.map(\.name) == ["macOS", "virtualization", "entitlement", "signature", "disk space", "store folder", "running VMs"])
+    }
+
+    @Test func theStoreFolderMustBeYourOwnAndPrivate() {
+        func check(_ state: StoreRoot.State?) -> (HostCheck.Status?, Bool) {
+            var facts = Self.goodFacts()
+            facts.store = state
+            let report = HostReport.evaluate(facts)
+            return (status(report, "store folder"), report.canRunBoxes)
+        }
+        #expect(check(nil) == (.info, true))
+        #expect(check(StoreRoot.State(isFolder: true, ownedByUser: true, mode: 0o755, ignoresOwnership: false)) == (.warning, true))
+        #expect(check(StoreRoot.State(isFolder: true, ownedByUser: true, mode: 0o700, ignoresOwnership: true)) == (.warning, true))
+        #expect(check(StoreRoot.State(isFolder: true, ownedByUser: false, mode: 0o700, ignoresOwnership: false)) == (.failure, false))
+        #expect(check(StoreRoot.State(isFolder: false, ownedByUser: true, mode: 0o600, ignoresOwnership: false)) == (.failure, false))
+    }
+
+    /// A store folder made before agent-vm set the mode, or by hand, or by someone else.
+    @Test func aStoreFolderIsMadePrivateOrRefusedBeforeAnythingIsWritten() throws {
+        let scratch = try Scratch()
+        let root = scratch.root.appendingPathComponent("old-store", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        chmod(root.path, 0o755)
+        #expect(StoreRoot.state(root)?.mode == 0o755)
+        _ = try SessionStore(root: root).start(project: scratch.project.path)
+        #expect(StoreRoot.state(root) == StoreRoot.State(isFolder: true, ownedByUser: true, mode: 0o700, ignoresOwnership: false))
+
+        // Missing: created private, with what is above it.
+        let fresh = scratch.root.appendingPathComponent("a/b/store", isDirectory: true)
+        #expect(StoreRoot.state(fresh) == nil)
+        try StoreRoot.prepare(fresh)
+        #expect(StoreRoot.state(fresh)?.mode == 0o700)
+
+        // Given as a link to a folder: that folder, as the stores take it.
+        let link = scratch.root.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root)
+        try StoreRoot.prepare(link)
+        #expect(StoreRoot.state(link) == StoreRoot.state(root))
+
+        // Not a folder, and a folder of another user (root's).
+        let file = scratch.root.appendingPathComponent("file")
+        try Data().write(to: file)
+        for (bad, reason) in [(file, "not a folder"), (URL(fileURLWithPath: "/private/var/empty"), "another user")] {
+            do {
+                try StoreRoot.prepare(bad)
+                Issue.record("\(bad.path) was accepted as a store")
+            } catch let AgentVMError.unsuitableStore(_, text) {
+                #expect(text.contains(reason), "\(text)")
+            }
+            #expect(throws: AgentVMError.self) { try JobStore(root: bad).start(executable: "/usr/bin/true", arguments: [], targets: [], directory: "/", runner: ["/usr/bin/true"]) }
+        }
     }
 
     @Test func missingEntitlementFailsAndPointsAtTheBuildScript() {

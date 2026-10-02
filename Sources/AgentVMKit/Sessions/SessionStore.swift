@@ -45,6 +45,7 @@ public struct SessionStore: Sendable {
     /// Takes a snapshot of `projectPath` and records a new active session.
     @discardableResult
     public func start(project projectPath: String) throws -> Session {
+        try StoreRoot.prepare(root)
         try FileSystem.makeDirectories(sessionsDirectory.path)
         let project = try validatedProject(projectPath)
         let projectInfo = try FileSystem.status(project)
@@ -530,6 +531,7 @@ public struct SessionStore: Sendable {
     // MARK: - Persistence
 
     private func withLock<T>(_ body: () throws -> T) throws -> T {
+        try StoreRoot.prepare(root)
         try FileSystem.makeDirectories(sessionsDirectory.path)
         return try FileSystem.withExclusiveLock(at: sessionsDirectory.appendingPathComponent(".lock").path, body)
     }

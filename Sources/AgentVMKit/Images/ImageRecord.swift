@@ -37,6 +37,19 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     public var memoryBytes: UInt64
     /// Logical size of the disk; the file is sparse and takes only what the guest wrote.
     public var diskBytes: UInt64
+
+    /// Why the record's numbers cannot be a machine's, or nil.
+    var numbersProblem: String? {
+        if let revision, !(0...RecordNumbers.maximumRevision).contains(revision) {
+            return "it names revision \(revision)"
+        }
+        for seconds in [installSeconds, provisionSeconds, updateSeconds] {
+            if let seconds, !(0...RecordNumbers.maximumSeconds).contains(seconds) {
+                return "it names a duration of \(seconds) seconds"
+            }
+        }
+        return RecordNumbers.problem(cpuCount: cpuCount, memoryBytes: memoryBytes, diskBytes: diskBytes)
+    }
     /// The guest's network card address; the host's DHCP server keys its lease on it.
     public var macAddress: String
     /// The account created at first boot. Its password is in the `Password` file (mode 0600).

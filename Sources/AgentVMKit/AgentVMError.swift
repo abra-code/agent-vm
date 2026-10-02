@@ -12,6 +12,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case system(operation: String, code: Int32)
     /// The project path is not usable for a session (missing, not a folder, or too broad).
     case unsuitableProject(path: String, reason: String)
+    /// The store's own folder is not one agent-vm may keep its state in.
+    case unsuitableStore(path: String, reason: String)
     /// The project and the session store are on different volumes, so an instant snapshot is impossible.
     case differentVolume(project: String, store: String)
     /// Another session on the same project is still active.
@@ -140,6 +142,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "\(operation) failed: \(String(cString: strerror(code))) (errno \(code))"
         case let .unsuitableProject(path, reason):
             return "cannot use \(path) as a project: \(reason)"
+        case let .unsuitableStore(path, reason):
+            return "cannot use \(path) as the agent-vm store: \(reason). Set AGENT_VM_HOME to a folder of your own"
         case let .differentVolume(project, store):
             return "\(project) is on a different volume than the session store \(store); an instant snapshot needs both on the same APFS volume. Set AGENT_VM_HOME to a folder on the project's volume."
         case let .sessionAlreadyActive(project, id):

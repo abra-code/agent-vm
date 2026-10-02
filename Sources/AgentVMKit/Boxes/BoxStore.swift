@@ -205,6 +205,7 @@ public struct BoxStore: Sendable {
             throw AgentVMError.wrongImageState(name: current.name, state: current.record.state.rawValue, operation: "create a box from")
         }
 
+        try StoreRoot.prepare(root)
         try FileSystem.makeDirectories(boxesDirectory.path)
         let directory = boxesDirectory.appendingPathComponent(name, isDirectory: true)
         if mkdir(directory.path, 0o700) != 0 {
@@ -256,6 +257,9 @@ public struct BoxStore: Sendable {
         }
         guard record.name == name else {
             throw AgentVMError.corruptBoxRecord(path: path, reason: "it names box \(record.name)")
+        }
+        if let problem = RecordNumbers.problem(cpuCount: record.cpuCount, memoryBytes: record.memoryBytes, diskBytes: nil) {
+            throw AgentVMError.corruptBoxRecord(path: path, reason: problem)
         }
         guard record.formatVersion <= BoxRecord.currentFormatVersion else {
             throw AgentVMError.corruptBoxRecord(path: path, reason: "written by a newer agent-vm (format \(record.formatVersion))")

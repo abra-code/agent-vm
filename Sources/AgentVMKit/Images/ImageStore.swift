@@ -71,6 +71,7 @@ public struct ImageStore: Sendable {
         guard Self.isValidName(record.name) else {
             throw AgentVMError.invalidImageName(record.name)
         }
+        try StoreRoot.prepare(root)
         try FileSystem.makeDirectories(imagesDirectory.path)
         let directory = imagesDirectory.appendingPathComponent(record.name, isDirectory: true)
         if mkdir(directory.path, 0o700) != 0 {
@@ -124,6 +125,9 @@ public struct ImageStore: Sendable {
         }
         guard record.name == name else {
             throw AgentVMError.corruptImageRecord(path: path, reason: "it names image \(record.name)")
+        }
+        if let problem = record.numbersProblem {
+            throw AgentVMError.corruptImageRecord(path: path, reason: problem)
         }
         guard record.formatVersion <= ImageRecord.currentFormatVersion else {
             throw AgentVMError.corruptImageRecord(path: path, reason: "written by a newer agent-vm (format \(record.formatVersion))")

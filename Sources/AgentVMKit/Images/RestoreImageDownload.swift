@@ -18,8 +18,10 @@ public struct RestoreImageCache: Sendable {
     public static let minimumFreeAfter: Int64 = 10 << 30
 
     public let directory: URL
+    let root: URL
 
     public init(root: URL) {
+        self.root = root
         directory = root.appendingPathComponent("Cache", isDirectory: true).appendingPathComponent("ipsw", isDirectory: true)
     }
 
@@ -203,7 +205,8 @@ public enum RestoreImageDownload {
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw AgentVMError.download(url: url.absoluteString, reason: "the server answered \((response as? HTTPURLResponse)?.statusCode ?? 0)")
         }
-        let length = http.value(forHTTPHeaderField: "Content-Length").flatMap { Int64($0) }
+        // A length that is not a positive number is no length: the sums below are done with it.
+        let length = http.value(forHTTPHeaderField: "Content-Length").flatMap { Int64($0) }.flatMap { $0 > 0 ? $0 : nil }
         return Remote(length: length, etag: http.value(forHTTPHeaderField: "ETag"))
     }
 
@@ -228,6 +231,7 @@ public enum RestoreImageDownload {
                                 minimumFreeAfter: Int64 = RestoreImageCache.minimumFreeAfter,
                                 cancellation: BuildCancellation? = nil,
                                 progress: @escaping @Sendable (Int64, Int64?) -> Void) async throws {
+        try StoreRoot.prepare(cache.root)
         try FileSystem.makeDirectories(cache.directory.path)
         guard let lock = try FolderLock.tryAcquire(cache.lockPath) else {
             throw AgentVMError.download(url: url.absoluteString, reason: "another agent-vm is downloading a restore image into \(cache.directory.path)")

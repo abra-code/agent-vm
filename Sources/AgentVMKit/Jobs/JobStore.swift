@@ -254,7 +254,12 @@ public struct JobStore: Sendable {
         guard let data = FileManager.default.contents(atPath: path(id, Self.runnerName)) else {
             return nil
         }
-        return try? Self.decoder.decode(JobRunnerInfo.self, from: data)
+        // A process id below 2 is no runner's: signaled, 0 and -1 mean "every process of
+        // this user", so a damaged file counts as none.
+        guard let info = try? Self.decoder.decode(JobRunnerInfo.self, from: data), info.pid > 1, info.commandPid.map({ $0 > 1 }) ?? true else {
+            return nil
+        }
+        return info
     }
 
     /// Whether the job's runner is alive: something holds an exclusive lock on its lock file.
@@ -506,6 +511,7 @@ public struct JobStore: Sendable {
         guard executable.hasPrefix("/"), let runnerPath = runner.first, runnerPath.hasPrefix("/") else {
             throw AgentVMError.system(operation: "start a job: the command and the runner need absolute paths", code: EINVAL)
         }
+        try StoreRoot.prepare(root)
         try FileSystem.makeDirectories(jobsDirectory.path)
         _ = try? list(prune: true)
         // Looked at after the pruning, which could otherwise remove it under the new job.

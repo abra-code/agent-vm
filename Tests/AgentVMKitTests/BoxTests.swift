@@ -48,6 +48,46 @@ final class BoxScratch {
         #expect(!box.isRunning)
     }
 
+    /// A record's sizes are added to and rounded all over; one no machine could have is a
+    /// damaged record, not a number to do sums with.
+    @Test func recordsWithImpossibleNumbersAreDamagedRecords() throws {
+        let fixture = try BoxScratch()
+        let box = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images)
+        func rewrite(_ url: URL, _ key: String, _ value: String) throws {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let changed = text.replacingOccurrences(of: #""\#(key)" : [0-9]+"#, with: "\"\(key)\" : \(value)", options: .regularExpression)
+            #expect(changed != text)
+            try Data(changed.utf8).write(to: url)
+        }
+        let boxRecord = box.directory.appendingPathComponent(BoxStore.recordName)
+        let imageRecord = fixture.image.directory.appendingPathComponent(ImageStore.recordName)
+        let good = (try Data(contentsOf: boxRecord), try Data(contentsOf: imageRecord))
+        for (key, value) in [("memoryBytes", "18446744073709551615"), ("memoryBytes", "0"), ("cpuCount", "0"), ("cpuCount", "100000")] {
+            try rewrite(boxRecord, key, value)
+            try rewrite(imageRecord, key, value)
+            #expect(throws: AgentVMError.self) { try fixture.boxes.box(named: "b1") }
+            #expect(throws: AgentVMError.self) { try fixture.images.image(named: "dev") }
+            try good.0.write(to: boxRecord)
+            try good.1.write(to: imageRecord)
+        }
+        try rewrite(imageRecord, "diskBytes", "18446744073709551615")
+        #expect(throws: AgentVMError.self) { try fixture.images.image(named: "dev") }
+        try good.1.write(to: imageRecord)
+        // The image's revision is counted up and its durations are shown as whole seconds.
+        for extra in [#""revision" : 9223372036854775807"#, #""revision" : -1"#, #""updateSeconds" : 1e300"#, #""installSeconds" : -1"#] {
+            let text = try #require(String(data: good.1, encoding: .utf8))
+            let changed = text.replacingOccurrences(of: #""cpuCount" :"#, with: "\(extra),\n  \"cpuCount\" :")
+            #expect(changed != text)
+            try Data(changed.utf8).write(to: imageRecord)
+            #expect(throws: AgentVMError.self) { try fixture.images.image(named: "dev") }
+        }
+        try Data(try #require(String(data: good.1, encoding: .utf8)).replacingOccurrences(of: #""cpuCount" :"#, with: "\"revision\" : 3,\n  \"updateSeconds\" : 41.5,\n  \"cpuCount\" :").utf8).write(to: imageRecord)
+        #expect(try fixture.images.image(named: "dev").record.revision == 3)
+        try good.1.write(to: imageRecord)
+        #expect(try fixture.boxes.box(named: "b1").record == box.record)
+        #expect(BoxStore.createCommand(name: "b1", image: "dev", record: box.record, network: BoxNetwork(mode: .off, allow: [])).contains("--memory-gb 8"))
+    }
+
     @Test func resourcesCanBeOverridden() throws {
         let fixture = try BoxScratch()
         let box = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images, cpuCount: 2, memoryBytes: 4 << 30)

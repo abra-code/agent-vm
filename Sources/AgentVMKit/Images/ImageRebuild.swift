@@ -85,7 +85,10 @@ extension ImageStore {
         guard let data = try? Data(contentsOf: directory.appendingPathComponent(Self.recordName)) else {
             return nil
         }
-        return try? SessionStore.decoder.decode(ImageRecord.self, from: data)
+        guard let record = try? SessionStore.decoder.decode(ImageRecord.self, from: data), record.numbersProblem == nil else {
+            return nil
+        }
+        return record
     }
 
     /// Clears the build name for a rebuild of `image`. A finished build (ready, marked as

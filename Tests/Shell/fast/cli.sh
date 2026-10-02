@@ -27,11 +27,23 @@ test_unknown_command_is_a_usage_error() {
 test_doctor_reports_every_check_as_json() {
     run_avm doctor --json
     assert_status 0 || return 1
-    assert_json checks 6 || return 1
+    assert_json checks 7 || return 1
     assert_json checks.0.name macOS || return 1
     # The binary under test is the signed one: it must carry the entitlement.
     assert_json checks.2.name entitlement || return 1
     assert_json checks.2.status ok || return 1
+    assert_json checks.5.name "store folder" || return 1
+
+    # A store folder others may list is reported, and made private by the first write.
+    /bin/mkdir -p "$AGENT_VM_HOME"
+    /bin/chmod 755 "$AGENT_VM_HOME"
+    run_avm doctor --json
+    assert_json checks.5.status warning || return 1
+    make_project "$SCRATCH/project"
+    run_avm session start --project "$SCRATCH/project" --json
+    assert_status 0 || return 1
+    run_avm doctor --json
+    assert_json checks.5.status ok || return 1
 }
 
 test_exec_needs_a_program() {

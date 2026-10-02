@@ -43,6 +43,7 @@ public struct NewestMacOS: Codable, Equatable, Sendable {
 
     public func write(root: URL) throws {
         let file = Self.file(root: root)
+        try StoreRoot.prepare(root)
         try FileSystem.makeDirectories(file.deletingLastPathComponent().path)
         do {
             try SessionStore.encoder.encode(self).write(to: file, options: .atomic)
