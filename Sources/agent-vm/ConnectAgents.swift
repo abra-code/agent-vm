@@ -88,6 +88,10 @@ extension ConnectRunner {
             }
         }
         facts.probed = probed
+        if agent.source == .user {
+            // Agreed to as the file is now; an entry with no digest is never agreed to.
+            facts.agentAgreed = agent.digest.map { ConnectChoices(store: root).agreed(agent: agent.id, digest: $0) } ?? false
+        }
         return (facts, entries)
     }
 
@@ -104,6 +108,11 @@ extension ConnectRunner {
         var stored: Set<String> = []
         for step in steps {
             switch step {
+            case .askAgent:
+                guard try askAgent(agent, setSecrets: facts.secretsListed ? facts.setSecrets : nil, terminal: terminal) else {
+                    throw ConnectError.agentDeclined(agent: agent)
+                }
+                answered.agentAgreed = true
             case .offerSecret:
                 if let name = try offerSecret(agent, terminal: terminal) {
                     answered.setSecrets.append(name)
@@ -128,6 +137,70 @@ extension ConnectRunner {
             }
         }
         return answered
+    }
+
+    /// Before the first run of one of the person's own agent entries (or of an edited one):
+    /// everything the file decides, then the question, whose default is no. Yes is remembered
+    /// for the file as it is. A built-in entry is never asked about.
+    private func askAgent(_ agent: AgentEntry, setSecrets: [String]?, terminal: Terminal) throws -> Bool {
+        for line in Self.agentSummary(agent, setSecrets: setSecrets) {
+            print(line)
+        }
+        guard try Confirm("Run it?", defaultAnswer: false).run(on: terminal) else {
+            return false
+        }
+        if let digest = agent.digest {
+            do {
+                try ConnectChoices(store: root).agree(agent: agent.id, digest: digest)
+            } catch {
+                warn("cannot remember this answer, so it is asked again next time: \(error)")
+            }
+        }
+        return true
+    }
+
+    /// What a user's agent entry decides, for the question about it: where it is from, what
+    /// runs, the hosts, and the Keychain secrets it can be handed.
+    static func agentSummary(_ agent: AgentEntry, setSecrets: [String]?) -> [String] {
+        var lines = ["\(agent.name) is your own agent entry, \(agent.path), and has not run before as that file is now."]
+        if agent.replacesBuiltIn {
+            lines.append("It replaces the built-in agent \(agent.id).")
+        }
+        // The file's words can hold line ends (a command word, a variable's value, a carriage
+        // return in the script), and a line of their own could pass for one of the lines below
+        // ("  hosts: none of its own"). Each is made one line; the script's lines keep their
+        // indent, whatever ends them.
+        lines.append("  runs: \(Printable.line(ConnectPlanner.shellQuoted(agent.command)))")
+        if let setup = agent.setup {
+            lines.append("  runs first, in the box, with the variables and the secret below:")
+            lines += setup.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map { "      \(Printable.line(String($0)))" }
+        }
+        if !agent.env.isEmpty {
+            lines.append("  sets: \(Printable.line(ConnectPlanner.shellQuoted(AgentCatalog.envArguments(for: agent))))")
+        }
+        if agent.allow.isEmpty {
+            lines.append("  hosts: none of its own")
+        } else {
+            lines.append("  hosts: \(agent.allow.joined(separator: ", ")) (a new box allows them; an existing box is asked)")
+        }
+        if agent.secrets.isEmpty {
+            lines.append("  secrets from your Keychain: none")
+        } else {
+            let names = agent.secrets.map { secret -> String in
+                let variable = secret.secret == nil ? "" : " as \(secret.env)"
+                let state = setSecrets.map { $0.contains(secret.name) ? ", set" : ", not set" } ?? ""
+                return "\(secret.name)\(variable)\(state)"
+            }
+            lines.append("  secrets from your Keychain, the first that is set: \(names.joined(separator: "; "))")
+        }
+        // Its own words to the person, which avm prints later as advice (how to install it,
+        // how to log in): shown as the file's, before they can pass for avm's.
+        for (what, text) in [("to install it", agent.install), ("to log in", agent.login), ("its note", agent.note)] {
+            if let text {
+                lines.append("  it says, \(what): \(Printable.line(text))")
+            }
+        }
+        return lines
     }
 
     /// The choice for a secret found in the Keychain that another build of agent-vm stored:
@@ -268,9 +341,16 @@ extension ConnectRunner {
             }
             return entry.readable ? "set" : "asks"
         }
+        let choices = ConnectChoices(store: root)
+        func agreed(_ agent: AgentEntry) -> Bool? {
+            guard agent.source == .user else {
+                return nil
+            }
+            return agent.digest.map { choices.agreed(agent: agent.id, digest: $0) } ?? false
+        }
         if json {
             var list = catalog.entries.map { agent in
-                AgentJSON(agent, secrets: agent.secrets.map { AgentJSON.SecretJSON($0, state: state($0)) })
+                AgentJSON(agent, secrets: agent.secrets.map { AgentJSON.SecretJSON($0, state: state($0)) }, agreed: agreed(agent))
             }
             for (id, problem) in catalog.problems.sorted(by: { $0.key < $1.key }) {
                 list.append(AgentJSON(problem: problem, id: id))
@@ -282,8 +362,11 @@ extension ConnectRunner {
                 if agent.replacesBuiltIn {
                     source += ", replaces the built-in one"
                 }
+                if agreed(agent) == false {
+                    source += ", asked about before its first run"
+                }
                 print("\(agent.id)  \(agent.name)  (\(source))")
-                var runs = "    runs: \(ConnectPlanner.shellQuoted(agent.command))"
+                var runs = "    runs: \(Printable.line(ConnectPlanner.shellQuoted(agent.command)))"
                 if !agent.allow.isEmpty {
                     runs += "    allows: \(agent.allow.joined(separator: ", "))"
                 }
@@ -344,9 +427,12 @@ struct AgentJSON: Encodable {
     var source: String
     var path: String
     var replacesBuiltIn: Bool?
+    /// A user's entry: whether the person agreed to run it as its file is now.
+    var agreed: Bool?
     var problem: String?
 
-    init(_ agent: AgentEntry, secrets: [SecretJSON]) {
+    init(_ agent: AgentEntry, secrets: [SecretJSON], agreed: Bool?) {
+        self.agreed = agreed
         id = agent.id
         name = agent.name
         command = agent.command

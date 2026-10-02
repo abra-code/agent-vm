@@ -21,6 +21,31 @@ import Testing
         #expect(choices.choice(for: "/other") == nil)
     }
 
+    /// An agreement is to an agent's file as it was: another digest is not agreed to, and the
+    /// folders' choices and the agreements are kept through each other's writes.
+    @Test func agentAgreementsAreKeptByDigest() throws {
+        let scratch = try Scratch()
+        let choices = ConnectChoices(store: scratch.root)
+        #expect(!choices.agreed(agent: "aider", digest: "aa"))
+        try choices.agree(agent: "aider", digest: "aa")
+        #expect(choices.agreed(agent: "aider", digest: "aa"))
+        #expect(!choices.agreed(agent: "aider", digest: "bb"))
+        #expect(!choices.agreed(agent: "other", digest: "aa"))
+        try choices.remember(ConnectChoice(target: .box, box: "dev1"), for: "/p")
+        #expect(choices.agreed(agent: "aider", digest: "aa"))
+        try choices.agree(agent: "aider", digest: "bb")
+        #expect(!choices.agreed(agent: "aider", digest: "aa"))
+        #expect(choices.agreed(agent: "aider", digest: "bb"))
+        #expect(choices.choice(for: "/p")?.box == "dev1")
+        // A file from before agreements were kept, and a damaged one: nothing agreed to.
+        try Data(#"{"version": 1, "projects": {}}"#.utf8).write(to: choices.url)
+        #expect(!choices.agreed(agent: "aider", digest: "bb"))
+        try Data("garbage".utf8).write(to: choices.url)
+        #expect(!choices.agreed(agent: "aider", digest: "bb"))
+        try choices.agree(agent: "aider", digest: "bb")
+        #expect(choices.agreed(agent: "aider", digest: "bb"))
+    }
+
     @Test func aDamagedFileIsEmpty() throws {
         let scratch = try Scratch()
         let choices = ConnectChoices(store: scratch.root)

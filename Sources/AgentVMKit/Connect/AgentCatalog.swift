@@ -7,7 +7,12 @@
 // The user's own are Agents/<id>.json in the store: one named like a built-in entry replaces it
 // in place, others follow the built-in ones. Loading never throws: a broken user file costs
 // only its agent, and a broken built-in file leaves the user's entries and a login shell.
+//
+// A user's entry decides what a session is handed (hosts, a Keychain secret, a setup script),
+// so connect asks about it once before its first run. `digest` names the file's content: an
+// edited file is another entry, and is asked about again (`ConnectChoices`).
 
+import CryptoKit
 import Foundation
 
 public struct AgentEntry: Equatable, Sendable {
@@ -64,6 +69,8 @@ public struct AgentEntry: Equatable, Sendable {
     public var path: String
     /// A user entry with a built-in entry's id, which it replaces.
     public var replacesBuiltIn: Bool
+    /// A user entry's file content, as a SHA-256 in hex; nil for a built-in entry.
+    public var digest: String?
 
     public init(id: String, name: String, command: [String], allow: [String] = [], secrets: [Secret] = [],
                 secretsNeeded: SecretsNeeded = .optional, env: [String: String] = [:], setup: String? = nil, login: String? = nil,
@@ -187,6 +194,7 @@ public struct AgentCatalog: Sendable {
                 }
                 var entry = try parse(object, id: id, path: path)
                 entry.source = .user
+                entry.digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
                 if let index = entries.firstIndex(where: { $0.id == id }) {
                     entry.replacesBuiltIn = true
                     entries[index] = entry

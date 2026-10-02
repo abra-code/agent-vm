@@ -1,7 +1,8 @@
 // Sources/AgentVMKit/Connect/ConnectPlan.swift
 //
 // What `agent-vm connect` (avm) does once the choices are made, as data: the steps in order
-// (offer to set an agent's secret, ask to allow its hosts, create a new box, start the box,
+// (ask about the person's own agent entry before its first run,
+// offer to set an agent's secret, ask to allow its hosts, create a new box, start the box,
 // check the agent is installed, share the folder, snapshot it, run the session, stop and
 // delete a temporary box, report what changed), so
 // `--dry-run` prints exactly what a run performs, and tests check the steps without a box. The
@@ -86,9 +87,12 @@ public struct ConnectFacts: Equatable, Sendable {
     public var ownPid: Int32
     /// The name for a new temporary box (temporaryName, chosen free).
     public var temporaryName: String?
+    /// False for one of the person's own agent entries they have not agreed to run yet, as the
+    /// file is now.
+    public var agentAgreed: Bool
 
     public init(boxRunning: Bool, boxRules: [String]? = nil, setSecrets: [String] = [], secretsListed: Bool = true,
-                probed: Set<String>? = nil, ownPid: Int32, temporaryName: String? = nil) {
+                probed: Set<String>? = nil, ownPid: Int32, temporaryName: String? = nil, agentAgreed: Bool = true) {
         self.boxRunning = boxRunning
         self.boxRules = boxRules
         self.setSecrets = setSecrets
@@ -96,10 +100,14 @@ public struct ConnectFacts: Equatable, Sendable {
         self.probed = probed
         self.ownPid = ownPid
         self.temporaryName = temporaryName
+        self.agentAgreed = agentAgreed
     }
 }
 
 public enum ConnectStep: Equatable, Sendable {
+    /// One of the person's own agent entries, not agreed to yet: show what it runs, the hosts
+    /// it allows and the secrets it is handed, and ask. No ends the run.
+    case askAgent(id: String, path: String)
     /// None of the agent's secrets is set: offer to set one (in the Keychain) or go on without.
     case offerSecret(agent: String, secrets: [String])
     /// The box's allowlist lacks rules the agent needs: ask to add them.
@@ -129,7 +137,7 @@ public enum ConnectStep: Equatable, Sendable {
     /// A question asked before the other steps (they are planned again with its answer).
     public var isQuestion: Bool {
         switch self {
-        case .offerSecret, .askRules:
+        case .askAgent, .offerSecret, .askRules:
             return true
         default:
             return false
@@ -139,6 +147,8 @@ public enum ConnectStep: Equatable, Sendable {
     /// The step for a person (the lines of --dry-run).
     public var text: String {
         switch self {
+        case let .askAgent(id, path):
+            return "ask whether to run your own agent \(id) (\(path)), not agreed to yet: its command, hosts and secrets are shown first"
         case let .offerSecret(_, secrets):
             return "offer to set one of: \(secrets.joined(separator: ", "))"
         case let .askRules(box, rules):
@@ -207,6 +217,10 @@ public enum ConnectPlanner {
             // The variables the person's --env and --secret set (NAME or NAME=...).
             func variable(_ spec: String) -> Substring {
                 return spec.prefix { $0 != "=" }
+            }
+            // Before anything of the entry's is used: the next questions are already its own.
+            if agent.source == .user && !facts.agentAgreed {
+                steps.append(.askAgent(id: agent.id, path: agent.path))
             }
             let personal = Set((request.env + request.secrets).map(variable))
             let secret = facts.secretsListed ? AgentCatalog.secretArguments(for: agent, set: facts.setSecrets) : []

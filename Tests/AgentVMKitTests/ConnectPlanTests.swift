@@ -116,6 +116,36 @@ import Testing
         #expect(!ConnectPlanner.steps(for: request, facts: none).contains { $0.isQuestion })
     }
 
+    /// The person's own entry is asked about first, until they agreed to the file as it is; a
+    /// built-in entry never is. Nothing else in the plan changes.
+    @Test func aUsersAgentIsAskedAboutBeforeItsFirstRun() {
+        var mine = claude
+        mine.source = .user
+        mine.path = "/store/Agents/claude.json"
+        mine.digest = "aa"
+        let request = ConnectRequest(target: .newTemporary(image: "dev"), launch: .agent(mine), project: nil)
+        let agreedTo = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: false, setSecrets: ["ANTHROPIC_API_KEY"], ownPid: pid))
+        let asked = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: false, setSecrets: ["ANTHROPIC_API_KEY"], ownPid: pid,
+                                                                           agentAgreed: false))
+        #expect(asked.first == .askAgent(id: "claude", path: "/store/Agents/claude.json"))
+        #expect(asked.first?.isQuestion == true)
+        #expect(asked.first?.text.contains("your own agent claude (/store/Agents/claude.json)") == true)
+        #expect(Array(asked.dropFirst()) == agreedTo)
+        // Before the offer of a secret too: that question is already the entry's own.
+        let none = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: false, ownPid: pid, agentAgreed: false))
+        #expect(none.prefix(2).map(\.isQuestion) == [true, true])
+        if case .askAgent = none[0], case .offerSecret = none[1] {} else {
+            Issue.record("the agent is asked about first: \(none.prefix(2))")
+        }
+        let builtIn = ConnectRequest(target: .newTemporary(image: "dev"), launch: .agent(claude), project: nil)
+        #expect(!ConnectPlanner.steps(for: builtIn, facts: ConnectFacts(boxRunning: false, ownPid: pid, agentAgreed: false)).contains { step in
+            if case .askAgent = step {
+                return true
+            }
+            return false
+        })
+    }
+
     @Test func aMissingSecretIsOffered() {
         let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil)
         let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: true, probed: ["claude"], ownPid: pid))

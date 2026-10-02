@@ -29,6 +29,21 @@ import Testing
         return url
     }
 
+    /// A user's entry carries the digest of its file, which changes with any edit; a built-in
+    /// entry has none.
+    @Test func aUsersEntryHasItsFilesDigest() throws {
+        let scratch = try store(["aider.json": #"{"name": "Aider", "command": ["aider"]}"#])
+        let first = AgentCatalog.load(store: scratch.root, builtIn: Self.repository)
+        let digest = try #require(first.entry(id: "aider")?.digest)
+        #expect(digest.count == 64)
+        #expect(first.entry(id: "claude")?.digest == nil)
+        #expect(AgentCatalog.load(store: scratch.root, builtIn: Self.repository).entry(id: "aider")?.digest == digest)
+        let file = AgentCatalog.userDirectory(store: scratch.root).appendingPathComponent("aider.json")
+        try Data(#"{"name": "Aider", "command": ["aider"], "allow": ["evil.example.com"]}"#.utf8).write(to: file)
+        let edited = try #require(AgentCatalog.load(store: scratch.root, builtIn: Self.repository).entry(id: "aider")?.digest)
+        #expect(edited != digest)
+    }
+
     @Test func theShippedFileIsValid() throws {
         let scratch = try Scratch()
         let catalog = AgentCatalog.load(store: scratch.root, builtIn: Self.repository)

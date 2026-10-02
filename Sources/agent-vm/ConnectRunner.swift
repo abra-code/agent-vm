@@ -27,6 +27,8 @@ enum ConnectError: Error, CustomStringConvertible {
     case unknownAgent(id: String, known: [String], problem: AgentCatalog.Problem?, name: String)
     /// The agent's command is not in the box.
     case agentNotInstalled(agent: AgentEntry, box: Box, name: String)
+    /// The person said no to their own agent entry.
+    case agentDeclined(agent: AgentEntry)
     /// A session was asked for and stdin or stdout is not a terminal.
     case sessionNeedsTerminal
     /// No box and no usable image to offer.
@@ -86,6 +88,8 @@ enum ConnectError: Error, CustomStringConvertible {
             // The update's own words (they begin with "Error:"), then what it means here.
             let said = message.trimmingCharacters(in: .whitespacesAndNewlines)
             return "\(said.isEmpty ? "the tools update of image \(image) failed" : said)\nimage \(image) is as it was, and no box was made; without --refresh the box is made from it as it is"
+        case let .agentDeclined(agent):
+            return "nothing was run: \(agent.name) (\(agent.path)) was not agreed to"
         case let .imageNeedsUpdate(image):
             return "image \(image)'s agent-vm-guest cannot run terminal sessions; update it with agent-vm image update \(image) --guest"
         case let .temporaryNotRunning(box, name):
@@ -318,7 +322,8 @@ struct ConnectRunner {
                 if options.dryRun {
                     print("\(invokedAs) would:")
                     for step in steps {
-                        print("  " + step.text)
+                        // One line each: an agent's words may hold line ends.
+                        print("  " + Printable.line(step.text))
                     }
                     return 0
                 }
@@ -330,6 +335,10 @@ struct ConnectRunner {
                     return try perform(rest, existing: existing, request: request, remembered: remembered, terminal: terminal)
                 } catch let error as ConnectError {
                     switch error {
+                    case .agentDeclined where launchChosenInPicker:
+                        // The list of what to run again.
+                        say(error)
+                        continue
                     case .agentNotInstalled where launchChosenInPicker:
                         say(error)
                         // A kept box made meanwhile is an existing box now; a temporary one
@@ -545,6 +554,9 @@ struct ConnectRunner {
                     }
                 case let .create(name, image, allow, isTemporary, cpus, memoryBytes):
                     print(isTemporary ? "Creating box \(name) from \(image) (temporary: deleted when you leave)" : "Creating box \(name) from \(image)")
+                    // What the new box may reach is decided here, by the agent's entry and
+                    // --allow, with no question: said every time.
+                    print(allow.isEmpty ? "  it allows no hosts (agent-vm box network \(name) --allow <rule> adds one)" : "  it allows: \(allow.joined(separator: ", "))")
                     let golden = try imageStore.image(named: image)
                     let created = try boxStore.create(name: name, from: golden, imageStore: imageStore, cpuCount: cpus, memoryBytes: memoryBytes,
                                                       network: BoxNetwork(mode: .allowlist, allow: allow), disposable: isTemporary)
@@ -590,7 +602,7 @@ struct ConnectRunner {
                     if let found = AgentProbe.run(box: current, commands: [command]), !found.contains(command) {
                         throw ConnectError.agentNotInstalled(agent: agent, box: current, name: invokedAs)
                     }
-                case .offerSecret, .askRules:
+                case .askAgent, .offerSecret, .askRules:
                     // Asked before the steps (ask).
                     continue
                 case let .share(name, project, readOnly):

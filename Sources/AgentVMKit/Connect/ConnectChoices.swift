@@ -1,9 +1,10 @@
 // Sources/AgentVMKit/Connect/ConnectChoices.swift
 //
 // What `agent-vm connect` (avm) last chose for each project folder, in <store>/connect.json, so
-// the pickers start at it. A convenience only: a missing, unreadable or damaged file reads as
-// no choices, never an error, and nothing is skipped because of it. Nothing secret is kept:
-// folder paths, box and image names, what ran.
+// the pickers start at it, and which of the person's own agent entries they have agreed to
+// run. A missing, unreadable or damaged file reads as no choices and no agreements, never an
+// error: the pickers start at the top, and an agent is asked about again. Nothing secret is
+// kept: folder paths, box and image names, what ran, agent ids and file digests.
 
 import Darwin
 import Foundation
@@ -42,6 +43,8 @@ public struct ConnectChoices: Sendable {
     private struct File: Codable {
         var version: Int
         var projects: [String: ConnectChoice]
+        /// The user's agent entries agreed to: id to the digest of the file agreed to.
+        var agents: [String: String]?
     }
 
     public let url: URL
@@ -52,12 +55,27 @@ public struct ConnectChoices: Sendable {
 
     /// The choice last made for `project` (a canonical path), if any.
     public func choice(for project: String) -> ConnectChoice? {
-        return read()[project]
+        return read().projects[project]
+    }
+
+    /// Whether the person agreed to run the user's agent `id` as the file with `digest`.
+    public func agreed(agent id: String, digest: String) -> Bool {
+        return read().agents?[id] == digest
+    }
+
+    /// Records the agreement to agent `id` as the file with `digest`, replacing an earlier one.
+    public func agree(agent id: String, digest: String) throws {
+        var file = read()
+        var agents = file.agents ?? [:]
+        agents[id] = digest
+        file.agents = agents
+        try write(file)
     }
 
     /// Records `choice` for `project`, replacing a damaged file.
     public func remember(_ choice: ConnectChoice, for project: String) throws {
-        var projects = read()
+        var file = read()
+        var projects = file.projects
         projects[project] = choice
         if projects.count > Self.limit {
             let oldest = projects.sorted { $0.value.at < $1.value.at }.prefix(projects.count - Self.limit)
@@ -65,23 +83,28 @@ public struct ConnectChoices: Sendable {
                 projects.removeValue(forKey: path)
             }
         }
+        file.projects = projects
+        try write(file)
+    }
+
+    private func write(_ file: File) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(File(version: 1, projects: projects))
-        try write(data)
+        try write(try encoder.encode(file))
     }
 
-    private func read() -> [String: ConnectChoice] {
+    private func read() -> File {
+        let empty = File(version: 1, projects: [:], agents: nil)
         guard let data = try? Data(contentsOf: url) else {
-            return [:]
+            return empty
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let file = try? decoder.decode(File.self, from: data), file.version == 1 else {
-            return [:]
+            return empty
         }
-        return file.projects
+        return file
     }
 
     /// Whole and private: a new file made with mode 0600 next to the old one, then renamed over
