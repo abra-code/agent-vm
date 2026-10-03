@@ -16,8 +16,10 @@ public final class OwnerWatch: @unchecked Sendable {
     private let onExit: @Sendable () -> Void
 
     /// Watches `pid` and calls `onExit` once, on `queue`, when it exits; at once when it is not
-    /// running (or exited while the watch was being set up).
-    public init(pid: Int32, queue: DispatchQueue, onExit: @escaping @Sendable () -> Void) {
+    /// running (or exited while the watch was being set up). With `startedAt`, also at once
+    /// when the process with this number is not the one that started then: the owner exited
+    /// and its number went to another process before the watch was set up.
+    public init(pid: Int32, startedAt: String? = nil, queue: DispatchQueue, onExit: @escaping @Sendable () -> Void) {
         self.pid = pid
         self.onExit = onExit
         source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: queue)
@@ -28,7 +30,9 @@ public final class OwnerWatch: @unchecked Sendable {
         // libdispatch reports a process already gone (or a zombie) as exited at once (measured);
         // this check, after the registration, is a second safeguard that does not depend on it.
         // fire() runs onExit only once either way.
-        if !Self.isAlive(pid) {
+        // Only a start time that was read and differs: one that cannot be read says nothing.
+        let now = startedAt == nil ? nil : Self.startTime(of: pid)
+        if !Self.isAlive(pid) || (now != nil && now != startedAt) {
             queue.async { [weak self] in
                 self?.fire()
             }
@@ -63,6 +67,18 @@ public final class OwnerWatch: @unchecked Sendable {
             return false
         }
         return kill(pid, 0) == 0 || errno == EPERM
+    }
+
+    /// When process `pid` started, as "seconds.microseconds" since 1970: with the number, it
+    /// names one process for good, where the number alone is given to another once it is free.
+    /// nil when there is no such process (or it is another user's and may not be asked about).
+    public static func startTime(of pid: Int32) -> String? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard pid > 0, proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else {
+            return nil
+        }
+        return "\(info.pbi_start_tvsec).\(info.pbi_start_tvusec)"
     }
 
     /// Whether `pid` can own a box: a running process of this user, and not process 1.

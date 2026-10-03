@@ -92,7 +92,7 @@ AgentVM does not try to protect programs in a box from each other. Two things ar
 - `--env NAME=VALUE` puts the value in agent-vm's argument list, which every local user can read with `ps` while the command runs. Use `--env NAME`, `--env-file` or `--secret`. The exec log never records a program's environment, but it records the program's command line as given, so keep secrets out of its arguments too.
 - Recipe parameters (`--set`) are recorded in the image and written to the build log in clear. Do not pass secrets that way.
 - **The account password** is in the Keychain (images made since 0.6.0 by a build signed with an identity, not ad hoc) or in a private `Password` file. Either way it can be recovered from any disk image of that lineage by whoever can read the store.
-- The supervisor of a box and the runner of a job keep the environment of the shell that started them for as long as they live. A key exported in that shell stays in that process; the box does not see it.
+- The supervisor of a box and the runner of a job outlive the command that started them, so they do not keep its environment (since 0.6.7): a key exported in your shell does not stay in a process that runs for days. The box never sees the Mac's environment either way.
 
 ## Other users of the Mac, and other programs running as you
 

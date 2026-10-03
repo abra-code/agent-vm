@@ -112,6 +112,36 @@ import Testing
         withExtendedLifetime(watch) {}
     }
 
+    /// A process number is given to another process once it is free. The watch is told when
+    /// the owner started: a process with its number that started at another time is not it,
+    /// and the watch fires as for an owner that is gone.
+    @Test func aProcessThatTookTheOwnersNumberIsNotTheOwner() async throws {
+        let pid = try Self.spawn(["/bin/sleep", "30"])
+        defer {
+            kill(pid, SIGTERM)
+            Self.reap(pid)
+        }
+        let started = try #require(OwnerWatch.startTime(of: pid))
+        #expect(started == OwnerWatch.startTime(of: pid))
+        #expect(started != OwnerWatch.startTime(of: getpid()))
+        #expect(OwnerWatch.startTime(of: 0) == nil && OwnerWatch.startTime(of: -1) == nil)
+
+        // The same process: the watch waits.
+        let same = Flag()
+        let waiting = OwnerWatch(pid: pid, startedAt: started, queue: .global()) { same.set() }
+        // Another start time for the number: fired at once, while the process still runs.
+        let other = Flag()
+        let fired = OwnerWatch(pid: pid, startedAt: "1.5", queue: .global()) { other.set() }
+        for _ in 0..<50 where !other.value {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(other.value)
+        #expect(!same.value)
+        #expect(OwnerWatch.isAlive(pid))
+        waiting.cancel()
+        withExtendedLifetime(fired) {}
+    }
+
     @Test func onlyOwnRunningProcessesCanOwnABox() {
         #expect(OwnerWatch.isUsableOwner(getpid()))
         #expect(!OwnerWatch.isUsableOwner(1))

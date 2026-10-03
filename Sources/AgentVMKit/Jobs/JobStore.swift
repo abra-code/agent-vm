@@ -501,9 +501,9 @@ public struct JobStore: Sendable {
 
     /// Records a job and starts its runner, detached: `runner` plus the job's id is the
     /// runner's command line (`agent-vm job run`), and it receives the job's lock on
-    /// descriptor `runnerLockDescriptor`. `environment` is the runner's (and so the
-    /// command's), with AGENT_VM_HOME set to this store, so the command works on the store
-    /// that holds its record. With `after`, the job waits for that one and runs only when it
+    /// descriptor `runnerLockDescriptor`. Of `environment` the runner (and so the command)
+    /// gets what a detached process needs (`DetachedEnvironment`), with AGENT_VM_HOME set to
+    /// this store, so the command works on the store that holds its record. With `after`, the job waits for that one and runs only when it
     /// ended with status 0; one that already ended otherwise is refused here. Returns the
     /// record once the runner is started.
     public func start(executable: String, arguments: [String], targets: [String], directory: String, after: String? = nil,
@@ -593,9 +593,10 @@ public struct JobStore: Sendable {
         sigemptyset(&empty)
         posix_spawnattr_setsigmask(&attributes, &empty)
 
+        // Not the caller's whole environment: a job's commands take nothing from it.
         var runnerEnvironment = environment
         runnerEnvironment["AGENT_VM_HOME"] = root.path
-        let environmentList = runnerEnvironment.map { "\($0.key)=\($0.value)" }
+        let environmentList = DetachedEnvironment.list(runnerEnvironment)
         let argv = runner + [id]
         var pid: pid_t = 0
         let status = GuestServer.withCStrings(argv) { argvPointer in

@@ -971,6 +971,9 @@ struct BoxCommand: ParsableCommand {
         @Option(name: .customLong("owner-pid"), help: "Stop the box when this process exits.")
         var ownerPid: Int32?
 
+        @Option(name: .customLong("owner-started-at"), help: "When that process started, as box start saw it.")
+        var ownerStartedAt: String?
+
         @OptionGroup var options: StoreOptions
 
         @MainActor
@@ -981,7 +984,7 @@ struct BoxCommand: ParsableCommand {
             // In a login session main runs AppKit's loop (see Main): the supervisor is then an
             // application without a Dock icon, and `box view` can show the box's screen.
             let windows = Self.runsAppKit
-            let supervisor = BoxSupervisor(box: box, windows: windows, ownerPid: ownerPid) { line in
+            let supervisor = BoxSupervisor(box: box, windows: windows, ownerPid: ownerPid, ownerStartedAt: ownerStartedAt) { line in
                 let formatter = ISO8601DateFormatter()
                 // One line per entry, whatever a guest's answer quoted in it holds.
                 print("\(formatter.string(from: Date())) \(Printable.line(line, limit: 4000))")

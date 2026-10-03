@@ -82,6 +82,7 @@ final class JobScratch {
             where)
                 /bin/pwd
                 printf '%s\\n' "$AGENT_VM_HOME"
+                printf 'key=%s test=%s home=%s\\n' "${SOME_API_KEY:-none}" "${AGENT_VM_TEST_SETTING:-none}" "${HOME:-none}"
                 exit 0
                 ;;
         esac
@@ -245,7 +246,40 @@ final class JobScratch {
         let id = try scratch.start(["where"], directory: scratch.root.path)
         _ = try scratch.wait(id, for: .done)
         let output = try String(contentsOfFile: scratch.store.path(id, JobStore.outputName), encoding: .utf8)
-        #expect(output == "\(scratch.root.path)\n\(scratch.store.root.path)\n")
+        let lines = output.split(separator: "\n").map(String.init)
+        #expect(Array(lines.prefix(2)) == [scratch.root.path, scratch.store.root.path])
+    }
+
+    /// The runner and its command do not get the caller's whole environment: a key exported in
+    /// the shell that started the job is not theirs to keep. agent-vm's own settings and the
+    /// user's home are.
+    @Test func theCommandDoesNotInheritTheCallersEnvironment() throws {
+        let scratch = try JobScratch()
+        var environment = ProcessInfo.processInfo.environment
+        environment["SOME_API_KEY"] = "sk-secret"
+        environment["AGENT_VM_TEST_SETTING"] = "kept"
+        environment["HOME"] = "/Users/someone"
+        let id = try scratch.store.start(executable: scratch.command, arguments: ["where"], targets: ["box:b1"], directory: "/",
+                                         runner: scratch.runner, environment: environment).id
+        _ = try scratch.wait(id, for: .done)
+        let output = try String(contentsOfFile: scratch.store.path(id, JobStore.outputName), encoding: .utf8)
+        #expect(output.split(separator: "\n").last == "key=none test=kept home=/Users/someone")
+    }
+
+    @Test func aDetachedProcessKeepsOnlyWhatItNeeds() {
+        let kept = DetachedEnvironment.filtered([
+            "HOME": "/Users/x", "PATH": "/usr/bin", "TMPDIR": "/tmp/x", "LANG": "en_US.UTF-8", "LC_ALL": "C",
+            "AGENT_VM_HOME": "/store", "AGENT_VM_PACKS_FILE": "/p.json",
+            // Set by agent-vm for the ssh it starts, never a setting: with one of them an
+            // agent-vm answers a password prompt and exits.
+            "AGENT_VM_ASKPASS_ITEM": "x", "AGENT_VM_ASKPASS_FILE": "/f",
+            "ANTHROPIC_API_KEY": "sk-1", "AWS_SECRET_ACCESS_KEY": "x", "SSH_AUTH_SOCK": "/s", "GITHUB_TOKEN": "t",
+            "DYLD_INSERT_LIBRARIES": "/x.dylib", "HOMEBREW_GITHUB_API_TOKEN": "t", "agent_vm_home": "/other", "LC": "x",
+        ])
+        #expect(kept.keys.sorted() == ["AGENT_VM_HOME", "AGENT_VM_PACKS_FILE", "HOME", "LANG", "LC_ALL", "PATH", "TMPDIR"])
+        #expect(DetachedEnvironment.list(["PATH": "/usr/bin", "HOME": "/h", "X": "1"]) == ["HOME=/h", "PATH=/usr/bin"])
+        // A value may hold anything, "=" and line ends included: it is passed as it is.
+        #expect(DetachedEnvironment.list(["AGENT_VM_HOME": "/a=b\nc"]) == ["AGENT_VM_HOME=/a=b\nc"])
     }
 
     @Test func aRunnerThatDiesLeavesTheJobLost() throws {

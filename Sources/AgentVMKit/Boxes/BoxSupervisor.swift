@@ -32,13 +32,17 @@ public final class BoxSupervisor {
     private var viewer: BoxViewer?
     /// The process whose exit stops the box (`box start --owner-pid`), and its watch.
     private let ownerPid: Int32?
+    /// When the owner started, as `box start` saw it (`OwnerWatch.startTime`).
+    private let ownerStartedAt: String?
     private var ownerWatch: OwnerWatch?
 
     /// `windows`: the caller runs NSApplication on the main thread (see BoxViewer).
-    public init(box: Box, windows: Bool = false, ownerPid: Int32? = nil, log: @escaping @MainActor (String) -> Void) {
+    public init(box: Box, windows: Bool = false, ownerPid: Int32? = nil, ownerStartedAt: String? = nil,
+                log: @escaping @MainActor (String) -> Void) {
         self.box = box
         self.windows = windows
         self.ownerPid = ownerPid
+        self.ownerStartedAt = ownerStartedAt
         self.log = log
     }
 
@@ -185,7 +189,7 @@ public final class BoxSupervisor {
             state.setOwner(ownerPid)
             log("Owner: process \(ownerPid); the box stops when it exits")
             // Called on the main queue, so on the main actor.
-            ownerWatch = OwnerWatch(pid: ownerPid, queue: .main) { [state, log] in
+            ownerWatch = OwnerWatch(pid: ownerPid, startedAt: ownerStartedAt, queue: .main) { [state, log] in
                 state.requestStop()
                 MainActor.assumeIsolated {
                     log("The owner process \(ownerPid) exited; stopping")
@@ -909,6 +913,10 @@ public enum BoxLauncher {
                              tick: (() -> Void)? = nil, progress: (String) -> Void) throws -> ControlResponse {
         // One limit for the whole call, a wait for a stopping box included.
         let deadline = ContinuousClock.now + timeout
+        // The owner's start time as it is now, right after the caller checked the number and
+        // before any wait for a stopping box: by the time the supervisor watches the number,
+        // it may be another process's.
+        let ownerStartedAt = ownerPid.flatMap { OwnerWatch.startTime(of: $0) }
         if box.isRunning {
             // Another start is under way (or done): wait for it rather than fail. A box that is
             // stopping (or whose other start failed) is started here once it has stopped, so
@@ -947,8 +955,12 @@ public enum BoxLauncher {
         var pid: pid_t = 0
         // The full path as argv[0], so a process list tells which binary runs the box.
         let arguments = [executable, "box", "serve", box.name] + (ownerPid.map { ["--owner-pid", String($0)] } ?? [])
+            + (ownerStartedAt.map { ["--owner-started-at", $0] } ?? [])
+        // Not the caller's whole environment: the supervisor outlives it by days.
         let status = GuestServer.withCStrings(arguments) { argv in
-            posix_spawn(&pid, executable, &actions, &attributes, argv, environ)
+            GuestServer.withCStrings(DetachedEnvironment.list()) { envp in
+                posix_spawn(&pid, executable, &actions, &attributes, argv, envp)
+            }
         }
         guard status == 0 else {
             throw AgentVMError.system(operation: "start the supervisor \(executable)", code: status)
