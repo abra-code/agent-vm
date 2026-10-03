@@ -21,7 +21,7 @@
 # agents and that avm answers as agent-vm, and runs `agent-vm doctor` with the signed binary as
 # the end-to-end check.
 #
-# Notarization of a distributable archive is not done here yet.
+# Notarization is a manual release step on the package (see Packaging/README.md).
 
 REPO_ROOT="$(cd "$(/usr/bin/dirname "$0")/.." && /bin/pwd -P)"
 ENTITLEMENTS="$REPO_ROOT/Resources/agent-vm.entitlements"

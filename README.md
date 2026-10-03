@@ -16,6 +16,8 @@ An AI coding agent (Claude Code, Codex, opencode, or any tool an agent drives) r
 
 It builds on Apple's Virtualization framework and the zero-click macOS guest setup added in macOS 27.
 
+What a box protects against, what it does not, and what each claim rests on: [Docs/threat-model.md](Docs/threat-model.md).
+
 ## Requirements
 
 - A Mac with Apple silicon
