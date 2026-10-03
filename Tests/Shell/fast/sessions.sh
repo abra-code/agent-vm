@@ -234,6 +234,11 @@ test_names_an_agent_chose_cannot_act_on_the_terminal() {
     printf 'x' > "$_project/zz${_escape}[1A${_escape}[2K${_return}HIGH   A forged"
     printf 'x' > "$_project/.envrc${_newline}HIGH   D also-forged"
     /bin/ln -s "/etc/passwd${_escape}]0;title${_return}" "$_project/link"
+    # A link whose target holds a line end, and a hook (a flagged name, so its reason is printed
+    # too) in a folder whose name holds one.
+    /bin/ln -s "/etc/passwd${_newline}HIGH   D forged-by-target" "$_project/link2"
+    /bin/mkdir -p "$_project/sub${_newline}HIGH   D forged-by-folder/.git/hooks"
+    printf '#!/bin/sh\n' > "$_project/sub${_newline}HIGH   D forged-by-folder/.git/hooks/pre-commit"
 
     run_avm session report "$SESSION"
     assert_status 0 || return 1
@@ -242,6 +247,9 @@ test_names_an_agent_chose_cannot_act_on_the_terminal() {
     local _forged
     _forged="$(printf '%s\n' "$OUT" | /usr/bin/grep -c '^HIGH   D also-forged')"
     assert_eq "$_forged" "0" "lines forged by a file name" || return 1
+    _forged="$(printf '%s\n' "$OUT" | /usr/bin/grep -c '^HIGH   D forged-by')"
+    assert_eq "$_forged" "0" "lines forged by a link target or a folder name" || return 1
+    assert_out_contains "git hook" || return 1
     assert_out_contains "zz?[1A?[2K?HIGH   A forged" || return 1
 
     # JSON keeps the names as they are, escaped as JSON does.

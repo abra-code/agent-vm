@@ -156,6 +156,27 @@ import Testing
         #expect(GuestNetwork.parseLeases(text).isEmpty)
     }
 
+    /// The `name=` value is the host name a guest sent. Field text inside it, on its line or
+    /// after anything but a line feed, is part of the name and names no lease.
+    @Test func aHostNameCannotForgeALease() {
+        let mac = "da:51:72:d4:e5:72"
+        func leases(name: String) -> String {
+            return "{\n\tname=\(name)\n\tip_address=192.168.64.9\n\thw_address=1,\(mac)\n\tlease=0x10\n}\n"
+        }
+        let forged = "ip_address=192.168.64.66 hw_address=1,\(mac) lease=0xffffffff"
+        #expect(GuestNetwork.address(forMAC: mac, leases: leases(name: "x \(forged)")) == "192.168.64.9")
+        #expect(GuestNetwork.address(forMAC: mac, leases: leases(name: "x } { \(forged) }")) == "192.168.64.9")
+        // Line ends other than the line feed the file is written with.
+        for end in ["\r", "\u{0B}", "\u{0C}", "\u{85}", "\u{2028}", "\u{2029}"] {
+            // A whole lease of its own, closed before the real fields follow: read as lines, it would
+            // be the newer lease for this address.
+            let block = ["x", "ip_address=192.168.64.66", "hw_address=1,\(mac)", "lease=0xffffffff", "}", "{"].joined(separator: end)
+            let text = leases(name: block)
+            #expect(GuestNetwork.parseLeases(text).count == 1, "\(end.unicodeScalars.map(\.value))")
+            #expect(GuestNetwork.address(forMAC: mac, leases: text) == "192.168.64.9")
+        }
+    }
+
     @Test func portProbe() throws {
         let listener = socket(AF_INET, SOCK_STREAM, 0)
         #expect(listener >= 0)

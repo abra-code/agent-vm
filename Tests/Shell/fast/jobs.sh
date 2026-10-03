@@ -101,6 +101,23 @@ test_a_failed_job_keeps_agent_vms_message() {
 
     run_avm job log "$_id" --follow --json
     assert_status 64 || return 1
+
+    # What a command printed is not agent-vm's text: escapes in its messages, its notices and
+    # its other lines do not reach the terminal, and none of them starts a line of its own.
+    local _log="$AGENT_VM_HOME/Jobs/$_id/log"
+    printf '%s\n' '{"event":"progress","message":"step\u001b[2J\r one\nJob x done","step":"install"}' >> "$_log"
+    printf '%s\n' '{"event":"notice","message":"look\u001b]52;c;eA==\u0007 here"}' >> "$_log"
+    printf 'plain \033[1A\033[2K\rline\n' >> "$_log"
+    local _command
+    for _command in "job log $_id" "job list" "status"; do
+        run_avm $_command
+        assert_status 0 || return 1
+        assert_printable "$OUT$ERR" "$_command" || return 1
+    done
+    run_avm job log "$_id"
+    local _forged
+    _forged="$(printf '%s\n' "$OUT" | /usr/bin/grep -c '^Job x done')"
+    assert_eq "$_forged" "0" "lines forged by a progress message" || return 1
 }
 
 test_cancel_and_forget_refusals() {

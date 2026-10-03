@@ -213,7 +213,7 @@ enum TestPacks {
     /// An address under a rule that names it, in any spelling: what is not public stays refused.
     @Test func aNamedRuleLetsNoSpecialAddressThrough() {
         for host in ["0x7f.1", "2130706433", "017700000001", "127.1", "0", "::", "::7f00:1", "::ffff:10.0.0.1", "169.254.169.254", "fd00:ec2::254",
-                     "2002:c0a8:101::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "192.0.2.1"] {
+                     "2002:c0a8:101::1", "2002:7f00:1::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2", "192.0.2.1"] {
             #expect(throws: ProxyRefusal.self, "\(host)") { _ = try AddressCheck.resolve(host, port: 443, localNetworks: [], nat64: []) }
         }
     }
@@ -659,6 +659,25 @@ final class HoldingServer: @unchecked Sendable {
         #expect(entries.map(\.decision) == [.failed, .failed])
         #expect(entries.first?.reason?.contains("127.0.0.1") == true)
         #expect(entries.last?.reason?.hasPrefix("cannot resolve") == true)
+    }
+
+    /// The same for a private address the box names itself, under a rule that names it: the
+    /// answer is the one for a name that does not resolve, and does not say what kind of
+    /// address it is.
+    @Test func aRefusedPrivateAddressGetsTheSameAnswer() throws {
+        let scratch = try Scratch()
+        let log = NetworkLog(url: scratch.root.appendingPathComponent("network.jsonl"))
+        let rules = ["10.0.0.1:9", "no-such-name.invalid:9"]
+        let proxy = ProxyServer(policy: try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: rules), packs: TestPacks.builtIn), log: log)
+        let local = try exchange(proxy, "CONNECT 10.0.0.1:9 HTTP/1.1\r\n\r\n")
+        let missing = try exchange(proxy, "CONNECT no-such-name.invalid:9 HTTP/1.1\r\n\r\n")
+        #expect(local.hasPrefix("HTTP/1.1 502 Bad Gateway\r\n"))
+        func body(_ answer: String) -> String {
+            return answer.components(separatedBy: "\r\n\r\n").last ?? ""
+        }
+        #expect(!body(local).contains("private") && !body(local).contains("non-public"), "\(local)")
+        #expect(body(missing).replacingOccurrences(of: "no-such-name.invalid", with: "10.0.0.1") == body(local))
+        #expect(log.entries().first?.decision == .failed)
     }
 
     /// An allowed connection that is still open: the client's end, and a signal for when the

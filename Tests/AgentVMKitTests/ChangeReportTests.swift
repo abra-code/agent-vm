@@ -361,6 +361,64 @@ import Testing
         #expect(rules(change(report, "vendor/Store/hooks/pre-receive")).contains("git-hook"))
     }
 
+    /// The flagged names are all ASCII, so the two spellings of an accented letter (composed,
+    /// or the letter and a combining mark) can only differ in the folders around them. A name
+    /// with a mark added is another file, which no tool reads as the flagged one.
+    @Test func accentedFoldersInEitherSpellingKeepTheirFlags() {
+        func rules(_ path: String) -> Set<String> {
+            return Set(RiskRules.flags(for: path, kind: .added, type: .file, mode: 0o644, previousMode: nil,
+                                       symlinkTarget: nil, linkCount: 1).map(\.rule))
+        }
+        for folder in ["caf\u{E9}", "cafe\u{301}", "CAF\u{C9}", "CAFE\u{301}"] {
+            #expect(rules("\(folder)/.git/hooks/pre-commit").contains("git-hook"), "\(folder.unicodeScalars.count) scalars")
+            #expect(rules("\(folder)/.mcp.json").contains("agent-config"))
+            #expect(rules("\(folder)/CLAUDE.md").contains("agent-instructions"))
+            #expect(rules("\(folder)/Makefile").contains("build-script"))
+        }
+        #expect(!rules("CLAUDE.md\u{301}").contains("agent-instructions"))
+        #expect(!rules("Makefile\u{301}").contains("build-script"))
+    }
+
+    /// A `.git` file that points git at a folder elsewhere in the project (`gitdir: ../store`):
+    /// the file is flagged, and so are the hooks and the configuration of the folder it names,
+    /// which is found by what it holds.
+    @Test func aGitFileAndTheFolderItPointsAtAreBothFlagged() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        try scratch.write("work/README.md", "x\n")
+        let session = try scratch.store.start(project: scratch.project.path)
+
+        try scratch.write("work/.git", "gitdir: ../store\n")
+        try scratch.write("store/HEAD", "ref: refs/heads/main\n")
+        try scratch.write("store/objects/info/packs", "")
+        try scratch.write("store/refs/heads/main", "0000\n")
+        try scratch.write("store/config", "[core]\n\tfsmonitor = /tmp/x\n")
+        try scratch.write("store/hooks/post-checkout", "#!/bin/sh\n")
+
+        let report = try scratch.store.report(id: session.id)
+        #expect(rules(change(report, "work/.git")).contains("git-dir"))
+        #expect(rules(change(report, "store")).contains("git-dir"))
+        #expect(rules(change(report, "store/hooks/post-checkout")).contains("git-hook"))
+        #expect(rules(change(report, "store/config")).contains("git-config"))
+    }
+
+    /// A tree deeper than a path may be long, made during a session: the report ends, names
+    /// the tree once, and does not lose the changes beside it.
+    @Test(.timeLimit(.minutes(2)))
+    func aReportOfATreeTooDeepForAPathStillEnds() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let session = try scratch.store.start(project: scratch.project.path)
+        let name = String(repeating: "d", count: 200)
+        try makeChain(in: scratch.project.path, name: name, levels: 20, text: "the agent's\n")
+        try scratch.write(".git/hooks/pre-commit", "#!/bin/sh\n")
+
+        let report = try scratch.store.report(id: session.id)
+        #expect(change(report, name)?.kind == .added)
+        #expect(report.changes.filter { $0.path.hasPrefix(name) }.count == 1)
+        #expect(rules(change(report, ".git/hooks/pre-commit")).contains("git-hook"))
+    }
+
     @Test func escapeCheckIsLexical() {
         #expect(RiskRules.escapesProject(link: "a", target: "/x"))
         #expect(RiskRules.escapesProject(link: "a", target: "../x"))

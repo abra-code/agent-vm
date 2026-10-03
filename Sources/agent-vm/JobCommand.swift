@@ -177,6 +177,13 @@ struct JobCommand: ParsableCommand {
             }
         }
 
+        /// A message of several lines with every line after the first set in. A message is the
+        /// command's text, or text the command passed on (a recipe step's output): none of its
+        /// lines may stand where a job's own line or the log's last line would.
+        static func inset(_ message: String, by indent: String = "    ") -> String {
+            return message.components(separatedBy: .newlines).joined(separator: "\n" + indent)
+        }
+
         /// A job for a person: its id, state and command, then what it is doing or why it
         /// ended as it did.
         static func lines(_ job: Job) -> [String] {
@@ -188,12 +195,12 @@ struct JobCommand: ParsableCommand {
             case .running:
                 if let progress = job.progress {
                     let percent = progress.fraction.map { " \(Int(($0 * 100).rounded()))%" } ?? ""
-                    lines.append("    \(progress.message)\(percent)")
+                    lines.append("    \(Self.inset(progress.message))\(percent)")
                 } else {
                     lines.append("    starting")
                 }
                 if let notice = job.notice {
-                    lines.append("    \(notice)")
+                    lines.append("    \(Self.inset(notice))")
                 }
             case .canceled:
                 // Why a queued job never ran; a canceled command says nothing more.
@@ -275,7 +282,7 @@ struct JobCommand: ParsableCommand {
             if line.trimmingCharacters(in: .whitespaces).isEmpty {
                 return nil
             }
-            return JobLog.parse(line).events.first?.message ?? line
+            return JobLog.parse(line).events.first.map { List.inset($0.message, by: "  ") } ?? line
         }
 
         static func ending(_ job: Job) -> String {

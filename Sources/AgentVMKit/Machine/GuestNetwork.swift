@@ -28,14 +28,16 @@ public enum GuestNetwork {
         public var lease: UInt64
     }
 
-    /// Every complete lease in a dhcpd_leases file.
+    /// Every complete lease in a dhcpd_leases file. A line ends at a line feed and nowhere
+    /// else: the `name=` value is the host name a guest sent, and a carriage return or another
+    /// of Unicode's line ends inside it must not start a line of its own.
     public static func parseLeases(_ text: String) -> [Lease] {
         var leases: [Lease] = []
         var address: String?
         var hardware: String?
         var lease: UInt64 = 0
-        for rawLine in text.split(whereSeparator: \.isNewline) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
+        for rawLine in text.utf8.split(separator: UInt8(ascii: "\n")) {
+            let line = String(decoding: rawLine, as: UTF8.self).trimmingCharacters(in: .whitespaces)
             if line == "{" {
                 address = nil
                 hardware = nil
@@ -79,10 +81,12 @@ public enum GuestNetwork {
     }
 
     public static func address(forMAC mac: String) -> String? {
-        guard let text = try? String(contentsOfFile: leasesPath, encoding: .utf8) else {
+        // Read as bytes: a host name that is not UTF-8 (any guest on the Mac's virtual network
+        // chooses its own) must not make the whole file unreadable.
+        guard let data = FileManager.default.contents(atPath: leasesPath) else {
             return nil
         }
-        return address(forMAC: mac, leases: text)
+        return address(forMAC: mac, leases: String(decoding: data, as: UTF8.self))
     }
 
     /// Whether a TCP connection to `host:port` succeeds within `timeout` seconds. Blocks.

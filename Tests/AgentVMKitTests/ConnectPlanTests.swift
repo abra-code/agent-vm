@@ -137,6 +137,15 @@ import Testing
         if case .askAgent = none[0], case .offerSecret = none[1] {} else {
             Issue.record("the agent is asked about first: \(none.prefix(2))")
         }
+        // The same before a kept box is made, and before a stopped one is started.
+        for target in [ConnectTarget.newKept(image: "dev", name: "k1"), .box("b1")] {
+            let request = ConnectRequest(target: target, launch: .agent(mine), project: nil)
+            let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: false, setSecrets: ["ANTHROPIC_API_KEY"], ownPid: pid,
+                                                                              agentAgreed: false))
+            #expect(steps.first == .askAgent(id: "claude", path: "/store/Agents/claude.json"), "\(target)")
+            #expect(steps.dropFirst().allSatisfy { !$0.isQuestion }, "\(target)")
+            #expect(steps.count > 1, "\(target)")
+        }
         let builtIn = ConnectRequest(target: .newTemporary(image: "dev"), launch: .agent(claude), project: nil)
         #expect(!ConnectPlanner.steps(for: builtIn, facts: ConnectFacts(boxRunning: false, ownPid: pid, agentAgreed: false)).contains { step in
             if case .askAgent = step {

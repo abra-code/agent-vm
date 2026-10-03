@@ -191,6 +191,31 @@ final class RangeServer: @unchecked Sendable {
         #expect(resumed.contains("If-Range: \"v1\""))
     }
 
+    /// A server that sends no ETag: a partial download is resumed when the address and the
+    /// length are the same, with no condition to send; another length starts over.
+    @Test func withoutAnETagTheLengthDecides() async throws {
+        let (_, server, cache, file) = try fixture()
+        server.set {
+            $0.etag = nil
+            $0.cutAfter = 100_000
+        }
+        await #expect(throws: AgentVMError.self) { try await download(server, file, cache) }
+        let kept = try Data(contentsOf: cache.partialFile(for: file))
+        let remote = try await RestoreImageDownload.remote(server.url)
+        #expect(remote.etag == nil)
+        #expect(RestoreImageDownload.resumableBytes(file, url: server.url, remote: remote, cache: cache) == Int64(kept.count))
+        // The same partial file against another length is another file's.
+        let other = RestoreImageDownload.Remote(length: Int64(body.count) + 1, etag: nil)
+        #expect(RestoreImageDownload.resumableBytes(file, url: server.url, remote: other, cache: cache) == 0)
+
+        server.set { $0.cutAfter = nil }
+        try await download(server, file, cache)
+        #expect(try Data(contentsOf: file) == body)
+        let resumed = try #require(server.requests.last)
+        #expect(resumed.contains("Range: bytes=\(kept.count)-"))
+        #expect(!resumed.contains("If-Range"))
+    }
+
     /// The file changed on the server (another ETag): the partial download is not trusted.
     @Test func aChangedFileStartsOver() async throws {
         let (_, server, cache, file) = try fixture()
@@ -313,6 +338,20 @@ final class RangeServer: @unchecked Sendable {
                 #expect(reason.contains("did not say how large"))
             }
         }
+
+        // The largest length there is: a number, so the space check answers, without a trap.
+        server.set { $0.claimedLength = "9223372036854775807" }
+        #expect(try await RestoreImageDownload.remote(server.url).length == Int64.max)
+        do {
+            try await download(server, file, cache)
+            Issue.record("a download of every byte there is ran")
+        } catch let AgentVMError.download(_, reason) {
+            #expect(reason.contains("must stay free"), "\(reason)")
+        }
+        // One digit more is no number.
+        server.set { $0.claimedLength = "9223372036854775808" }
+        #expect(try await RestoreImageDownload.remote(server.url).length == nil)
+        server.set { $0.claimedLength = nil }
 
         for name in ["x.dmg", ".ipsw", "..ipsw", "a b.ipsw", "evil%2F.ipsw"] {
             #expect(throws: AgentVMError.self) { try cache.file(for: URL(string: "https://example.com/\(name.replacingOccurrences(of: " ", with: "%20"))")!) }

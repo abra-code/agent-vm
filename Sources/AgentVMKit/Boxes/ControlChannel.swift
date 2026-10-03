@@ -203,10 +203,10 @@ public enum ControlChannel {
     }
 
     /// Whether the peer of a connected Unix socket runs as this process's user.
-    static func peerIsSameUser(_ descriptor: Int32) -> Bool {
+    static func peerIsSameUser(_ descriptor: Int32, expected: uid_t = geteuid()) -> Bool {
         var uid: uid_t = 0
         var gid: gid_t = 0
-        return getpeereid(descriptor, &uid, &gid) == 0 && uid == geteuid()
+        return getpeereid(descriptor, &uid, &gid) == 0 && uid == expected
     }
 
     // MARK: - Messages

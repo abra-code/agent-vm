@@ -645,6 +645,46 @@ test_a_record_cannot_act_on_the_terminal() {
     assert_printable "$OUT" "status" || return 1
     run_avm image info dev
     assert_printable "$OUT$ERR" "image info" || return 1
+
+    # The same in a box's record, in the features an image names, and in why an image failed.
+    run_avm box create b1 --image dev
+    assert_status 0 || return 1
+    edit_json "$AGENT_VM_HOME/Boxes/b1/box.json" '.guestVersion = "0.2\u001b[2J\rspoofed"' || return 1
+    edit_json "$_record" '.guestFeatures = ["tty\u001b]52;c;eA==\u0007", "x\nBox b9  running"] | .guestVersion = "0.3"' || return 1
+    local _command
+    for _command in "box list" "box status b1" "box info b1" "status" "image list" "image info dev"; do
+        run_avm $_command
+        assert_printable "$OUT$ERR" "$_command" || return 1
+        assert_not_contains "$OUT" "$(printf '\nBox b9  running')" "$_command" || return 1
+    done
+    edit_json "$_record" '.state = "failed" | .failure = "step 2\u001b[1A\u001b[2K\rready\nimage evil  ready"' || return 1
+    for _command in "image list" "image info dev" "status"; do
+        run_avm $_command
+        assert_printable "$OUT$ERR" "$_command" || return 1
+    done
+}
+
+# A pack file comes from elsewhere: what it says is printed as text, on its own line.
+test_a_pack_cannot_act_on_the_terminal() {
+    /bin/mkdir -p "$AGENT_VM_HOME/Packs"
+    printf '%s\n' '{"description": "mirror\u001b]0;title\u0007\u001b[2J\r\npack:github  (built-in)\n    evil.example.com", "hosts": ["npm.example.com"]}' > "$AGENT_VM_HOME/Packs/mine.json"
+    printf '%s\n' '{"hosts": ["bad\u001b[2Jhost\nx"]}' > "$AGENT_VM_HOME/Packs/broken.json"
+    run_avm box packs
+    assert_status 0 || return 1
+    assert_printable "$OUT" "box packs" || return 1
+    assert_out_contains "pack:mine" || return 1
+    local _count
+    _count="$(printf '%s\n' "$OUT" | /usr/bin/grep -c '^pack:github')"
+    assert_eq "$_count" "1" "lines that start a github pack" || return 1
+    _count="$(printf '%s\n' "$OUT" | /usr/bin/grep -c '^    evil.example.com')"
+    assert_eq "$_count" "0" "host lines forged by a description" || return 1
+    # A box that names the pack: what create says about it is printable too.
+    fake_image dev
+    run_avm box create b1 --image dev --allow pack:broken
+    assert_printable "$OUT$ERR" "box create with a broken pack" || return 1
+    run_avm box packs --json
+    assert_status 0 || return 1
+    assert_printable "$OUT" "box packs --json" || return 1
 }
 
 # The log's two files are one list, and an open connection shows the bytes last noted.

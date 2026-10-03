@@ -521,6 +521,44 @@ import Testing
         }
     }
 
+    /// The same exchange while the snapshot is taken (an agent of an earlier session that
+    /// still runs): whatever the snapshot ends up holding, it is never a copy of what is
+    /// outside the project. A start that fails instead is fine.
+    @Test(.timeLimit(.minutes(2)))
+    func aSnapshotNeverHoldsWhatIsOutsideTheProject() throws {
+        let marker = Data("the user's own\n".utf8)
+        for _ in 0..<5 {
+            let scratch = try Scratch()
+            let outside = scratch.root.appendingPathComponent("outside", isDirectory: true)
+            try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+            for index in 0..<400 {
+                try scratch.write("a/file-\(index)", "in the project\n")
+                try marker.write(to: outside.appendingPathComponent("file-\(index)"))
+            }
+            symlink(outside.path, scratch.path("lnk"))
+            let outsideBefore = try describeTree(outside.path)
+
+            let stop = StopFlag()
+            let folder = scratch.path("a")
+            let link = scratch.path("lnk")
+            let flipper = Thread {
+                while !stop.isSet {
+                    renamex_np(folder, link, UInt32(RENAME_SWAP))
+                    renamex_np(folder, link, UInt32(RENAME_SWAP))
+                }
+                stop.finished.signal()
+            }
+            flipper.start()
+            _ = try? scratch.store.start(project: scratch.project.path)
+            stop.set()
+            stop.finished.wait()
+
+            #expect(try describeTree(outside.path) == outsideBefore)
+            let kept = try describeTree(scratch.store.root.path).filter { $0.kind == .file(marker) }
+            #expect(kept.isEmpty)
+        }
+    }
+
     // MARK: - awkward but legitimate projects, and agents that lock things down
 
     @Test func readOnlyFoldersAreSnapshottedAndRestored() throws {

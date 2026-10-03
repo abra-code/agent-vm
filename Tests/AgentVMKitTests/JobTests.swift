@@ -174,6 +174,31 @@ final class JobScratch {
         #expect(!scratch.store.runnerHoldsLock(id))
     }
 
+    /// A runner file that names no process of a job, while the job runs: cancel sends no signal
+    /// and says so, and the job goes on. (Process 1 stands for the damaged numbers here: a
+    /// signal to it is refused by the system, where one to 0 or -1 would reach this test run
+    /// or every process of the user if the check were ever lost.)
+    @Test(.timeLimit(.minutes(1)))
+    func cancelSignalsNothingWhenTheRunnerFileIsDamaged() throws {
+        let scratch = try JobScratch()
+        let id = try scratch.start(["wait"])
+        #expect(scratch.waitForLog(id, "waiting"))
+        let file = URL(fileURLWithPath: scratch.store.path(id, JobStore.runnerName))
+        let good = try Data(contentsOf: file)
+        let info = try #require(scratch.store.runnerInfo(id))
+        let command = try #require(info.commandPid)
+
+        try Data("{\"pid\": 1}".utf8).write(to: file)
+        #expect(throws: AgentVMError.jobNotStarted(id)) { try scratch.store.cancel(id) }
+        #expect(scratch.store.runnerHoldsLock(id))
+        #expect(kill(info.pid, 0) == 0 && kill(command, 0) == 0)
+        #expect(scratch.store.state(id).state == .running)
+
+        try good.write(to: file)
+        try scratch.store.cancel(id)
+        _ = try scratch.wait(id, for: .canceled)
+    }
+
     @Test func cancelPassesSIGINTAndEndsCanceled() throws {
         let scratch = try JobScratch()
         let id = try scratch.start(["wait"])

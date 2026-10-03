@@ -535,6 +535,101 @@ final class ShortFolder {
         #expect(response.error?.contains("7") == true)
     }
 
+    /// What no agent-vm sends: a length below zero or past the limit, text that is not a
+    /// request, nothing but nesting, two messages in one write. Each gets a refusal and its
+    /// connection is closed; the server goes on answering.
+    @Test(.timeLimit(.minutes(1)))
+    func messagesOfTheWrongShapeAreRefusedAndTheServerGoesOn() throws {
+        let scratch = try ShortFolder()
+        let handler = FakeHandler()
+        let server = try ControlServer(path: socketPath(scratch), handler: handler)
+        defer { server.close() }
+        func framed(_ text: String) -> [UInt8] {
+            return Int32(text.utf8.count).bigEndianBytes + Array(text.utf8)
+        }
+        let status = "{\"v\":\(ControlChannel.version),\"op\":\"status\"}"
+        let stop = "{\"v\":\(ControlChannel.version),\"op\":\"stop\"}"
+        let cases: [(String, [UInt8])] = [
+            ("a length below zero", Int32(-1).bigEndianBytes),
+            ("the smallest length", Int32.min.bigEndianBytes),
+            ("a length past the limit", Int32(ControlChannel.maxMessage + 1).bigEndianBytes),
+            ("the largest length", Int32.max.bigEndianBytes),
+            ("not JSON", framed("status")),
+            ("no operation", framed("{\"v\":\(ControlChannel.version)}")),
+            ("an unknown operation", framed("{\"v\":\(ControlChannel.version),\"op\":\"format\"}")),
+            ("nothing but nesting", framed(String(repeating: "[", count: 60_000))),
+            ("nested objects", framed(String(repeating: "{\"a\":", count: 12_000))),
+            ("two messages in one write", framed(status) + framed(stop)),
+        ]
+        for (name, bytes) in cases {
+            let socket = try ControlChannel.connect(socketPath(scratch))
+            defer { close(socket) }
+            let written = bytes.withUnsafeBytes { write(socket, $0.baseAddress, $0.count) }
+            #expect(written == bytes.count, "\(name)")
+            let (response, _) = try #require(try ControlChannel.receive(ControlResponse.self, from: socket), "\(name)")
+            #expect(!response.ok, "\(name)")
+            // Nothing more comes: the connection is closed, not served further.
+            #expect(try ControlChannel.receive(ControlResponse.self, from: socket) == nil, "\(name)")
+        }
+        // The second message of the pair was not acted on.
+        #expect(handler.stopCount == 0)
+        #expect(try ControlClient.request(.status, path: socketPath(scratch)).ok)
+    }
+
+    /// Connections that say nothing, half a length, or half a message, and stay: each holds
+    /// one thread of the server and nothing else, so a request beside them is answered.
+    @Test(.timeLimit(.minutes(1)))
+    func stalledConnectionsDoNotStopTheServer() throws {
+        let scratch = try ShortFolder()
+        let server = try ControlServer(path: socketPath(scratch), handler: FakeHandler())
+        defer { server.close() }
+        // 60, not hundreds: both ends of each are descriptors of this test process.
+        var stalled: [Int32] = []
+        defer { stalled.forEach { close($0) } }
+        for index in 0..<60 {
+            // The server's queue of connections not yet accepted is short: one made while it
+            // is full is refused, and made again.
+            var connected = try? ControlChannel.connect(socketPath(scratch))
+            for _ in 0..<200 where connected == nil {
+                usleep(10_000)
+                connected = try? ControlChannel.connect(socketPath(scratch))
+            }
+            let socket = try #require(connected)
+            stalled.append(socket)
+            let bytes: [UInt8]
+            switch index % 3 {
+            case 0: bytes = []
+            case 1: bytes = [0, 0]
+            default: bytes = Int32(40).bigEndianBytes + Array("{\"v\":".utf8)
+            }
+            #expect(bytes.withUnsafeBytes { write(socket, $0.baseAddress, $0.count) } == bytes.count)
+        }
+        #expect(try ControlClient.request(.status, path: socketPath(scratch)).ok)
+        // They are let go when their clients close, and the server still answers.
+        stalled.forEach { close($0) }
+        stalled = []
+        #expect(try ControlClient.request(.status, path: socketPath(scratch)).ok)
+    }
+
+    /// The server serves only its own user. Another user cannot be played here, so the check
+    /// is asked about a user this process is not.
+    @Test func thePeerMustBeTheSameUser() throws {
+        var pair: [Int32] = [-1, -1]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+        defer {
+            close(pair[0])
+            close(pair[1])
+        }
+        #expect(ControlChannel.peerIsSameUser(pair[0]))
+        #expect(ControlChannel.peerIsSameUser(pair[0], expected: geteuid()))
+        #expect(!ControlChannel.peerIsSameUser(pair[0], expected: geteuid() + 1))
+        #expect(!ControlChannel.peerIsSameUser(pair[0], expected: 0) || geteuid() == 0)
+        // Not a socket at all: no peer, no service.
+        let file = open("/dev/null", O_RDONLY)
+        defer { close(file) }
+        #expect(!ControlChannel.peerIsSameUser(file))
+    }
+
     /// More descriptors than the receive buffer holds: the kernel still reports all of them in
     /// cmsg_len, so a count taken from it alone would read past the buffer and close whatever
     /// numbers it found there.

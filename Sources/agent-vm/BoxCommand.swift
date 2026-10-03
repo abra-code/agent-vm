@@ -857,15 +857,16 @@ struct BoxCommand: ParsableCommand {
             }
             for entry in entries {
                 let origin = entry.source == NetworkPack.Source.user.rawValue
-                    ? "yours, \(entry.path)\(entry.replacesBuiltIn == true ? ", replaces the built-in one" : "")"
+                    ? "yours, \(Printable.line(entry.path))\(entry.replacesBuiltIn == true ? ", replaces the built-in one" : "")"
                     : "built-in"
-                print("pack:\(entry.name)  (\(origin))")
+                // A pack file is copied from elsewhere: what it says takes one line and starts none.
+                print("pack:\(Printable.line(entry.name))  (\(origin))")
                 if let problem = entry.problem {
-                    print("    cannot be used: \(problem)")
+                    print("    cannot be used: \(Printable.line(problem))")
                     continue
                 }
                 if let description = entry.description {
-                    print("    \(description)")
+                    print("    \(Printable.line(description))")
                 }
                 print("    \((entry.hosts ?? []).joined(separator: ", "))")
             }
