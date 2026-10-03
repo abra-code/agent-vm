@@ -108,7 +108,7 @@ agent-vm box start s1 --owner-pid $$               # stops when this shell exits
 
 - **`exec` behaves like the program itself.**
   - stdin, stdout and stderr are streamed: about 550 MB/s out of the box, 430 MB/s into it.
-  - SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1 and SIGUSR2 go to the program's process group.
+  - SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1 and SIGUSR2 go to the program's process group. When the program does not end, a second SIGINT, SIGTERM, SIGHUP or SIGQUIT between 1 and 30 seconds after the first ends `exec` itself with 128 + the signal number (without a terminal; since 0.6.10): the connection closes, and the box hangs the program up and kills it 3 seconds later.
   - The exit status is the program's: 128 + the signal number when a signal ended it, 127 when the program is not found, 126 when it cannot be started, and 125 when agent-vm itself fails (for example, the box is not running). A closed output (`exec ... | head -1`) ends `exec` with 141, as SIGPIPE would end the program locally, and the program is hung up.
   - If `agent-vm exec` is killed, the program gets SIGHUP, then SIGKILL 3 seconds later.
   - Programs run as the box user in their home folder unless `--user` or `--cwd` say otherwise.

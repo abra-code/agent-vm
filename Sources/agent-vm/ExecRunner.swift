@@ -128,6 +128,8 @@ struct ExecRunner {
         ExecExit.shared.started(guestPid: session.pid)
 
         var sources: [DispatchSourceSignal] = []
+        let patience = SignalPatience()
+        let boxName = box.name
         for signalNumber in [SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2] {
             signal(signalNumber, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .global())
@@ -136,6 +138,18 @@ struct ExecRunner {
                 // connection hangs up the program's terminal (a shell at its prompt ignores
                 // SIGTERM itself). Everything else is forwarded.
                 if terminal && (signalNumber == SIGHUP || signalNumber == SIGTERM) {
+                    ExecExit.shared.exit(128 + signalNumber)
+                }
+                // Without a terminal, a program that ignored the first request to end is given
+                // up on at the second: closing the connection (with the process) makes the
+                // guest daemon hang it up and kill it. On a terminal Control-C is a key, and
+                // the two signals above end the session.
+                if !terminal && patience.givesUp(on: signalNumber) {
+                    // One plain write, errors ignored: whoever signals twice may have closed
+                    // the other end, and FileHandle's write ends the process on a failure,
+                    // without the exec log's end line.
+                    let text = "agent-vm: the program in box \(boxName) did not end; closing the connection, which ends it\n"
+                    _ = Array(text.utf8).withUnsafeBytes { write(STDERR_FILENO, $0.baseAddress!, $0.count) }
                     ExecExit.shared.exit(128 + signalNumber)
                 }
                 try? session.sendSignal(signalNumber)

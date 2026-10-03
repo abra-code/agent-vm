@@ -95,6 +95,29 @@ test_signals_reach_the_program() {
     assert_eq "$?" "130" "status after SIGINT" || return 1
 }
 
+# A program that ignores the signal: the first is forwarded and changes nothing, a second one a
+# moment later ends exec with 128 + the signal, and the guest daemon ends the program.
+test_a_second_signal_ends_exec_and_the_program() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    local _marker="sleep 319"
+    "$AGENT_VM" exec --box "$BOX" -- /bin/sh -c "trap '' INT TERM; $_marker; $_marker" 2>"$SCRATCH/second-signal.err" &
+    local _pid=$!
+    /bin/sleep 3
+    kill -INT "$_pid"
+    # At once again, as a terminal and a forwarding parent do together: still one request.
+    kill -INT "$_pid"
+    /bin/sleep 2
+    kill -0 "$_pid" 2>/dev/null || { fail "exec ended on the first signal although the program ignores it"; return 1; }
+    kill -INT "$_pid"
+    wait "$_pid"
+    assert_eq "$?" "130" "status after the second SIGINT" || return 1
+    assert_contains "$(/bin/cat "$SCRATCH/second-signal.err")" "did not end; closing the connection" "exec's stderr" || return 1
+    # The guest daemon hangs the group up at once (only INT and TERM are ignored) and kills it after 3 s.
+    /bin/sleep 5
+    run_avm exec --box "$BOX" -- /bin/sh -c "/bin/ps -axo command | /usr/bin/grep -c '^$_marker'"
+    assert_eq "$OUT" "0" "processes left in the guest" || return 1
+}
+
 test_killing_the_client_ends_the_program() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     local _marker="sleep 317"
