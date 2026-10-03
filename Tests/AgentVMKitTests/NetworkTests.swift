@@ -993,7 +993,9 @@ final class HoldingServer: @unchecked Sendable {
         // Still open on the box's side: no limit applies.
         #expect(done.wait(timeout: .now() + 3) == .timedOut)
         close(client)
-        #expect(done.wait(timeout: .now() + 6) == .success)
+        // 2 to 3 s (the limit, asked about once a second); far more allowed for a loaded Mac,
+        // where a parallel run with virtual machines going took over 6 s.
+        #expect(done.wait(timeout: .now() + 30) == .success)
         #expect(log.entries().first?.reason?.contains("nothing from the server") == true)
         #expect(eventually { (try? self.exchange(proxy, "CONNECT example.com:443 HTTP/1.1\r\n\r\n"))?.hasPrefix("HTTP/1.1 403") == true })
     }

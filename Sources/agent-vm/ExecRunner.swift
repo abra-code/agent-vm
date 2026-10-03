@@ -157,11 +157,19 @@ struct ExecRunner {
         }
         session.forwardStdin(from: STDIN_FILENO)
 
+        // On a terminal, the program's output goes through a filter: only what draws in the
+        // window reaches the Mac's terminal (TerminalOutputFilter).
+        let filter = terminal ? TerminalOutputFilter() : nil
+        if let filter {
+            ExecExit.shared.filter(filter)
+        }
         let report: ExitReport
         do {
             let terminal = self.terminal
             let prompts = self.prompts
-            report = try session.run(stdout: { Self.writeAll(STDOUT_FILENO, $0) }, stderr: { Self.writeAll(STDERR_FILENO, $0) }, notice: { notice in
+            // A guest daemon sends no stderr on a terminal (it is the terminal), but a replaced
+            // one could: the same filter, read on the same thread as stdout.
+            report = try session.run(stdout: { Self.writeAll(STDOUT_FILENO, filter?.filter($0) ?? $0) }, stderr: { Self.writeAll(STDERR_FILENO, filter?.filter($0) ?? $0) }, notice: { notice in
                 Self.report(notice, box: box, terminal: terminal, prompts: prompts)
             })
         } catch {
@@ -316,6 +324,7 @@ final class ExecExit: @unchecked Sendable {
     private var guestPid: Int32?
     private var prompts: [String] = []
     private var box: String?
+    private var outputFilter: TerminalOutputFilter?
     private let began = ContinuousClock.now
 
     func record(log: ExecLog, id: String, box: String) {
@@ -324,6 +333,13 @@ final class ExecExit: @unchecked Sendable {
         self.log = log
         self.id = id
         self.box = box
+    }
+
+    /// The terminal session's output filter: its reset is written when the session ends.
+    func filter(_ filter: TerminalOutputFilter) {
+        lock.lock()
+        defer { lock.unlock() }
+        outputFilter = filter
     }
 
     func started(guestPid: Int32) {
@@ -365,8 +381,21 @@ final class ExecExit: @unchecked Sendable {
     func restoreTerminal() {
         lock.lock()
         defer { lock.unlock() }
+        restoreLocked()
+    }
+
+    /// Turns off what the program left on in the Mac's terminal (mouse reports, the alternate
+    /// screen, a hidden cursor), then gives the terminal its settings back. TCSAFLUSH: input not
+    /// read yet is discarded, so an answer the terminal typed to a query the program sent just
+    /// before it ended does not land in the Mac's shell.
+    private func restoreLocked() {
+        if let reset = outputFilter?.resetSequence(), isatty(STDOUT_FILENO) == 1 {
+            // One plain write, errors ignored: writeAll comes back to `exit` on EPIPE.
+            _ = reset.withUnsafeBytes { write(STDOUT_FILENO, $0.baseAddress!, $0.count) }
+        }
+        outputFilter = nil
         if var saved = savedTerminal {
-            _ = tcsetattr(STDIN_FILENO, TCSADRAIN, &saved)
+            _ = tcsetattr(STDIN_FILENO, TCSAFLUSH, &saved)
             savedTerminal = nil
         }
     }
@@ -374,8 +403,9 @@ final class ExecExit: @unchecked Sendable {
     func exit(_ status: Int32) -> Never {
         // Never unlocked: a second thread arriving here waits for the process to end.
         lock.lock()
-        if var saved = savedTerminal {
-            _ = tcsetattr(STDIN_FILENO, TCSADRAIN, &saved)
+        let wasRaw = savedTerminal != nil
+        restoreLocked()
+        if wasRaw {
             // A full-screen program may have drawn over the notices: say it again, now that the
             // terminal is ours.
             if !prompts.isEmpty {
