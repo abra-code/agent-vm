@@ -255,7 +255,7 @@ final class PromptWatcher: @unchecked Sendable {
     private func handle(line: [UInt8]) {
         guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
               let message = object["eventMessage"] as? String,
-              let event = Self.parse(message) else {
+              let event = Self.parse(message, responsible: getpid()) else {
             return
         }
         let process = (object["processID"] as? NSNumber)?.intValue ?? 0
@@ -306,8 +306,78 @@ final class PromptWatcher: @unchecked Sendable {
         }
     }
 
-    /// The event in one privacy-service message, or nil for any other message.
-    static func parse(_ message: String) -> Event? {
+    /// The process groups of an attribution, in the order tccd writes them.
+    private static let groups = ["responsible={TCCDProcess: ", "accessing={TCCDProcess: ", "requesting={TCCDProcess: "]
+
+    /// The longest attribution line that is read.
+    static let maxAttributionBytes = 1000
+
+    /// The program an attribution line names: the `accessing` process, or `requesting` when
+    /// there is none (a program that asks for itself: Automation, the camera).
+    ///
+    ///     attribution={responsible={TCCDProcess: identifier=..., pid=291, ..., binary_path=...},
+    ///     accessing={TCCDProcess: identifier=com.apple.ls, pid=688, ..., binary_path=/bin/ls},
+    ///     requesting={TCCDProcess: identifier=..., pid=152, ..., binary_path=...}, },
+    ///
+    /// A program chooses its own signing identifier and its own path, and both are printed
+    /// inside its group, so either may hold the text of a field or of a whole group with
+    /// another process's id. The line is therefore read only when it has one reading: each
+    /// group at most once and in tccd's order, and in each group exactly one `pid=` followed by
+    /// exactly one `binary_path=`. That leaves one line made of added text that still reads
+    /// well, an `accessing` group written inside the responsible process's own fields; so with
+    /// `responsible` (the daemon's process id), a line whose responsible process is another one
+    /// (a program that disclaimed the daemon), or that names none, is not read either. A line that is not read costs
+    /// a notice, never a wrong one.
+    static func attributed(in message: String, responsible: Int32?) -> (pid: Int32, program: String?)? {
+        // A long identifier or path gets the line cut short by the log (measured: an argument
+        // of about 1 KB and more is cut, without a mark), and a line missing the program's own
+        // fields and the groups after them no longer has one reading. A line this short was not
+        // cut; tccd's own are about 500 bytes.
+        guard message.utf8.count < maxAttributionBytes else {
+            return nil
+        }
+        var starts: [(name: String, range: Range<String.Index>)] = []
+        for name in groups {
+            guard let first = message.range(of: name) else {
+                continue
+            }
+            guard message.range(of: name, range: first.upperBound..<message.endIndex) == nil,
+                  starts.last.map({ $0.range.upperBound <= first.lowerBound }) ?? true else {
+                return nil
+            }
+            starts.append((name, first))
+        }
+        var found: [String: (pid: Int32, program: String?)] = [:]
+        for (index, start) in starts.enumerated() {
+            let end = index + 1 < starts.count ? starts[index + 1].range.lowerBound : message.endIndex
+            var body = message[start.range.upperBound..<end]
+            // What closes the group: "}, ", and after the last one the attribution's "}," too.
+            let closing = index + 1 < starts.count ? "}, " : "}, },"
+            guard body.hasSuffix(closing) else {
+                return nil
+            }
+            body = body.dropLast(closing.count)
+            guard let pidName = body.range(of: "pid="), body.range(of: "pid=", range: pidName.upperBound..<body.endIndex) == nil,
+                  let pathName = body.range(of: "binary_path="), body.range(of: "binary_path=", range: pathName.upperBound..<body.endIndex) == nil,
+                  pidName.upperBound <= pathName.lowerBound else {
+                return nil
+            }
+            let digits = body[pidName.upperBound...].prefix { $0 != "," }
+            guard let pid = Int32(digits), pid > 0 else {
+                return nil
+            }
+            let path = String(body[pathName.upperBound...])
+            found[start.name] = (pid, path.isEmpty ? nil : path)
+        }
+        if let responsible, found[groups[0]]?.pid != responsible {
+            return nil
+        }
+        return found[groups[1]] ?? found[groups[2]]
+    }
+
+    /// The event in one privacy-service message, or nil for any other message. `responsible`:
+    /// see `attributed`.
+    static func parse(_ message: String, responsible: Int32? = nil) -> Event? {
         if message.hasPrefix(keychainPromptPrefix) {
             // "<path>(<pid>); ACL: ..." (format "%s(%d); ACL: %@"): the pid in the last
             // parentheses before the first "; ACL: ", so a path may hold "; " and parentheses.
@@ -324,17 +394,10 @@ final class PromptWatcher: @unchecked Sendable {
             return nil
         }
         if message.hasPrefix("AUTHREQ_ATTRIBUTION") {
-            // accessing={TCCDProcess: identifier=..., pid=688, ..., binary_path=/bin/ls}. A program
-            // that asks itself (Automation, the camera) has no `accessing`: it is `requesting`.
-            guard let start = message.range(of: "accessing={") ?? message.range(of: "requesting={") else {
+            guard let (pid, program) = attributed(in: message, responsible: responsible) else {
                 return nil
             }
-            let rest = message[start.upperBound...]
-            let accessing = String(rest[..<(rest.firstIndex(of: "}") ?? rest.endIndex)])
-            guard let pid = field("pid=", in: accessing, until: ",").flatMap({ Int32($0) }) else {
-                return nil
-            }
-            return .attribution(messageID: messageID, pid: pid, program: field("binary_path=", in: accessing, until: ","))
+            return .attribution(messageID: messageID, pid: pid, program: program)
         }
         if message.hasPrefix("AUTHREQ_PROMPTING") {
             guard let service = field("service=", in: message, until: ",") else {

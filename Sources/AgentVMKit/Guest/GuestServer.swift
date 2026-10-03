@@ -74,6 +74,7 @@ public final class GuestServer: @unchecked Sendable {
         if geteuid() == 0 {
             PromptWatcher.shared.start()
         }
+        var refusals = RefusalLog()
         while true {
             var address = sockaddr_vm()
             var length = socklen_t(MemoryLayout<sockaddr_vm>.size)
@@ -90,7 +91,11 @@ public final class GuestServer: @unchecked Sendable {
             _ = fcntl(connection, F_SETFD, FD_CLOEXEC)
             // VMADDR_CID_HOST: only the host may drive the daemon.
             guard address.svm_cid == 2 else {
-                Self.log("refused a connection from CID \(address.svm_cid)")
+                // Any process in the box can connect, as often as it likes, and each log line
+                // is written through to disk on this thread, the one that accepts the host.
+                if let line = refusals.line(cid: address.svm_cid) {
+                    Self.log(line)
+                }
                 close(connection)
                 continue
             }
@@ -265,7 +270,13 @@ public final class GuestServer: @unchecked Sendable {
             // With job control the foreground job has a group of its own; it is hung up too
             // (the master is still open here: runExec closes it after this thread ends).
             let foreground = terminal.map { tcgetpgrp($0) } ?? -1
-            let groups = foreground > 0 && foreground != pid ? [pid, foreground] : [pid]
+            // Only groups that still have a process: this runs at the end of every exec too,
+            // after the program was reaped, and the number of a group with nobody left in it
+            // can be given to a new process, which a root daemon must not signal.
+            let groups = (foreground > 0 && foreground != pid ? [pid, foreground] : [pid]).filter { kill(-$0, 0) == 0 }
+            guard !groups.isEmpty else {
+                return
+            }
             for group in groups {
                 _ = kill(-group, SIGHUP)
             }
@@ -273,8 +284,16 @@ public final class GuestServer: @unchecked Sendable {
             // delay late, and later still when the shared queue is busy (measured up to 1.3 s
             // late under a parallel test run).
             Thread.detachNewThread {
-                Thread.sleep(forTimeInterval: hangupGrace)
-                for group in groups {
+                // Looked at every tenth of a second, so a group the hangup ended is known to be
+                // gone long before its number can come around again. Timed by the time the
+                // machine has run, not by the clock, which a time-sync may set back meanwhile.
+                var left = groups
+                let end = DispatchTime.now() + hangupGrace
+                while !left.isEmpty, DispatchTime.now() < end {
+                    Thread.sleep(forTimeInterval: 0.1)
+                    left = left.filter { kill(-$0, 0) == 0 }
+                }
+                for group in left {
                     _ = kill(-group, SIGKILL)
                 }
             }
@@ -656,7 +675,7 @@ public final class GuestServer: @unchecked Sendable {
             fail("cannot become \(name): \(String(cString: strerror(errno)))")
         }
         if account.uid != 0 {
-            guard setuid(0) != 0, getuid() == account.uid, geteuid() == account.uid else {
+            guard setuid(0) != 0, getuid() == account.uid, geteuid() == account.uid, getgid() == account.gid, getegid() == account.gid else {
                 fail("privileges were not dropped")
             }
         }
@@ -765,6 +784,25 @@ public final class GuestServer: @unchecked Sendable {
     public static func logLine(_ line: String) {
         FileHandle.standardError.write(Data((line + "\n").utf8))
         fsync(STDERR_FILENO)
+    }
+}
+
+/// The log line for connections refused because they did not come from the host: the first one
+/// at once, then at most one line a minute that says how many more there were.
+struct RefusalLog {
+    static let interval: TimeInterval = 60
+    private var lastLine: Date?
+    private var unlogged = 0
+
+    mutating func line(cid: UInt32, now: Date = Date()) -> String? {
+        if let lastLine, now.timeIntervalSince(lastLine) < Self.interval {
+            unlogged += 1
+            return nil
+        }
+        let more = unlogged > 0 ? " (and \(unlogged) more since the last such line)" : ""
+        lastLine = now
+        unlogged = 0
+        return "refused a connection from CID \(cid)\(more)"
     }
 }
 

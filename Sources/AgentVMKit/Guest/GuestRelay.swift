@@ -12,8 +12,20 @@ public enum GuestRelay {
     public static let port: UInt16 = 3128
     public static let hostPort: UInt32 = 3128
 
-    /// Listens on 127.0.0.1:`port` and relays forever on background threads.
-    public static func start(port: UInt16 = port, hostPort: UInt32 = hostPort) throws {
+    /// The most connections relayed at once. Each takes a thread and two descriptors of the
+    /// daemon, which also needs descriptors to accept the host and to run programs: a box
+    /// program that opens connections without end must not use them up. The host's proxy
+    /// serves 256 at once for the whole box.
+    public static let maxConnections = 128
+    /// The daemon's limit on open descriptors once the relay runs: four times what the relay
+    /// can hold.
+    static let descriptorLimit: rlim_t = 1024
+
+    /// Listens on 127.0.0.1:`port` (0: any free port) and relays forever on background threads;
+    /// returns the port. A connection past `maxConnections` is closed at once. `connect` opens
+    /// the far side of one connection (the host's proxy; replaced in tests) or returns -1.
+    @discardableResult
+    public static func start(port: UInt16 = port, hostPort: UInt32 = hostPort, connect: (@Sendable () -> Int32)? = nil) throws -> UInt16 {
         let listener = socket(AF_INET, SOCK_STREAM, 0)
         guard listener >= 0 else {
             throw AgentVMError.system(operation: "relay socket", code: errno)
@@ -34,6 +46,24 @@ public enum GuestRelay {
             close(listener)
             throw AgentVMError.system(operation: "listen on 127.0.0.1:\(port)", code: code)
         }
+        var listening = sockaddr_in()
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let named = withUnsafeMutablePointer(to: &listening) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(listener, $0, &length) }
+        }
+        guard named == 0 else {
+            let code = errno
+            close(listener)
+            throw AgentVMError.system(operation: "getsockname", code: code)
+        }
+        // launchd starts the daemon with room for 256 descriptors, which `maxConnections`
+        // connections alone would fill. Programs the daemon starts inherit the higher limit.
+        var limit = rlimit()
+        if getrlimit(RLIMIT_NOFILE, &limit) == 0, limit.rlim_cur < descriptorLimit {
+            limit.rlim_cur = min(descriptorLimit, limit.rlim_max)
+            _ = setrlimit(RLIMIT_NOFILE, &limit)
+        }
+        let open = OpenCount()
         Thread.detachNewThread {
             while true {
                 let client = accept(listener, nil, nil)
@@ -43,21 +73,58 @@ public enum GuestRelay {
                     }
                     continue
                 }
+                guard open.take(limit: maxConnections) else {
+                    close(client)
+                    continue
+                }
                 _ = fcntl(client, F_SETFD, FD_CLOEXEC)
                 Thread.detachNewThread {
-                    relay(client, hostPort: hostPort)
+                    relay(client, to: connect?() ?? connectToHost(port: hostPort))
+                    open.give()
                 }
             }
         }
+        return UInt16(bigEndian: listening.sin_port)
     }
 
-    static func relay(_ client: Int32, hostPort: UInt32) {
+    /// Connections being relayed now.
+    private final class OpenCount: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+
+        func take(limit: Int) -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard count < limit else {
+                return false
+            }
+            count += 1
+            return true
+        }
+
+        func give() {
+            lock.lock()
+            count -= 1
+            lock.unlock()
+        }
+    }
+
+    /// Copies between the two until either ends, and closes both.
+    static func relay(_ client: Int32, to upstream: Int32) {
         defer { close(client) }
-        let upstream = socket(AF_VSOCK, SOCK_STREAM, 0)
         guard upstream >= 0 else {
             return
         }
         defer { close(upstream) }
+        Splice.run(client, upstream)
+    }
+
+    /// A connection to the host's vsock port `port`, or -1.
+    static func connectToHost(port hostPort: UInt32) -> Int32 {
+        let upstream = socket(AF_VSOCK, SOCK_STREAM, 0)
+        guard upstream >= 0 else {
+            return -1
+        }
         _ = fcntl(upstream, F_SETFD, FD_CLOEXEC)
         var address = sockaddr_vm()
         address.svm_len = UInt8(MemoryLayout<sockaddr_vm>.size)
@@ -68,8 +135,9 @@ public enum GuestRelay {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(upstream, $0, socklen_t(MemoryLayout<sockaddr_vm>.size)) }
         }
         guard connected == 0 else {
-            return
+            close(upstream)
+            return -1
         }
-        Splice.run(client, upstream)
+        return upstream
     }
 }
