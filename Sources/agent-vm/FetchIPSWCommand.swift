@@ -69,7 +69,11 @@ extension ImageCommand {
             }
             // Tests point this at a local server; the version is then read from the file.
             var latest: LatestRestoreImage
-            if let override = ProcessInfo.processInfo.environment["AGENT_VM_IPSW_URL"], !override.isEmpty, let url = URL(string: override) {
+            if let override = ProcessInfo.processInfo.environment["AGENT_VM_IPSW_URL"], !override.isEmpty {
+                // An address that cannot be read is refused too, not passed over for Apple's.
+                guard let url = URL(string: override), RestoreImageDownload.isAcceptableSource(url) else {
+                    throw ValidationError("AGENT_VM_IPSW_URL must be an https address, or an http one on this Mac (127.0.0.1)")
+                }
                 latest = LatestRestoreImage(url: url, version: "", build: "")
             } else {
                 emit(ProgressEvent(.progress, "Asking Apple for the latest restore image this Mac supports", step: "resolve"))

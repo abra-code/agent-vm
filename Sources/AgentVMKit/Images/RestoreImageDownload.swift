@@ -210,6 +210,23 @@ public enum RestoreImageDownload {
         return Remote(length: length, etag: http.value(forHTTPHeaderField: "ETag"))
     }
 
+    /// Whether a restore image may be fetched from `url` when the address is not Apple's own
+    /// answer but was given (AGENT_VM_IPSW_URL, which the tests point at a local server): over
+    /// HTTPS, or from this Mac itself. A restore image is trusted for where it came from, so
+    /// it is not asked for over a connection anyone on the way can rewrite. (Only the address
+    /// given is checked: where a server redirects to is not.)
+    public static func isAcceptableSource(_ url: URL) -> Bool {
+        let host = (url.host ?? "").lowercased()
+        switch url.scheme?.lowercased() {
+        case "https":
+            return !host.isEmpty
+        case "http":
+            return ["127.0.0.1", "localhost", "::1", "[::1]"].contains(host)
+        default:
+            return false
+        }
+    }
+
     /// Bytes already in the partial file for `url` (0 when there is none, or it is for
     /// another file and will be started over).
     public static func resumableBytes(_ file: URL, url: URL, remote: Remote, cache: RestoreImageCache) -> Int64 {

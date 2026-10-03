@@ -70,12 +70,15 @@ test_exec_failures_of_agent_vm_itself_exit_125() {
 }
 
 test_exec_rejects_malformed_environment() {
-    run_avm exec --box anything --env =value -- /usr/bin/true
+    # A value given without its name is not repeated in the error.
+    run_avm exec --box anything --env =sk-value-123 -- /usr/bin/true
     assert_status 64 || return 1
     assert_err_contains "NAME=VALUE or the NAME of a variable" || return 1
-    run_avm exec --box anything --env not-a-name -- /usr/bin/true
+    assert_not_contains "$ERR" "sk-value-123" "the error" || return 1
+    run_avm exec --box anything --env sk-value-123 -- /usr/bin/true
     assert_status 64 || return 1
-    assert_err_contains "got not-a-name" || return 1
+    assert_err_contains "is not a name" || return 1
+    assert_not_contains "$ERR" "sk-value-123" "the error" || return 1
 }
 
 # Checked before the box: a missing variable is a usage error, and no value is printed.
@@ -239,6 +242,10 @@ test_fetch_ipsw_checks_and_refuses() {
     AGENT_VM_IPSW_URL="$_url" run_avm image fetch-ipsw --check
     assert_status 1 || return 1
     assert_err_contains "cannot download $_url" || return 1
+    # A given address is https, or this Mac: nothing is asked of another host over plain http.
+    AGENT_VM_IPSW_URL="http://example.com/UniversalMac_99.0_99A1_Restore.ipsw" run_avm image fetch-ipsw --check
+    assert_status 64 || return 1
+    assert_err_contains "must be an https address" || return 1
 }
 
 test_fetch_ipsw_lists_and_create_finds_by_name() {

@@ -25,12 +25,14 @@ public enum ExecEnvironment {
     public static func entry(_ text: String, host: [String: String]) throws -> (name: String, value: String) {
         if let equals = text.firstIndex(of: "=") {
             guard equals != text.startIndex else {
-                throw AgentVMError.invalidEnvironment("--env needs NAME=VALUE or the NAME of a variable to pass on, got \(text)")
+                // Not the text: what follows "=" is a value, and errors name variables only.
+                throw AgentVMError.invalidEnvironment("--env needs NAME=VALUE or the NAME of a variable to pass on; the name before \"=\" is missing")
             }
             return (String(text[..<equals]), String(text[text.index(after: equals)...]))
         }
         guard isValidName(text) else {
-            throw AgentVMError.invalidEnvironment("--env needs NAME=VALUE or the NAME of a variable to pass on, got \(text)")
+            // Not the text either: a value given without its name looks just like this.
+            throw AgentVMError.invalidEnvironment("--env needs NAME=VALUE or the NAME of a variable to pass on; what was given is not a name (letters, digits and \"_\", not starting with a digit)")
         }
         guard let value = host[text] else {
             throw AgentVMError.invalidEnvironment("--env \(text): \(text) is not set in agent-vm's environment")

@@ -36,11 +36,17 @@ import Testing
         #expect(throws: AgentVMError.invalidEnvironment("--env MISSING: MISSING is not set in agent-vm's environment")) {
             try ExecEnvironment.entry("MISSING", host: host)
         }
-        #expect(throws: AgentVMError.invalidEnvironment("--env needs NAME=VALUE or the NAME of a variable to pass on, got =x")) {
-            try ExecEnvironment.entry("=x", host: host)
-        }
-        #expect(throws: AgentVMError.invalidEnvironment("--env needs NAME=VALUE or the NAME of a variable to pass on, got not-a-name")) {
-            try ExecEnvironment.entry("not-a-name", host: host)
+        // A value without its name (`--env =sk-...`, `--env sk-...`) is never repeated.
+        for mistake in ["=sk-live-123", "sk-live-123", "sk live 123", "9KEY"] {
+            do {
+                _ = try ExecEnvironment.entry(mistake, host: host)
+                Issue.record("\(mistake) was taken")
+            } catch let AgentVMError.invalidEnvironment(reason) {
+                #expect(reason.hasPrefix("--env needs NAME=VALUE or the NAME of a variable to pass on"))
+                #expect(!reason.contains("sk") && !reason.contains("123") && !reason.contains("9KEY"), "\(reason)")
+            } catch {
+                Issue.record("\(error)")
+            }
         }
     }
 

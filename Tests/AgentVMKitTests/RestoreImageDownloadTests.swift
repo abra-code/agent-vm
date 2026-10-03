@@ -191,6 +191,18 @@ final class RangeServer: @unchecked Sendable {
         #expect(resumed.contains("If-Range: \"v1\""))
     }
 
+    @Test func aGivenAddressIsHTTPSOrThisMac() throws {
+        for good in ["https://updates.cdn-apple.com/x.ipsw", "HTTPS://example.com/x.ipsw", "http://127.0.0.1:8080/x.ipsw",
+                     "http://localhost/x.ipsw", "http://[::1]:9/x.ipsw"] {
+            #expect(RestoreImageDownload.isAcceptableSource(try #require(URL(string: good))), "\(good)")
+        }
+        for bad in ["http://example.com/x.ipsw", "http://127.0.0.1.example.com/x.ipsw", "http://localhost.example.com/x.ipsw",
+                    "http://127.0.0.2/x.ipsw", "http://192.168.1.5/x.ipsw", "ftp://127.0.0.1/x.ipsw", "file:///tmp/x.ipsw",
+                    "https:///x.ipsw", "x.ipsw", "http://user@example.com@127.0.0.1.evil.example/x.ipsw"] {
+            #expect(!RestoreImageDownload.isAcceptableSource(try #require(URL(string: bad))), "\(bad)")
+        }
+    }
+
     /// A server that sends no ETag: a partial download is resumed when the address and the
     /// length are the same, with no condition to send; another length starts over.
     @Test func withoutAnETagTheLengthDecides() async throws {
