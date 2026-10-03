@@ -99,6 +99,7 @@ agent-vm box status dev1                      # its state, supervisor and runnin
 agent-vm box list
 agent-vm box info dev1                        # its status plus its space on disk
 agent-vm box stop dev1                        # clean shutdown through the guest daemon
+agent-vm box set dev1 --memory-gb 12 --cpus 6 # a stopped box's size; what it holds stays
 agent-vm box recreate dev1                    # a fresh clone of its image, same settings (stopped boxes only); box list says when one is needed
 agent-vm box delete dev1
 agent-vm box create s1 --image dev --disposable     # a box for one session

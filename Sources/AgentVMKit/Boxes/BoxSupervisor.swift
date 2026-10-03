@@ -15,7 +15,8 @@ import Virtualization
 
 @MainActor
 public final class BoxSupervisor {
-    public let box: Box
+    /// As `run` read it under the box's lock; before that, as the caller read it.
+    public private(set) var box: Box
     private let log: @MainActor (String) -> Void
     private let state = SupervisorState()
     private var machine: MacMachine?
@@ -124,6 +125,9 @@ public final class BoxSupervisor {
             rmdir(box.directory.path)
             throw AgentVMError.boxNotFound(box.name)
         }
+        // The record as it is now: `box set` or `box network` may have changed it between the
+        // caller's read and this lock, and the box must run as its record says.
+        box = try BoxStore.reread(box)
         // Checked under the lock: a disposable box that stopped is only ever deleted.
         guard !box.isTombstoned else {
             throw AgentVMError.boxDisposed(box.name)

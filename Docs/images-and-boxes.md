@@ -27,7 +27,7 @@ restore image (.ipsw)
 | What it is | A sealed template | A working copy of one image |
 | Made by | `image create` (from a restore image, or `--from` another image with a recipe) | `box create --image <image>`: an APFS clone, instant, free until the box writes |
 | Runs programs | Only while agent-vm builds or updates it | Yes: `exec`, `box shell`, `box view` |
-| Changed by | `image update`, `image setup` | Whatever runs in it; `box network` for its network rules |
+| Changed by | `image update`, `image setup` | Whatever runs in it; `box network` for its network rules; `box set` for its CPUs and memory |
 | Its own settings | CPUs, memory, disk size, account name | CPUs and memory (default: the image's), network mode and rules |
 | Folder (shown by `image list`, `box list`; with its space by `image info`, `box info`) | `~/Library/Application Support/agent-vm/Images/<name>/` | `~/Library/Application Support/agent-vm/Boxes/<name>/` |
 
@@ -185,7 +185,7 @@ What changes:
 No. A derived image is a clone made at `image create --from`. To pass a change on, update the derived image too (`image update`), or build it again on its base as it is now: `agent-vm image rebuild <image>` runs the image's own recipes on a fresh clone of the base and keeps the name.
 
 **Can I change a box's CPUs or memory, or rename a box or an image?**
-Not after creation. For a box, make it again with `box create --cpus N --memory-gb N`. The network is the exception: `box network` changes the rules at once, and the mode while the box is stopped.
+CPUs and memory of a stopped box, yes: `agent-vm box set <box> --cpus N --memory-gb N`, and what the box holds stays. The same for its network: `box network` changes the rules at once, and the mode while the box is stopped. An image's CPUs and memory are only what its new boxes start with. Nothing can be renamed.
 
 **How do I know that a macOS update exists?**
 `agent-vm status --check-updates` asks Apple for the newest macOS and names the images that are behind it, with the command that installs it. The answer is kept: until you ask again, plain `status` and `image list` repeat it without a network. Nothing is checked or installed by itself.

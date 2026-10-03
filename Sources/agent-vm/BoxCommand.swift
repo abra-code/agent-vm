@@ -24,7 +24,7 @@ struct BoxCommand: ParsableCommand {
             shows what exec and shell ran there, `box status` shows its state without \
             starting anything, and `box info` adds the space it takes on disk.
             """,
-        subcommands: [Create.self, Recreate.self, List.self, Status.self, Info.self, Start.self, GC.self, SyncClock.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self, Send.self,
+        subcommands: [Create.self, Recreate.self, SetSize.self, List.self, Status.self, Info.self, Start.self, GC.self, SyncClock.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self, Send.self,
                       Packs.self, Serve.self]
     )
 
@@ -321,6 +321,50 @@ struct BoxCommand: ParsableCommand {
         }
     }
 
+    struct SetSize: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "set",
+            abstract: "Change a stopped box's CPUs or memory.",
+            discussion: """
+                A box reads its CPUs and memory when it starts, so they change only while it is \
+                stopped; what the box holds stays. Without an option the command shows what the \
+                box has. A box costs this Mac close to its whole memory once it has been busy, \
+                and gives none back before it stops.
+                """)
+
+        @Argument(help: "The box name.")
+        var name: String
+
+        @Option(name: .long, help: "Virtual CPUs.")
+        var cpus: Int?
+
+        @Option(name: .customLong("memory-gb"), help: "Memory in GB.")
+        var memoryGB: Int?
+
+        @OptionGroup var options: StoreOptions
+
+        func validate() throws {
+            if let cpus, !(1...256).contains(cpus) {
+                throw ValidationError("--cpus must be between 1 and 256")
+            }
+            if let memoryGB, !(1...4096).contains(memoryGB) {
+                throw ValidationError("--memory-gb must be between 1 and 4096")
+            }
+        }
+
+        func run() throws {
+            var box = try options.boxStore.box(named: name)
+            if cpus != nil || memoryGB != nil {
+                box = try options.boxStore.resize(named: name, cpuCount: cpus, memoryBytes: memoryGB.map { UInt64($0) << 30 })
+            }
+            if options.json {
+                try Output.json(box.record)
+                return
+            }
+            print("Box \(box.name): \(box.record.cpuCount) CPUs, \(box.record.memoryBytes >> 30) GB of memory")
+        }
+    }
+
     struct Start: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Start a box in the background and wait until it is ready (a running box is left as is).")
@@ -356,6 +400,13 @@ struct BoxCommand: ParsableCommand {
                     print("Box \(box.name) is already running (supervisor pid \(status.pid ?? 0)\(owner))\(ownerPid == nil ? "" : "; --owner-pid is ignored")")
                 }
                 return
+            }
+            if let warning = MachineSize.memoryWarning(starting: box.record.memoryBytes, running: options.boxStore.runningMemory(except: box.name)) {
+                if options.json {
+                    Events.emit(ProgressEvent(.notice, warning, box: box.name), json: true)
+                } else {
+                    Stderr.write("note: \(warning)\n")
+                }
             }
             let clock = ContinuousClock()
             let began = clock.now

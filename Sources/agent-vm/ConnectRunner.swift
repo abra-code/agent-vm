@@ -568,6 +568,9 @@ struct ConnectRunner {
                     guard let current = box else {
                         continue
                     }
+                    if let warning = MachineSize.memoryWarning(starting: current.record.memoryBytes, running: boxStore.runningMemory(except: name)) {
+                        warn(warning)
+                    }
                     let shown = StartProgress(box: name, estimate: BoxLauncher.lastBootSeconds(of: current), terminal: terminal)
                     shown.begin()
                     do {

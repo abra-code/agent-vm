@@ -86,7 +86,7 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 
 `image setup`: `boot`, `full-disk-access` (the window is open: waiting for the grant, or, when agent-vm-guest has it already, for the window to close), `shutdown`.
 
-`box start`: `starting`, then `running`, following the supervisor's state (`stopping` when the box this command started is stopped before it runs; the command then fails). A box that is already running reports no steps; one that another `box start` is starting reports its state from then on. A box that is stopping reports `stopping` (message `waiting for the box to stop`) until it has stopped, then `starting` and `running` as it is started again.
+`box start`: `starting`, then `running`, following the supervisor's state (`stopping` when the box this command started is stopped before it runs; the command then fails). A box that is already running reports no steps; one that another `box start` is starting reports its state from then on. A box that is stopping reports `stopping` (message `waiting for the box to stop`) until it has stopped, then `starting` and `running` as it is started again. A `notice` comes first when the boxes that run, with this one, leave this Mac less than 6 GB of its memory.
 
 `box stop`: `shutdown`.
 

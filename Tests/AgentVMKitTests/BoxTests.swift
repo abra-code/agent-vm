@@ -166,6 +166,90 @@ final class BoxScratch {
         #expect(try fixture.boxes.box(named: "b1").record == box.record)
     }
 
+    /// box set: a stopped box takes other CPUs and memory and keeps everything else; a running
+    /// one is refused and unchanged.
+    @Test func aStoppedBoxTakesAnotherSize() throws {
+        let fixture = try BoxScratch()
+        let made = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images, cpuCount: 2, memoryBytes: 3 << 30)
+        try Data("written in the box".utf8).write(to: made.diskURL)
+        var box = try fixture.boxes.resize(named: "b1", memoryBytes: 5 << 30)
+        #expect(box.record.cpuCount == 2 && box.record.memoryBytes == 5 << 30)
+        box = try fixture.boxes.resize(named: "b1", cpuCount: 1)
+        #expect(box.record.cpuCount == 1 && box.record.memoryBytes == 5 << 30)
+        var expected = made.record
+        expected.cpuCount = 1
+        expected.memoryBytes = 5 << 30
+        #expect(try fixture.boxes.box(named: "b1").record == expected)
+        #expect(try String(contentsOf: box.diskURL, encoding: .utf8) == "written in the box")
+        // What a supervisor does once it holds the lock: a box read before the change is read again.
+        #expect(try BoxStore.reread(made).record == expected)
+        // Nothing asked: nothing changed.
+        #expect(try fixture.boxes.resize(named: "b1").record == expected)
+
+        let lock = try #require(try FolderLock.tryAcquire(box.lockPath))
+        #expect(throws: AgentVMError.boxRunning("b1")) {
+            _ = try fixture.boxes.resize(named: "b1", memoryBytes: 2 << 30)
+        }
+        lock.release()
+        #expect(try fixture.boxes.box(named: "b1").record == expected)
+        #expect(throws: AgentVMError.boxNotFound("nope")) {
+            _ = try fixture.boxes.resize(named: "nope", cpuCount: 2)
+        }
+    }
+
+    /// More than this Mac can give a machine is refused when it is asked for, by create and by
+    /// set, and nothing is made or changed.
+    @Test func aSizeThisMacCannotRunIsRefused() throws {
+        let fixture = try BoxScratch()
+        let tooMuch = VZVirtualMachineConfiguration.maximumAllowedMemorySize + (1 << 30)
+        #expect(throws: AgentVMError.self) {
+            _ = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images, memoryBytes: tooMuch)
+        }
+        #expect(throws: AgentVMError.boxNotFound("b1")) {
+            _ = try fixture.boxes.box(named: "b1")
+        }
+        let box = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images)
+        #expect(throws: AgentVMError.self) {
+            _ = try fixture.boxes.resize(named: "b1", memoryBytes: tooMuch)
+        }
+        #expect(throws: AgentVMError.self) {
+            _ = try fixture.boxes.resize(named: "b1", cpuCount: VZVirtualMachineConfiguration.maximumAllowedCPUCount + 1)
+        }
+        #expect(try fixture.boxes.box(named: "b1").record == box.record)
+
+        #expect(MachineSize.problem(cpuCount: nil, memoryBytes: nil, maximumCPUs: 8, maximumMemoryBytes: 16 << 30) == nil)
+        #expect(MachineSize.problem(cpuCount: 8, memoryBytes: 16 << 30, maximumCPUs: 8, maximumMemoryBytes: 16 << 30) == nil)
+        #expect(MachineSize.problem(cpuCount: 9, memoryBytes: nil, maximumCPUs: 8, maximumMemoryBytes: 16 << 30)?.contains("9 CPUs") == true)
+        #expect(MachineSize.problem(cpuCount: nil, memoryBytes: 17 << 30, maximumCPUs: 8, maximumMemoryBytes: 16 << 30)?.contains("17 GB") == true)
+    }
+
+    /// The start's warning: said when the boxes that run together leave the Mac less than its
+    /// reserve, with the numbers; not before.
+    @Test func boxesThatLeaveTheMacTooLittleMemoryAreSaid() throws {
+        let host: UInt64 = 24 << 30
+        #expect(MachineSize.memoryWarning(starting: 8 << 30, running: [], hostBytes: host) == nil)
+        #expect(MachineSize.memoryWarning(starting: 8 << 30, running: [8 << 30], hostBytes: host) == nil)
+        #expect(MachineSize.memoryWarning(starting: 18 << 30, running: [], hostBytes: host) == nil)
+        let alone = try #require(MachineSize.memoryWarning(starting: 20 << 30, running: [], hostBytes: host))
+        #expect(alone.hasPrefix("this box has 20 GB of this Mac's 24 GB"))
+        let beside = try #require(MachineSize.memoryWarning(starting: 12 << 30, running: [8 << 30], hostBytes: host))
+        #expect(beside.hasPrefix("with this box (12 GB) and 1 already running, boxes have 20 GB of this Mac's 24 GB"))
+        // A Mac smaller than the reserve, and sums that do not fit a number.
+        #expect(MachineSize.memoryWarning(starting: 4 << 30, running: [], hostBytes: 4 << 30) != nil)
+        #expect(MachineSize.memoryWarning(starting: UInt64.max, running: [UInt64.max], hostBytes: host) != nil)
+        #expect(MachineSize.gigabytes(3 << 30) == 3 && MachineSize.gigabytes((3 << 30) + 1) == 4)
+
+        // What a start adds to: the boxes whose lock is held, without the one that starts.
+        let fixture = try BoxScratch()
+        let first = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images, memoryBytes: 3 << 30)
+        _ = try fixture.boxes.create(name: "b2", from: fixture.image, imageStore: fixture.images, memoryBytes: 2 << 30)
+        #expect(fixture.boxes.runningMemory(except: "b2").isEmpty)
+        let lock = try #require(try FolderLock.tryAcquire(first.lockPath))
+        #expect(fixture.boxes.runningMemory(except: "b2") == [3 << 30])
+        #expect(fixture.boxes.runningMemory(except: "b1").isEmpty)
+        lock.release()
+    }
+
     /// Refusals come before the delete and leave the box as it was.
     @Test func recreateRefusesBeforeDeleting() throws {
         let fixture = try BoxScratch()

@@ -195,6 +195,11 @@ public struct BoxStore: Sendable {
         guard ImageStore.isValidName(name) else {
             throw AgentVMError.invalidBoxName(name)
         }
+        // A size that was asked for and this Mac cannot run; the image's own is not checked,
+        // it may come from another Mac and the start says so.
+        if let problem = MachineSize.problem(cpuCount: cpuCount, memoryBytes: memoryBytes) {
+            throw AgentVMError.virtualMachine(operation: "configure \(name)", message: problem)
+        }
         // Reject bad rules and unknown packs before anything is created.
         _ = try CompiledPolicy(network, packs: try NetworkPacks.needed(for: network, store: root, builtIn: builtInPacks))
         guard image.record.state == .ready else {
@@ -255,7 +260,16 @@ public struct BoxStore: Sendable {
         guard ImageStore.isValidName(name) else {
             throw AgentVMError.invalidBoxName(name)
         }
-        let directory = boxesDirectory.appendingPathComponent(name, isDirectory: true)
+        return try Self.read(name: name, directory: boxesDirectory.appendingPathComponent(name, isDirectory: true))
+    }
+
+    /// `box` as its record says now. Whoever read a box before taking its lock reads it again
+    /// under the lock with this: `box set` and `box network` change the record of a stopped box.
+    public static func reread(_ box: Box) throws -> Box {
+        return try read(name: box.name, directory: box.directory)
+    }
+
+    private static func read(name: String, directory: URL) throws -> Box {
         guard FileSystem.exists(directory.path) else {
             throw AgentVMError.boxNotFound(name)
         }
@@ -330,6 +344,62 @@ public struct BoxStore: Sendable {
         let updated = Box(record: record, directory: current.directory)
         try save(updated)
         return updated
+    }
+
+    /// Changes the box's CPUs, memory or both (nil: as it is). They are read when the box
+    /// starts, so only a stopped box takes them; its lock is held while the record is written,
+    /// and a supervisor reads the record again once it holds the lock (BoxSupervisor.run), so
+    /// no box runs at one size while its record names another.
+    @discardableResult
+    public func resize(named name: String, cpuCount: Int? = nil, memoryBytes: UInt64? = nil) throws -> Box {
+        if let problem = MachineSize.problem(cpuCount: cpuCount, memoryBytes: memoryBytes) {
+            throw AgentVMError.virtualMachine(operation: "configure \(name)", message: problem)
+        }
+        // As in `updateNetwork`: the record is read, changed and written back, and moving
+        // account passwords into the Keychain writes the same record.
+        guard let recordLock = try FolderLock.tryAcquire(AccountPasswordStore.lockPath(store: root), patience: AccountPasswordStore.lockPatience) else {
+            throw AgentVMError.system(operation: "change the size of box \(name) while account passwords are moved into the Keychain", code: EBUSY)
+        }
+        defer { recordLock.release() }
+        let listed = try box(named: name)
+        let lock: FolderLock?
+        do {
+            lock = try FolderLock.tryAcquire(listed.lockPath, patience: FolderLock.testPatience)
+        } catch AgentVMError.system(_, ENOENT) {
+            // Deleted meanwhile by another process.
+            throw AgentVMError.boxNotFound(name)
+        }
+        guard let lock else {
+            throw AgentVMError.boxRunning(name)
+        }
+        defer { lock.release() }
+        // Read again under the lock: a delete or a recreate that ran since the first read
+        // must not get the old record written back (into a folder that is going away, or
+        // over the new box's identity). As in BoxSupervisor.run, a lock file made in what a
+        // delete left is taken away again.
+        guard FileSystem.exists(listed.directory.appendingPathComponent(Self.recordName).path) else {
+            unlink(listed.lockPath)
+            rmdir(listed.directory.path)
+            throw AgentVMError.boxNotFound(name)
+        }
+        let current = try box(named: name)
+        var record = current.record
+        record.cpuCount = cpuCount ?? record.cpuCount
+        record.memoryBytes = memoryBytes ?? record.memoryBytes
+        if let problem = RecordNumbers.problem(cpuCount: record.cpuCount, memoryBytes: record.memoryBytes, diskBytes: nil) {
+            throw AgentVMError.virtualMachine(operation: "configure \(name)", message: problem)
+        }
+        let updated = Box(record: record, directory: current.directory)
+        try save(updated)
+        return updated
+    }
+
+    /// The memory of the boxes that run now, without `name`: what a start of `name` adds to.
+    public func runningMemory(except name: String) -> [UInt64] {
+        guard let boxes = try? list().boxes else {
+            return []
+        }
+        return boxes.filter { $0.name != name && $0.isRunning }.map(\.record.memoryBytes)
     }
 
     /// Deletes box `name` and creates it again from `image` with the same CPUs, memory,

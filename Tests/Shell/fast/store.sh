@@ -577,6 +577,43 @@ test_recreate_keeps_the_settings() {
     assert_err_contains "no box nosuch" || return 1
 }
 
+# box set changes a stopped box's CPUs and memory and nothing else; without an option it shows them.
+test_set_changes_a_stopped_boxs_size() {
+    fake_image dev
+    run_avm box create b1 --image dev --cpus 2 --memory-gb 3 --json
+    assert_status 0 || return 1
+    local _mac
+    _mac="$(json_value macAddress)"
+    local _box="$AGENT_VM_HOME/Boxes/b1"
+    printf 'written in the box' > "$_box/Disk.img"
+
+    run_avm box set b1
+    assert_status 0 || return 1
+    assert_out_contains "Box b1: 2 CPUs, 3 GB of memory" || return 1
+    run_avm box set b1 --memory-gb 5
+    assert_status 0 || return 1
+    assert_out_contains "Box b1: 2 CPUs, 5 GB of memory" || return 1
+    run_avm box set b1 --cpus 1 --json
+    assert_status 0 || return 1
+    assert_json cpuCount 1 || return 1
+    assert_json memoryBytes 5368709120 || return 1
+    assert_json macAddress "$_mac" || return 1
+    assert_eq "$(/bin/cat "$_box/Disk.img")" "written in the box" "the disk after box set" || return 1
+    run_avm box list
+    assert_out_contains "1 CPUs  5 GB" || return 1
+
+    run_avm box set b1 --memory-gb 0
+    assert_status 64 || return 1
+    run_avm box set b1 --memory-gb 4096
+    assert_status 1 || return 1
+    assert_err_contains "more than this Mac allows a box" || return 1
+    run_avm box set nosuch --cpus 2
+    assert_status 1 || return 1
+    assert_err_contains "no box nosuch" || return 1
+    run_avm box set b1 --json
+    assert_json memoryBytes 5368709120 || return 1
+}
+
 # edit_json <file> <jq filter>: rewrites a JSON file through jq.
 edit_json() {
     /usr/bin/jq "$2" "$1" > "$1.new"
