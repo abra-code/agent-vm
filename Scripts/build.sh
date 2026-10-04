@@ -159,6 +159,14 @@ done
 status=$?
 [ "$status" -eq 0 ] || die "cannot link $OUTPUT/avm to agent-vm"
 
+# The recipes and the guide to writing them, where the installer puts them: in Recipes next to
+# agent-vm (RecipeGuide). A link to the repository's folder, so an edit needs no rebuild.
+# Onto a real folder ln would put the link inside it, and agent-vm would read a stale guide.
+[ -L "$OUTPUT/Recipes" ] || [ ! -e "$OUTPUT/Recipes" ] || die "$OUTPUT/Recipes is a folder, not the link this script makes; remove it and run again"
+/bin/ln -sfn "$REPO_ROOT/Recipes" "$OUTPUT/Recipes"
+status=$?
+[ "$status" -eq 0 ] || die "cannot link $OUTPUT/Recipes to $REPO_ROOT/Recipes"
+
 printf '\nSigned binaries in %s\n\n' "$OUTPUT"
 # Without $AGENT_VM_PACKS_FILE, so the check reads the packs.json just put there.
 AGENT_VM_PACKS_FILE="" "$OUTPUT/agent-vm" box packs > /dev/null
@@ -168,6 +176,10 @@ status=$?
 AGENT_VM_AGENTS_FILE="" "$OUTPUT/agent-vm" connect agents > /dev/null
 status=$?
 [ "$status" -eq 0 ] || die "agent-vm cannot read $OUTPUT/agents.json (status $status); run \"$OUTPUT/agent-vm connect agents\" to see why"
+# And the guide `agent-vm recipe guide` prints.
+"$OUTPUT/agent-vm" recipe guide > /dev/null
+status=$?
+[ "$status" -eq 0 ] || die "agent-vm cannot read $OUTPUT/Recipes/WRITING-RECIPES.md (status $status); run \"$OUTPUT/agent-vm recipe guide\" to see why"
 agent_vm_version="$("$OUTPUT/agent-vm" --version)"
 avm_version="$("$OUTPUT/avm" --version)"
 status=$?

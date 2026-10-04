@@ -1,6 +1,6 @@
 # Example recipes
 
-Recipes for `agent-vm image create --recipe`. The format is described in [../Docs/image-recipes.md](../Docs/image-recipes.md); `agent-vm recipe check <file>` says what a build would refuse in a recipe of your own, without building.
+Recipes for `agent-vm image create --recipe`. The format is described in [../Docs/image-recipes.md](../Docs/image-recipes.md); `agent-vm recipe check <file>` says what a build would refuse in a recipe of your own, without building. To have an AI agent write one, tell it: "Run `agent-vm recipe guide` and follow it to write a recipe that installs ..."; the guide is [WRITING-RECIPES.md](WRITING-RECIPES.md).
 
 | Recipe | Installs | Needs |
 |---|---|---|

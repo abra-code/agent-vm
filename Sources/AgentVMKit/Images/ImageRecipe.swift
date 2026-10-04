@@ -92,6 +92,12 @@ public struct ImageRecipe: Equatable, Sendable {
     public var parameterValues: [String: String] = [:]
 
     public static let defaultTimeoutSeconds = 1800
+    /// Every key the format knows, by where it stands; anything else is refused. The guide for
+    /// agents (Recipes/WRITING-RECIPES.md) lists the same keys, and a test holds it to these.
+    static let recipeKeys: Set<String> = ["version", "description", "commandLineTools", "steps", "update", "checks", "inputs", "parameters"]
+    static let stepKeys: Set<String> = ["name", "run", "copy", "to", "mode", "user", "env", "timeoutSeconds"]
+    static let inputKeys: Set<String> = ["description"]
+    static let parameterKeys: Set<String> = ["description", "default"]
     public static let maxCopyBytes = 256 << 20
 
     /// Reads and checks a recipe; `copy` sources are resolved against the recipe's folder and
@@ -179,7 +185,7 @@ public struct ImageRecipe: Equatable, Sendable {
         } catch {
             throw fail("it is not valid JSON: \(error.localizedDescription)")
         }
-        try requireKnownKeys(root, ["version", "description", "commandLineTools", "steps", "update", "checks", "inputs", "parameters"], at: "the recipe", fail)
+        try requireKnownKeys(root, recipeKeys, at: "the recipe", fail)
         guard let version = integer(root["version"]) else {
             throw fail("\"version\" is missing (use \(currentVersion))")
         }
@@ -210,7 +216,7 @@ public struct ImageRecipe: Equatable, Sendable {
                 guard let step = rawStep as? [String: Any] else {
                     throw fail("\(place) must be a JSON object")
                 }
-                try requireKnownKeys(step, ["name", "run", "copy", "to", "mode", "user", "env", "timeoutSeconds"], at: place, fail)
+                try requireKnownKeys(step, stepKeys, at: place, fail)
                 let name = try optionalString(step, "name", at: place, fail) ?? place
                 let user = try optionalString(step, "user", at: place, fail)
                 guard user == nil || user == "root" else {
@@ -287,12 +293,12 @@ public struct ImageRecipe: Equatable, Sendable {
         }
         var inputs: [Input] = []
         for (name, declaration) in try declarations(root, "inputs", fail) {
-            try requireKnownKeys(declaration, ["description"], at: "input \(name)", fail)
+            try requireKnownKeys(declaration, inputKeys, at: "input \(name)", fail)
             inputs.append(Input(name: name, description: try optionalString(declaration, "description", at: "input \(name)", fail)))
         }
         var parameters: [Parameter] = []
         for (name, declaration) in try declarations(root, "parameters", fail) {
-            try requireKnownKeys(declaration, ["description", "default"], at: "parameter \(name)", fail)
+            try requireKnownKeys(declaration, parameterKeys, at: "parameter \(name)", fail)
             parameters.append(Parameter(name: name, description: try optionalString(declaration, "description", at: "parameter \(name)", fail),
                                         defaultValue: try optionalString(declaration, "default", at: "parameter \(name)", fail)))
         }

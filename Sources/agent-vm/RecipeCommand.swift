@@ -2,7 +2,8 @@
 //
 // `agent-vm recipe`: what helps to write an image recipe. `check` says in a second what a build
 // would refuse, and warns about what is known to fail later; it needs no virtual machine and no
-// store, so it also runs inside a sandbox.
+// store, so it also runs inside a sandbox. `guide` (RecipeGuideCommand.swift) prints the guide
+// an AI agent follows to write one.
 
 import AgentVMKit
 import ArgumentParser
@@ -11,13 +12,15 @@ import Foundation
 struct RecipeCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "recipe",
-        abstract: "Check image recipes before building with them.",
+        abstract: "Check image recipes before building with them, and print the guide to writing one.",
         discussion: """
             A recipe says what to install in an image besides macOS (`agent-vm image create \
             --recipe`). `recipe check` reads recipe files as a build would and reports what it \
-            would refuse, without starting a virtual machine.
+            would refuse, without starting a virtual machine. `recipe guide` prints a guide \
+            written for an AI agent: give the agent one sentence, "Run `agent-vm recipe guide` and \
+            follow it to write a recipe that installs ...".
             """,
-        subcommands: [Check.self]
+        subcommands: [Check.self, Guide.self]
     )
 
     struct Check: ParsableCommand {

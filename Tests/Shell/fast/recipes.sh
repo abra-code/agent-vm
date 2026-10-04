@@ -158,6 +158,20 @@ test_the_example_recipes_pass_the_check() {
     assert_out_contains "homebrew/recipe.json: ok (homebrew:" || return 1
 }
 
+# recipe guide prints the guide that is installed next to the program, and --path says where.
+test_recipe_guide_prints_the_guide() {
+    run_avm recipe guide
+    assert_status 0 || return 1
+    assert_out_contains "# Writing an image recipe: a guide for AI agents" || return 1
+    assert_out_contains "agent-vm recipe check --strict" || return 1
+    run_avm recipe guide --path
+    assert_status 0 || return 1
+    assert_out_contains "/Recipes/WRITING-RECIPES.md" || return 1
+    [ -f "$OUT" ] || { fail "recipe guide --path names no file: $OUT"; return 1; }
+    # No store is made or needed.
+    assert_missing "$AGENT_VM_HOME/Images" || return 1
+}
+
 test_unusable_bases_are_refused() {
     fake_image half provisioning
     write_recipe '{"version": 1, "steps": [{"run": "true"}]}'

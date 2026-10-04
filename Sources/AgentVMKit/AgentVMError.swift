@@ -47,6 +47,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case hostNotReady(String)
     /// An image recipe that cannot be used as it is.
     case invalidRecipe(path: String, reason: String)
+    /// The guide to writing recipes is not where the installer puts it.
+    case recipeGuideMissing(path: String, reason: String)
     /// A network rule that is not a host, wildcard, host:port or known pack.
     case invalidNetworkRule(String, reason: String)
     /// The host packs file, or a user pack file, cannot be used.
@@ -184,6 +186,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "cannot build here: \(reason)"
         case let .invalidRecipe(path, reason):
             return "recipe \(path): \(reason)"
+        case let .recipeGuideMissing(path, reason):
+            return "cannot read the guide to writing recipes, \(path): \(reason). It is installed with agent-vm, in the Recipes folder next to the program; install agent-vm again"
         case let .invalidNetworkRule(rule, reason):
             return "\(rule) is not a usable network rule: \(reason)"
         case let .invalidPacks(path, reason):

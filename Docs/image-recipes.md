@@ -9,6 +9,8 @@ Give `--recipe` more than once to put several recipes into one image: they run i
 
 Examples are in [../Recipes/](../Recipes/README.md).
 
+**Writing one with an AI agent:** give the agent (Claude Code, Codex, any agent with a shell on your Mac) one sentence: "Run `agent-vm recipe guide` and follow it to write a recipe that installs ...". The guide it prints, [../Recipes/WRITING-RECIPES.md](../Recipes/WRITING-RECIPES.md), is written for an agent that knows nothing else about agent-vm: the format, the traps, and a loop of `agent-vm recipe check` and a scratch build that it repeats until the recipe works. The agent must be allowed to run agent-vm outside its sandbox for the build. This page stays the reference for people.
+
 ```json
 {
   "version": 1,
