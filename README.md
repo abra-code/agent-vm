@@ -2,8 +2,6 @@
 
 Run AI agents and their tools inside disposable macOS virtual machines, so a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac.
 
-> **Status:** early development. Working today: sessions (snapshot, change report and undo, with or without a virtual machine), golden images (`image create`, macOS installed and set up with no clicks), boxes with `agent-vm exec`, `avm` (a login shell or a command in a box on your terminal, with your folder shared), the allowlist network with host packs and a connection log, projects shared at the same path, and `doctor`. The rest of this README describes the intended tool: packs for tools installed in images, disposable per-session boxes and the Cadabra integration are not built yet.
-
 ## What it does
 
 An AI coding agent (Claude Code, Codex, opencode, or any tool an agent drives) runs inside a macOS virtual machine - a "box" - instead of directly on your Mac:
@@ -24,6 +22,10 @@ What a box protects against, what it does not, and what each claim rests on: [Do
 - macOS 27 or later (host and guest)
 - Disk space for one golden image (tens of GB) plus per-box changes
 
+## Installing
+
+Open the installer package, `agent-vm_<version>.pkg`. It installs for you alone, with no administrator password: the tool goes into `~/.local/share/agent-vm/versions/<version>`, and `~/.local/bin/agent-vm` and `~/.local/bin/avm` point at it. It also adds `~/.local/bin` to your shell's `PATH` unless it is there already. Then, in a new Terminal window, `agent-vm doctor` says whether this Mac can run boxes. Details are in [Packaging/README.md](Packaging/README.md); building from source is under [Building](#building).
+
 ## Usage
 
 ```sh
@@ -41,7 +43,9 @@ agent-vm session undo <id>                               # restore the project s
 
 How images and boxes relate (a box is a copy of its image made once, and never updated from it afterwards), and the everyday procedures - adding tools, upgrading agent-vm, refreshing a box, freeing space - with answers to common questions: [Docs/images-and-boxes.md](Docs/images-and-boxes.md).
 
-## Sessions: snapshot, report and undo (works today)
+How many CPUs and how much memory to give a box, by what it will do and by your Mac's size: [Docs/processors-and-memory.md](Docs/processors-and-memory.md).
+
+## Sessions: snapshot, report and undo
 
 A session protects a project folder while an agent works on it - in a box, or directly on your Mac. It is useful on its own: run it around any agent session.
 
@@ -78,7 +82,7 @@ agent-vm session list                          # all sessions and their states
 | `undone` | The project was restored; what the agent left is kept in the session folder. |
 | `discarded` | Snapshot and replaced tree deleted; only the record remains. |
 
-## Boxes and exec (works today)
+## Boxes and exec
 
 A box is an instant copy-on-write clone of a ready image with its own identity (MAC address, machine identifier). `box start` runs it in the background under a supervisor process that owns the virtual machine; `agent-vm exec` runs programs in it.
 
@@ -145,7 +149,7 @@ agent-vm box start s1 --owner-pid $$               # stops when this shell exits
 - **macOS runs at most two macOS guests at once**, whichever applications started them (`agent-vm status` and `agent-vm doctor` count them; with `--json`, `status` has `runningVMs` and doctor's "running VMs" check has `count` and `limit`). A command that needs a VM when none is free (`box start`, `image create`, `image update-guest`, `image setup`) fails with exit status 75 and a message that starts with "no free VM slot". A refusal before the first VM starts leaves nothing behind: a new image whose VM never ran is removed, so its name stays free, an image being updated stays as it was, and a disposable box can be started again. A build or update boots more than once, and if another application takes the slot between two boots, the image is marked failed, as after any other failure; delete it (or update it again) and retry.
 - **Socket paths:** the control socket's full path must stay under 104 bytes, which a very long `AGENT_VM_HOME` can exceed.
 
-## Jobs: long commands in the background (works today)
+## Jobs: long commands in the background
 
 An image build takes minutes to an hour, a box start half a minute. `agent-vm job start` runs such a command detached, in its own session, so closing the terminal (or quitting the application that started it) does not end it, and records what happened in the store, where any terminal or application sees it.
 
@@ -165,7 +169,7 @@ agent-vm job forget 20260929-101500-a1b2c3             # removes a finished job'
 - **For programs:** `job start --json` prints the job; `job list --json` is an array of jobs with `id`, `command` (agent-vm's arguments), `targets` (`image:<name>`, `box:<name>` or `ipsw`, what the command works on), `after` (the job it waits for), `state`, `status` (the exit status once it ended), `createdAt`, `startedAt`, `endedAt`, `progress` (the last progress event, [Docs/progress-events.md](Docs/progress-events.md)), `notice` (the text of the last notice), `error` (a failed, canceled or lost job's error, possibly several lines, or why a queued job never ran) and `path`. `job log <id> --json` adds every event (`events`) and the lines that are neither events nor the error (`lines`).
 - **Where it lives:** `Jobs/<id>/` in the store: `job.json` (what runs), `log`, `out`, `runner.json` and `end.json` (how it ended). The runner is `agent-vm job run <id>` in its own session; it holds the job's `lock` for as long as it lives, which is how every client tells a running job from a lost one without trusting a process id. Finished jobs are removed a week after they ended (by `job list` and `job start`).
 
-## Terminal sessions: avm (works today)
+## Terminal sessions: avm
 
 `avm` is the short way into a box from a terminal. Run it in a project folder: it lists your boxes (or makes a new one from an image), starts the one you choose when it is stopped, shares the folder into it at the same path, snapshots it, and runs what you choose there: Claude Code, Codex, opencode, or a login shell. Exit it to come back: avm reports what changed in the folder, and you keep the changes or undo them.
 
@@ -206,18 +210,18 @@ Box dev1 keeps running; stop it with: agent-vm box stop dev1
 
 - **The lists:** first the boxes, running ones first (with the folder each one shares and how many programs run in it), then stopped ones; then what to run. Arrows (or Control-P and Control-N) move, typing filters, Enter chooses, Escape clears the filter and then quits. The box and what ran, chosen for a folder, are remembered (`connect.json` in the store) and preselected next time. A temporary box that is not running is never offered, and an unresponsive one is shown but cannot be chosen.
 - **Agents:** Claude Code (`claude`), Codex (`codex`) and opencode (`opencode`), as an image built with [Recipes/agent-clis](Recipes/README.md) installs them. The list of what to run marks an agent the box lacks; each runs through the account's login shell, as the shell does. When none of an agent's secrets is set (for Claude Code, `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` on this Mac, or `ANTHROPIC_API_KEY`), avm offers to set one in the Keychain: typed without echo, it goes to the Keychain only, and the session reads it from there (`exec --secret`). Or go on without and log in inside the box. When the box does not allow the agent's hosts (`pack:anthropic` for Claude Code), avm asks to add them. The agents come from `agents.json` next to `agent-vm`; your own go in `Agents/<id>.json` in the store (see [Docs/avm.md](Docs/avm.md#agents)).
-- **Snapshot, report, keep or undo:** a folder shared read-write is snapshotted before the session (a session, as in [Sessions](#sessions-snapshot-report-and-undo-works-today)). Afterwards avm lists what changed, flagging files that run code later on this Mac, and asks: `k` keeps the changes (the snapshot stays, so `agent-vm session undo <id>` still works later), `r` shows every change, `u` undoes them all. Escape keeps them. With no changes, the snapshot is discarded. The box keeps running, so stop what the agent left running in the background before you undo; avm asks first when other programs (another terminal or application) use the box. Kept snapshots take space as the folder changes: `agent-vm session discard --older-than 7` frees those older than a week.
+- **Snapshot, report, keep or undo:** a folder shared read-write is snapshotted before the session (a session, as in [Sessions](#sessions-snapshot-report-and-undo)). Afterwards avm lists what changed, flagging files that run code later on this Mac, and asks: `k` keeps the changes (the snapshot stays, so `agent-vm session undo <id>` still works later), `r` shows every change, `u` undoes them all. Escape keeps them. With no changes, the snapshot is discarded. The box keeps running, so stop what the agent left running in the background before you undo; avm asks first when other programs (another terminal or application) use the box. Kept snapshots take space as the folder changes: `agent-vm session discard --older-than 7` frees those older than a week.
 - **New boxes:** the list ends with `Temporary box from an image...` and `Kept box from an image...`, then a list of your ready images; `avm new <image>` names the image. A temporary box (`avm-<image>-<6 hex digits>`) belongs to that avm: it is stopped and deleted after the session, before the report, and if avm is killed it stops on its own and `box gc` deletes it. A kept box (named in a question, or with `--name`) stays. A new box allows the agent's hosts, plus `--allow`; `--cpus` and `--memory-gb` set its size.
 - **Two VMs at most:** macOS runs at most two macOS virtual machines at once, and a new or stopped box needs one of them. When none is free avm names the running boxes and exits 75 (or, when you chose in the list, shows it again: joining a running box needs no slot).
 - **One folder per box:** a box shares one folder at a time, and a box whose programs use another folder refuses to switch. avm says so and shows the list again.
 - **Your home folder cannot be shared** (nor `~/Library`, a hidden folder in it, or the agent-vm store). Started there, avm offers to connect without a folder; `--project <folder>` shares another one.
 - **A box avm started keeps running** afterwards; stop it with `agent-vm box stop <box>`. avm stops and deletes only the temporary box it made in that run.
 - **Exit status:** the program's; 1 when avm could not connect (no such box, a box that did not start, a refused folder, an agent not installed in the box, no snapshot and you chose not to go on); 64 for options that do not go together, an unknown agent, or when there is no terminal (from a script, use `agent-vm exec`); 75 when no VM slot is free; 130 when you quit the list.
-- **Installing:** `avm` is a symlink to `agent-vm`, made by `Scripts/build.sh` next to it; link it into a folder on your `PATH` (`ln -s <repository>/.build/signed/release/avm ~/bin/avm`), or run `agent-vm connect`, which is the same command.
+- **Installing:** the installer package puts `avm` in `~/.local/bin` next to `agent-vm`. It is a symlink to `agent-vm`; `agent-vm connect` is the same command. A build from source makes the link next to the binary (`.build/signed/release/avm`).
 - **Completion** of box, image and agent names (after `to` or `new`: `avm to <Tab>`, `avm new <Tab>`): `avm --generate-completion-script zsh > ~/.zfunc/_avm` (with `fpath=(~/.zfunc $fpath)` before `compinit` in `~/.zshrc`), or for bash `avm --generate-completion-script bash > ~/.avm-completion.bash` and `source ~/.avm-completion.bash` in `~/.bashrc`. The same with `agent-vm` completes `agent-vm connect` and every other command.
 - `NO_COLOR=1` turns off bold and reverse video; with `TERM=dumb` (or no `TERM`) the list is a numbered menu. Everything else: [Docs/avm.md](Docs/avm.md).
 
-## Secrets in the Keychain (works today)
+## Secrets in the Keychain
 
 ```sh
 printf %s "$KEY" | agent-vm secret set ANTHROPIC_API_KEY   # or type it: agent-vm secret set ANTHROPIC_API_KEY
@@ -231,7 +235,7 @@ agent-vm secret delete ANTHROPIC_API_KEY
 - **`secret list`** shows whether each secret was stored by this very agent-vm, so reads it without a question (`readable` in `--json`). It reads names and attributes only, never a value, so it never asks: macOS offers no way to find out whether a read would ask without asking, so this is what agent-vm can tell (a secret someone chose Always Allow for is still listed as not readable).
 - **What this does not protect:** as for `--env`, every program in the box can read the value, and an agent can send it anywhere the network allows.
 
-## Network: allowlist, off or open (works today)
+## Network: allowlist, off or open
 
 Every box has a network mode, chosen at `box create --net` (default `allowlist`) and changed with `box network`:
 
@@ -278,7 +282,7 @@ agent-vm box network dev1 --net open                                         # w
 - **Rules can change while a box runs**: the supervisor rereads them at once, and closes every open connection the new rules no longer allow (since 0.5.12; before, a connection opened under a rule kept running after the rule was removed, until the box stopped). A connection another rule still allows goes on. The mode decides the network card, so it changes only while the box is stopped.
 - **Boxes created before network policy** keep running on NAT (`open`).
 
-## Projects: your folder in the box, at the same path (works today)
+## Projects: your folder in the box, at the same path
 
 ```sh
 agent-vm exec --box dev1 --project ~/src/myapp -- swift test      # runs in /Users/you/src/myapp in the box
@@ -295,7 +299,7 @@ agent-vm session start --project ~/src/myapp                      # snapshot fir
 - **Keep build output inside the box.** Large files cross the share quickly (1 GB written in 0.7 s), but creating many small files is about 8 times slower than on the box's own disk, and walking a tree about 30 times slower. Put build products on the box's disk: Xcode's DerivedData already lives in the box user's Library, and `swift build --scratch-path ~/build/myapp` does the same for SwiftPM.
 - **How it works**: each box has one virtio file system device, filled on the running box and mounted by the guest daemon. It uses Apple's automount tag: with any other tag, macOS treats the share as a network volume and holds every program not run as root on a privacy prompt nobody can see. The project sits inside a small read-only root mounted on its parent folder, so the guest's volume housekeeping (`.fseventsd`, `.Trashes`) never lands in your project.
 
-## Images: macOS installed and set up with no clicks (works today)
+## Images: macOS installed and set up with no clicks
 
 A golden image is the macOS guest boxes will be cloned from. `image fetch-ipsw` downloads the latest restore image this Mac supports into the store's `Cache/ipsw/`. An interrupted download is resumed by the next run, and one whose file changed on Apple's server starts over (the file's ETag is compared). It refuses to start when less than 10 GB would stay free, counting only space that is free now, not purgeable space. The file is put in place only once Virtualization can load it. `--check` shows the image, its size, what is already downloaded and whether it fits, and downloads nothing; `--json` gives the result: `url`, `macOSVersion` and `macOSBuild` (as image records name them), `totalBytes`, `path`, and `state` (`ready`, `partial` or `missing`); with `--check` also `partialBytes`, `freeBytes` (free now) and `fits`, and without it `downloaded` (whether this run downloaded anything). A file already downloaded is checked again on every run. A finished file that Virtualization says is not a restore image is deleted; one it cannot check for another reason is kept. When the server sends no ETag, a partial download is resumed if the URL and length match. `image fetch-ipsw --list` shows the restore images already downloaded, newest first, and which one is the latest usable; it needs no network. With `--json` it gives an array of `name`, `path`, `bytes`, `macOSVersion`, `macOSBuild`, `latest`, and `problem` for a file Virtualization cannot use. `image create --ipsw` takes a path, the file name of a downloaded restore image, or `latest` for the newest usable one; a bare name is looked for in the current directory first (`./latest` names a file called latest). `image create` installs macOS from a restore image (`.ipsw`) and sets it up without a single click, using the guest provisioning added to Virtualization in macOS 27: the first boot creates an administrator account, logs it in automatically and turns on Remote Login. agent-vm then copies its guest daemon in over SSH, checks that it answers over vsock and runs programs as the account, turns Remote Login off again, and shuts the guest down through the daemon.
 
@@ -349,7 +353,6 @@ agent-vm image delete dev
 - **`image update-guest` is deprecated** and will be removed: `image update <image> --guest` does the same on a copy of the image, and plain `image update` brings in the daemon with everything else. It still works, says so on standard error (a `notice` event with `--json`), and no longer appears in `image --help`. What follows describes it until it goes.
 - **Updating the guest daemon.** A newer agent-vm may bring guest features (the terminal for `exec -t` and `box shell` is one), and `image list` names what an image lacks (with `--json`, as `needs`: `{"kind": "guest-update", "missing": [...]}` and `{"kind": "full-disk-access", "reason": "not-granted" | "not-checked"}`, empty when nothing is missing). `agent-vm version` shows the daemon `update-guest` would install, with its version, features and SHA-256; an image whose `guestDigest` differs would get it. `image update-guest <image>` boots the image, replaces its `agent-vm-guest` with the one next to `agent-vm` when they differ, and boots it once more to check the new one: about 45 seconds, or 30 when there is nothing to replace. Several images can be named at once (`image update-guest dev dev-node dev-agents`): they are updated one after another, every name is checked before the first boot, and the first failure stops the rest, since a daemon that does not start marks its image failed and would mark the next one too. Boxes made from the image earlier keep their daemon; `box recreate <box>` makes one again from the updated image. `image create --from` puts the current daemon into every image it builds.
 - **Progress for programs.** With `--json`, `image create`, `image update`, `image update-guest` and `image setup` report their steps on standard error as one JSON object per line (`{"event": "progress", "step": "install", "fraction": 0.4, ...}`, log lines and notices), and print only the image record on standard output; without it, the text is as shown above. The steps and fields are in [Docs/progress-events.md](Docs/progress-events.md).
-- **Not yet:** downloading the restore image (get it from Apple, or reuse the one a VM app such as Viable keeps in its bundle).
 
 ## Building
 

@@ -185,7 +185,7 @@ What changes:
 No. A derived image is a clone made at `image create --from`. To pass a change on, update the derived image too (`image update`), or build it again on its base as it is now: `agent-vm image rebuild <image>` runs the image's own recipes on a fresh clone of the base and keeps the name.
 
 **Can I change a box's CPUs or memory, or rename a box or an image?**
-CPUs and memory of a stopped box, yes: `agent-vm box set <box> --cpus N --memory-gb N`, and what the box holds stays. The same for its network: `box network` changes the rules at once, and the mode while the box is stopped. An image's CPUs and memory are only what its new boxes start with. Nothing can be renamed.
+CPUs and memory of a stopped box, yes: `agent-vm box set <box> --cpus N --memory-gb N`, and what the box holds stays. What to choose is in [processors-and-memory.md](processors-and-memory.md). The same for its network: `box network` changes the rules at once, and the mode while the box is stopped. An image's CPUs and memory are only what its new boxes start with. Nothing can be renamed.
 
 **How do I know that a macOS update exists?**
 `agent-vm status --check-updates` asks Apple for the newest macOS and names the images that are behind it, with the command that installs it. The answer is kept: until you ask again, plain `status` and `image list` repeat it without a network. Nothing is checked or installed by itself.
