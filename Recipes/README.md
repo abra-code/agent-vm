@@ -1,6 +1,6 @@
 # Example recipes
 
-Recipes for `agent-vm image create --recipe`. The format is described in [../Docs/image-recipes.md](../Docs/image-recipes.md).
+Recipes for `agent-vm image create --recipe`. The format is described in [../Docs/image-recipes.md](../Docs/image-recipes.md); `agent-vm recipe check <file>` says what a build would refuse in a recipe of your own, without building.
 
 | Recipe | Installs | Needs |
 |---|---|---|

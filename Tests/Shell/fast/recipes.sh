@@ -106,6 +106,58 @@ test_a_bad_recipe_is_refused_before_anything_is_built() {
     assert_err_contains "cannot read it" || return 1
 }
 
+# recipe check: the build's own verdict without a build or a store, warnings that fail only with
+# --strict, and JSON for a program.
+test_recipe_check_says_what_a_build_would() {
+    write_recipe '{"version": 1, "steps": [{"run": "true", "usr": "root"}]}'
+    run_avm recipe check "$SCRATCH/recipe/recipe.json"
+    assert_status 1 || return 1
+    assert_out_contains "recipe.json: error: step 1 has unknown key \"usr\"" || return 1
+    run_avm image create x --from dev --recipe "$SCRATCH/recipe/recipe.json"
+    assert_err_contains "step 1 has unknown key \"usr\"" || return 1
+
+    write_recipe '{"version": 1, "description": "A tool", "parameters": {"release": {"default": "stable"}}, "steps": [{"run": "sudo install-tool $AGENT_VM_PARAM_RELEASE"}], "update": [{"run": "tool update"}], "checks": ["tool --version"]}'
+    run_avm recipe check "$SCRATCH/recipe/recipe.json"
+    assert_status 0 || return 1
+    assert_out_contains "recipe.json: ok, 1 warning (recipe: 1 step, 1 update step, 1 check)" || return 1
+    assert_out_contains "warning (step 1): it runs sudo" || return 1
+    run_avm recipe check "$SCRATCH/recipe/recipe.json" --strict
+    assert_status 1 || return 1
+    run_avm recipe check "$SCRATCH/recipe/recipe.json" --json
+    assert_status 0 || return 1
+    assert_json recipes.0.name recipe || return 1
+    assert_json recipes.0.description "A tool" || return 1
+    assert_json recipes.0.steps 1 || return 1
+    assert_json recipes.0.parameters.0.name release || return 1
+    assert_json recipes.0.parameters.0.default stable || return 1
+    assert_json recipes.0.warnings.0.code sudo || return 1
+    assert_json recipes.0.warnings.0.place "step 1" || return 1
+
+    # Values are checked only when one is given; the same file twice is refused as a build refuses it.
+    run_avm recipe check "$SCRATCH/recipe/recipe.json" --set nope=1
+    assert_status 1 || return 1
+    assert_out_contains "it has no parameter nope" || return 1
+    run_avm recipe check "$SCRATCH/recipe/recipe.json" "$SCRATCH/recipe/recipe.json"
+    assert_status 1 || return 1
+    assert_out_contains "it is given twice" || return 1
+    # A value without "=" is refused as image create refuses it, not checked as an empty value.
+    run_avm recipe check "$SCRATCH/recipe/recipe.json" --set release
+    assert_status 64 || return 1
+    assert_err_contains "release: give name=value" || return 1
+    run_avm recipe check
+    assert_status 64 || return 1
+    # No store is made or needed.
+    assert_missing "$AGENT_VM_HOME/Images" || return 1
+}
+
+# A note is not a warning: the shipped recipes pass --strict.
+test_the_example_recipes_pass_the_check() {
+    run_avm recipe check --strict "$TESTS_DIR/../../Recipes"/*/recipe.json
+    assert_status 0 || return 1
+    assert_not_contains "$OUT" "warning" "recipe check" || return 1
+    assert_out_contains "homebrew/recipe.json: ok (homebrew:" || return 1
+}
+
 test_unusable_bases_are_refused() {
     fake_image half provisioning
     write_recipe '{"version": 1, "steps": [{"run": "true"}]}'

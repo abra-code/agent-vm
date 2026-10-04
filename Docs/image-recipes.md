@@ -135,9 +135,36 @@ agent-vm image create dev --ipsw latest \
 - **The Command Line Tools** (git, clang, swift, make, python3), unless the recipe turns them off.
 - **No terminal and no input**: standard input is closed and there is no terminal, so a program that asks a question usually fails at once. Pass the answers instead: `--yes`, `NONINTERACTIVE=1`, `CI=1`. The box user is an administrator, but `sudo` asks for a password, so use `"user": "root"` for steps that need root.
 
+## Checking a recipe
+
+```sh
+agent-vm recipe check recipe.json                 # what a build would refuse, and warnings; no virtual machine
+agent-vm recipe check a/recipe.json b/recipe.json --input xcode=~/Downloads/Xcode_27.xip --set platforms=iOS
+agent-vm recipe check recipe.json --strict --json
+```
+
+`agent-vm recipe check <file>...` reads recipes exactly as `image create --recipe` does and says what a build would refuse, in about a second and without a virtual machine or a store (so it also works where virtual machines cannot run, such as inside an agent's sandbox). A recipe that passes is one a build accepts; whether its steps work, only a build shows.
+
+- **Errors** are the build's own, one per file (the first mistake). Several files are checked as one build would take them: the same recipe twice is refused.
+- **Inputs and parameters**: with `--input` or `--set`, values are checked as a build checks them. With neither, a missing input or required parameter is not a mistake, so a recipe can be checked before its files exist.
+- **Warnings** are about recipes that load but are known to fail or mislead later. They are read from the commands' text, so they are guesses, and they never stop a build:
+
+  | Code | Meaning |
+  |---|---|
+  | `sudo` | A step of the box user, or a check, runs `sudo`, which asks for a password; use `"user": "root"`. Not said about a root step, where `sudo -u` is how one command runs as the box user. |
+  | `no-checks` | The recipe has no `checks`, so nothing proves that it worked. |
+  | `undeclared-input`, `undeclared-parameter` | A command uses `AGENT_VM_INPUT_<NAME>` or `AGENT_VM_PARAM_<NAME>` and the recipe does not declare the name; the variable will be empty. |
+  | `unused-input`, `unused-parameter` | Declared, and no command and no copied file uses its variable. |
+  | `input-in-update`, `input-in-check` | An update step or a check uses an input's variable; inputs are deleted after the build, and checks run again at every `image update`. |
+  | `secret-parameter` | A parameter's name suggests a secret (`token`, `password`, `key`, `secret`); parameter values are recorded and visible to `ps`. |
+
+  One note, which is never counted as a warning: `no-update`, for a recipe with steps and no `update` steps.
+- **Exit status**: 0 when every recipe loads, 1 when one does not; `--strict` gives 1 for warnings too.
+- **`--json`** prints one object: `recipes`, a list in the order given, and `error` when the recipes together are refused (a `--set` name none declares). Each recipe has its `path` as given, and when it loads its `name`, `description`, `digest`, the counts `steps`, `updateSteps` and `checks`, and `inputs` and `parameters` as declared (`name`, `description`, and a parameter's `default`); `error` when it does not load; `warnings` and `notes`, each a list of `code`, `place` ("step 3", "update step 1", "check 2", "input xcode", "parameter token", "the recipe") and `message`.
+
 ## Failures
 
-A step that exits with a non-zero status, or stays silent past its timeout, fails the build. The image is kept with state `failed` and a reason naming the step and the end of its output. `agent-vm image list` shows it; delete the image and build it again. A recipe with a mistake (malformed JSON, an unknown key, a missing `copy` file) is refused before anything is built, and a `copy` file that changes while the image is being built fails its step, so the recorded digest always matches what went into the image.
+A step that exits with a non-zero status, or stays silent past its timeout, fails the build. The image is kept with state `failed` and a reason naming the step and the end of its output. `agent-vm image list` shows it; delete the image and build it again. A recipe with a mistake (malformed JSON, an unknown key, a missing `copy` file) is refused before anything is built (`agent-vm recipe check` says so without a build), and a `copy` file that changes while the image is being built fails its step, so the recorded digest always matches what went into the image.
 
 ## Provenance
 
