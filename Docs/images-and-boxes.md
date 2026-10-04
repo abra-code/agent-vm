@@ -199,6 +199,9 @@ CPUs and memory of a stopped box, yes: `agent-vm box set <box> --cpus N --memory
 **Can I update a box in place instead of its image?**
 There is no command for it, on purpose: a box is a disposable copy. Whatever you install or update in a kept box by hand stays in that box only, and is lost when it is recreated.
 
+**An image build started from an application fails with "SSH did not come up". Why?**
+Most likely the application lacks Local Network access. The first boot of a newly installed image is the only time agent-vm reaches a guest over the network, and macOS asks the permission of the application that started agent-vm (Terminal needs none). Turn it on in System Settings > Privacy & Security > Local Network, delete the failed image and build again. The error names the last attempt: "No route to host" or "Operation not permitted" means this Mac refused the connection; "Connection refused", "Host is down" or "got no answer" means the guest was not ready in time.
+
 **How many boxes can I have?**
 As many as your disk holds: a stopped box costs only the space it wrote. At most two can run at once, because macOS runs at most two macOS virtual machines at a time, counting image builds and updates and other apps' virtual machines (`agent-vm status` and `agent-vm doctor` show how many are running). A start or build with no free slot fails with exit status 75 ("no free VM slot"); try again when a VM has stopped. A box, or a new image, that was refused before its first boot is left as it was, so the same command can simply run again.
 

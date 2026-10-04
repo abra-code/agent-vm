@@ -44,7 +44,7 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 |---|---|
 | `restore-image` | Reading the restore image. |
 | `install` | Installing macOS, with `fraction` every 10%. About 3 minutes. |
-| `first-boot` | The first boot creates the account, logs it in and turns on SSH. |
+| `first-boot` | The first boot creates the account, logs it in and turns on SSH. A `notice` follows when this Mac has refused every connection to the guest for 30 seconds (Local Network access; since 0.6.13). |
 | `guest-daemon` | Installing `agent-vm-guest` over SSH. |
 | `command-line-tools` | Installing Xcode's Command Line Tools (unless `--no-command-line-tools`). |
 | `recipe`, `recipe-input`, `recipe-step`, `recipe-check` | With `--recipe`: the recipe begins, each input file is sent, each step runs, each check runs. |

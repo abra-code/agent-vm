@@ -1295,6 +1295,7 @@ public final class ImageBuilder {
     private func waitForSSH(_ machine: MacMachine, macAddress: String) async throws -> String {
         let deadline = ContinuousClock.now + Self.provisionTimeout
         var announced: String?
+        var contact = FirstContact()
         while ContinuousClock.now < deadline {
             try checkCanceled()
             guard machine.isRunning else {
@@ -1305,14 +1306,17 @@ public final class ImageBuilder {
                     announced = host
                     log("  address \(host)")
                 }
-                let open = await Task.detached { GuestNetwork.isPortOpen(host, port: 22) }.value
-                if open {
+                let attempt = await Task.detached { GuestNetwork.attempt(host, port: 22) }.value
+                if attempt == .open {
                     return host
+                }
+                if let text = contact.record(attempt, host: host) {
+                    notice("  note: \(text)")
                 }
             }
             try await Task.sleep(for: .seconds(2))
         }
-        throw AgentVMError.guestUnreachable("SSH did not come up within \(Self.provisionTimeout)")
+        throw AgentVMError.guestUnreachable(contact.failure(after: Self.provisionTimeout))
     }
 
     /// Logs in (retrying while the account is still being created) and reads the guest's

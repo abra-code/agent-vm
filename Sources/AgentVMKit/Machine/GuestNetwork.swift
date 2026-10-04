@@ -89,18 +89,58 @@ public enum GuestNetwork {
         return address(forMAC: mac, leases: String(decoding: data, as: UTF8.self))
     }
 
+    /// How one attempt to connect ended.
+    public enum Attempt: Equatable, Sendable {
+        case open
+        /// Nothing answered within the timeout.
+        case noAnswer
+        /// The connection failed with this errno: ECONNREFUSED when nothing listens yet,
+        /// EHOSTDOWN when no machine has the address, EHOSTUNREACH or EPERM (see
+        /// `refusedByThisMac`) when this Mac does not let the process reach it.
+        case failed(Int32)
+
+        /// Whether this Mac, not the guest, stopped the attempt. A guest that is up and has
+        /// no listener answers with ECONNREFUSED; these come from the Mac's own network
+        /// stack: Local Network privacy, a sandbox, a content filter.
+        public var refusedByThisMac: Bool {
+            switch self {
+            case .failed(EHOSTUNREACH), .failed(EPERM), .failed(EACCES), .failed(ENETUNREACH):
+                return true
+            default:
+                return false
+            }
+        }
+
+        /// For a person: "failed with No route to host".
+        public var text: String {
+            switch self {
+            case .open:
+                return "succeeded"
+            case .noAnswer:
+                return "got no answer"
+            case let .failed(code):
+                return "failed with \(String(cString: strerror(code)))"
+            }
+        }
+    }
+
     /// Whether a TCP connection to `host:port` succeeds within `timeout` seconds. Blocks.
     public static func isPortOpen(_ host: String, port: UInt16, timeout: Int = 2) -> Bool {
+        return attempt(host, port: port, timeout: timeout) == .open
+    }
+
+    /// One attempt to connect to `host:port`, with the reason when it fails. Blocks.
+    public static func attempt(_ host: String, port: UInt16, timeout: Int = 2) -> Attempt {
         var address = sockaddr_in()
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = port.bigEndian
         guard inet_pton(AF_INET, host, &address.sin_addr) == 1 else {
-            return false
+            return .failed(EINVAL)
         }
         let descriptor = socket(AF_INET, SOCK_STREAM, 0)
         guard descriptor >= 0 else {
-            return false
+            return .failed(errno)
         }
         defer { close(descriptor) }
         // Non-blocking connect, then wait for writability with poll: connect(2) alone can block
@@ -112,21 +152,22 @@ public enum GuestNetwork {
                 connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
+        let connectError = errno
         if result == 0 {
-            return true
+            return .open
         }
-        guard errno == EINPROGRESS else {
-            return false
+        guard connectError == EINPROGRESS else {
+            return .failed(connectError)
         }
         var descriptorPoll = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
         guard poll(&descriptorPoll, 1, Int32(timeout * 1000)) == 1 else {
-            return false
+            return .noAnswer
         }
         var socketError: Int32 = 0
         var length = socklen_t(MemoryLayout<Int32>.size)
         guard getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &socketError, &length) == 0 else {
-            return false
+            return .failed(errno)
         }
-        return socketError == 0
+        return socketError == 0 ? .open : .failed(socketError)
     }
 }
