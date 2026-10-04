@@ -90,14 +90,15 @@ A step has either `run`, or `copy` with `to`. The same keys are used in `steps` 
 
 ## 3. What steps can rely on, and the traps
 
-- **Who runs a step:** the box user (an administrator account, in its home folder), or root with `"user": "root"`.
+- **Who runs a step:** the box user (an administrator account, in its home folder), or root with `"user": "root"`. A box has the same user and the same home folder, so what a step installs into `~` is there in the box. In a root step the box user's home is `/Users/$AGENT_VM_BOX_USER`.
+- **The image is macOS on Apple silicon** (`arm64`; Rust and some others call it `aarch64`). Download that build of a tool.
 - **Never `sudo` as the box user.** It asks for a password and there is nobody to type it. A step that needs root says `"user": "root"`. (Inside a root step, `sudo -u "$AGENT_VM_BOX_USER" <command>` runs one command as the box user.) Root steps hand files to the box user with `chown "$AGENT_VM_BOX_USER"`; that variable is set in every step.
 - **No terminal and no input.** Standard input is closed. A program that asks a question fails or waits forever. Pass the answers: `--yes`, `-y`, `NONINTERACTIVE=1`, `CI=1`.
-- **The path** is `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`. A tool installed elsewhere (`~/.local/bin`, `~/.cargo/bin`) is not found by later steps, by checks, or by programs run in a box. Install into one of those folders, link the tool into `/usr/local/bin` in a root step, or call it by its full path.
+- **The path** is `/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`. A tool installed elsewhere (`~/.local/bin`, `~/.cargo/bin`) is not found by later steps, by checks, or by programs run in a box. Install into one of those folders, link the tool into `/usr/local/bin` in a root step, or call it by its full path. `/usr/local/bin` does not exist in a new image: the root step starts with `mkdir -p /usr/local/bin`. Links cover the programs that exist when the step runs; if the tool adds programs to its folder later (an update, a plug-in), make the links again in a root update step.
 - **Each step is a new shell.** A `cd` or an `export` in one step is gone in the next. Put what belongs together in one step, joined with `&&`.
 - **A step fails when its command exits non-zero.** In a step with several commands, join them with `&&`, or a failure in the middle is not noticed.
 - **A silent step hits its timeout.** The timeout counts seconds without output, not the step's whole time. A long download that prints nothing needs a larger `timeoutSeconds` or a flag that makes it print progress.
-- **The network differs between build and box.** The build reaches the whole internet. A box, by default, reaches only the hosts its rules allow. If the tool needs the network when it runs (a registry, an API), say so in the recipe's `description` and tell the person which hosts or packs the box will need (`agent-vm box packs` lists the packs, such as `pack:npm`, `pack:pypi`, `pack:github`).
+- **The network differs between build and box.** The build reaches the whole internet. A box, by default, reaches only the hosts its rules allow. If the tool needs the network when it runs (a registry, an API), say so in the recipe's `description` and tell the person which hosts or packs the box will need (`agent-vm box packs` lists the packs, such as `pack:npm`, `pack:pypi`, `pack:github`). When no pack covers the tool, name the hosts one by one. The person allows each with `--allow` when making the box: `agent-vm box create <box> --image <image> --allow pack:github --allow crates.io --allow '*.example.com'`.
 - **Update steps run again and again,** on an image where they ran before: `brew upgrade x || true`, `npm install --global x@latest`. They must succeed when there is nothing to update. Do not update macOS in a recipe.
 - **Inputs are gone after the build.** Do not use `$AGENT_VM_INPUT_...` in an update step or in a check: checks run again at every update.
 - **Checks must hold forever:** after the build and after any later update. Check that the tool runs (`tool --version`), not an exact version number.
@@ -131,26 +132,31 @@ agent-vm recipe check --strict path/to/recipe.json
    Add `--input NAME=PATH` and `--set NAME=VALUE` for the recipe's inputs and parameters. Recipes yours needs go before it, each with its own `--recipe`, unless the image already has them.
 3. **On success** the command exits 0 and prints the new image's record as JSON on standard output. Progress lines, one JSON object each, go to standard error; each check's first output line is among them.
 4. **On failure** it exits non-zero, and the last lines on standard error are `Error: ...`, naming the step or check that failed and the end of its output. When a step or check failed, the same text is kept: `agent-vm image list --json` shows the scratch image with state `failed` and the reason in `failure`. A build refused before it started (a mistake in the recipe, a missing input, no free virtual machine) leaves no image.
-5. Delete the scratch image if `image list` shows one, whether it failed or not: `agent-vm image delete scratch-mytool`.
-6. Fix the recipe, run round 1 again, then build again. Repeat until a build succeeds.
-7. When it succeeds, delete the scratch image and tell the person: where the recipe is, the exact `image create` command to build their real image with it, and which hosts or packs a box will need.
+5. If the recipe has `update` steps and the build succeeded, run them once on the scratch image: `agent-vm image update scratch-mytool --tools`. It runs the update steps and then the checks; it exits 0 when all passed, and on a failure it prints `Error: ...` and leaves the image as it was. This is the only image you may update.
+6. Delete the scratch image if `image list` shows one, whether it failed or not: `agent-vm image delete scratch-mytool`. It asks nothing.
+7. Fix the recipe, run round 1 again, then build again. Repeat until a build and its update succeed.
+8. When they succeed, delete the scratch image and tell the person all of these:
+   - where the recipe is;
+   - the exact `image create` command to build their real image with it, with each parameter they can set;
+   - which hosts or packs a box will need, as `--allow` options (say so when it needs none);
+   - anything you could not test.
 
 If a build fails for a reason that is not the recipe's (no free virtual machine, no disk space, the error in section 6 about virtual machines), stop and tell the person. Do not retry in a loop.
 
 ## 5. When to stop and ask the person
 
 - **A file only they can get:** an installer behind a login (Xcode's `.xip` needs an Apple ID), a license file. Declare it as an input, and ask them for the path.
-- **Which image to build from,** when more than one is ready or none is.
+- **Which image to build from,** when more than one is ready or none is, unless they already named one.
 - **Anything that needs an account, a login or a payment.** A recipe never logs in to anything.
 - **Where the recipe folder should go,** if they did not say.
-- **A choice the request leaves open** that changes what is installed (which version, which variant).
+- **A choice the request leaves open** that changes what is installed (which version, which variant). A parameter with a sensible default answers such a question without asking: tell the person what the default is.
 
 ## 6. Rules of conduct
 
 - **Never put a secret in a recipe or a parameter:** no token, password or key. Recipes are kept with the image, and parameter values are recorded and can be read by every user of the Mac. If the tool needs a login, the person does it in the box afterwards.
 - **Build only under a scratch name, and delete it afterwards.** Leave no scratch image behind.
-- **Never change, update or delete the person's existing images or boxes.** `image delete` only on a scratch image you made in this session. No `image update`, `image rebuild`, `box delete` or `box recreate`.
-- **Download only from the tool's own source:** its official site, its repository, a package manager. Use `https`. Do not pipe a script from an address you guessed.
+- **Never change, update or delete the person's existing images or boxes.** `image delete` only on a scratch image you made in this session. No `image update` (except on your own scratch image, section 4), `image rebuild`, `box delete` or `box recreate`.
+- **Download only from the tool's own source:** its official site, its repository, a package manager. Use `https`. An installer script that the tool's own documentation tells people to run is fine: download it to a file in one command and run the file in the next, so a failed download fails the step. Do not run a script from an address you guessed.
 - **agent-vm cannot run virtual machines inside a sandbox.** If you run in one, `image create` fails with an error that may not name the sandbox: an operation that is not permitted, or a virtual machine that cannot start. `agent-vm doctor` tells: inside a sandbox it prints a line starting with `FAIL  virtualization`, saying that this process cannot run virtual machines. Do not retry and do not look for another way: ask the person to allow agent-vm to run outside the sandbox. `recipe check` and `recipe guide` work inside one.
 - **Do not edit the shipped recipes.** Copy from them into your own.
 
