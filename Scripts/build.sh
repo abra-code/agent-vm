@@ -166,6 +166,14 @@ status=$?
 /bin/ln -sfn "$REPO_ROOT/Recipes" "$OUTPUT/Recipes"
 status=$?
 [ "$status" -eq 0 ] || die "cannot link $OUTPUT/Recipes to $REPO_ROOT/Recipes"
+# The installer takes the whole Recipes folder, so what Finder and development tools leave in it
+# goes now: .DS_Store files, and .claude folders when they hold nothing but empty folders.
+/usr/bin/find "$REPO_ROOT/Recipes" -name .DS_Store -type f -delete
+status=$?
+[ "$status" -eq 0 ] || die "cannot remove the .DS_Store files in $REPO_ROOT/Recipes"
+/usr/bin/find "$REPO_ROOT/Recipes" -depth -type d \( -name .claude -o -path '*/.claude/*' \) -empty -delete
+status=$?
+[ "$status" -eq 0 ] || die "cannot remove the empty .claude folders in $REPO_ROOT/Recipes"
 
 printf '\nSigned binaries in %s\n\n' "$OUTPUT"
 # Without $AGENT_VM_PACKS_FILE, so the check reads the packs.json just put there.
