@@ -2,7 +2,7 @@
 
 Long commands tell what they are doing as they go. For a person, that is lines of text on standard output. With `--json`, the same information goes to standard error as one JSON object per line, so a program can show the current step and a progress bar without reading prose. Standard output then holds only the command's result: the image record, the box's status.
 
-Commands that report progress: `image create` (from a restore image or `--from` an image), `image update`, `image update-guest`, `image setup`, `image fetch-ipsw`, `box start`, `box stop` and `box send`.
+Commands that report progress: `image create` (from a restore image or `--from` an image), `image update`, `image update-guest`, `image setup`, `image view`, `image fetch-ipsw`, `box start`, `box stop` and `box send`.
 
 Run as a job (`agent-vm job start -- <command>`, see the README), a command's events are kept in the job's log: `job list --json` gives each job's last `progress` event and last notice, and `job log <id> --json` all of its events.
 
@@ -83,6 +83,8 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 `image rebuild`: the steps of `image create` (with `--ipsw`, or with `--from`), their `image` being the image's own name and not the name it is built under, then `replace`: the rebuilt image takes the old one's place.
 
 `image update-guest`: `boot`, then, when the daemon differs, `replace-guest-daemon`, `shutdown`, `check-guest-daemon` and `shutdown` again (otherwise just `shutdown`), for each image in turn. A failure in one image skips the rest, with a `notice` naming them.
+
+`image view` (since 0.6.14): `boot`, `window` (the window is open; the step lasts until it is closed), `shutdown`.
 
 `image setup`: `boot`, `full-disk-access` (the window is open: waiting for the grant, or, when agent-vm-guest has it already, for the window to close), `shutdown`.
 

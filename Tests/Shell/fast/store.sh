@@ -171,6 +171,11 @@ test_images_name_missing_guest_features() {
     run_avm image setup broken
     assert_status 1 || return 1
     assert_err_contains "cannot set up image broken: it is failed" || return 1
+    run_avm image view broken
+    assert_status 1 || return 1
+    assert_err_contains "cannot view image broken: it is failed" || return 1
+    run_avm image view nosuch
+    assert_status 1 || return 1
     assert_not_contains "$OUT" "image update broken" "stdout" || return 1
     run_avm image update-guest broken
     assert_status 1 || return 1

@@ -26,7 +26,7 @@ import Testing
     }
 
     @Test func drawsAtDisplaySize() throws {
-        let data = try GuestWallpaper.png(title: "dev", lines: ["agent-vm image", "macOS 27.0 (26A428)"])
+        let data = try GuestWallpaper.png(title: "dev", lines: ["AgentVM image", "macOS 27.0 (26A428)"])
         #expect(data.starts(with: [0x89, 0x50, 0x4e, 0x47]))
         let image = try decode(data)
         #expect(image.width == MacMachineSpec.displayWidth)
@@ -54,5 +54,14 @@ import Testing
 
     @Test func featureIsAnnounced() {
         #expect(GuestFeature.all.contains(GuestFeature.wallpaper))
+    }
+}
+
+@MainActor
+struct BoxViewerTitleTests {
+    @Test func theWindowTitleNamesTheProjectAndWhatIsShown() {
+        #expect(BoxViewer.title(kind: "box", name: "work", interactive: true) == "AgentVM box - work")
+        #expect(BoxViewer.title(kind: "box", name: "work", interactive: false) == "AgentVM box - work (view only)")
+        #expect(BoxViewer.title(kind: "image", name: "dev", interactive: true) == "AgentVM image - dev")
     }
 }

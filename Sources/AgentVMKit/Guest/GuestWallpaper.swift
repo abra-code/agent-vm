@@ -77,12 +77,12 @@ public enum GuestWallpaper {
 
     /// The wallpaper of a box: its name, then what it was cloned from.
     public static func png(for box: BoxRecord) throws -> Data {
-        return try png(title: box.name, lines: ["agent-vm box", "image \(box.image)  -  macOS \(box.macOSVersion) (\(box.macOSBuild))"])
+        return try png(title: box.name, lines: ["AgentVM box", "image \(box.image)  -  macOS \(box.macOSVersion) (\(box.macOSBuild))"])
     }
 
     /// The wallpaper of an image, which its boxes show until they set their own.
     public static func png(for image: ImageRecord) throws -> Data {
-        return try png(title: image.name, lines: ["agent-vm image", "macOS \(image.macOSVersion) (\(image.macOSBuild))"])
+        return try png(title: image.name, lines: ["AgentVM image", "macOS \(image.macOSVersion) (\(image.macOSBuild))"])
     }
 
     private static func line(_ text: String, font: CTFontUIFontType, size: CGFloat, gray: CGFloat) -> CTLine {

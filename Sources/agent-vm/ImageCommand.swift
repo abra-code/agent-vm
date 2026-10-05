@@ -19,7 +19,7 @@ struct ImageCommand: ParsableCommand {
             off again and shuts the guest down. Starting virtual machines needs the binaries \
             built by Scripts/build.sh (see `agent-vm doctor`).
             """,
-        subcommands: [Create.self, List.self, Info.self, Delete.self, Setup.self, Update.self, Rebuild.self, UpdateGuest.self, FetchIPSW.self]
+        subcommands: [Create.self, List.self, Info.self, Delete.self, Setup.self, View.self, Update.self, Rebuild.self, UpdateGuest.self, FetchIPSW.self]
     )
 
     struct Create: AsyncParsableCommand {
@@ -223,9 +223,11 @@ struct ImageCommand: ParsableCommand {
 
         @OptionGroup var options: StoreOptions
 
-        /// `agent-vm image setup ...` runs AppKit's loop from main, for the window.
+        /// `agent-vm image setup ...` and `image view ...` run AppKit's loop from main, for
+        /// the window.
         static func shouldRunAppKit(_ arguments: [String]) -> Bool {
-            return Array(arguments.dropFirst().prefix(2)) == ["image", "setup"] && BoxSupervisor.canShowWindows
+            let command = Array(arguments.dropFirst().prefix(2))
+            return (command == ["image", "setup"] || command == ["image", "view"]) && BoxSupervisor.canShowWindows
         }
 
         @MainActor
@@ -239,6 +241,39 @@ struct ImageCommand: ParsableCommand {
             }
             let granted = image.record.fullDiskAccess?.granted == true
             print("Image \(image.name) is set up\(granted ? "" : "; agent-vm-guest has no Full Disk Access yet (run image setup again to grant it)")")
+        }
+    }
+
+    struct View: AsyncParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "view",
+            abstract: "Open an image's screen in a window, to set something up by hand.",
+            discussion: """
+                Boots the image with its screen in an interactive window on this Mac, as \
+                `image setup` does, but opens nothing in it: do whatever the image needs \
+                (install an application, sign in, change a setting), then close the window. \
+                The image shuts down and keeps what was done, and boxes made from it \
+                afterwards inherit it; boxes made before keep what they have. The window has \
+                Send, for copying files from this Mac into the image's Downloads folder, and \
+                Type Password. Whether agent-vm-guest has Full Disk Access is looked at when \
+                the window closes and recorded. Needs a login session on this Mac (not SSH).
+                """)
+
+        @Argument(help: "The image to open.")
+        var name: String
+
+        @OptionGroup var options: StoreOptions
+
+        @MainActor
+        func run() async throws {
+            let json = options.json
+            let builder = ImageBuilder(store: options.imageStore, events: Events.handler(json: json))
+            let image = try await builder.setUp(named: name, fullDiskAccess: false)
+            if json {
+                try Output.json(image.record)
+                return
+            }
+            print("Image \(image.name) is shut down; what was done in its window is kept")
         }
     }
 

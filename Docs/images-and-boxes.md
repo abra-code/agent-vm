@@ -27,7 +27,7 @@ restore image (.ipsw)
 | What it is | A sealed template | A working copy of one image |
 | Made by | `image create` (from a restore image, or `--from` another image with a recipe) | `box create --image <image>`: an APFS clone, instant, free until the box writes |
 | Runs programs | Only while agent-vm builds or updates it | Yes: `exec`, `box shell`, `box view` |
-| Changed by | `image update`, `image setup` | Whatever runs in it; `box network` for its network rules; `box set` for its CPUs and memory |
+| Changed by | `image update`, `image setup`, `image view` | Whatever runs in it; `box network` for its network rules; `box set` for its CPUs and memory |
 | Its own settings | CPUs, memory, disk size, account name | CPUs and memory (default: the image's), network mode and rules |
 | Folder (shown by `image list`, `box list`; with its space by `image info`, `box info`) | `~/Library/Application Support/agent-vm/Images/<name>/` | `~/Library/Application Support/agent-vm/Boxes/<name>/` |
 
@@ -47,6 +47,7 @@ After that, the box does not follow its image. In particular, these do **not** r
 - `image update` (a newer macOS, newer tools);
 - `image update --guest` (a newer guest daemon and its features, such as the terminal or the wallpaper);
 - `image setup` (Full Disk Access granted after the box was made);
+- `image view` (whatever was done by hand in its window);
 - a new derived image, or a rebuilt one with the same name.
 
 A box made before one of these keeps what it had. That is by design: a box is a disposable copy, and making it again takes seconds.

@@ -224,7 +224,7 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
         case let .invalidSecret(name, reason):
             return "secret \(name): \(reason)"
         case let .accountPasswordMissing(owner, reason):
-            return "the account password of \(owner) is missing: \(reason). Boxes still start and run programs; what needs the password (the Type Password button, `image setup`, a macOS update, building from it) works again once the image is rebuilt from a restore file, which makes a new password (`agent-vm image rebuild <image> --ipsw latest`), and its boxes are made again (`agent-vm box recreate`)"
+            return "the account password of \(owner) is missing: \(reason). Boxes still start and run programs; what needs the password (the Type Password button, `image setup`, `image view`, a macOS update, building from it) works again once the image is rebuilt from a restore file, which makes a new password (`agent-vm image rebuild <image> --ipsw latest`), and its boxes are made again (`agent-vm box recreate`)"
         case let .accountPasswordUnreadable(owner, reason):
             return "the account password of \(owner) could not be read: \(reason)"
         case let .secretNotFound(name):

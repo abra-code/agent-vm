@@ -25,14 +25,19 @@ extension ImageBuilder {
     /// would lock the screen, opens Full Disk Access in System Settings with agent-vm-guest shown
     /// in Finder, watches for the grant, and shuts the image down when the window is closed (or
     /// on SIGINT or SIGTERM). The result is recorded in image.json.
-    public func setUp(named name: String) async throws -> GoldenImage {
+    ///
+    /// Without `fullDiskAccess` (`agent-vm image view`) the window opens on the desktop as it
+    /// is, for whatever a person wants to do by hand: no System Settings, no Finder window.
+    /// Whether the daemon has Full Disk Access is still looked at before the shutdown and
+    /// recorded, so a grant given by hand in such a window is not missed.
+    public func setUp(named name: String, fullDiskAccess: Bool = true) async throws -> GoldenImage {
         var image = try store.image(named: name)
         subject = image.name
         guard image.record.state == .ready else {
-            throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "set up")
+            throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: fullDiskAccess ? "set up" : "view")
         }
         guard BoxViewer.canShowWindows else {
-            throw AgentVMError.hostNotReady("image setup shows the image's screen, so it needs a login session on this Mac (not SSH)")
+            throw AgentVMError.hostNotReady("image \(fullDiskAccess ? "setup" : "view") shows the image's screen, so it needs a login session on this Mac (not SSH)")
         }
         try Self.checkHost(HostFacts.current(storeRoot: store.root), minimumFree: Self.minimumFreeBytesToUpdate)
         guard let lock = try store.tryLock(image) else {
@@ -82,12 +87,12 @@ extension ImageBuilder {
                 log("  Stopped before the window opened")
                 granted = (try? await hasFullDiskAccess(machine)) == true
             } else {
-                granted = try await grantFullDiskAccess(machine, image: image, password: password, done: done)
+                granted = try await grantFullDiskAccess(machine, image: image, password: password, done: done, guide: fullDiskAccess)
             }
             if machine.isRunning {
                 try await shutDown(machine)
             } else if let failure = machine.failure {
-                throw AgentVMError.guestUnreachable("the guest stopped during setup: \(failure)")
+                throw AgentVMError.guestUnreachable("the guest stopped during \(fullDiskAccess ? "setup" : "the view"): \(failure)")
             } else {
                 log("  The guest shut itself down")
             }
@@ -104,15 +109,22 @@ extension ImageBuilder {
         return image
     }
 
-    /// The window part: shows the screen, opens the settings, and waits for the window to close.
-    private func grantFullDiskAccess(_ machine: MacMachine, image: GoldenImage, password: String, done: SetupDone) async throws -> Bool {
-        let viewer = BoxViewer(name: "image \(image.name)", machine: machine, password: { password },
-                               note: "Full Disk Access for agent-vm-guest: in Settings, drag agent-vm-guest from the Finder window into the list (or use +), turn it on, and use Type Password when asked. Close this window when done.",
+    static let viewNote = "Do any one-time steps the image needs, then close this window: the image shuts down and keeps them."
+
+    /// The window part: shows the screen, opens the settings (with `guide`), and waits for the
+    /// window to close. Returns whether agent-vm-guest has Full Disk Access at the end.
+    private func grantFullDiskAccess(_ machine: MacMachine, image: GoldenImage, password: String, done: SetupDone, guide: Bool) async throws -> Bool {
+        let viewer = BoxViewer(name: image.name, kind: "image", machine: machine, password: { password },
+                               note: !guide ? Self.viewNote : "Full Disk Access for agent-vm-guest: in Settings, drag agent-vm-guest from the Finder window into the list (or use +), turn it on, and use Type Password when asked. Close this window when done.",
                                onClose: { done.finish() }, log: { [weak self] in self?.log($0) })
         viewer.show(interactive: true)
 
         var granted = try await hasFullDiskAccess(machine)
-        if granted {
+        if !guide {
+            // The step that waits on the window, under a name that says nothing of Full Disk
+            // Access: this window is for anything.
+            progress("window", "  The window is open; close it when done")
+        } else if granted {
             // Still the step that waits on the window, so a program can say so.
             progress("full-disk-access", "  agent-vm-guest already has Full Disk Access; close the window when done")
             viewer.setNote("agent-vm-guest has Full Disk Access. Do any other one-time steps, then close this window.")
@@ -139,7 +151,9 @@ extension ImageBuilder {
             if !granted, !done.isFinished, (try? await hasFullDiskAccess(machine)) == true {
                 granted = true
                 log("  Full Disk Access granted")
-                viewer.setNote("Full Disk Access granted. Do any other one-time steps, then close this window.")
+                if guide {
+                    viewer.setNote("Full Disk Access granted. Do any other one-time steps, then close this window.")
+                }
             }
         }
         // A last look: the grant may have come in the final seconds.

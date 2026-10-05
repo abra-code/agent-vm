@@ -19,6 +19,8 @@ import Virtualization
 @MainActor
 final class BoxViewer: NSObject, NSWindowDelegate {
     private let name: String
+    /// What the window shows: "box", or "image" for `image setup` and `image view`.
+    private let kind: String
     private let machine: MacMachine
     /// Gives the guest account's password, typed by the Type Password button (interactive
     /// only). Asked when the button is pressed, away from the main actor: read from the
@@ -44,9 +46,10 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     /// Stop was pressed or the window closed: no further item starts.
     private var stopRequested = false
 
-    init(name: String, machine: MacMachine, password: (@Sendable () throws -> String)? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil,
+    init(name: String, kind: String = "box", machine: MacMachine, password: (@Sendable () throws -> String)? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil,
          log: (@MainActor (String) -> Void)? = nil) {
         self.name = name
+        self.kind = kind
         self.machine = machine
         self.password = password
         self.note = note
@@ -70,7 +73,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         screen.viewOnly = !interactive
         screen.capturesSystemKeys = interactive
         typeButton?.isEnabled = interactive
-        window.title = interactive ? "agent-vm box \(name)" : "agent-vm box \(name) - view only"
+        window.title = Self.title(kind: kind, name: name, interactive: interactive)
         NSApplication.shared.setActivationPolicy(.accessory)
         // In front even though the supervisor is not the active application (the user is in
         // Terminal, or in the app that ran box view).
@@ -115,8 +118,8 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         return window
     }
 
-    /// Under the title bar: the note, what a send is doing, and the Send and Type Password
-    /// buttons.
+    /// Under the title bar: at the left the note and Type Password, which the note speaks of;
+    /// at the right what a send is doing and the Send button.
     private func makeAccessory() -> NSTitlebarAccessoryViewController {
         let bar = NSStackView()
         bar.orientation = .horizontal
@@ -128,6 +131,20 @@ final class BoxViewer: NSObject, NSWindowDelegate {
             bar.addArrangedSubview(label)
             noteLabel = label
         }
+        if password != nil {
+            let button = NSButton(title: "Type Password", target: self, action: #selector(typePassword(_:)))
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+            button.toolTip = "Types the box account's password into the focused field in the box (for login windows and administrator prompts)"
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            bar.addArrangedSubview(button)
+            typeButton = button
+        }
+        // Takes the room between the two groups, so Send stays at the trailing edge.
+        let space = NSView()
+        space.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        space.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        bar.addArrangedSubview(space)
         let sending = NSTextField(labelWithString: "")
         sending.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         sending.lineBreakMode = .byTruncatingMiddle
@@ -140,21 +157,19 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         send.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
         send.toolTip = "Copies files or folders from this Mac into the Downloads folder in the box. Nothing there is replaced: a name in use gets a number."
         send.setContentHuggingPriority(.required, for: .horizontal)
+        send.image = NSImage(systemSymbolName: "arrow.up.doc", accessibilityDescription: nil)
+        send.imagePosition = .imageLeading
         bar.addArrangedSubview(send)
         sendButton = send
-        if password != nil {
-            let button = NSButton(title: "Type Password", target: self, action: #selector(typePassword(_:)))
-            button.controlSize = .small
-            button.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
-            button.toolTip = "Types the box account's password into the focused field in the box (for login windows and administrator prompts)"
-            button.setContentHuggingPriority(.required, for: .horizontal)
-            bar.addArrangedSubview(button)
-            typeButton = button
-        }
         let accessory = NSTitlebarAccessoryViewController()
         accessory.view = bar
         accessory.layoutAttribute = .bottom
         return accessory
+    }
+
+    /// "AgentVM box - work", "AgentVM image - dev"; a window that takes no keys says so.
+    static func title(kind: String, name: String, interactive: Bool) -> String {
+        return "AgentVM \(kind) - \(name)\(interactive ? "" : " (view only)")"
     }
 
     /// Whether keys and clicks reach the guest (the window was last shown interactive).
@@ -183,7 +198,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         panel.prompt = "Send"
-        panel.message = "Files and folders to copy into the Downloads folder in \(name)"
+        panel.message = "Select files or folders to copy to Downloads in \(kind == "box" ? name : "\(kind) \(name)")"
         panel.beginSheetModal(for: window) { [weak self] response in
             let urls = panel.urls
             MainActor.assumeIsolated {
@@ -291,7 +306,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     /// whatever has the focus there. Letters, digits, space, return and a few punctuation marks.
     func type(_ text: String) async throws {
         guard let window, let screen else {
-            throw AgentVMError.supervisorRefused("the window of box \(name) is not open")
+            throw AgentVMError.supervisorRefused("the window of \(kind) \(name) is not open")
         }
         // Through the window, as typed keys arrive, to the screen as first responder.
         window.makeFirstResponder(screen)
@@ -304,7 +319,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         }
         let keys = try text.map { character in
             guard let key = GuestKeys.key(for: character) else {
-                throw AgentVMError.supervisorRefused("cannot type \"\(character)\" into box \(name)")
+                throw AgentVMError.supervisorRefused("cannot type \"\(character)\" into \(kind) \(name)")
             }
             return (character, key)
         }
