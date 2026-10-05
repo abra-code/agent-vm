@@ -1,4 +1,4 @@
-# AgentVM
+# AgentVM CLI tools
 
 Run AI agents and their tools inside disposable macOS virtual machines, so a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac.
 
