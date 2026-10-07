@@ -50,6 +50,20 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 | `recipe`, `recipe-input`, `recipe-step`, `recipe-check` | With `--recipe`: the recipe begins, each input file is sent, each step runs, each check runs. |
 | `shutdown` | Shutting the guest down. |
 
+`image create --linux` (a new Linux image from a distribution's cloud image; since 0.7.4):
+
+| Step | What happens |
+|---|---|
+| `base-check` | Asking the distribution's host for the cloud image's checksum (with `--cloud-image`: reading your file). A `log` event follows when the downloaded file is checked, and one when it is the one the list names; a `notice` when the list could not be fetched and a checked copy is used. |
+| `download` | Downloading the cloud image, with `fraction` at every whole percent. Left out when the downloaded file is still the one the list names. |
+| `unpack` | Unpacking the disk into the image. |
+| `first-boot` | The first boot: the system installs `agent-vm-guest` from the seed disk. |
+| `guest-daemon` | The daemon answers. |
+| `linux-setup` | Each setup step, with `index` and `count` over all of them (waiting for the first boot to finish, the account, the packages, git's settings; then, after `seal`, the sealing steps), and `fraction`. A step's output lines follow as `log` events with `output`. |
+| `recipe`, `recipe-step`, `recipe-check` | With `--recipe`, as above. |
+| `seal` | Sealing begins; its steps follow as `linux-setup`. |
+| `shutdown` | Shutting the guest down. |
+
 `image create --from` (an image from an image):
 
 | Step | What happens |

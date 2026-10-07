@@ -24,9 +24,12 @@ struct ImageCommand: ParsableCommand {
 
     struct Create: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Build an image: install macOS from a restore image, or start from another image.",
+            abstract: "Build an image: install macOS from a restore image, build Linux from a cloud image, or start from another image.",
             discussion: """
                 With --ipsw, macOS is installed and set up with no clicks (about 6 minutes). With \
+                --linux, the distribution's own cloud image is downloaded (0.2 GB, kept in the \
+                store's Cache/linux and checked against the distribution's checksum list every \
+                time) and set up (about a minute). With \
                 --from, a ready image is cloned and the recipes applied to the clone (minutes). \
                 Several --recipe options put several tool sets into one image, in the order \
                 given; --input and --set go to every recipe that declares the name. SIGINT or SIGTERM stops the build at \
@@ -40,16 +43,22 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .long, help: ArgumentHelp("The macOS restore image (.ipsw) to install: a path, the file name of one `image fetch-ipsw` downloaded (see `image fetch-ipsw --list`), or latest for the newest of those. A bare name is looked for in the current directory first.", valueName: "path|name|latest"))
         var ipsw: String?
 
+        @Option(name: .long, help: ArgumentHelp("The Linux system to build an image of: \(LinuxBase.known.map(\.id).joined(separator: ", ")) (\(LinuxBase.known.first?.distribution ?? "debian") alone means the newest).", valueName: "release"))
+        var linux: String?
+
+        @Option(name: .customLong("cloud-image"), help: ArgumentHelp("With --linux: a cloud image file of your own (.tar.xz or .raw) in place of the download. It is trusted because you give it, and its SHA-512 is recorded.", valueName: "path"))
+        var cloudImage: String?
+
         @Option(name: .long, help: "A ready image to start from instead of a restore image.")
         var from: String?
 
         @Option(name: .long, help: "Virtual CPUs (default \(ImageBuildOptions.defaultCPUCount), or the base image's).")
         var cpus: Int?
 
-        @Option(name: .customLong("memory-gb"), help: "Memory in GB (default \(ImageBuildOptions.defaultMemoryBytes >> 30), or the base image's).")
+        @Option(name: .customLong("memory-gb"), help: "Memory in GB (default \(ImageBuildOptions.defaultMemoryBytes >> 30), \(LinuxImageBuildOptions.defaultMemoryBytes >> 30) for Linux, or the base image's).")
         var memoryGB: Int?
 
-        @Option(name: .customLong("disk-gb"), help: "Disk size in GB (default \(ImageBuildOptions.defaultDiskBytes >> 30); a sparse file that takes only what the guest writes). With --from: a larger disk than the base's (default: the base's).")
+        @Option(name: .customLong("disk-gb"), help: "Disk size in GB (default \(ImageBuildOptions.defaultDiskBytes >> 30), \(LinuxImageBuildOptions.defaultDiskBytes >> 30) for Linux; a sparse file that takes only what the guest writes). With --from: a larger disk than the base's (default: the base's).")
         var diskGB: Int?
 
         @Option(name: .long, help: "Account name created in the guest (default agent). Not with --from.")
@@ -59,7 +68,7 @@ struct ImageCommand: ParsableCommand {
         var guestDaemon: String?
 
         @Flag(name: .customLong("command-line-tools"), inversion: .prefixedNo,
-              help: "Install Xcode's Command Line Tools (clang, swift, git, python3; about 530 MB, needs the internet). Default: yes for --ipsw, or what the recipe says; with --from, only if the base lacks them.")
+              help: "Install Xcode's Command Line Tools (clang, swift, git, python3; about 530 MB, needs the internet); for Linux, the compiler and make (build-essential). Default: yes for --ipsw and --linux, or what the recipe says; with --from, only if the base lacks them.")
         var commandLineTools: Bool?
 
         @Option(name: .long, help: "A JSON recipe of steps to run in the image (see Docs/image-recipes.md); repeatable, applied in the order given.")
@@ -74,8 +83,11 @@ struct ImageCommand: ParsableCommand {
         @OptionGroup var options: StoreOptions
 
         func validate() throws {
-            guard (ipsw == nil) != (from == nil) else {
-                throw ValidationError("give either --ipsw (install macOS) or --from (start from a ready image)")
+            guard [ipsw, linux, from].compactMap({ $0 }).count == 1 else {
+                throw ValidationError("give one of --ipsw (install macOS), --linux (a Linux cloud image) or --from (start from a ready image)")
+            }
+            guard cloudImage == nil || linux != nil else {
+                throw ValidationError("--cloud-image is a Linux cloud image: give --linux <release> with it")
             }
             if recipe.isEmpty && !(inputs.isEmpty && settings.isEmpty) {
                 throw ValidationError("--input and --set give values to a recipe's inputs and parameters; add --recipe")
@@ -132,7 +144,19 @@ struct ImageCommand: ParsableCommand {
             let asked = recipes.compactMap(\.commandLineTools)
             let recipesWantTools: Bool? = asked.isEmpty ? nil : asked.contains(true)
             let image: GoldenImage
-            if let from {
+            if let linux {
+                image = try await builder.buildLinux(LinuxImageBuildOptions(
+                    name: name,
+                    base: try LinuxBase.named(linux),
+                    cloudImage: cloudImage,
+                    cpuCount: cpus ?? LinuxImageBuildOptions.defaultCPUCount,
+                    memoryBytes: memoryGB.map { UInt64($0) << 30 } ?? LinuxImageBuildOptions.defaultMemoryBytes,
+                    diskBytes: diskGB.map { UInt64($0) << 30 } ?? LinuxImageBuildOptions.defaultDiskBytes,
+                    userName: user ?? "agent",
+                    guestDaemon: try guestDaemonURL(for: .linux),
+                    commandLineTools: commandLineTools ?? recipesWantTools ?? true,
+                    recipes: recipes))
+            } else if let from {
                 image = try await builder.derive(ImageDeriveOptions(
                     name: name,
                     base: from,
@@ -172,11 +196,11 @@ struct ImageCommand: ParsableCommand {
             return result
         }
 
-        private func guestDaemonURL() throws -> URL {
+        private func guestDaemonURL(for kind: GuestKind = .macOS) throws -> URL {
             if let guestDaemon {
                 return URL(fileURLWithPath: (guestDaemon as NSString).expandingTildeInPath)
             }
-            return try ImageCommand.localGuestDaemon()
+            return try ImageCommand.localGuestDaemon(for: kind)
         }
     }
 

@@ -25,7 +25,7 @@ restore image (.ipsw)
 | | Image | Box |
 |---|---|---|
 | What it is | A sealed template | A working copy of one image |
-| Made by | `image create` (from a restore image, or `--from` another image with a recipe) | `box create --image <image>`: an APFS clone, instant, free until the box writes |
+| Made by | `image create` (from a restore image, from a Linux cloud image with `--linux`, or `--from` another image with a recipe) | `box create --image <image>`: an APFS clone, instant, free until the box writes |
 | Runs programs | Only while agent-vm builds or updates it | Yes: `exec`, `box shell`, `box view` |
 | Changed by | `image update`, `image setup`, `image view` | Whatever runs in it; `box network` for its network rules; `box set` for its CPUs and memory |
 | Its own settings | CPUs, memory, disk size, account name | CPUs and memory (default: the image's), network mode and rules |
@@ -69,6 +69,12 @@ agent-vm image create dev --ipsw latest                    # about 6 minutes, no
 agent-vm image setup dev                                   # once: Full Disk Access for the guest daemon
 agent-vm box create work --image dev --allow pack:github
 agent-vm box start work
+```
+
+A Linux image needs no restore image and no `image setup` (since 0.7.4):
+
+```sh
+agent-vm image create deb --linux debian-13                # Debian's cloud image (0.2 GB), about a minute, no clicks
 ```
 
 `image setup` opens the image in a window with System Settings on Full Disk Access; the README's Images section walks through it. Without it, a program in a box that opens the account's Desktop, Documents or Downloads waits on a permission prompt that nobody sees.

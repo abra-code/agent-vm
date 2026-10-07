@@ -769,7 +769,15 @@ public final class ImageBuilder {
                 current = try store.update(current) { $0.commandLineTools = label }
             }
         }
-        // After each recipe, so a failed build's record says which ones ran.
+        current = try await applyRecipes(recipes, to: current, machine: machine)
+        // Checked, so image list says whether boxes can open protected folders (image setup).
+        return try await recordFullDiskAccess(current, machine: machine, digest: current.record.guestDigest, requirement: current.record.guestRequirement)
+    }
+
+    /// Runs `recipes` in order in the guest and records each in the image once it ran, so a
+    /// failed build's record says which ones did. Returns the updated image.
+    func applyRecipes(_ recipes: [ImageRecipe], to image: GoldenImage, machine: GuestMachine) async throws -> GoldenImage {
+        var current = image
         var own: [ImageRecord.RecipeInfo] = []
         let inherited = current.record.recipes ?? []
         for (index, recipe) in recipes.enumerated() {
@@ -792,16 +800,19 @@ public final class ImageBuilder {
         if recipes.count == 1 {
             try Data(recipes[0].text.utf8).write(to: current.recipeURL)
         }
-        // Checked, so image list says whether boxes can open protected folders (image setup).
-        return try await recordFullDiskAccess(current, machine: machine, digest: current.record.guestDigest, requirement: current.record.guestRequirement)
+        return current
     }
 
-    /// `requestStop()` leaves a logged-in guest running; the daemon shuts it down.
-    func shutDown(_ machine: GuestMachine) async throws {
+    /// `requestStop()` leaves a logged-in guest running; the daemon shuts it down. A Linux
+    /// image is first cleared of what must differ between the boots of one disk.
+    func shutDown(_ machine: GuestMachine, guest: GuestKind = .macOS) async throws {
         progress("shutdown", "Shutting down")
         // Checked once: the request itself is not cut short, or a guest already shutting down
         // would lose power.
         try checkCanceled()
+        if guest == .linux {
+            try await prepareForCloning(machine)
+        }
         try await withGuest(machine, "shutdown", cancellable: false) { descriptor in
             try GuestClient.shutdown(descriptor)
         }
@@ -884,8 +895,10 @@ public final class ImageBuilder {
         return SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
     }
 
-    /// Waits until the daemon answers hello (launchd starts it within a second or two).
-    func waitForDaemon(_ machine: GuestMachine, attempts: Int = 30) async throws -> GuestResponse {
+    /// Waits until the daemon answers hello (launchd starts it within a second or two). The
+    /// daemon must be one for `guest`: a Linux disk whose daemon says macOS, or the other way
+    /// round, is not what the record says it is.
+    func waitForDaemon(_ machine: GuestMachine, attempts: Int = 30, guest: GuestKind = .macOS) async throws -> GuestResponse {
         var lastError: Error = AgentVMError.guestUnreachable("the guest daemon did not answer")
         for _ in 0..<attempts {
             try checkCanceled()
@@ -898,6 +911,9 @@ public final class ImageBuilder {
                 let hello = try await withGuest(machine, "hello", redeliver: false) { try GuestClient.hello($0) }
                 guard hello.v == AgentVM.guestProtocolVersion else {
                     throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the guest daemon speaks protocol \(hello.v ?? 0), agent-vm \(AgentVM.guestProtocolVersion)")
+                }
+                guard GuestKind(hello: hello.os) == guest else {
+                    throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the guest daemon says it runs on \(hello.os ?? GuestKind.macOS.rawValue), and the image is a \(guest.rawValue) one")
                 }
                 // No supervisor keeps an image's clock: set it at each boot, so what the guest
                 // logs lines up with the Mac's time.

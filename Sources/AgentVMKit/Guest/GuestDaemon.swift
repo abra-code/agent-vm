@@ -41,6 +41,49 @@ public enum GuestDaemon {
         ].joined(separator: " && ")
     }
 
+    // MARK: - Linux
+
+    /// Where systemd finds the daemon's unit in a Linux image.
+    public static let linuxUnitName = "agent-vm-guest.service"
+    public static let linuxUnitPath = "/etc/systemd/system/\(linuxUnitName)"
+
+    /// The systemd unit of a Linux image; `user` is the account exec runs as by default. Every
+    /// program the daemon starts is in this unit's control group, which is why four lines are
+    /// not the defaults:
+    /// - `OOMPolicy=continue`: by default systemd stops a whole service when the kernel kills one
+    ///   of its processes for memory. A build that runs out of memory must not take the daemon
+    ///   and every other program with it.
+    /// - `OOMScoreAdjust=-900` keeps the daemon from being the one killed; the daemon's helper
+    ///   sets the score back for the program it starts.
+    /// - `TasksMax=infinity`: the default limit would apply to all programs of the box together.
+    /// - `TimeoutStopSec=10`: at shutdown a program that ignores SIGTERM would hold the guest
+    ///   for 90 s.
+    /// A daemon that exits is started again a second later and never given up on
+    /// (`StartLimitIntervalSec=0`). It is a normal unit, started when the system is up, so "the
+    /// daemon answers" means "the guest is ready", as on macOS.
+    public static func systemdUnit(user: String) -> String {
+        return """
+            [Unit]
+            Description=agent-vm guest daemon
+            StartLimitIntervalSec=0
+
+            [Service]
+            ExecStart=\(executablePath) serve --user \(user)
+            Restart=always
+            RestartSec=1
+            TimeoutStopSec=10
+            OOMPolicy=continue
+            OOMScoreAdjust=-900
+            TasksMax=infinity
+            StandardOutput=append:\(logPath)
+            StandardError=append:\(logPath)
+
+            [Install]
+            WantedBy=multi-user.target
+
+            """
+    }
+
     /// Run as root through the daemon, with the new executable on stdin: put it in place and
     /// print its SHA-256. The running daemon keeps its old file (a rename does not touch it) and
     /// the new one runs from the next boot. A copy cut short (the host gone, so cat sees an early

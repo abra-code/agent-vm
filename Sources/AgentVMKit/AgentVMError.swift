@@ -48,6 +48,9 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     /// A command that has no meaning for the guest an image or box runs, or that this agent-vm
     /// does not do for it; the text says which.
     case notForThisGuest(String)
+    /// A Linux system that is not known, or a cloud image that cannot be fetched or does not
+    /// match its distribution's checksum; the text is the whole message.
+    case linuxBase(String)
     /// An image recipe that cannot be used as it is.
     case invalidRecipe(path: String, reason: String)
     /// The guide to writing recipes is not where the installer puts it.
@@ -188,6 +191,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
         case let .hostNotReady(reason):
             return "cannot build here: \(reason)"
         case let .notForThisGuest(reason):
+            return reason
+        case let .linuxBase(reason):
             return reason
         case let .invalidRecipe(path, reason):
             return "recipe \(path): \(reason)"

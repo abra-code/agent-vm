@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Tests/Shell/fast/recipes.sh - image create's checks that run before any virtual machine: the
-# choice between --ipsw and --from, recipe validation, and refusing unusable base images.
+# choice between --ipsw, --linux and --from, recipe validation, and refusing unusable base images.
 
 # write_recipe <json>: writes $SCRATCH/recipe/recipe.json.
 write_recipe() {
@@ -12,7 +12,7 @@ write_recipe() {
 test_ipsw_and_from_are_alternatives() {
     run_avm image create x
     assert_status 64 || return 1
-    assert_err_contains "either --ipsw" || return 1
+    assert_err_contains "give one of --ipsw (install macOS), --linux (a Linux cloud image) or --from (start from a ready image)" || return 1
     run_avm image create x --ipsw /nowhere.ipsw --from dev --recipe r.json
     assert_status 64 || return 1
 }
