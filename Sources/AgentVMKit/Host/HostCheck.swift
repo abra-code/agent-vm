@@ -34,6 +34,9 @@ public struct HostFacts: Sendable {
     public var passwordFiles: Int?
     /// Whether this agent-vm keeps passwords in the Keychain (not an ad hoc build).
     public var keepsPasswordsInKeychain = true
+    /// The Linux guest daemon next to agent-vm, as LocalGuestDaemon.inspectLinux found it; nil
+    /// when nobody looked. Without it macOS boxes work as ever, and Linux images cannot be made.
+    public var linuxGuestDaemon: LocalGuestDaemon?
 
     public struct Signature: Sendable, Equatable, Codable {
         public var isAdHoc: Bool
@@ -51,7 +54,8 @@ public struct HostFacts: Sendable {
                 hasVirtualizationEntitlement: Bool?, signature: Signature?, cpuCount: Int,
                 memoryBytes: UInt64, storeRoot: String, storeFreeBytes: Int64?,
                 runningVirtualMachines: Int?, store: StoreRoot.State? = nil,
-                passwordFiles: Int? = 0, keepsPasswordsInKeychain: Bool = true) {
+                passwordFiles: Int? = 0, keepsPasswordsInKeychain: Bool = true, linuxGuestDaemon: LocalGuestDaemon? = nil) {
+        self.linuxGuestDaemon = linuxGuestDaemon
         self.osVersion = osVersion
         self.isAppleSilicon = isAppleSilicon
         self.virtualizationSupported = virtualizationSupported
@@ -71,7 +75,7 @@ public struct HostFacts: Sendable {
     static let virtualMachineServicePath = "/System/Library/Frameworks/Virtualization.framework/Versions/A/XPCServices/com.apple.Virtualization.VirtualMachine.xpc/Contents/MacOS/com.apple.Virtualization.VirtualMachine"
 
     /// The facts for this process on this Mac.
-    public static func current(storeRoot: URL) -> HostFacts {
+    public static func current(storeRoot: URL, linuxGuestDaemon: LocalGuestDaemon? = nil) -> HostFacts {
         return HostFacts(
             osVersion: ProcessInfo.processInfo.operatingSystemVersion,
             isAppleSilicon: isArm64(),
@@ -85,7 +89,8 @@ public struct HostFacts: Sendable {
             runningVirtualMachines: countVirtualMachineProcesses(),
             store: StoreRoot.state(storeRoot),
             passwordFiles: AccountPasswordMove.fileCount(store: FileSystem.canonicalRoot(storeRoot)),
-            keepsPasswordsInKeychain: AccountPasswordStore.keepsNewPasswords
+            keepsPasswordsInKeychain: AccountPasswordStore.keepsNewPasswords,
+            linuxGuestDaemon: linuxGuestDaemon
         )
     }
 
@@ -317,6 +322,20 @@ public struct HostReport: Sendable, Equatable, Codable {
         } else {
             checks.append(HostCheck(name: "running VMs", status: .info, detail: "could not list processes (sandboxed?); at most \(macOSGuestLimit) macOS guests can run at once", limit: macOSGuestLimit))
         }
+
+        checks.append(linuxGuestDaemonCheck(facts.linuxGuestDaemon))
         return HostReport(checks: checks)
+    }
+
+    /// Never a failure: a Mac without the Linux daemon runs macOS boxes as ever.
+    static func linuxGuestDaemonCheck(_ daemon: LocalGuestDaemon?) -> HostCheck {
+        let name = "linux guest daemon"
+        if let daemon, let digest = daemon.digest, daemon.error == nil {
+            return HostCheck(name: name, status: .info, detail: "next to agent-vm (SHA-256 \(digest.prefix(12))...)")
+        }
+        if let daemon, FileManager.default.fileExists(atPath: daemon.path) {
+            return HostCheck(name: name, status: .warning, detail: "\(daemon.error ?? "\(daemon.path) could not be read"); Linux images cannot be created until Scripts/build.sh has built it again")
+        }
+        return HostCheck(name: name, status: .info, detail: "not built; Linux images cannot be created (Scripts/build.sh builds it when the swift.org toolchain and its static Linux SDK are installed)")
     }
 }

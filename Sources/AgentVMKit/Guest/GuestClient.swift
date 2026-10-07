@@ -44,8 +44,9 @@ public enum GuestClient {
         // Kept in the box's status and records and shown by every list from then on: only what
         // a version, a build and a feature name look like is taken.
         guard response.version.map({ Printable.isToken($0) }) ?? true, response.osBuild.map({ Printable.isToken($0) }) ?? true,
+              response.os.map({ Printable.isToken($0) }) ?? true,
               (response.features ?? []).count <= maxFeatures, (response.features ?? []).allSatisfy({ Printable.isToken($0) }) else {
-            throw GuestProtocolError.malformed("the guest's hello names a version, build or feature that is not one")
+            throw GuestProtocolError.malformed("the guest's hello names a version, build, system or feature that is not one")
         }
         return response
     }

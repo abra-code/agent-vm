@@ -32,8 +32,40 @@ import Virtualization
     @Test func goodHostPassesEveryCheck() {
         let report = HostReport.evaluate(Self.goodFacts())
         #expect(report.canRunBoxes)
-        #expect(report.checks.allSatisfy { $0.status == .ok })
-        #expect(report.checks.map(\.name) == ["macOS", "virtualization", "entitlement", "signature", "disk space", "store folder", "account passwords", "running VMs"])
+        // The last line is about Linux guests, and is never more than a note.
+        #expect(report.checks.dropLast().allSatisfy { $0.status == .ok })
+        #expect(report.checks.last?.status == .info)
+        #expect(report.checks.map(\.name) == ["macOS", "virtualization", "entitlement", "signature", "disk space", "store folder", "account passwords", "running VMs",
+                                             "linux guest daemon"])
+    }
+
+    @Test func theLinuxDaemonLineIsNeverAFailure() throws {
+        func check(_ daemon: LocalGuestDaemon?) -> HostCheck? {
+            var facts = Self.goodFacts()
+            facts.linuxGuestDaemon = daemon
+            let report = HostReport.evaluate(facts)
+            #expect(report.canRunBoxes)
+            return report.checks.first { $0.name == "linux guest daemon" }
+        }
+        // Nobody looked, or it is not there: a note that says how to get it.
+        #expect(check(nil)?.status == .info)
+        #expect(check(nil)?.detail.contains("not built") == true)
+        let missing = LocalGuestDaemon.inspectLinux(URL(fileURLWithPath: "/no/such/linux/agent-vm-guest"))
+        #expect(check(missing)?.status == .info)
+        #expect(check(missing)?.detail.contains("Scripts/build.sh") == true)
+        // There, and good: its digest, shortened.
+        var good = LocalGuestDaemon(path: "/somewhere/linux/agent-vm-guest")
+        good.digest = String(repeating: "ab", count: 32)
+        #expect(check(good)?.status == .info)
+        #expect(check(good)?.detail == "next to agent-vm (SHA-256 abababababab...)")
+        // There, and not a Linux program: a warning that names the file.
+        let scratch = try Scratch()
+        let wrong = scratch.root.appendingPathComponent("agent-vm-guest")
+        try Data("#!/bin/sh\n".utf8).write(to: wrong)
+        chmod(wrong.path, 0o755)
+        let found = check(LocalGuestDaemon.inspectLinux(wrong))
+        #expect(found?.status == .warning)
+        #expect(found?.detail.contains(wrong.path) == true)
     }
 
     @Test func theStoreFolderMustBeYourOwnAndPrivate() {

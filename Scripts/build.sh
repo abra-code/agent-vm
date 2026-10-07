@@ -3,8 +3,10 @@
 # Scripts/build.sh - build agent-vm and agent-vm-guest and sign them, so the host tool carries
 # the com.apple.security.virtualization entitlement it needs to start virtual machines. A plain
 # `swift build` produces binaries without it: Virtualization then refuses every configuration.
+# It also builds linux/agent-vm-guest, the guest daemon for Linux boxes, when this Mac can.
 #
 # Usage: Scripts/build.sh [--debug] [--identity <identity>] [--output <folder>]
+#                         [--require-linux-guest | --no-linux-guest]
 #
 #   --identity <identity>  codesign identity: "-" for ad hoc (default; runs on this Mac only),
 #                          or a Developer ID Application identity (name, team ID or SHA-1 hash),
@@ -12,6 +14,15 @@
 #                          else "-".
 #   --output <folder>      where the signed binaries go (default: .build/signed/<configuration>)
 #   --debug                debug build instead of release
+#   --require-linux-guest  fail when linux/agent-vm-guest cannot be built (for a release)
+#   --no-linux-guest       do not build it
+#
+# linux/agent-vm-guest is the same daemon built for 64-bit ARM Linux as one static program. Xcode
+# cannot build it: it needs a swift.org toolchain and the static Linux SDK of the same version
+# (README.md, "Building"). The compiler is $AGENT_VM_LINUX_SWIFT, else the newest release
+# toolchain in ~/Library/Developer/Toolchains that has such an SDK, else ~/.swiftly/bin/swift.
+# Without one the build goes on, and that agent-vm cannot create Linux images. The Linux daemon
+# is not signed: it never runs on a Mac.
 #
 # Both binaries are signed with the hardened runtime. The guest daemon gets no entitlements:
 # it never starts virtual machines. The built-in host packs (Resources/packs.json) and agents
@@ -28,6 +39,8 @@ ENTITLEMENTS="$REPO_ROOT/Resources/agent-vm.entitlements"
 IDENTITY="${AGENT_VM_SIGN_IDENTITY:--}"
 CONFIGURATION="release"
 OUTPUT=""
+# auto: build the Linux guest daemon when a compiler for it is found; require; no.
+LINUX_GUEST="auto"
 
 die() {
     printf 'build.sh: error: %s\n' "$1" >&2
@@ -42,7 +55,7 @@ die_unsigned() {
 }
 
 usage() {
-    /usr/bin/sed -n '7,14p' "$0" | /usr/bin/sed 's/^# \{0,1\}//'
+    /usr/bin/sed -n '8,18p' "$0" | /usr/bin/sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -59,6 +72,12 @@ while [ $# -gt 0 ]; do
             shift
             [ $# -gt 0 ] || die "--output needs a value"
             OUTPUT="$1"
+            ;;
+        --require-linux-guest)
+            LINUX_GUEST="require"
+            ;;
+        --no-linux-guest)
+            LINUX_GUEST="no"
             ;;
         -h|--help)
             usage
@@ -90,6 +109,79 @@ bin_dir="$(/usr/bin/xcrun swift build --package-path "$REPO_ROOT" -c "$CONFIGURA
 status=$?
 [ "$status" -eq 0 ] && [ -d "$bin_dir" ] || die "could not find the build products folder"
 
+# Prints the swift of a toolchain that can build for Linux: one that has a static Linux SDK of
+# its own version. Nothing when there is none.
+find_linux_swift() {
+    local _candidate
+    local _version
+    local _sdks
+    if [ -n "$AGENT_VM_LINUX_SWIFT" ]; then
+        printf '%s\n' "$AGENT_VM_LINUX_SWIFT"
+        return 0
+    fi
+    # Newest first, by version number (6.10 after 6.9).
+    local _toolchains
+    _toolchains="$(/bin/ls -1d "$HOME"/Library/Developer/Toolchains/swift-*-RELEASE.xctoolchain 2>/dev/null | /usr/bin/sort -rV)"
+    local _toolchain
+    while IFS= read -r _toolchain; do
+        [ -n "$_toolchain" ] || continue
+        _candidate="$_toolchain/usr/bin/swift"
+        [ -x "$_candidate" ] || continue
+        _version="$(/usr/bin/basename "$_toolchain" .xctoolchain)"
+        _sdks="$("$_candidate" sdk list 2>/dev/null)"
+        case "$_sdks" in
+            *"${_version}_static-linux"*)
+                printf '%s\n' "$_candidate"
+                return 0
+                ;;
+        esac
+    done <<EOF_TOOLCHAINS
+$_toolchains
+EOF_TOOLCHAINS
+    _candidate="$HOME/.swiftly/bin/swift"
+    if [ -x "$_candidate" ]; then
+        _sdks="$("$_candidate" sdk list 2>/dev/null)"
+        case "$_sdks" in
+            *static-linux*)
+                printf '%s\n' "$_candidate"
+                return 0
+                ;;
+        esac
+    fi
+    return 0
+}
+
+# The Linux guest daemon: built in a scratch folder of its own (another compiler, another
+# target), then stripped of its symbols, which are most of the file.
+LINUX_SDK="aarch64-swift-linux-musl"
+linux_binary=""
+if [ "$LINUX_GUEST" != "no" ]; then
+    linux_swift="$(find_linux_swift)"
+    if [ -z "$linux_swift" ]; then
+        [ "$LINUX_GUEST" != "require" ] || die "no swift.org toolchain with the static Linux SDK was found, and --require-linux-guest was given (README.md, \"Building\")"
+        printf 'No swift.org toolchain with the static Linux SDK: linux/agent-vm-guest was not built, and this build cannot create Linux images\n'
+    else
+        [ -x "$linux_swift" ] || die "the Linux compiler $linux_swift is not an executable (\$AGENT_VM_LINUX_SWIFT?)"
+        printf 'Building agent-vm-guest for Linux (%s) with %s...\n' "$CONFIGURATION" "$linux_swift"
+        "$linux_swift" build --package-path "$REPO_ROOT" --scratch-path "$REPO_ROOT/.build/linux-guest" \
+            --swift-sdk "$LINUX_SDK" -c "$CONFIGURATION" --product agent-vm-guest
+        status=$?
+        [ "$status" -eq 0 ] || die "swift build of agent-vm-guest for Linux failed (status $status); is the static Linux SDK of this toolchain installed? ($linux_swift sdk list)"
+        linux_bin_dir="$("$linux_swift" build --package-path "$REPO_ROOT" --scratch-path "$REPO_ROOT/.build/linux-guest" \
+            --swift-sdk "$LINUX_SDK" -c "$CONFIGURATION" --show-bin-path)"
+        status=$?
+        [ "$status" -eq 0 ] && [ -f "$linux_bin_dir/agent-vm-guest" ] || die "could not find the Linux build of agent-vm-guest"
+        linux_binary="$linux_bin_dir/agent-vm-guest"
+        linux_objcopy="$(/usr/bin/dirname "$linux_swift")/llvm-objcopy"
+        if [ ! -x "$linux_objcopy" ]; then
+            # swiftly's swift is a launcher with no tools beside it: the toolchain it installed
+            # is the newest one in the user's Toolchains folder.
+            linux_objcopy="$HOME/Library/Developer/Toolchains/swift-latest.xctoolchain/usr/bin/llvm-objcopy"
+        fi
+        [ -x "$linux_objcopy" ] || die "llvm-objcopy was not found next to $linux_swift; it strips the Linux daemon"
+    fi
+fi
+
 /bin/mkdir -p "$OUTPUT"
 status=$?
 [ "$status" -eq 0 ] || die "cannot create $OUTPUT"
@@ -110,6 +202,17 @@ for product in agent-vm agent-vm-guest; do
     status=$?
     [ "$status" -eq 0 ] || die_unsigned "cannot copy $bin_dir/$product to $STAGE"
 done
+if [ -n "$linux_binary" ]; then
+    /bin/mkdir -p "$STAGE/linux"
+    status=$?
+    [ "$status" -eq 0 ] || die_unsigned "cannot create $STAGE/linux"
+    "$linux_objcopy" --strip-all "$linux_binary" "$STAGE/linux/agent-vm-guest"
+    status=$?
+    [ "$status" -eq 0 ] || die_unsigned "cannot strip $linux_binary into $STAGE"
+    /bin/chmod 0755 "$STAGE/linux/agent-vm-guest"
+    status=$?
+    [ "$status" -eq 0 ] || die_unsigned "cannot set the mode of $STAGE/linux/agent-vm-guest"
+fi
 # The built-in host packs, read from next to agent-vm (NetworkPacks), so a host can change
 # without a rebuild.
 /bin/cp -f "$REPO_ROOT/Resources/packs.json" "$STAGE/packs.json"
@@ -152,6 +255,21 @@ for product in packs.json agents.json agent-vm agent-vm-guest; do
     status=$?
     [ "$status" -eq 0 ] || die_unsigned "cannot move the signed $product into $OUTPUT"
 done
+# The Linux daemon has the macOS one's name, so it is in a folder of its own. It goes with the
+# agent-vm of the same build, or not at all: one left from an earlier build would be another
+# version than the agent-vm beside it.
+if [ -n "$linux_binary" ]; then
+    /bin/mkdir -p "$OUTPUT/linux"
+    status=$?
+    [ "$status" -eq 0 ] || die_unsigned "cannot create $OUTPUT/linux"
+    /bin/mv -f "$STAGE/linux/agent-vm-guest" "$OUTPUT/linux/agent-vm-guest"
+    status=$?
+    [ "$status" -eq 0 ] || die_unsigned "cannot move linux/agent-vm-guest into $OUTPUT"
+else
+    /bin/rm -rf "$OUTPUT/linux"
+    status=$?
+    [ "$status" -eq 0 ] || die_unsigned "cannot remove the linux/agent-vm-guest of an earlier build from $OUTPUT"
+fi
 /bin/rm -rf "$STAGE"
 
 # avm, after the signed files are in place: a relative link, so the folder can be moved.
@@ -193,6 +311,12 @@ avm_version="$("$OUTPUT/avm" --version)"
 status=$?
 [ "$status" -eq 0 ] && [ -n "$avm_version" ] && [ "$avm_version" = "$agent_vm_version" ] \
     || die "$OUTPUT/avm does not answer as agent-vm ($avm_version, expected $agent_vm_version)"
+# agent-vm's own look at the Linux daemon: a 64-bit ARM Linux program, with a digest.
+if [ -n "$linux_binary" ]; then
+    linux_digest="$("$OUTPUT/agent-vm" version --json | /usr/bin/jq -r 'if .linuxGuestDaemon.error then "" else (.linuxGuestDaemon.digest // "") end')"
+    status=$?
+    [ "$status" -eq 0 ] && [ -n "$linux_digest" ] || die "agent-vm does not take $OUTPUT/linux/agent-vm-guest for a Linux guest daemon; run \"$OUTPUT/agent-vm version\" to see why"
+fi
 "$OUTPUT/agent-vm" doctor
 status=$?
 if [ "$status" -ne 0 ]; then

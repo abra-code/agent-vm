@@ -16,8 +16,9 @@ final class GuestPair {
     let serverDone = DispatchSemaphore(value: 0)
 
     /// `helperPath`: an exec-as helper (see `builtHelper`); without one, the server runs programs
-    /// only directly, as this test process's account and without a terminal.
-    init(helperPath: String? = nil, setClock: (@Sendable (Double) -> Int32)? = nil) throws {
+    /// only directly, as this test process's account and without a terminal. `checkedHelper`:
+    /// every program goes through the helper's checked form, as in a Linux guest.
+    init(helperPath: String? = nil, setClock: (@Sendable (Double) -> Int32)? = nil, checkedHelper: Bool = false, statusDeadline: Double = 10) throws {
         var pair: [Int32] = [-1, -1]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else {
             throw AgentVMError.system(operation: "socketpair", code: errno)
@@ -30,7 +31,7 @@ final class GuestPair {
         _ = setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
         let done = serverDone
         Thread.detachNewThread {
-            GuestServer(defaultUser: nil, helperPath: helperPath, setClock: setClock).serve(descriptor: server)
+            GuestServer(defaultUser: nil, helperPath: helperPath, setClock: setClock, checkedHelper: checkedHelper, statusDeadline: statusDeadline).serve(descriptor: server)
             done.signal()
         }
     }

@@ -5,7 +5,13 @@
 // connection becomes one vsock connection; the host decides what is allowed. When the host
 // runs no proxy (open mode), the vsock connect fails at once and the client is closed.
 
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 
 public enum GuestRelay {
@@ -34,7 +40,9 @@ public enum GuestRelay {
         var one: Int32 = 1
         _ = setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, &one, socklen_t(MemoryLayout<Int32>.size))
         var address = sockaddr_in()
+        #if canImport(Darwin)
         address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        #endif
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = port.bigEndian
         address.sin_addr.s_addr = inet_addr("127.0.0.1")
@@ -127,7 +135,9 @@ public enum GuestRelay {
         }
         _ = fcntl(upstream, F_SETFD, FD_CLOEXEC)
         var address = sockaddr_vm()
+        #if canImport(Darwin)
         address.svm_len = UInt8(MemoryLayout<sockaddr_vm>.size)
+        #endif
         address.svm_family = sa_family_t(AF_VSOCK)
         address.svm_port = hostPort
         address.svm_cid = 2 // VMADDR_CID_HOST

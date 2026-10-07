@@ -198,9 +198,11 @@ struct ImageCommand: ParsableCommand {
         }
     }
 
-    /// The agent-vm-guest built with this agent-vm, next to it.
-    static func localGuestDaemon() throws -> URL {
-        return URL(fileURLWithPath: try AskpassEntry.executablePath()).deletingLastPathComponent().appendingPathComponent("agent-vm-guest")
+    /// The guest daemon built with this agent-vm, next to it: agent-vm-guest for a macOS guest,
+    /// linux/agent-vm-guest for a Linux one.
+    static func localGuestDaemon(for kind: GuestKind = .macOS) throws -> URL {
+        let name = kind == .linux ? "linux/agent-vm-guest" : "agent-vm-guest"
+        return URL(fileURLWithPath: try AskpassEntry.executablePath()).deletingLastPathComponent().appendingPathComponent(name)
     }
 
     struct Setup: AsyncParsableCommand {

@@ -365,12 +365,21 @@ swift test
 Scripts/build.sh                          # release build, signed ad hoc for this Mac
 Scripts/build.sh --identity <Developer ID Application identity or team ID>
 .build/signed/release/agent-vm doctor     # can this Mac and this binary run boxes?
-.build/signed/release/agent-vm version    # versions, protocols, and the guest daemon next to it
+.build/signed/release/agent-vm version    # versions, protocols, and the guest daemons next to it
 ```
+
+`Scripts/build.sh` also builds `linux/agent-vm-guest`, the guest daemon for Linux boxes, when this Mac can (since 0.7.1). It is the same source built for 64-bit ARM Linux as one static program, which Xcode cannot do. It needs two things from swift.org, of the same version as each other: a toolchain and the static Linux SDK.
+
+```sh
+swiftly install 6.4.0                     # a swift.org toolchain, into ~/Library/Developer/Toolchains
+swift sdk install <address of the static Linux SDK for that version, from swift.org/install>
+```
+
+The script uses `$AGENT_VM_LINUX_SWIFT` when it is set, else the newest release toolchain in `~/Library/Developer/Toolchains` that has a static Linux SDK of its own version, else `~/.swiftly/bin/swift`. Without one it says so and goes on: everything about macOS boxes works, and that build cannot create Linux images (`agent-vm doctor` has a line for it). `--require-linux-guest` makes a missing compiler an error, for a release; `--no-linux-guest` skips the step. The Linux daemon is not signed: it never runs on a Mac. `agent-vm version` shows its SHA-256.
 
 Virtualization refuses every virtual machine from a process without the `com.apple.security.virtualization` entitlement (`Resources/agent-vm.entitlements`). Any developer can use it without Apple's approval, but a plain `swift build` does not sign it in, so `session` commands work from `.build/debug/agent-vm` while anything that starts a virtual machine needs the output of `Scripts/build.sh`. The script builds `agent-vm` and `agent-vm-guest`, signs copies in a staging folder and renames them into `.build/signed/<configuration>/` (so running boxes survive a rebuild: macOS stops a process whose signed file is rewritten under it) with the hardened runtime (ad hoc by default, or with a Developer ID and a secure timestamp; `AGENT_VM_SIGN_IDENTITY` sets the default), verifies the signatures, makes `avm` next to them (a symlink to `agent-vm`) and runs `agent-vm doctor` with the result.
 
-`agent-vm doctor` checks the macOS version, Apple silicon, the binary's entitlement and signature, free space for the store, the store folder itself, account passwords still in files, and how many virtual machines already run (macOS runs at most two macOS guests at once, whichever applications started them). It exits 1 when something prevents running boxes; `--json` prints the checks for programs.
+`agent-vm doctor` checks the macOS version, Apple silicon, the binary's entitlement and signature, free space for the store, the store folder itself, account passwords still in files, how many virtual machines already run, and whether the Linux guest daemon is there (macOS runs at most two macOS guests at once, whichever applications started them). It exits 1 when something prevents running boxes; `--json` prints the checks for programs.
 
 The store folder (`~/Library/Application Support/agent-vm`, or `$AGENT_VM_HOME`) must be a folder of your own (since 0.5.15). One that group or others may list is made private (mode 700) by the next command that writes to the store; one that belongs to another user is refused, because they could replace what agent-vm keeps and trusts there. On a volume mounted with ownership ignored (the default for external volumes) no permission keeps other users of the Mac out; `doctor` warns.
 

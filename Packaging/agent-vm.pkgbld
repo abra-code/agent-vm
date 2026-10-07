@@ -38,6 +38,13 @@
           "OWNER" : "root"
         },
         {
+          "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/linux\/agent-vm-guest",
+          "MODE" : "0755",
+          "SOURCE" : "${ARTIFACTS_DIR}\/linux\/agent-vm-guest",
+          "GROUP" : "wheel",
+          "OWNER" : "root"
+        },
+        {
           "OWNER" : "root",
           "MODE" : "0644",
           "SOURCE" : "${ARTIFACTS_DIR}\/packs.json",
@@ -113,7 +120,7 @@
   "FORMAT_VERSION" : 1,
   "PROJECT" : {
     "NAME" : "agent-vm",
-    "VERSION" : "0.7.0",
+    "VERSION" : "0.7.1",
     "OUTPUT_DIR" : "..\/.build\/package",
     "PACKAGE_NAME" : "${NAME}_${VERSION}.pkg",
     "MIN_OS_VERSION" : "27.0",

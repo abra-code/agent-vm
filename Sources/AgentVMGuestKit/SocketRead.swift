@@ -10,7 +10,13 @@
 // guest's shutdowns (a half-close keeps the guest's end open), and a canceled build or Send
 // shuts its own connection down to stop its reader; so their readers wait in poll().
 
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 enum SocketRead {
     /// The longest one poll() waits before trying the socket again. poll() never missed a

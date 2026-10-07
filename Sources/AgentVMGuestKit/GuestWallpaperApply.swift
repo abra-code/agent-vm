@@ -6,6 +6,7 @@
 // would ask for Automation permission, and outside the session the call reports success and
 // changes nothing (measured).
 
+#if os(macOS)
 import AppKit
 import CryptoKit
 import Foundation
@@ -95,3 +96,4 @@ public enum GuestWallpaper {
         return (.set, url.path)
     }
 }
+#endif

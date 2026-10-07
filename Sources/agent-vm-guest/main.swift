@@ -1,24 +1,37 @@
 // Sources/agent-vm-guest/main.swift
 //
-// The daemon inside a box. Installed by `agent-vm image create` as the root LaunchDaemon
-// com.abracode.agent-vm.guest; talks to the host over vsock only.
+// The daemon inside a box. Installed by `agent-vm image create`: on macOS as the root
+// LaunchDaemon com.abracode.agent-vm.guest, on Linux as the systemd unit agent-vm-guest. It
+// talks to the host over vsock only.
 //
 //   agent-vm-guest serve [--port N] [--user NAME]   answer the host (hello, exec, shutdown) and
 //                                                   relay 127.0.0.1:3128 to the host proxy
-//   agent-vm-guest exec-as [--terminal] USER DIR EXECUTABLE -- ARGV...  (internal) take the
-//                                                   terminal, drop privileges and exec
-//   agent-vm-guest wallpaper < PNG                   (internal) make the PNG the calling user's
-//                                                   wallpaper; run in their desktop session
+//   agent-vm-guest exec-as [--checked] [--terminal] USER DIR EXECUTABLE -- ARGV...  (internal)
+//                                                   take the terminal, drop privileges and exec
+//   agent-vm-guest wallpaper < PNG                   (internal, macOS only) make the PNG the
+//                                                   calling user's wallpaper; run in their
+//                                                   desktop session
 //   agent-vm-guest --version [--json]
 
 import AgentVMGuestKit
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("usage: agent-vm-guest serve [--port N] [--user NAME] | exec-as [--terminal] USER DIR EXECUTABLE -- ARGV... | wallpaper < PNG | --version [--json]\n".utf8))
+    #if os(macOS)
+    let wallpaper = " | wallpaper < PNG"
+    #else
+    let wallpaper = ""
+    #endif
+    FileHandle.standardError.write(Data("usage: agent-vm-guest serve [--port N] [--user NAME] | exec-as [--checked] [--terminal] USER DIR EXECUTABLE -- ARGV...\(wallpaper) | --version [--json]\n".utf8))
     exit(64) // EX_USAGE
 }
 
@@ -40,6 +53,7 @@ case "--version":
 case "exec-as":
     GuestServer.execAs(Array(arguments.dropFirst()))
 
+#if os(macOS)
 case "wallpaper":
     guard arguments.count == 1 else {
         usage()
@@ -52,6 +66,7 @@ case "wallpaper":
         FileHandle.standardError.write(Data("agent-vm-guest wallpaper: \(error)\n".utf8))
         exit(1)
     }
+#endif
 
 case "serve":
     // A host that goes away mid-write must not kill the daemon.

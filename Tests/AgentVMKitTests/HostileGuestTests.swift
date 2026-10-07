@@ -131,6 +131,9 @@ private final class FakeGuest {
         #"{"v":1,"ok":true,"version":"0.5.9","osBuild":"26A434\r"}"#,
         #"{"v":1,"ok":true,"version":"0.5.9","features":["terminal","\u009b2J"]}"#,
         #"{"v":1,"ok":true,"version":""}"#,
+        #"{"v":1,"ok":true,"version":"0.7.1","os":"linux\u001b[2J"}"#,
+        #"{"v":1,"ok":true,"version":"0.7.1","os":"\#(String(repeating: "x", count: 33))"}"#,
+        #"{"v":1,"ok":true,"version":"0.7.1","os":""}"#,
     ])
     func aHelloThatNamesNoVersionIsRefused(answer: String) throws {
         let guest = try FakeGuest { channel in
@@ -156,6 +159,23 @@ private final class FakeGuest {
         }
         let hello = try GuestClient.hello(guest.host)
         #expect(hello.version == "0.5.10" && hello.osBuild == "26A434" && hello.features?.count == 3)
+    }
+
+    @Test func aHelloNamesItsSystemOrIsAMac() throws {
+        let linux = try FakeGuest { channel in
+            try? channel.send(Frame(.response, Array(#"{"v":1,"ok":true,"version":"0.7.1","osBuild":"13","os":"linux","features":["terminal"]}"#.utf8)))
+        }
+        #expect(GuestKind(hello: try GuestClient.hello(linux.host).os) == .linux)
+        // A daemon from before the field: a macOS one.
+        let older = try FakeGuest { channel in
+            try? channel.send(Frame(.response, Array(#"{"v":1,"ok":true,"version":"0.6.14","osBuild":"26A434"}"#.utf8)))
+        }
+        #expect(GuestKind(hello: try GuestClient.hello(older.host).os) == .macOS)
+        // A system this agent-vm does not know is taken as text and is no kind.
+        let other = try FakeGuest { channel in
+            try? channel.send(Frame(.response, Array(#"{"v":1,"ok":true,"version":"9.0.0","os":"plan9"}"#.utf8)))
+        }
+        #expect(GuestKind(hello: try GuestClient.hello(other.host).os) == nil)
     }
 
     @Test func aRefusalIsOneLineAndAShellStatus() throws {

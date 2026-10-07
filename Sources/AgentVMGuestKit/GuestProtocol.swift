@@ -8,7 +8,13 @@
 // opens with a `request` frame (JSON), the guest answers with a `response` frame (JSON). For
 // `exec`, stream frames follow in both directions until the guest sends `exit`.
 
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 
 public enum GuestProtocol {
@@ -99,9 +105,13 @@ public struct GuestResponse: Codable, Equatable, Sendable {
     public var ok: Bool
     public var error: String?
     public var v: Int?
-    /// agent-vm-guest's version, and the guest's macOS build (hello only).
+    /// agent-vm-guest's version, and the guest system's build (hello only): macOS's build, or
+    /// a Linux distribution's version number.
     public var version: String?
     public var osBuild: String?
+    /// The system the daemon runs on, a GuestKind (hello only). A daemon older than this field
+    /// sends none and runs on macOS.
+    public var os: String?
     /// The started process (exec only).
     public var pid: Int32?
     /// For a refused exec: the status a shell would give (127 not found, 126 cannot run).
@@ -112,9 +122,10 @@ public struct GuestResponse: Codable, Equatable, Sendable {
     /// (negative: ahead).
     public var offset: Double?
 
-    public init(ok: Bool, error: String? = nil, v: Int? = nil, version: String? = nil, osBuild: String? = nil, pid: Int32? = nil, status: Int32? = nil,
-                features: [String]? = nil, offset: Double? = nil) {
+    public init(ok: Bool, error: String? = nil, v: Int? = nil, version: String? = nil, osBuild: String? = nil, os: String? = nil, pid: Int32? = nil,
+                status: Int32? = nil, features: [String]? = nil, offset: Double? = nil) {
         self.offset = offset
+        self.os = os
         self.ok = ok
         self.error = error
         self.v = v
@@ -148,8 +159,47 @@ public enum GuestFeature {
     /// The terminal's size in pixels too: in the exec request's `terminal`, and in 8-byte
     /// `resize` frames (a guest without it reads only 4-byte ones).
     public static let terminalPixels = "terminal-pixels"
-    /// Everything this build's daemon supports.
-    public static let all = [terminal, promptNotices, wallpaper, timeSync, userSession, terminalPixels]
+
+    /// Everything this build's daemon supports, on the system it is built for.
+    public static var all: [String] {
+        return all(for: .current)
+    }
+
+    /// Everything a daemon of this version supports on a guest of `kind`. A Linux box has no
+    /// screen and no login session to run in, so three features are macOS's alone.
+    public static func all(for kind: GuestKind) -> [String] {
+        switch kind {
+        case .macOS:
+            return [terminal, promptNotices, wallpaper, timeSync, userSession, terminalPixels]
+        case .linux:
+            return [terminal, timeSync, terminalPixels]
+        }
+    }
+}
+
+/// The system a guest runs: what a daemon is built for, and what its hello says in `os`.
+public enum GuestKind: String, Codable, Sendable, CaseIterable {
+    case macOS = "macos"
+    case linux
+
+    /// The system this code was built for.
+    public static var current: GuestKind {
+        #if os(Linux)
+        return .linux
+        #else
+        return .macOS
+        #endif
+    }
+
+    /// What a hello's `os` means: a daemon from before the field (nil) runs on macOS; a
+    /// name this build does not know is no kind.
+    public init?(hello os: String?) {
+        guard let os else {
+            self = .macOS
+            return
+        }
+        self.init(rawValue: os)
+    }
 }
 
 /// A terminal's size in character cells.
@@ -190,7 +240,7 @@ public struct TerminalSize: Codable, Equatable, Sendable {
 
     /// For the guest's TIOCSWINSZ.
     public var winsize: winsize {
-        return Darwin.winsize(ws_row: rows, ws_col: columns, ws_xpixel: xpixels ?? 0, ws_ypixel: ypixels ?? 0)
+        return Platform.WindowSize(ws_row: rows, ws_col: columns, ws_xpixel: xpixels ?? 0, ws_ypixel: ypixels ?? 0)
     }
 }
 
@@ -278,9 +328,8 @@ public final class FrameChannel: @unchecked Sendable {
         // A peer that goes away must produce EPIPE, never a process-killing SIGPIPE. The socket
         // option is not enough on a socket pair whose other end is closed (measured); the
         // descriptor flag is.
-        var one: Int32 = 1
-        _ = setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
-        _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
+        Platform.noSIGPIPE(socket: descriptor)
+        Platform.noSIGPIPE(descriptor: descriptor)
     }
 
     public func send(_ frame: Frame) throws {
@@ -356,7 +405,7 @@ public final class FrameChannel: @unchecked Sendable {
 
     /// Stops both directions; a thread blocked in `receive` returns.
     public func shutdownBoth() {
-        _ = Darwin.shutdown(descriptor, SHUT_RDWR)
+        _ = Platform.shutdown(descriptor, SHUT_RDWR)
     }
 
     /// Closes the descriptor. Later sends fail instead of writing to whatever reuses the
@@ -366,7 +415,7 @@ public final class FrameChannel: @unchecked Sendable {
         defer { writeLock.unlock() }
         if !isClosed {
             isClosed = true
-            Darwin.close(descriptor)
+            Platform.close(descriptor)
         }
     }
 
@@ -421,5 +470,84 @@ extension Int32 {
             return nil
         }
         self = Int32(bitPattern: UInt32(bytes[0]) << 24 | UInt32(bytes[1]) << 16 | UInt32(bytes[2]) << 8 | UInt32(bytes[3]))
+    }
+}
+
+/// What the guest tells an exec that asked for notices.
+public struct GuestNotice: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable {
+        /// The program waits on a privacy prompt on the guest's screen.
+        case permissionPrompt = "permission-prompt"
+        /// The program waits on a Keychain dialog on the guest's screen (access to an item, for
+        /// one, that another program made); `service` is "keychain".
+        case keychainPrompt = "keychain-prompt"
+    }
+
+    public var kind: Kind
+    /// The privacy service asked about (kTCCService...), or `keychainService`.
+    public var service: String?
+    /// The program that tried the access.
+    public var program: String?
+    public var pid: Int32?
+
+    public init(kind: Kind, service: String? = nil, program: String? = nil, pid: Int32? = nil) {
+        self.kind = kind
+        self.service = service
+        self.program = program
+        self.pid = pid
+    }
+
+    /// The notice as a host takes it from a guest, or nil when it is not one a real daemon
+    /// sends: the service is a name (letters, digits, ".", "_", "-"), the program one line of
+    /// at most 1024 characters with nothing in it that acts on a terminal.
+    public var checked: GuestNotice? {
+        if let service {
+            let named = service.unicodeScalars.allSatisfy { scalar in
+                switch scalar {
+                case "a"..."z", "A"..."Z", "0"..."9", ".", "_", "-":
+                    return true
+                default:
+                    return false
+                }
+            }
+            guard named, !service.isEmpty, service.unicodeScalars.count <= 128 else {
+                return nil
+            }
+        }
+        var notice = self
+        notice.program = program.map { Printable.line($0, limit: 1024) }
+        return notice
+    }
+
+    /// The `service` of a Keychain dialog: not a privacy service, a Keychain item.
+    public static let keychainService = "keychain"
+
+    /// The service in words: "the Downloads folder".
+    public var serviceDescription: String {
+        guard let service else {
+            return "something macOS protects"
+        }
+        let names: [String: String] = [
+            Self.keychainService: "a Keychain item",
+            "kTCCServiceSystemPolicyDownloadsFolder": "the Downloads folder",
+            "kTCCServiceSystemPolicyDocumentsFolder": "the Documents folder",
+            "kTCCServiceSystemPolicyDesktopFolder": "the Desktop folder",
+            "kTCCServiceSystemPolicyAllFiles": "all files (Full Disk Access)",
+            "kTCCServiceSystemPolicyRemovableVolumes": "removable volumes",
+            "kTCCServiceSystemPolicyNetworkVolumes": "network volumes",
+            "kTCCServiceSystemPolicyAppData": "another app's data",
+            "kTCCServiceFileProviderDomain": "a file provider (cloud storage)",
+            "kTCCServiceAppleEvents": "control of another app (Automation)",
+            "kTCCServiceAccessibility": "Accessibility",
+            "kTCCServiceScreenCapture": "screen recording",
+            "kTCCServiceListenEvent": "input monitoring",
+            "kTCCServiceMicrophone": "the microphone",
+            "kTCCServiceCamera": "the camera",
+            "kTCCServicePhotos": "Photos",
+            "kTCCServiceAddressBook": "Contacts",
+            "kTCCServiceCalendar": "Calendars",
+            "kTCCServiceReminders": "Reminders",
+        ]
+        return names[service] ?? service
     }
 }

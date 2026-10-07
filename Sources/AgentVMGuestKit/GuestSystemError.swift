@@ -3,6 +3,13 @@
 // A system call that failed in code the guest daemon and the host share. Its text is the one
 // the host's own errors use for a failed system call.
 
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 
 package struct GuestSystemError: Error, Equatable, CustomStringConvertible {

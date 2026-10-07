@@ -25,7 +25,8 @@ struct DoctorCommand: ParsableCommand {
     func run() throws {
         // Stopped disposable boxes take disk space and count for nothing.
         BoxCommand.GC.collect(options.boxStore)
-        let facts = HostFacts.current(storeRoot: options.store.root)
+        let linuxDaemon = (try? ImageCommand.localGuestDaemon(for: .linux)).map { LocalGuestDaemon.inspectLinux($0) }
+        let facts = HostFacts.current(storeRoot: options.store.root, linuxGuestDaemon: linuxDaemon)
         let report = HostReport.evaluate(facts)
         if options.json {
             try Output.json(report)

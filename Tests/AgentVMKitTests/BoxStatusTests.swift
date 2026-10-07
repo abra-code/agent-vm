@@ -254,4 +254,51 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
         #expect(silent.digest != nil)
         #expect(silent.version == nil)
     }
+
+    /// The first bytes of an ELF program: 64-bit, little-endian, for `machine`.
+    static func elfHeader(machine: UInt16) -> Data {
+        var header = [UInt8](repeating: 0, count: 64)
+        header.replaceSubrange(0..<7, with: [0x7f, 0x45, 0x4c, 0x46, 2, 1, 1])
+        header[16] = 2
+        header[18] = UInt8(machine & 0xff)
+        header[19] = UInt8(machine >> 8)
+        return Data(header)
+    }
+
+    @Test func anELFFileIsALinuxDaemon() throws {
+        let scratch = try Scratch()
+        let url = scratch.root.appendingPathComponent("agent-vm-guest")
+        try Self.elfHeader(machine: 183).write(to: url)
+        chmod(url.path, 0o755)
+        let daemon = LocalGuestDaemon.inspectLinux(url)
+        #expect(daemon.error == nil)
+        #expect(daemon.digest == (try ImageBuilder.sha256(of: url)))
+        // It was not run, so it said nothing about itself.
+        #expect(daemon.version == nil && daemon.features == nil && daemon.requirement == nil)
+
+        // The same header for Intel (62) is not a daemon for an ARM guest, and has no digest to install by.
+        try Self.elfHeader(machine: 62).write(to: url)
+        let intel = LocalGuestDaemon.inspectLinux(url)
+        #expect(intel.error?.contains("not a program for a 64-bit ARM Linux guest") == true)
+        #expect(intel.digest == nil)
+    }
+
+    @Test func aMachOFileIsNot() throws {
+        let own = URL(fileURLWithPath: try GuestPair.builtHelper())
+        let daemon = LocalGuestDaemon.inspectLinux(own)
+        #expect(daemon.error?.contains("not a program for a 64-bit ARM Linux guest") == true)
+        #expect(daemon.digest == nil)
+        // Neither is a file too short to hold a header.
+        let scratch = try Scratch()
+        let short = scratch.root.appendingPathComponent("short")
+        try Data([0x7f, 0x45, 0x4c, 0x46]).write(to: short)
+        chmod(short.path, 0o755)
+        #expect(LocalGuestDaemon.inspectLinux(short).error != nil)
+    }
+
+    @Test func aMissingFileSaysSo() {
+        let daemon = LocalGuestDaemon.inspectLinux(URL(fileURLWithPath: "/no/such/linux/agent-vm-guest"))
+        #expect(daemon.error == "no linux/agent-vm-guest executable at /no/such/linux/agent-vm-guest")
+        #expect(daemon.digest == nil)
+    }
 }

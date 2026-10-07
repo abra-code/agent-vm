@@ -27,12 +27,14 @@ test_unknown_command_is_a_usage_error() {
 test_doctor_reports_every_check_as_json() {
     run_avm doctor --json
     assert_status 0 || return 1
-    assert_json checks 8 || return 1
+    assert_json checks 9 || return 1
     assert_json checks.0.name macOS || return 1
     # The binary under test is the signed one: it must carry the entitlement.
     assert_json checks.2.name entitlement || return 1
     assert_json checks.2.status ok || return 1
     assert_json checks.5.name "store folder" || return 1
+    # The last check is about Linux guests, and never a failure.
+    assert_json checks.8.name "linux guest daemon" || return 1
 
     # A store folder others may list is reported, and made private by the first write.
     /bin/mkdir -p "$AGENT_VM_HOME"
@@ -149,6 +151,40 @@ test_version_names_the_guest_daemon() {
     assert_out_contains "agent-vm $_version (control protocol 1, guest protocol 1)" || return 1
     assert_out_contains "sha256 $_digest" || return 1
     assert_out_contains "signature: $_requirement" || return 1
+}
+
+# The daemon for Linux guests is found in the linux folder beside agent-vm and named by its digest; it is not run.
+# A build without it says so, and nothing else changes.
+test_version_names_the_linux_guest_daemon() {
+    local _linux
+    _linux="$(/usr/bin/dirname "$AGENT_VM")/linux/agent-vm-guest"
+    run_avm version --json
+    assert_status 0 || return 1
+    assert_json linuxGuestDaemon.path "$_linux" || return 1
+    if [ ! -x "$_linux" ]; then
+        assert_json linuxGuestDaemon.error "no linux/agent-vm-guest executable at $_linux" || return 1
+        run_avm version
+        assert_status 0 || return 1
+        assert_out_contains "linux/agent-vm-guest: no linux/agent-vm-guest executable at $_linux" || return 1
+        run_avm doctor --json
+        assert_json checks.8.status info || return 1
+        skip "this build has no linux/agent-vm-guest (Scripts/build.sh builds it with a swift.org toolchain and the static Linux SDK)"
+        return 0
+    fi
+    local _digest
+    _digest="$(/usr/bin/shasum -a 256 "$_linux" | /usr/bin/awk '{ print $1 }')"
+    assert_json linuxGuestDaemon.digest "$_digest" || return 1
+    local _error
+    _error="$(json_value linuxGuestDaemon.error)"
+    [ -z "$_error" ] || { fail "the Linux daemon has an error: $_error"; return 1; }
+    run_avm version
+    assert_status 0 || return 1
+    assert_out_contains "linux/agent-vm-guest (for Linux guests)" || return 1
+    assert_out_contains "sha256 $_digest" || return 1
+    run_avm doctor --json
+    assert_json checks.8.name "linux guest daemon" || return 1
+    assert_json checks.8.status info || return 1
+    assert_contains "$(json_value checks.8.detail)" "$(printf '%s' "$_digest" | /usr/bin/cut -c1-12)" "the doctor line" || return 1
 }
 
 # Secrets in the Keychain, through the signed binary only: every item is stored, read and

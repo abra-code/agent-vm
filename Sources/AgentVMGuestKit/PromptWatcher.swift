@@ -11,87 +11,9 @@
 // under their subsystems), finds the exec the program belongs to (its session: exec starts every
 // program in a new one), and sends that exec a notice frame.
 
+#if os(macOS)
 import Darwin
 import Foundation
-
-/// What the guest tells an exec that asked for notices.
-public struct GuestNotice: Codable, Equatable, Sendable {
-    public enum Kind: String, Codable, Sendable {
-        /// The program waits on a privacy prompt on the guest's screen.
-        case permissionPrompt = "permission-prompt"
-        /// The program waits on a Keychain dialog on the guest's screen (access to an item, for
-        /// one, that another program made); `service` is "keychain".
-        case keychainPrompt = "keychain-prompt"
-    }
-
-    public var kind: Kind
-    /// The privacy service asked about (kTCCService...), or `keychainService`.
-    public var service: String?
-    /// The program that tried the access.
-    public var program: String?
-    public var pid: Int32?
-
-    public init(kind: Kind, service: String? = nil, program: String? = nil, pid: Int32? = nil) {
-        self.kind = kind
-        self.service = service
-        self.program = program
-        self.pid = pid
-    }
-
-    /// The notice as a host takes it from a guest, or nil when it is not one a real daemon
-    /// sends: the service is a name (letters, digits, ".", "_", "-"), the program one line of
-    /// at most 1024 characters with nothing in it that acts on a terminal.
-    public var checked: GuestNotice? {
-        if let service {
-            let named = service.unicodeScalars.allSatisfy { scalar in
-                switch scalar {
-                case "a"..."z", "A"..."Z", "0"..."9", ".", "_", "-":
-                    return true
-                default:
-                    return false
-                }
-            }
-            guard named, !service.isEmpty, service.unicodeScalars.count <= 128 else {
-                return nil
-            }
-        }
-        var notice = self
-        notice.program = program.map { Printable.line($0, limit: 1024) }
-        return notice
-    }
-
-    /// The `service` of a Keychain dialog: not a privacy service, a Keychain item.
-    public static let keychainService = "keychain"
-
-    /// The service in words: "the Downloads folder".
-    public var serviceDescription: String {
-        guard let service else {
-            return "something macOS protects"
-        }
-        let names: [String: String] = [
-            Self.keychainService: "a Keychain item",
-            "kTCCServiceSystemPolicyDownloadsFolder": "the Downloads folder",
-            "kTCCServiceSystemPolicyDocumentsFolder": "the Documents folder",
-            "kTCCServiceSystemPolicyDesktopFolder": "the Desktop folder",
-            "kTCCServiceSystemPolicyAllFiles": "all files (Full Disk Access)",
-            "kTCCServiceSystemPolicyRemovableVolumes": "removable volumes",
-            "kTCCServiceSystemPolicyNetworkVolumes": "network volumes",
-            "kTCCServiceSystemPolicyAppData": "another app's data",
-            "kTCCServiceFileProviderDomain": "a file provider (cloud storage)",
-            "kTCCServiceAppleEvents": "control of another app (Automation)",
-            "kTCCServiceAccessibility": "Accessibility",
-            "kTCCServiceScreenCapture": "screen recording",
-            "kTCCServiceListenEvent": "input monitoring",
-            "kTCCServiceMicrophone": "the microphone",
-            "kTCCServiceCamera": "the camera",
-            "kTCCServicePhotos": "Photos",
-            "kTCCServiceAddressBook": "Contacts",
-            "kTCCServiceCalendar": "Calendars",
-            "kTCCServiceReminders": "Reminders",
-        ]
-        return names[service] ?? service
-    }
-}
 
 final class PromptWatcher: @unchecked Sendable {
     /// One privacy-service log line that matters here.
@@ -427,3 +349,4 @@ final class PromptWatcher: @unchecked Sendable {
         return value.isEmpty ? nil : value
     }
 }
+#endif

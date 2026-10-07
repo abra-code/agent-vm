@@ -4,7 +4,13 @@
 // finishes sending, the other side's write half is shut down (a half-close, which vsock
 // supports - measured), so request/response protocols that close one way still complete.
 
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import Foundation
 
 public enum Splice {
@@ -96,9 +102,8 @@ public enum Splice {
     /// threads and its descriptors for good.
     @discardableResult
     public static func run(_ a: Int32, _ b: Int32, progress: Progress? = nil, silenceLimit: Duration? = nil, forwardLimit: Int? = nil) -> (aToB: Int, bToA: Int) {
-        var one: Int32 = 1
-        _ = setsockopt(a, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
-        _ = setsockopt(b, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+        Platform.noSIGPIPE(socket: a)
+        Platform.noSIGPIPE(socket: b)
         let progress = progress ?? Progress()
         progress.attach(a, b)
         // Before the caller can close either descriptor.

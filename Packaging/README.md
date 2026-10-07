@@ -20,10 +20,10 @@ The package has two parts, both ticked by default and both shown under Customize
 1. Bump the version in the sources, then build and sign with the Developer ID:
 
    ```sh
-   Scripts/build.sh --identity "Developer ID Application: Tomasz Kukielka (T9NM2ZLDTY)"
+   Scripts/build.sh --require-linux-guest --identity "Developer ID Application: Tomasz Kukielka (T9NM2ZLDTY)"
    ```
 
-   The signed files land in `.build/signed/release`, the project's artifacts folder.
+   The signed files land in `.build/signed/release`, the project's artifacts folder. `--require-linux-guest` fails the build when `linux/agent-vm-guest` (the guest daemon for Linux boxes) cannot be built: the package carries it, and a release without it could not create Linux images. It is an ELF program, not signed, and the package installs it in a `linux` folder beside the others (it has the macOS daemon's name) without the signature checks the two Mach-O programs get.
 
 2. Set the package version and build it. The version check fails the build when the binaries report a different version, which is what catches a stale artifacts folder:
 
