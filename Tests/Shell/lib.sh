@@ -351,6 +351,56 @@ start_file_box() {
     "$AGENT_VM" box start "$_name" --json > "$FILE_SCRATCH/box-start.json" || return 1
 }
 
+# The ready Linux image the Linux extended tests build their boxes from; they skip without it.
+# Make one with: agent-vm image create <name> --linux debian-13
+LINUX_TEST_IMAGE="${AGENT_VM_TEST_LINUX_IMAGE:-}"
+
+# start_linux_file_box <name> [box create options...]: as start_file_box, from
+# $LINUX_TEST_IMAGE.
+start_linux_file_box() {
+    local _name="$1"
+    shift
+    if [ -z "$LINUX_TEST_IMAGE" ]; then
+        printf 'set AGENT_VM_TEST_LINUX_IMAGE to a ready Linux image (agent-vm image create <name> --linux debian-13)' > "$FILE_SCRATCH/no-box"
+        return 0
+    fi
+    local _state
+    _state="$(image_state "$LINUX_TEST_IMAGE")"
+    local _listed=$?
+    [ "$_listed" -eq 0 ] || { printf 'agent-vm image list --json failed\n' >&2; return 1; }
+    if [ "$_state" != "ready" ] || [ "$(image_value "$LINUX_TEST_IMAGE" guest)" != "linux" ]; then
+        printf 'no ready Linux image %s (AGENT_VM_TEST_LINUX_IMAGE)' "$LINUX_TEST_IMAGE" > "$FILE_SCRATCH/no-box"
+        return 0
+    fi
+    "$AGENT_VM" box delete "$_name" > /dev/null 2>&1
+    "$AGENT_VM" box create "$_name" --image "$LINUX_TEST_IMAGE" "$@" || return 1
+    printf '%s' "$_name" > "$FILE_SCRATCH/box"
+    "$AGENT_VM" box start "$_name" --json > "$FILE_SCRATCH/box-start.json" || return 1
+}
+
+# require_linux_image: in a test that makes its own box from $LINUX_TEST_IMAGE; as
+# require_image.
+require_linux_image() {
+    if [ -z "$LINUX_TEST_IMAGE" ]; then
+        skip "set AGENT_VM_TEST_LINUX_IMAGE to a ready Linux image (agent-vm image create <name> --linux debian-13)"
+        return 1
+    fi
+    local _state
+    _state="$(image_state "$LINUX_TEST_IMAGE")"
+    local _listed=$?
+    [ "$_listed" -eq 0 ] || { fail "agent-vm image list --json failed"; return 2; }
+    if [ "$_state" != "ready" ] || [ "$(image_value "$LINUX_TEST_IMAGE" guest)" != "linux" ]; then
+        skip "no ready Linux image $LINUX_TEST_IMAGE"
+        return 1
+    fi
+    return 0
+}
+
+# box_folder <box>: the box's folder in the store.
+box_folder() {
+    printf '%s/Boxes/%s' "${AGENT_VM_HOME:-$HOME/Library/Application Support/agent-vm}" "$1"
+}
+
 # stop_file_box: for file_teardown - stops and deletes the file's box.
 stop_file_box() {
     [ -f "$FILE_SCRATCH/box" ] || return 0

@@ -95,17 +95,17 @@ test_packs_are_listed() {
     run_avm box packs
     assert_status 0 || return 1
     local _pack
-    for _pack in anthropic anthropic-connectors apple-updates github homebrew npm openai pypi swiftpm; do
+    for _pack in anthropic anthropic-connectors apple-updates debian github homebrew npm openai pypi swiftpm; do
         assert_out_contains "pack:$_pack" || return 1
     done
     # For programs: name and hosts, sorted by name, the names without "pack:", and where each came from.
     run_avm box packs --json
     assert_status 0 || return 1
     assert_json 0.name anthropic || return 1
-    assert_json 3.name github || return 1
-    assert_json 3.hosts.0 github.com || return 1
-    assert_json 3.source built-in || return 1
-    assert_json 8.name swiftpm || return 1
+    assert_json 4.name github || return 1
+    assert_json 4.hosts.0 github.com || return 1
+    assert_json 4.source built-in || return 1
+    assert_json 9.name swiftpm || return 1
 
     # A user pack replaces the built-in one of its name; a broken one is listed with why.
     /bin/mkdir -p "$AGENT_VM_HOME/Packs"
@@ -113,12 +113,12 @@ test_packs_are_listed() {
     printf '%s\n' '{"hosts": ["public"]}' > "$AGENT_VM_HOME/Packs/wide.json"
     run_avm box packs --json
     assert_status 0 || return 1
-    assert_json 5.name npm || return 1
-    assert_json 5.source user || return 1
-    assert_json 5.replacesBuiltIn true || return 1
-    assert_json 5.hosts.0 npm.example.com || return 1
-    assert_json 9.name wide || return 1
-    local _problem="$(json_value 9.problem)"
+    assert_json 6.name npm || return 1
+    assert_json 6.source user || return 1
+    assert_json 6.replacesBuiltIn true || return 1
+    assert_json 6.hosts.0 npm.example.com || return 1
+    assert_json 10.name wide || return 1
+    local _problem="$(json_value 10.problem)"
     assert_contains "$_problem" "public is not a host name" "the broken pack's problem" || return 1
     run_avm box packs
     assert_out_contains "pack:npm  (yours, $AGENT_VM_HOME/Packs/npm.json, replaces the built-in one)" || return 1
@@ -905,34 +905,47 @@ test_a_linux_box_has_its_own_files() {
     assert_missing "$_box" || return 1
 }
 
-# Until agent-vm can run a Linux guest, every command that would start one says so, and names
-# what it was asked about. Nothing is created or changed by the refusals.
-test_linux_guests_cannot_be_run_yet() {
+# What agent-vm does not do with a Linux image yet, it says, and names the image. Nothing is
+# created or changed by the refusals.
+test_what_is_not_done_with_a_linux_image_yet() {
     fake_linux_image deb
-    fake_linux_box work deb
     local _record
     _record="$(/bin/cat "$AGENT_VM_HOME/Images/deb/image.json")"
-    run_avm box start work
-    assert_status 1 || return 1
-    assert_err_contains "box work runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
     printf '%s\n' '{ "version": 1, "description": "t", "steps": [ { "name": "n", "run": "true" } ] }' > "$SCRATCH/recipe.json"
     run_avm image create deb2 --from deb --recipe "$SCRATCH/recipe.json"
     assert_status 1 || return 1
-    assert_err_contains "image deb runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
+    assert_err_contains "image deb runs Linux, and this agent-vm cannot build an image from a Linux image yet" || return 1
     assert_missing "$AGENT_VM_HOME/Images/deb2" || return 1
     run_avm image update deb
     assert_status 1 || return 1
-    assert_err_contains "image deb runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
+    assert_err_contains "image deb runs Linux, and this agent-vm cannot update a Linux image yet" || return 1
     run_avm image update deb --guest
     assert_status 1 || return 1
-    assert_err_contains "image deb runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
+    assert_err_contains "image deb runs Linux, and this agent-vm cannot update a Linux image yet" || return 1
     run_avm image rebuild deb
     assert_status 1 || return 1
-    assert_err_contains "image deb runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
+    assert_err_contains "image deb runs Linux, and this agent-vm cannot rebuild a Linux image yet" || return 1
     assert_eq "$(/bin/cat "$AGENT_VM_HOME/Images/deb/image.json")" "$_record" "the image's record" || return 1
     # Passwords in files are a macOS record's: a Linux one has none to move, and none is asked for.
     run_avm doctor --json
     assert_json checks.6.status ok || return 1
+}
+
+# A Linux box whose files are not a machine's does not start, says which file, and leaves no
+# supervisor behind; the count of virtual machines names Linux boxes apart (none runs here).
+test_a_broken_linux_box_does_not_start() {
+    fake_linux_image deb
+    fake_linux_box work deb
+    run_avm box start work
+    assert_status 1 || return 1
+    assert_err_contains "the supervisor exited (status 1); see $AGENT_VM_HOME/Boxes/work/supervisor.log" || return 1
+    assert_contains "$(/bin/cat "$AGENT_VM_HOME/Boxes/work/supervisor.log")" "Boxes/work/MachineIdentifier is unusable: not a machine identifier" "the supervisor's log" || return 1
+    run_avm box status work --json
+    assert_json state stopped || return 1
+    run_avm status --json
+    assert_status 0 || return 1
+    assert_json runningVMs.linuxBoxes 0 || return 1
+    assert_json runningVMs.limit 2 || return 1
 }
 
 # A record written by an agent-vm that knows more is not guessed at.

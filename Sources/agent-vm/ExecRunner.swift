@@ -255,8 +255,9 @@ struct ExecRunner {
     /// such as Ghostty's or kitty's) could be installed in the account's ~/.terminfo in the box;
     /// else xterm-256color.
     static func terminalType(host: String?, box: Box, user: String?) -> String {
-        let known = ExecEnvironment.terminalType(host: host)
-        guard let host, known != host, let script = ExecEnvironment.terminfoInstallScript(name: host),
+        let guestKind = box.record.effectiveGuest
+        let known = ExecEnvironment.terminalType(host: host, guest: guestKind)
+        guard let host, known != host, let script = ExecEnvironment.terminfoInstallScript(name: host, guest: guestKind),
               let entry = localTerminfo(host) else {
             return known
         }

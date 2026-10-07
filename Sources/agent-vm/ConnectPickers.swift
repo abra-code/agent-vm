@@ -22,7 +22,7 @@ enum ConnectPickers {
     }
 
     /// Why a Linux image or box is shown and cannot be chosen.
-    static let linuxNotYet = "runs Linux, which this agent-vm cannot run yet"
+    static let linuxNotYet = "runs Linux, which avm cannot use yet (agent-vm box start and box shell can)"
 
     /// A box the picker shows, and why it cannot be chosen when it cannot.
     struct Offer {

@@ -330,7 +330,7 @@ public final class ImageBuilder {
             throw AgentVMError.wrongImageState(name: base.name, state: base.record.state.rawValue, operation: "build an image from")
         }
         guard base.record.effectiveGuest == .macOS else {
-            throw LinuxGuest.cannotRunYet("image \(base.name)")
+            throw LinuxGuest.cannotYet("build an image from", image: base.name)
         }
         guard base.record.guestProtocol == AgentVM.guestProtocolVersion else {
             throw AgentVMError.wrongImageState(name: base.name, state: "built with guest protocol \(base.record.guestProtocol.map(String.init) ?? "none"), not \(AgentVM.guestProtocolVersion)", operation: "build an image from")
@@ -591,7 +591,7 @@ public final class ImageBuilder {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: operation)
         }
         guard image.record.effectiveGuest == .macOS else {
-            throw LinuxGuest.cannotRunYet("image \(image.name)")
+            throw LinuxGuest.cannotYet("update", image: image.name)
         }
         return image
     }

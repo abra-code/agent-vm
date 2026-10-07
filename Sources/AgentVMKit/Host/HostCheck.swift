@@ -27,6 +27,10 @@ public struct HostFacts: Sendable {
     public var storeFreeBytes: Int64?
     /// Virtualization framework VM processes on this Mac, from any application.
     public var runningVirtualMachines: Int?
+    /// How many of those are agent-vm's own running Linux boxes, which take none of the two
+    /// places macOS guests have. Another application's Linux guest cannot be told from a macOS
+    /// one, so it is not in this number.
+    public var runningLinuxBoxes: Int = 0
     /// The store's own folder; nil when it does not exist yet.
     public var store: StoreRoot.State?
     /// Images and boxes that keep their account password in a plain-text file; nil when the
@@ -54,8 +58,10 @@ public struct HostFacts: Sendable {
                 hasVirtualizationEntitlement: Bool?, signature: Signature?, cpuCount: Int,
                 memoryBytes: UInt64, storeRoot: String, storeFreeBytes: Int64?,
                 runningVirtualMachines: Int?, store: StoreRoot.State? = nil,
-                passwordFiles: Int? = 0, keepsPasswordsInKeychain: Bool = true, linuxGuestDaemon: LocalGuestDaemon? = nil) {
+                passwordFiles: Int? = 0, keepsPasswordsInKeychain: Bool = true, linuxGuestDaemon: LocalGuestDaemon? = nil,
+                runningLinuxBoxes: Int = 0) {
         self.linuxGuestDaemon = linuxGuestDaemon
+        self.runningLinuxBoxes = runningLinuxBoxes
         self.osVersion = osVersion
         self.isAppleSilicon = isAppleSilicon
         self.virtualizationSupported = virtualizationSupported
@@ -90,8 +96,16 @@ public struct HostFacts: Sendable {
             store: StoreRoot.state(storeRoot),
             passwordFiles: AccountPasswordMove.fileCount(store: FileSystem.canonicalRoot(storeRoot)),
             keepsPasswordsInKeychain: AccountPasswordStore.keepsNewPasswords,
-            linuxGuestDaemon: linuxGuestDaemon
+            linuxGuestDaemon: linuxGuestDaemon,
+            runningLinuxBoxes: countRunningLinuxBoxes(storeRoot: storeRoot)
         )
+    }
+
+    /// The running Linux boxes of the store at `storeRoot`: by their records, and by the lock
+    /// a box's supervisor holds while it runs.
+    public static func countRunningLinuxBoxes(storeRoot: URL) -> Int {
+        let boxes = (try? BoxStore(root: storeRoot).list().boxes) ?? []
+        return boxes.filter { $0.record.effectiveGuest == .linux && $0.isRunning }.count
     }
 
     private static func isArm64() -> Bool {
@@ -213,6 +227,9 @@ public struct HostCheck: Sendable, Equatable, Codable {
     /// detail says it in words). `count` is left out when the processes could not be listed.
     public var count: Int? = nil
     public var limit: Int? = nil
+    /// With `count`: how many of them are agent-vm's own Linux boxes, which the limit does not
+    /// concern. A program shows `count - linuxBoxes` of `limit`.
+    public var linuxBoxes: Int? = nil
 }
 
 public struct HostReport: Sendable, Equatable, Codable {
@@ -312,12 +329,20 @@ public struct HostReport: Sendable, Equatable, Codable {
         }
 
         if let running = facts.runningVirtualMachines {
-            let text = "\(running) virtual machine\(running == 1 ? "" : "s") running on this Mac (any application)"
-            if running >= macOSGuestLimit {
-                checks.append(HostCheck(name: "running VMs", status: .warning, detail: "\(text); macOS runs at most \(macOSGuestLimit) macOS guests at once, so a box will not start while those are macOS guests",
-                                        count: running, limit: macOSGuestLimit))
+            // The limit is on macOS guests. agent-vm's own Linux boxes are known not to be
+            // any; what else runs, in this or another application, may be.
+            let linux = min(max(0, facts.runningLinuxBoxes), running)
+            let others = running - linux
+            var text = "\(running) virtual machine\(running == 1 ? "" : "s") running on this Mac (any application)"
+            if linux > 0 {
+                text += ", \(linux) of them \(linux == 1 ? "a Linux box" : "Linux boxes") of yours"
+            }
+            if others >= macOSGuestLimit {
+                let those = linux > 0 ? "the other \(others)" : "those"
+                checks.append(HostCheck(name: "running VMs", status: .warning, detail: "\(text); macOS runs at most \(macOSGuestLimit) macOS guests at once, so a \(linux > 0 ? "macOS " : "")box will not start while \(those) are macOS guests",
+                                        count: running, limit: macOSGuestLimit, linuxBoxes: linux))
             } else {
-                checks.append(HostCheck(name: "running VMs", status: .ok, detail: text, count: running, limit: macOSGuestLimit))
+                checks.append(HostCheck(name: "running VMs", status: .ok, detail: text, count: running, limit: macOSGuestLimit, linuxBoxes: linux))
             }
         } else {
             checks.append(HostCheck(name: "running VMs", status: .info, detail: "could not list processes (sandboxed?); at most \(macOSGuestLimit) macOS guests can run at once", limit: macOSGuestLimit))

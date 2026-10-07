@@ -176,7 +176,7 @@ extension ImageBuilder {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "rebuild")
         }
         guard image.record.effectiveGuest == .macOS else {
-            throw LinuxGuest.cannotRunYet("image \(image.name)")
+            throw LinuxGuest.cannotYet("rebuild", image: image.name)
         }
         let buildName = ImageStore.rebuildName(for: image.name)
         guard ImageStore.isValidName(buildName) else {

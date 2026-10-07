@@ -27,6 +27,22 @@ public final class BoxSupervisor {
     /// How long the guest may take to boot until its daemon answers, and to shut down.
     static let bootTimeout: Duration = .seconds(180)
     static let shutdownTimeout: Duration = .seconds(90)
+    /// A Linux box's daemon answers within 3 s of the start (measured); a minute is for a
+    /// loaded Mac. Its shutdown has a second way: the power button, which Linux obeys.
+    static let linuxBootTimeout: Duration = .seconds(60)
+    static let linuxShutdownTimeout: Duration = .seconds(45)
+    static let linuxPowerButtonTimeout: Duration = .seconds(15)
+
+    /// What a Linux guest prints on its console (ConsoleLog); a macOS box has none.
+    private var console: ConsoleLog?
+
+    private var guest: GuestKind {
+        return box.record.effectiveGuest
+    }
+
+    private var bootLimit: Duration {
+        return guest == .linux ? Self.linuxBootTimeout : Self.bootTimeout
+    }
 
     /// Whether this process runs AppKit and can show the box's screen (`box view`).
     private let windows: Bool
@@ -58,6 +74,7 @@ public final class BoxSupervisor {
     }
 
     private func view(interactive: Bool) throws {
+        try box.record.requireScreen()
         guard windows else {
             throw AgentVMError.supervisorRefused("box \(box.name) runs outside a login session (started over SSH or by a service), so it cannot show a window; stop it and start it again from a session on this Mac's screen")
         }
@@ -93,6 +110,7 @@ public final class BoxSupervisor {
 
     /// Types the box password (or `text`) into the open window's focused field in the guest.
     private func type(text: String?) async throws {
+        try box.record.requireScreen()
         guard let viewer else {
             throw AgentVMError.supervisorRefused("box \(box.name) shows no window; open one with `agent-vm box view \(box.name) --interactive`")
         }
@@ -113,9 +131,6 @@ public final class BoxSupervisor {
 
     /// Runs the box until it stops; returns when the VM is down and the socket is gone.
     public func run() async throws {
-        guard box.record.effectiveGuest == .macOS else {
-            throw LinuxGuest.cannotRunYet("box \(box.name)")
-        }
         guard let lock = try FolderLock.tryAcquire(box.lockPath, patience: FolderLock.testPatience) else {
             throw AgentVMError.boxRunning(box.name)
         }
@@ -154,14 +169,29 @@ public final class BoxSupervisor {
         let packs = try NetworkPacks.needed(for: network, store: box.directory.deletingLastPathComponent().deletingLastPathComponent())
         let proxy = ProxyServer(policy: try CompiledPolicy(network, packs: packs), log: NetworkLog(url: box.networkLogURL))
         let attachment: MachineNetwork
-        if network.usesProxy {
+        if !network.usesProxy {
+            attachment = .nat
+        } else if guest == .linux {
+            // No card at all: programs reach the proxy through the daemon's relay, and a
+            // Linux system is content without a network device.
+            attachment = .none
+        } else {
             let link = try DeadEndLink()
             self.link = link
             attachment = .fileHandle(link.guestHandle)
-        } else {
-            attachment = .nat
         }
-        let machine = try MachineBuilder.machine(MachineShape(box.record), files: box.machineFiles, network: attachment, share: true)
+        var extras = LinuxMachineExtras()
+        if guest == .linux {
+            let console = try ConsoleLog(url: box.consoleLogURL)
+            self.console = console
+            extras.console = console.writeHandle
+        }
+        // After the machine stopped, on every way out of this function.
+        defer {
+            console?.close()
+            console = nil
+        }
+        let machine = try MachineBuilder.machine(MachineShape(box.record), files: box.machineFiles, network: attachment, share: true, extras: extras)
         self.machine = machine
 
         let name = box.name
@@ -203,7 +233,11 @@ public final class BoxSupervisor {
         defer { ownerWatch?.cancel() }
 
         log("Starting box \(box.name) (\(box.record.cpuCount) CPUs, \(box.record.memoryBytes >> 30) GB, image \(box.record.image), network \(network.mode.rawValue))")
-        try await machine.start(provisioning: nil)
+        if guest == .linux {
+            try await machine.start()
+        } else {
+            try await machine.start(provisioning: nil)
+        }
         ran = true
         if network.usesProxy {
             // Each proxied connection holds two descriptors; the soft limit a shell hands down
@@ -230,11 +264,16 @@ public final class BoxSupervisor {
             }
             if !machine.isRunning {
                 log("The guest stopped while booting\(machine.failure.map { ": \($0)" } ?? "")")
-                throw AgentVMError.guestUnreachable("the guest stopped while booting\(machine.failure.map { ": \($0)" } ?? "")")
+                throw AgentVMError.guestUnreachable("the guest stopped while booting\(machine.failure.map { ": \($0)" } ?? "")\(consoleTail())")
             }
-            log("The guest daemon did not answer within \(Self.bootTimeout); stopping")
+            if let refusal = daemonRefusal {
+                log("\(refusal); stopping")
+                try? await machine.forceStop()
+                throw AgentVMError.guestRefused(refusal)
+            }
+            log("The guest daemon did not answer within \(bootLimit); stopping")
             try? await machine.forceStop()
-            throw AgentVMError.guestUnreachable("the guest daemon did not answer within \(Self.bootTimeout)")
+            throw AgentVMError.guestUnreachable("the guest daemon did not answer within \(bootLimit)\(consoleTail())")
         }
         do {
             try await configureNetwork(machine, mode: network.mode)
@@ -245,7 +284,9 @@ public final class BoxSupervisor {
         }
         state.set(.ready, guestVersion: hello.version, guestFeatures: hello.features ?? [])
         log("Ready in \(Int(ImageBuilder.seconds(clock.now - began))) s: agent-vm-guest \(hello.version ?? "?")")
-        prepareDesktop(machine, features: hello.features ?? [])
+        if guest == .macOS {
+            prepareDesktop(machine, features: hello.features ?? [])
+        }
         let clockSync = (hello.features ?? []).contains(GuestFeature.timeSync)
         if clockSync, !state.stopRequested {
             _ = try? await syncClock(reason: "boot")
@@ -324,8 +365,29 @@ public final class BoxSupervisor {
         }
     }
 
+    /// Why a daemon that did answer is not this box's: it says it runs another system than
+    /// the box's record does.
+    private var daemonRefusal: String?
+
+    /// How often the daemon is asked while a guest boots: a Linux box is up in under 3 s, and a
+    /// poll once a second would round that up by a third.
+    static let quickPoll: Duration = .milliseconds(200)
+    static let quickPollTime: Duration = .seconds(10)
+
+    /// The console's last lines, for the error of a Linux box that did not come up: a guest
+    /// that does not boot has nothing else to show. The text is the guest's, made printable.
+    private func consoleTail() -> String {
+        guard guest == .linux else {
+            return ""
+        }
+        let tail = ConsoleLog.tail(of: box.consoleLogURL, lines: 20)
+        return tail.isEmpty ? "; its console printed nothing (\(box.consoleLogURL.path))" : "; the console's last lines (\(box.consoleLogURL.path)):\n\(tail)"
+    }
+
     private func waitForDaemon(_ machine: GuestMachine) async -> GuestResponse? {
-        let deadline = ContinuousClock.now + Self.bootTimeout
+        let began = ContinuousClock.now
+        let deadline = began + bootLimit
+        let expected = guest
         while ContinuousClock.now < deadline && machine.isRunning && !state.stopRequested {
             if let connection = try? await machine.connect(toPort: GuestProtocol.port) {
                 let descriptor = connection.descriptor
@@ -333,10 +395,18 @@ public final class BoxSupervisor {
                 let hello = try? await Task.detached { try GuestClient.hello(descriptor, within: Self.answerLimit) }.value
                 connection.close()
                 if let hello, hello.v == AgentVM.guestProtocolVersion {
+                    // A consistency check, not trust: a guest can say anything, but a disk
+                    // that is not what its record says is not run as if it were. A hello
+                    // without the field is a macOS daemon's from before there was one.
+                    guard GuestKind(hello: hello.os) == expected else {
+                        daemonRefusal = "The guest daemon says it runs on \(hello.os ?? GuestKind.macOS.rawValue), and box \(box.name) is a \(expected.rawValue) one"
+                        return nil
+                    }
                     return hello
                 }
             }
-            try? await Task.sleep(for: .seconds(1))
+            let quick = expected == .linux && ContinuousClock.now - began < Self.quickPollTime
+            try? await Task.sleep(for: quick ? Self.quickPoll : .seconds(1))
         }
         return nil
     }
@@ -411,6 +481,10 @@ public final class BoxSupervisor {
     private func replaceProject(_ path: String, readOnly: Bool) async throws {
         guard let machine, state.snapshot.state == .ready else {
             throw AgentVMError.supervisorRefused("box \(box.name) is not ready")
+        }
+        // A Linux guest mounts a share by other commands, which this agent-vm does not have yet.
+        guard guest == .macOS else {
+            throw LinuxGuest.noProjectYet(box: box.name)
         }
         let storeRoot = box.directory.deletingLastPathComponent().deletingLastPathComponent()
         let project = try ProjectShare.validated(path, storeRoot: storeRoot)
@@ -489,12 +563,13 @@ public final class BoxSupervisor {
         defer { connection.close() }
         let descriptor = connection.descriptor
         Self.setReadTimeout(descriptor, seconds: 60)
-        let request = GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestNetworkSetup.command(for: mode)], user: "root")
+        let request = GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestNetworkSetup.command(for: mode, guest: guest)], user: "root")
         let result = try await Task.detached { try GuestClient.capture(descriptor, request, within: Self.commandLimit) }.value
         guard result.report == ExitReport(status: 0) else {
             throw AgentVMError.guestCommandFailed(command: "network setup", status: result.report.shellStatus, output: (result.stderr + result.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        log("Network: \(mode.rawValue)\(mode == .open ? " (NAT)" : " (dead-end card, proxy on vsock port \(GuestRelay.hostPort))")")
+        let card = guest == .linux ? "no network card" : "dead-end card"
+        log("Network: \(mode.rawValue)\(mode == .open ? " (NAT)" : " (\(card), proxy on vsock port \(GuestRelay.hostPort))")")
     }
 
     private func shutDown(_ machine: GuestMachine) async {
@@ -507,11 +582,27 @@ public final class BoxSupervisor {
             _ = try? await Task.detached { try GuestClient.shutdown(descriptor, within: Self.answerLimit) }.value
             connection.close()
         }
-        if await machine.waitUntilStopped(timeout: Self.shutdownTimeout) {
+        guard guest == .linux else {
+            if await machine.waitUntilStopped(timeout: Self.shutdownTimeout) {
+                log("Stopped")
+                return
+            }
+            log("The guest did not shut down within \(Self.shutdownTimeout); pulling the plug")
+            try? await machine.forceStop()
+            return
+        }
+        if await machine.waitUntilStopped(timeout: Self.linuxShutdownTimeout) {
             log("Stopped")
             return
         }
-        log("The guest did not shut down within \(Self.shutdownTimeout); pulling the plug")
+        // The power button, which the system obeys even when the daemon is gone.
+        log("The guest did not shut down within \(Self.linuxShutdownTimeout); pressing its power button")
+        try? machine.requestStop()
+        if await machine.waitUntilStopped(timeout: Self.linuxPowerButtonTimeout) {
+            log("Stopped")
+            return
+        }
+        log("The guest did not shut down within \(Self.linuxPowerButtonTimeout) more; pulling the plug")
         try? await machine.forceStop()
     }
 
@@ -915,9 +1006,6 @@ public enum BoxLauncher {
     /// for a caller that shows the time passing.
     public static func start(_ box: Box, executable: String, ownerPid: Int32? = nil, timeout: Duration = .seconds(200),
                              tick: (() -> Void)? = nil, progress: (String) -> Void) throws -> ControlResponse {
-        guard box.record.effectiveGuest == .macOS else {
-            throw LinuxGuest.cannotRunYet("box \(box.name)")
-        }
         // One limit for the whole call, a wait for a stopping box included.
         let deadline = ContinuousClock.now + timeout
         // The owner's start time as it is now, right after the caller checked the number and
@@ -961,7 +1049,9 @@ public enum BoxLauncher {
 
         var pid: pid_t = 0
         // The full path as argv[0], so a process list tells which binary runs the box.
-        let arguments = [executable, "box", "serve", box.name] + (ownerPid.map { ["--owner-pid", String($0)] } ?? [])
+        // A Linux box has no screen to show, so its supervisor is no application.
+        let arguments = [executable, "box", "serve", box.name] + (box.record.effectiveGuest == .linux ? ["--headless"] : [])
+            + (ownerPid.map { ["--owner-pid", String($0)] } ?? [])
             + (ownerStartedAt.map { ["--owner-started-at", $0] } ?? [])
         // Not the caller's whole environment: the supervisor outlives it by days.
         let status = GuestServer.withCStrings(arguments) { argv in

@@ -71,9 +71,14 @@ enum GuestSystemText {
 /// Why a command turns down a Linux image or box: what has no meaning for a Linux guest, and
 /// what this agent-vm does not do for one yet.
 enum LinuxGuest {
-    /// This agent-vm reads the records of Linux guests and lists them; it cannot start one.
-    static func cannotRunYet(_ owner: String) -> AgentVMError {
-        return .notForThisGuest("\(owner) runs Linux, and this agent-vm cannot run Linux guests yet")
+    /// What this agent-vm does not do with a Linux image yet: `what` is "build an image from",
+    /// "update" or "rebuild".
+    static func cannotYet(_ what: String, image: String) -> AgentVMError {
+        return .notForThisGuest("image \(image) runs Linux, and this agent-vm cannot \(what) a Linux image yet")
+    }
+
+    static func noProjectYet(box: String) -> AgentVMError {
+        return .notForThisGuest("box \(box) runs Linux, and this agent-vm cannot share a project folder into a Linux box yet; run the program without --project")
     }
 
     static func noFullDiskAccess(image: String) -> AgentVMError {

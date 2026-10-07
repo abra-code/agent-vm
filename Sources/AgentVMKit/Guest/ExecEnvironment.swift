@@ -118,14 +118,25 @@ public enum ExecEnvironment {
     /// The TERM for a program on a terminal in the box: the Mac's own when the guest knows it,
     /// else xterm-256color. Both run macOS, so the Mac's terminal database (terminfo) stands in
     /// for the guest's; a terminal with its own type (Ghostty, kitty) falls back.
-    public static func terminalType(host: String?, terminfo: String = "/usr/share/terminfo") -> String {
+    /// For a Linux box the Mac's database says nothing about the guest's: the names every
+    /// Debian and Ubuntu system has (`linuxTerminalTypes`) pass, any other falls back.
+    public static func terminalType(host: String?, guest: GuestKind = .macOS, terminfo: String = "/usr/share/terminfo") -> String {
         let fallback = "xterm-256color"
         guard let host, let first = host.unicodeScalars.first, first.isASCII, !host.contains("/"), host != "..", host != "." else {
             return fallback
         }
+        if guest == .linux {
+            return linuxTerminalTypes.contains(host) ? host : fallback
+        }
         let folder = String(first.value, radix: 16)
         return FileSystem.exists("\(terminfo)/\(folder)/\(host)") ? host : fallback
     }
+
+    /// Terminal types in the base terminal database of Debian and Ubuntu (the package
+    /// ncurses-base, which every system has).
+    public static let linuxTerminalTypes: Set<String> = [
+        "xterm", "xterm-256color", "vt100", "vt220", "linux", "screen", "screen-256color", "tmux", "tmux-256color", "ansi", "dumb",
+    ]
 
     /// Variables that say which terminal this is, passed with a terminal (`exec --tty`, `box
     /// shell`) as ssh's SendEnv would: programs choose 24-bit color, links, the enhanced
@@ -138,13 +149,15 @@ public enum ExecEnvironment {
     /// output from the Mac) as `name` into the account's ~/.terminfo, unless it is there; nil
     /// for a name that is not a plain terminal name (one that starts with "-" would be read as
     /// an option by infocmp on the Mac).
-    public static func terminfoInstallScript(name: String) -> String? {
+    /// The folder an entry is in differs: macOS names it by the first character's code in
+    /// hexadecimal ("78" for x), Linux by the character itself.
+    public static func terminfoInstallScript(name: String, guest: GuestKind = .macOS) -> String? {
         guard !name.isEmpty, name.count <= 64,
               name.unicodeScalars.allSatisfy({ isASCIILetter($0) || ("0"..."9").contains($0) || "-_.+".unicodeScalars.contains($0) }),
               name != ".", name != "..", let first = name.unicodeScalars.first, first != "-" else {
             return nil
         }
-        let folder = String(first.value, radix: 16)
+        let folder = guest == .linux ? String(first) : String(first.value, radix: 16)
         return "[ -e \"$HOME/.terminfo/\(folder)/\(name)\" ] && exit 0; /bin/mkdir -p \"$HOME/.terminfo\" && /usr/bin/tic -x -o \"$HOME/.terminfo\" /dev/stdin"
     }
 

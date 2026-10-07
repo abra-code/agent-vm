@@ -1034,6 +1034,9 @@ struct BoxCommand: ParsableCommand {
         @Option(name: .customLong("owner-started-at"), help: "When that process started, as box start saw it.")
         var ownerStartedAt: String?
 
+        @Flag(name: .long, help: "Run without AppKit: the box has no screen to show (a Linux box).")
+        var headless = false
+
         @OptionGroup var options: StoreOptions
 
         @MainActor
@@ -1086,7 +1089,9 @@ struct BoxCommand: ParsableCommand {
 
         /// `agent-vm box serve <name>` in a login session (with a window server).
         static func shouldRunAppKit(_ arguments: [String]) -> Bool {
-            return Array(arguments.dropFirst().prefix(2)) == ["box", "serve"] && BoxSupervisor.canShowWindows
+            // Decided from the arguments, before any record is read: `box start` says when
+            // the box has no screen.
+            return Array(arguments.dropFirst().prefix(2)) == ["box", "serve"] && !arguments.contains("--headless") && BoxSupervisor.canShowWindows
         }
     }
 }

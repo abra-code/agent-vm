@@ -216,6 +216,39 @@ import Virtualization
         #expect(others.allSatisfy { $0.count == nil && $0.limit == nil })
     }
 
+    /// The limit is on macOS guests: agent-vm's own running Linux boxes are counted, and named,
+    /// apart.
+    @Test func linuxBoxesDoNotCountAgainstTheLimit() throws {
+        func check(_ running: Int?, linux: Int) throws -> HostCheck {
+            var facts = Self.goodFacts()
+            facts.runningVirtualMachines = running
+            facts.runningLinuxBoxes = linux
+            return try #require(HostReport.evaluate(facts).checks.first { $0.name == "running VMs" })
+        }
+        // Two processes, one of them a Linux box: a macOS box still has a place.
+        var found = try check(2, linux: 1)
+        #expect(found.status == .ok && found.count == 2 && found.limit == 2 && found.linuxBoxes == 1)
+        #expect(found.detail == "2 virtual machines running on this Mac (any application), 1 of them a Linux box of yours")
+        // Three, one Linux: the other two may be macOS guests.
+        found = try check(3, linux: 1)
+        #expect(found.status == .warning && found.linuxBoxes == 1)
+        #expect(found.detail == "3 virtual machines running on this Mac (any application), 1 of them a Linux box of yours; macOS runs at most 2 macOS guests at once, so a macOS box will not start while the other 2 are macOS guests")
+        // Linux boxes alone never warn.
+        found = try check(5, linux: 5)
+        #expect(found.status == .ok && found.detail == "5 virtual machines running on this Mac (any application), 5 of them Linux boxes of yours")
+        // Without Linux boxes the words are the ones there always were.
+        found = try check(2, linux: 0)
+        #expect(found.detail == "2 virtual machines running on this Mac (any application); macOS runs at most 2 macOS guests at once, so a box will not start while those are macOS guests")
+        #expect(found.linuxBoxes == 0)
+        #expect(String(decoding: try JSONEncoder().encode(found), as: UTF8.self).contains("\"linuxBoxes\":0"))
+        // More boxes than processes (a supervisor whose machine is gone) is never a negative count.
+        found = try check(1, linux: 3)
+        #expect(found.status == .ok && found.linuxBoxes == 1)
+        // When the processes cannot be listed, nothing is claimed.
+        found = try check(nil, linux: 1)
+        #expect(found.count == nil && found.linuxBoxes == nil)
+    }
+
     /// Virtualization's refusal to run another VM becomes its own error, with a stable phrase
     /// and exit status; its other errors stay as they were.
     @Test func theVMLimitIsItsOwnRefusal() {

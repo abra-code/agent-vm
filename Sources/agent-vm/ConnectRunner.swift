@@ -467,7 +467,8 @@ struct ConnectRunner {
     private func noSlotMessage() -> String {
         let limit = HostReport.macOSGuestLimit
         var running: [String] = []
-        for box in ((try? boxStore.list().boxes) ?? []) where box.isRunning {
+        // Linux boxes take no slot: the limit is on macOS guests.
+        for box in ((try? boxStore.list().boxes) ?? []) where box.isRunning && box.record.effectiveGuest == .macOS {
             let status = BoxStatus.of(box)
             var notes: [String] = []
             if let execs = status.activeExecs, execs > 0 {

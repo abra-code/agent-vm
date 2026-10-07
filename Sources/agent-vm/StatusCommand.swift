@@ -24,8 +24,9 @@ struct StatusCommand: AsyncParsableCommand {
             nothing. With --json: `images`, `boxes` and `jobs`, each entry as `image list \
             --json`, `box list --json` and `job list --json` give it (`jobsError` says why \
             when the jobs could not be listed, rather than `jobs` being taken for none), and \
-            `runningVMs` (`count`, left out when processes cannot be listed, and `limit`, the \
-            macOS guests that can run at once). --check-updates asks Apple for the newest \
+            `runningVMs` (`count`, left out when processes cannot be listed, `limit`, the \
+            macOS guests that can run at once, and `linuxBoxes`, how many of `count` are your \
+            running Linux boxes, which the limit does not concern). --check-updates asks Apple for the newest \
             macOS this Mac's virtual machines can run (the lookup of `image fetch-ipsw \
             --check`; it needs the internet) and keeps the answer in the store; from then on \
             `status` and `image list` name, without a network, each ready image that is \
@@ -57,6 +58,9 @@ struct StatusCommand: AsyncParsableCommand {
         struct RunningVMs: Encodable {
             var count: Int?
             var limit: Int
+            /// How many of `count` are this store's running Linux boxes, which take none of
+            /// the `limit` places.
+            var linuxBoxes: Int
         }
     }
 
@@ -89,12 +93,16 @@ struct StatusCommand: AsyncParsableCommand {
         for problem in imageProblems + boxProblems + jobProblems {
             Stderr.write("warning: \(problem)\n")
         }
+        // Never more Linux boxes than machines: a supervisor holds its box's lock a moment
+        // before its machine is there and after it is gone (as doctor's check counts them).
+        let runningCount = HostFacts.countVirtualMachineProcesses()
+        let linuxBoxes = boxes.filter { $0.record.effectiveGuest == .linux && $0.isRunning }.count
         let summary = Summary(
             images: images.map { ImageCommand.List.Entry(record: $0.record, path: $0.directory.path, updating: $0.record.state == .ready && options.imageStore.isBeingChanged($0), macOSUpdate: newest?.update(for: $0.record)) },
             boxes: boxes.map { box in BoxCommand.List.Entry(box, image: images.first { $0.name == box.record.image }?.record) },
             jobs: jobs,
             jobsError: jobsError,
-            runningVMs: .init(count: HostFacts.countVirtualMachineProcesses(), limit: HostReport.macOSGuestLimit),
+            runningVMs: .init(count: runningCount, limit: HostReport.macOSGuestLimit, linuxBoxes: min(linuxBoxes, runningCount ?? linuxBoxes)),
             newestMacOS: newest, newestMacOSError: newestError)
         if options.json {
             try Output.json(summary)
@@ -185,7 +193,9 @@ struct StatusCommand: AsyncParsableCommand {
         }
         let limit = summary.runningVMs.limit
         if let count = summary.runningVMs.count {
-            lines.append("Virtual machines running on this Mac (any application): \(count); at most \(limit) macOS guests at once")
+            let linux = summary.runningVMs.linuxBoxes
+            let linuxNote = linux > 0 ? ", \(linux) of them \(linux == 1 ? "a Linux box" : "Linux boxes") of yours" : ""
+            lines.append("Virtual machines running on this Mac (any application): \(count)\(linuxNote); at most \(limit) macOS guests at once")
         } else {
             lines.append("Virtual machines running on this Mac: could not be counted; at most \(limit) macOS guests at once")
         }

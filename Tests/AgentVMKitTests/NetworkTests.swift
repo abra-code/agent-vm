@@ -1203,6 +1203,65 @@ final class HoldingServer: @unchecked Sendable {
         #expect(try fixture.boxes.box(named: "b1").record.effectiveNetwork.mode == .open)
     }
 
+    /// Whether /bin/sh takes `command` as a script.
+    static func isValidShell(_ command: String) -> Bool {
+        let check = Process()
+        check.executableURL = URL(fileURLWithPath: "/bin/sh")
+        check.arguments = ["-n", "-c", command]
+        check.standardError = FileHandle.nullDevice
+        guard (try? check.run()) != nil else {
+            return false
+        }
+        check.waitUntilExit()
+        return check.terminationStatus == 0
+    }
+
+    @Test func linuxProxiedBoxesGetThreeFiles() {
+        let proxied = GuestNetworkSetup.command(for: .allowlist, guest: .linux)
+        #expect(GuestNetworkSetup.command(for: .off, guest: .linux) == proxied)
+        // apt, ssh, and shells that exec did not start; each written beside the file and moved.
+        for path in ["/etc/apt/apt.conf.d/90agent-vm-proxy", "/etc/ssh/ssh_config.d/agent-vm.conf", "/etc/profile.d/agent-vm-proxy.sh"] {
+            #expect(proxied.contains("> \(path).new && /usr/bin/chmod 644 \(path).new && /usr/bin/mv -f \(path).new \(path) || exit 1"), "\(path)")
+        }
+        #expect(proxied.contains(#"'Acquire::http::Proxy "http://127.0.0.1:3128";' 'Acquire::https::Proxy "http://127.0.0.1:3128";'"#))
+        #expect(proxied.contains("'export HTTPS_PROXY=http://127.0.0.1:3128'") && proxied.contains("'export NODE_USE_ENV_PROXY=1'"))
+        #expect(proxied.contains("'export NO_PROXY=localhost,127.0.0.1,::1'"))
+        // No card: nothing sets an address, a route or DNS, and nothing of macOS is run.
+        for word in ["networksetup", "ipconfig", "10.254.0", "ip addr", "resolv"] {
+            #expect(!proxied.contains(word), "\(word)")
+        }
+        #expect(Self.isValidShell(proxied))
+        // The lines go in single quotes.
+        #expect((GuestNetworkSetup.linuxAptProxyLines + GuestNetworkSetup.linuxProfileLines).allSatisfy { !$0.contains("'") })
+        // A macOS guest is sent what it always was.
+        #expect(GuestNetworkSetup.command(for: .allowlist, guest: .macOS) == GuestNetworkSetup.command(for: .allowlist))
+        #expect(GuestNetworkSetup.command(for: .open, guest: .macOS) == GuestNetworkSetup.command(for: .open))
+    }
+
+    @Test func linuxOpenBoxesLoseThem() {
+        let open = GuestNetworkSetup.command(for: .open, guest: .linux)
+        #expect(open.contains("/usr/bin/rm -f /etc/apt/apt.conf.d/90agent-vm-proxy /etc/apt/apt.conf.d/90agent-vm-proxy.new /etc/ssh/ssh_config.d/agent-vm.conf /etc/ssh/ssh_config.d/agent-vm.conf.new /etc/profile.d/agent-vm-proxy.sh /etc/profile.d/agent-vm-proxy.sh.new || exit 1"))
+        // The wait for the card's address is bounded and does not fail the start.
+        #expect(open.contains("/usr/lib/systemd/systemd-networkd-wait-online --timeout=15 > /dev/null 2>&1 || /usr/bin/echo"))
+        #expect(!open.contains("Acquire") && !open.contains("export "))
+        #expect(Self.isValidShell(open))
+    }
+
+    @Test func theSshLinesAreTheSame() {
+        // One set of lines for both guests: Debian's nc speaks CONNECT as macOS's does.
+        let lines = GuestNetworkSetup.sshConfigLines.map { "'\($0)'" }.joined(separator: " ")
+        #expect(GuestNetworkSetup.command(for: .allowlist, guest: .linux).contains(lines))
+        #expect(GuestNetworkSetup.command(for: .allowlist, guest: .macOS).contains(lines))
+        #expect(lines.contains("ProxyCommand /usr/bin/nc -X connect -x 127.0.0.1:3128 %h %p"))
+    }
+
+    @Test func theDebianPackLoads() throws {
+        let pack = try #require(TestPacks.builtIn.packs["debian"])
+        #expect(pack.hosts.contains("deb.debian.org") && pack.hosts.contains("security.debian.org"))
+        // Usable in a box's rules.
+        _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["pack:debian"]), packs: TestPacks.builtIn)
+    }
+
     @Test func guestSetupCommands() {
         let proxied = GuestNetworkSetup.command(for: .allowlist)
         #expect(proxied.contains("-setmanual \"$service\" 10.254.0.2 255.255.255.0 10.254.0.1"))

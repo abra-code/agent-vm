@@ -469,12 +469,12 @@ test_connect_list_names_the_system() {
     assert_json images.0.guest linux || return 1
     assert_json images.0.system "Debian GNU/Linux 13 (trixie)" || return 1
     assert_json images.0.offered false || return 1
-    assert_json images.0.reason "runs Linux, which this agent-vm cannot run yet" || return 1
+    assert_json images.0.reason "runs Linux, which avm cannot use yet (agent-vm box start and box shell can)" || return 1
     assert_json images.1.name dev || return 1
     assert_json images.1.guest macos || return 1
     assert_json images.1.macOSVersion 27.0 || return 1
     run_avm_link list --project "$SCRATCH/project"
     assert_status 0 || return 1
-    assert_out_contains "deb  Debian 13  (runs Linux, which this agent-vm cannot run yet)" || return 1
+    assert_out_contains "deb  Debian 13  (runs Linux, which avm cannot use yet (agent-vm box start and box shell can))" || return 1
     assert_out_contains "dev  macOS 27.0" || return 1
 }

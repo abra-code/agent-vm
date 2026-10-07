@@ -115,6 +115,29 @@ import Testing
         #expect(ExecEnvironment.terminalType(host: "vt100") == "vt100")
     }
 
+    @Test func linuxKnowsTheBaseTerminalTypes() {
+        // What the Mac's database holds says nothing of a Linux guest's: the names every
+        // Debian and Ubuntu system has pass, any other falls back (or is installed).
+        for known in ["xterm", "xterm-256color", "vt100", "vt220", "linux", "screen", "screen-256color", "tmux", "tmux-256color", "ansi", "dumb"] {
+            #expect(ExecEnvironment.terminalType(host: known, guest: .linux) == known, "\(known)")
+        }
+        for other in ["xterm-ghostty", "xterm-kitty", "nsterm", "Apple_Terminal", nil, "", "../x/xterm", "."] {
+            #expect(ExecEnvironment.terminalType(host: other, guest: .linux) == "xterm-256color", "\(other ?? "nil")")
+        }
+        // A macOS guest is still asked through the Mac's own database.
+        #expect(ExecEnvironment.terminalType(host: "nsterm", guest: .macOS) == "nsterm")
+    }
+
+    @Test func anotherTypeIsInstalledUnderItsLetter() {
+        // Linux names the folder by the first character, macOS by its code.
+        #expect(ExecEnvironment.terminfoInstallScript(name: "xterm-ghostty", guest: .linux)
+                == "[ -e \"$HOME/.terminfo/x/xterm-ghostty\" ] && exit 0; /bin/mkdir -p \"$HOME/.terminfo\" && /usr/bin/tic -x -o \"$HOME/.terminfo\" /dev/stdin")
+        #expect(ExecEnvironment.terminfoInstallScript(name: "xterm-ghostty", guest: .macOS)?.contains("/.terminfo/78/xterm-ghostty") == true)
+        for bad in ["", ".", "a/b", "x y", "-A"] {
+            #expect(ExecEnvironment.terminfoInstallScript(name: bad, guest: .linux) == nil, "\(bad)")
+        }
+    }
+
     @Test func aTerminalTheGuestLacksIsInstalledForTheAccount() {
         let script = ExecEnvironment.terminfoInstallScript(name: "xterm-ghostty")
         #expect(script == "[ -e \"$HOME/.terminfo/78/xterm-ghostty\" ] && exit 0; /bin/mkdir -p \"$HOME/.terminfo\" && /usr/bin/tic -x -o \"$HOME/.terminfo\" /dev/stdin")
