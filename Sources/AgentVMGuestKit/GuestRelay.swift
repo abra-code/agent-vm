@@ -1,4 +1,4 @@
-// Sources/AgentVMKit/Guest/GuestRelay.swift
+// Sources/AgentVMGuestKit/GuestRelay.swift
 //
 // Inside the box: the proxy address programs use (127.0.0.1:3128, set as the system proxy and
 // in HTTP_PROXY/HTTPS_PROXY) forwarded to the host's proxy on vsock port 3128. Every accepted
@@ -28,7 +28,7 @@ public enum GuestRelay {
     public static func start(port: UInt16 = port, hostPort: UInt32 = hostPort, connect: (@Sendable () -> Int32)? = nil) throws -> UInt16 {
         let listener = socket(AF_INET, SOCK_STREAM, 0)
         guard listener >= 0 else {
-            throw AgentVMError.system(operation: "relay socket", code: errno)
+            throw GuestSystemError(operation: "relay socket", code: errno)
         }
         _ = fcntl(listener, F_SETFD, FD_CLOEXEC)
         var one: Int32 = 1
@@ -44,7 +44,7 @@ public enum GuestRelay {
         guard bound == 0, listen(listener, 64) == 0 else {
             let code = errno
             close(listener)
-            throw AgentVMError.system(operation: "listen on 127.0.0.1:\(port)", code: code)
+            throw GuestSystemError(operation: "listen on 127.0.0.1:\(port)", code: code)
         }
         var listening = sockaddr_in()
         var length = socklen_t(MemoryLayout<sockaddr_in>.size)
@@ -54,7 +54,7 @@ public enum GuestRelay {
         guard named == 0 else {
             let code = errno
             close(listener)
-            throw AgentVMError.system(operation: "getsockname", code: code)
+            throw GuestSystemError(operation: "getsockname", code: code)
         }
         // launchd starts the daemon with room for 256 descriptors, which `maxConnections`
         // connections alone would fill. Programs the daemon starts inherit the higher limit.

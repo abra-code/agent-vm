@@ -1,4 +1,4 @@
-// Sources/AgentVMKit/Guest/GuestServer.swift
+// Sources/AgentVMGuestKit/GuestServer.swift
 //
 // The guest side of the protocol, run by agent-vm-guest as a root LaunchDaemon inside the box.
 // One thread per connection; connections are accepted only from the host (vsock CID 2), since
@@ -47,7 +47,7 @@ public final class GuestServer: @unchecked Sendable {
     public static func listen(port: UInt32) throws -> Int32 {
         let descriptor = socket(AF_VSOCK, SOCK_STREAM, 0)
         guard descriptor >= 0 else {
-            throw AgentVMError.system(operation: "vsock socket", code: errno)
+            throw GuestSystemError(operation: "vsock socket", code: errno)
         }
         _ = fcntl(descriptor, F_SETFD, FD_CLOEXEC)
         var address = sockaddr_vm()
@@ -63,7 +63,7 @@ public final class GuestServer: @unchecked Sendable {
         guard bound == 0, Darwin.listen(descriptor, 16) == 0 else {
             let code = errno
             close(descriptor)
-            throw AgentVMError.system(operation: "listen on vsock port \(port)", code: code)
+            throw GuestSystemError(operation: "listen on vsock port \(port)", code: code)
         }
         return descriptor
     }
@@ -379,7 +379,7 @@ public final class GuestServer: @unchecked Sendable {
         }
     }
 
-    static func report(_ status: Int32) -> ExitReport {
+    package static func report(_ status: Int32) -> ExitReport {
         return ExitReport(waitStatus: status)
     }
 
@@ -722,7 +722,7 @@ public final class GuestServer: @unchecked Sendable {
 
     // MARK: - Helpers
 
-    static func withCStrings<T>(_ strings: [String], _ body: (UnsafePointer<UnsafeMutablePointer<CChar>?>) -> T) -> T {
+    package static func withCStrings<T>(_ strings: [String], _ body: (UnsafePointer<UnsafeMutablePointer<CChar>?>) -> T) -> T {
         var pointers: [UnsafeMutablePointer<CChar>?] = strings.map { strdup($0) }
         pointers.append(nil)
         defer {

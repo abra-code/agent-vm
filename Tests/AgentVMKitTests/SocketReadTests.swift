@@ -7,6 +7,7 @@ import Darwin
 import Foundation
 import Synchronization
 import Testing
+@testable import AgentVMGuestKit
 @testable import AgentVMKit
 
 /// One reader on a thread of its own, and a trigger `delay` after it started. The tests sweep

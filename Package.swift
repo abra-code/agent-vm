@@ -21,11 +21,16 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.6.0"),
     ],
     targets: [
-        // Host-side library: box images and clones, the VM supervisor, the guest protocol,
-        // network policy, sessions with project snapshots and change reports.
-        .target(name: "AgentVMKit"),
+        // What the guest daemon and the host share: the guest protocol, the daemon's server and
+        // its relay. No host framework is linked here.
+        .target(name: "AgentVMGuestKit"),
 
-        // The command-line tool; `agent-vm serve --box <name>` also runs the per-box supervisor,
+        // Host-side library: box images and clones, the VM supervisor, the guest client,
+        // network policy, sessions with project snapshots and change reports. It passes the
+        // guest kit on to its clients.
+        .target(name: "AgentVMKit", dependencies: ["AgentVMGuestKit"]),
+
+        // The command-line tool; `agent-vm box serve <name>` also runs the per-box supervisor,
         // and started as `avm` (a symlink) it is `agent-vm connect`.
         .executableTarget(
             name: "agent-vm",
@@ -37,12 +42,12 @@ let package = Package(
         ),
 
         // The daemon installed inside the guest; talks to the host over vsock only.
-        .executableTarget(name: "agent-vm-guest", dependencies: ["AgentVMKit"]),
+        .executableTarget(name: "agent-vm-guest", dependencies: ["AgentVMGuestKit"]),
 
         // The terminal pickers and prompts of `agent-vm connect`: raw mode, keys, drawing inline.
         .target(name: "TerminalUI"),
 
-        .testTarget(name: "AgentVMKitTests", dependencies: ["AgentVMKit"]),
+        .testTarget(name: "AgentVMKitTests", dependencies: ["AgentVMKit", "AgentVMGuestKit"]),
         .testTarget(name: "TerminalUITests", dependencies: ["TerminalUI"]),
     ]
 )

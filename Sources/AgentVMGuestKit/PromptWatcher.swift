@@ -1,4 +1,4 @@
-// Sources/AgentVMKit/Guest/PromptWatcher.swift
+// Sources/AgentVMGuestKit/PromptWatcher.swift
 //
 // In the guest daemon: notices that a program run by exec waits on a privacy prompt. Every
 // program exec runs is started by the daemon, so macOS asks on the daemon's behalf, on the

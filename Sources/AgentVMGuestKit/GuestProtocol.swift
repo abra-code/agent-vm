@@ -1,4 +1,4 @@
-// Sources/AgentVMKit/Guest/GuestProtocol.swift
+// Sources/AgentVMGuestKit/GuestProtocol.swift
 //
 // The host-to-guest protocol, spoken over one vsock connection per request (a connection costs
 // about 0.2 ms, measured). Language-neutral, so a Linux guest side can implement it too; the
@@ -370,7 +370,7 @@ public final class FrameChannel: @unchecked Sendable {
         }
     }
 
-    static func writeAll(_ descriptor: Int32, _ bytes: [UInt8]) throws {
+    package static func writeAll(_ descriptor: Int32, _ bytes: [UInt8]) throws {
         var done = 0
         try bytes.withUnsafeBytes { buffer in
             while done < buffer.count {
@@ -411,12 +411,12 @@ public final class FrameChannel: @unchecked Sendable {
 }
 
 extension Int32 {
-    var bigEndianBytes: [UInt8] {
+    package var bigEndianBytes: [UInt8] {
         let value = UInt32(bitPattern: self)
         return [UInt8(value >> 24), UInt8((value >> 16) & 0xff), UInt8((value >> 8) & 0xff), UInt8(value & 0xff)]
     }
 
-    init?(bigEndianBytes bytes: [UInt8]) {
+    package init?(bigEndianBytes bytes: [UInt8]) {
         guard bytes.count == 4 else {
             return nil
         }

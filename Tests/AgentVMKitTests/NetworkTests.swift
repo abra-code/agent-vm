@@ -6,6 +6,7 @@
 import Darwin
 import Foundation
 import Testing
+@testable import AgentVMGuestKit
 @testable import AgentVMKit
 
 /// The repository's built-in packs (Resources/packs.json), without any user packs.

@@ -7,6 +7,7 @@
 import Darwin
 import Foundation
 import Testing
+@testable import AgentVMGuestKit
 @testable import AgentVMKit
 
 @Suite struct GuestDaemonLimitsTests {

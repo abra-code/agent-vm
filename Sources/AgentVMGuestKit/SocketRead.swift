@@ -1,4 +1,4 @@
-// Sources/AgentVMKit/Network/SocketRead.swift
+// Sources/AgentVMGuestKit/SocketRead.swift
 //
 // Reading a stream socket without sleeping inside read(). On macOS 27, a thread asleep in
 // read() or recv() on an AF_UNIX stream socket can miss a shutdown of either end made at the

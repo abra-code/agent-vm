@@ -1,4 +1,4 @@
-// Sources/AgentVMKit/Printable.swift
+// Sources/AgentVMGuestKit/Printable.swift
 //
 // Text that agent-vm did not write, made safe to show: what a guest answers (its daemon's
 // version, a refusal, a program's output quoted in an error, a notice), the names of files an

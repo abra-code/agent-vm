@@ -7,6 +7,7 @@
 import Darwin
 import Foundation
 import Testing
+@testable import AgentVMGuestKit
 @testable import AgentVMKit
 
 /// A connected pair: the server side is served on a thread; `client` is closed at the end.

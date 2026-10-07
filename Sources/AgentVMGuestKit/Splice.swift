@@ -1,4 +1,4 @@
-// Sources/AgentVMKit/Network/Splice.swift
+// Sources/AgentVMGuestKit/Splice.swift
 //
 // Copies two connected stream sockets into each other until both directions end: when one side
 // finishes sending, the other side's write half is shut down (a half-close, which vsock

@@ -11,7 +11,7 @@
 //                                                   wallpaper; run in their desktop session
 //   agent-vm-guest --version [--json]
 
-import AgentVMKit
+import AgentVMGuestKit
 import Darwin
 import Foundation
 
