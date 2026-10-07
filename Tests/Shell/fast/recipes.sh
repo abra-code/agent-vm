@@ -119,7 +119,7 @@ test_recipe_check_says_what_a_build_would() {
     write_recipe '{"version": 1, "description": "A tool", "parameters": {"release": {"default": "stable"}}, "steps": [{"run": "sudo install-tool $AGENT_VM_PARAM_RELEASE"}], "update": [{"run": "tool update"}], "checks": ["tool --version"]}'
     run_avm recipe check "$SCRATCH/recipe/recipe.json"
     assert_status 0 || return 1
-    assert_out_contains "recipe.json: ok, 1 warning (recipe: 1 step, 1 update step, 1 check)" || return 1
+    assert_out_contains "recipe.json: ok, 1 warning (recipe: for macOS, 1 step, 1 update step, 1 check)" || return 1
     assert_out_contains "warning (step 1): it runs sudo" || return 1
     run_avm recipe check "$SCRATCH/recipe/recipe.json" --strict
     assert_status 1 || return 1

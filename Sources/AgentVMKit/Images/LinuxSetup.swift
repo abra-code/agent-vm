@@ -62,12 +62,12 @@ enum LinuxSetup {
                  // One name to a getent: asked for two, it fails when either is missing.
                  "if /usr/bin/getent passwd debian > /dev/null || /usr/bin/getent passwd ubuntu > /dev/null; then /usr/bin/echo 'the first boot made a default account'; exit 1; fi; "
                  + "/usr/sbin/useradd --create-home --shell /bin/bash --uid 1000 --user-group \(user) && /usr/bin/passwd --lock \(user) > /dev/null && /usr/bin/id \(user)"),
-            Step("package lists", "\(apt) update", timeout: 600),
+            packageLists,
             Step("system updates", "\(apt) -o Dpkg::Options::=--force-confold dist-upgrade", timeout: 1800),
             Step(packages.joined(separator: ", "), "\(apt) install \(packages.joined(separator: " "))", timeout: 900),
         ]
         if tools {
-            steps.append(Step("the compiler and make (\(toolsPackage))", "\(apt) install \(toolsPackage)", timeout: 1800))
+            steps.append(self.tools)
         }
         // A file of agent-vm's own that git reads: a box's supervisor names the shared project
         // there, so git trusts it whoever looked at it last.
@@ -76,6 +76,16 @@ enum LinuxSetup {
                           + "/usr/bin/git config --system include.path /etc/agent-vm/gitconfig"))
         return steps
     }
+
+    static let packageLists = Step("package lists", "\(apt) update", timeout: 600)
+    static let tools = Step("the compiler and make (\(toolsPackage))", "\(apt) install \(toolsPackage)", timeout: 1800)
+
+    /// Run first in every later boot that builds on an image (a derived image, an update):
+    /// the daemon answers before the network card has its address, and a step that downloads
+    /// would fail on the name lookup. Half a minute at most, and no failure when it runs out:
+    /// a recipe that needs no network still works, and one that does says what it misses.
+    static let waitForNetwork = Step("wait for the network",
+        "/usr/lib/systemd/systemd-networkd-wait-online --timeout=30 > /dev/null 2>&1 || /usr/bin/echo 'the network card got no address yet'", timeout: 60)
 
     /// The installed version of the tools package, for the record.
     static let toolsVersion = "/usr/bin/dpkg-query -W -f '${Version}' \(toolsPackage)"
@@ -120,7 +130,7 @@ enum LinuxSetup {
 
     /// What must be true of a sealed image. A script prints what it found and ends with a
     /// status other than 0 when it is not.
-    static func sealChecks(user: String, daemonPort: UInt32 = GuestProtocol.port) -> [Step] {
+    static func sealChecks(daemonPort: UInt32 = GuestProtocol.port) -> [Step] {
         return [
             Step("no ssh server", "if [ -e /usr/sbin/sshd ]; then /usr/bin/echo '/usr/sbin/sshd is still there'; exit 1; fi"),
             // The server's units, installed or made at boot by systemd's generator and still
@@ -144,11 +154,17 @@ enum LinuxSetup {
                  #"found="$(/usr/bin/systemctl is-enabled apt-daily.timer apt-daily-upgrade.timer 2> /dev/null | /usr/bin/grep -x enabled)"; if [ -n "$found" ]; then /usr/bin/echo 'an apt timer is still enabled'; exit 1; fi"#),
             Step("no account has a usable password",
                  #"found="$(/usr/bin/passwd -S -a | /usr/bin/grep -E '^[^ ]+ P ')"; if [ -n "$found" ]; then /usr/bin/echo "$found"; exit 1; fi"#),
-            Step("the box user has no sudo rule and no group but its own",
-                 #"groups="$(/usr/bin/id -nG \#(user))"; if [ "$groups" != "\#(user)" ]; then /usr/bin/echo "groups: $groups"; exit 1; fi; "#
-                 + #"rule="$(/usr/bin/sudo -n -l -U \#(user) 2>&1)"; case "$rule" in *"is not allowed to run sudo"*) ;; *) /usr/bin/echo "$rule"; exit 1;; esac"#),
             Step("cloud-init is off", "if [ ! -e /etc/cloud/cloud-init.disabled ]; then /usr/bin/echo 'cloud-init is still on'; exit 1; fi"),
         ]
+    }
+
+    /// What must be true of the account the setup made, checked before any recipe runs: the
+    /// first boot gave it no way to root. A recipe may then add one on purpose (a sudo rule, a
+    /// group), and its name in the image's record says so.
+    static func accountCheck(user: String) -> Step {
+        return Step("the box user has no sudo rule and no group but its own",
+                    #"groups="$(/usr/bin/id -nG \#(user))"; if [ "$groups" != "\#(user)" ]; then /usr/bin/echo "groups: $groups"; exit 1; fi; "#
+                    + #"rule="$(/usr/bin/sudo -n -l -U \#(user) 2>&1)"; case "$rule" in *"is not allowed to run sudo"*) ;; *) /usr/bin/echo "$rule"; exit 1;; esac"#)
     }
 
     /// Before every shutdown of an image: each boot of the image, and of every box cloned from

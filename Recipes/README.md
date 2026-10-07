@@ -12,6 +12,15 @@ Recipes for `agent-vm image create --recipe`. The format is described in [../Doc
 | [xcode](xcode/recipe.json) | Xcode from a `.xip` you give (`--input xcode=...`), checked to be signed by Apple, selected with `xcode-select`, its license accepted and first-launch packages installed; debugging without an administrator prompt. The Command Line Tools stay too. | an Xcode `.xip` (see below) |
 | [xcode-platforms](xcode-platforms/recipe.json) | Simulator runtimes (`--set platforms="iOS watchOS"`, default `iOS`; `iOS@26.5` for an older one) and Xcode components (`--set components=...`, default `MetalToolchain`), downloaded from Apple in the guest, no Apple ID needed | Xcode: an image built with xcode |
 
+The recipes above are for macOS images, except agent-clis and acp-agents, which serve both systems. For Linux images (since 0.7.7; see Linux images below):
+
+| Recipe | Installs | Needs |
+|---|---|---|
+| [linux-node](linux-node/recipe.json) | Node and npm from nodejs.org in `/usr/local`: the newest release of one major version (`--set major=24`, the default), checked against nodejs.org's checksum list. `npm install --global` is set to put packages into `~/.local` for the box user, so it needs no root | nothing |
+| [linux-python](linux-python/recipe.json) | Debian's Python (3.13 in Debian 13) with `venv`, `pip`, `pipx`, the headers, and `python` as a name for it; uv, from PyPI through pipx, in `~/.local/bin`. Debian's pip refuses `pip install` outside a virtual environment, so work in one (`python3 -m venv .venv`, or `uv venv`); boxes on the allowlist network need `--allow pack:pypi` | nothing |
+| [linux-sudo](linux-sudo/recipe.json) | A rule that lets the box user run anything as root with `sudo`, without a password. Read "sudo in a Linux box" below before you use it | nothing |
+| [agent-clis](agent-clis/recipe.json), [acp-agents](acp-agents/recipe.json) | As above: the same npm commands | Node: the linux-node recipe before it |
+
 Put the ones you want into one image, in an order that satisfies "Needs" (`--recipe` is repeatable; `--input` and `--set` go to the recipes that declare the name): A recipe that needs another says so in its first step: without Homebrew or Node in the image it fails at once, naming the recipe to put before it.
 
 ```sh
@@ -25,6 +34,31 @@ One image with every tool is the simplest to keep. While you are still working o
 Keep the image current with `agent-vm image update tools`: besides macOS, it runs each recipe's update steps. homebrew upgrades Homebrew and everything installed with it, which covers the node and python recipes (they need no update steps of their own; their checks run again after the upgrade, as do those of every recipe without update steps); agent-clis installs the newest Claude Code, Codex and opencode; acp-agents installs the versions set (`image update tools --tools --set claude_acp=latest` moves a pin). The Xcode recipes have none: a newer Xcode is a new `.xip` and a new image.
 
 The agents need their own logins or API keys inside the box: nothing from your Mac's Keychain reaches it.
+
+## Linux images
+
+```sh
+agent-vm image create deb --linux debian-13                                              # Debian alone, about a minute
+agent-vm image create deb-tools --from deb --recipe Recipes/linux-node/recipe.json --recipe Recipes/linux-python/recipe.json --recipe Recipes/agent-clis/recipe.json
+agent-vm box create work --image deb-tools --allow pack:anthropic --allow pack:openai --allow pack:npm
+```
+
+- **About a minute for all three** on a clone of a ready image (measured: Node 2 s, Python 41 s, the three agents 13 s). `--linux debian-13 --recipe ...` builds the same thing in one image.
+- **A recipe says which system it is for** (`"guest"` in the recipe; see [../Docs/image-recipes.md](../Docs/image-recipes.md)). One for the other system is refused before anything is built, so `Recipes/homebrew` cannot end up in Debian by mistake.
+- **Why not Debian's own Node:** Debian 13 has Node 20, whose `fetch` cannot use a proxy, and the proxy is a box's only way out. Node 24 can (`exec` sets `NODE_USE_ENV_PROXY=1`).
+- **Where the tools are:** `/usr/local/bin` (Node) and `~/.local/bin` (uv, and everything `npm install --global` installs, the agents among them). `~/.local/bin` is first on the path of every program run with `exec`.
+- **`image update`** does not serve Linux images yet. When it does, linux-node installs the newest release of its major version, linux-python the distribution's newest packages and the newest uv.
+
+### sudo in a Linux box
+
+The box user of a Linux image cannot become root: it has no password, no sudo rule and no group but its own. Root is yours, from the Mac: `agent-vm exec --box <box> --user root -- apt-get install -y ripgrep` (on the allowlist network with `--allow pack:debian`), or better a recipe, so that the next box has the package too.
+
+`Recipes/linux-sudo` changes that for an image: `agent-vm image create deb-sudo --from deb --recipe Recipes/linux-sudo/recipe.json`. In every box of such an image, any program, an agent included, runs anything as root.
+
+- **What it widens.** Root in a box can load kernel modules and talk to the virtual machine's devices in ways a user cannot, so more of the code between the box and your Mac is within its reach; it can also change everything in the box, its proxy settings among them. The proxy itself, the allowlist and your Mac's files stay where they are, outside the box. A box is still a separate machine: this is a wider surface, not an open door.
+- **The image says so.** `agent-vm image list` shows the recipe in every image built with it (and in images built from those).
+- **No other bundled recipe needs it,** and a recipe should not add a rule of its own.
+- **Seeing what an agent wanted root for,** in a box without the rule: each refused `sudo` is in the system's journal with its command. `agent-vm exec --box <box> --user root -- journalctl -t sudo` lists them (`user NOT in sudoers ; ... COMMAND=/usr/bin/apt-get install -y ripgrep`). The same packages asked for again and again belong in a recipe.
 
 ## Xcode
 

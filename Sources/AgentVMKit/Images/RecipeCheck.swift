@@ -42,6 +42,8 @@ public enum RecipeCheck {
         public var path: String
         public var name: String?
         public var description: String?
+        /// The guest the recipe is for: "macos", "linux" or "any".
+        public var guest: String?
         public var digest: String?
         public var steps: Int?
         public var updateSteps: Int?
@@ -122,6 +124,7 @@ public enum RecipeCheck {
     private static func fill(_ report: inout Report, from recipe: ImageRecipe) {
         report.name = recipe.name
         report.description = recipe.description
+        report.guest = recipe.guest.rawValue
         report.digest = recipe.digest
         report.steps = recipe.steps.count
         report.updateSteps = recipe.updateSteps.count
@@ -182,8 +185,12 @@ public enum RecipeCheck {
         var warnings: [Finding] = []
         for command in commands {
             // Not in a root step: there `sudo -u "$AGENT_VM_BOX_USER" ...` is how one command
-            // runs as the box user, and root is asked for no password.
-            if !command.root && usesSudo(command.text) {
+            // runs as the box user, and root is asked for no password. Not `sudo -n` in a
+            // check of a recipe for Linux or for any guest either: there a recipe can give the box
+            // user a sudo rule, and the check that never asks is how it proves the rule works.
+            let text = recipe.guest != .macOS && command.kind == .check
+                ? command.text.replacingOccurrences(of: #"\bsudo -n "#, with: "", options: .regularExpression) : command.text
+            if !command.root && usesSudo(text) {
                 let instead = command.kind == .check
                     ? "checks run as the box user; test what a root step left behind without it"
                     : "use \"user\": \"root\" for the step"

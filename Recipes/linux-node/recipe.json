@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "guest": "linux",
+  "description": "Node and npm from nodejs.org, for Linux images",
+  "parameters": {
+    "major": {
+      "description": "Node's major version; its newest release is installed (24 or later: an older Node cannot use a box's proxy for fetch)",
+      "default": "24"
+    }
+  },
+  "steps": [
+    {
+      "name": "The install script",
+      "user": "root",
+      "copy": "files/install-node.sh",
+      "to": "/usr/local/libexec/agent-vm-install-node",
+      "mode": "0755"
+    },
+    {
+      "name": "Node from nodejs.org, checked against its checksum list",
+      "user": "root",
+      "run": "/usr/local/libexec/agent-vm-install-node \"$AGENT_VM_PARAM_MAJOR\"",
+      "timeoutSeconds": 900
+    },
+    {
+      "name": "npm install --global goes to ~/.local for the box user",
+      "run": "mkdir -p \"$HOME/.local/bin\" && npm config set prefix \"$HOME/.local\""
+    }
+  ],
+  "update": [
+    {
+      "name": "Node, the newest of its major version",
+      "user": "root",
+      "run": "/usr/local/libexec/agent-vm-install-node \"$AGENT_VM_PARAM_MAJOR\"",
+      "timeoutSeconds": 900
+    }
+  ],
+  "checks": [
+    "node --version",
+    "npm --version",
+    "[ \"$(npm config get prefix)\" = \"$HOME/.local\" ] && echo \"npm installs global packages into $HOME/.local\""
+  ]
+}

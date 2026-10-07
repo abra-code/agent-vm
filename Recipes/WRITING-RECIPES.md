@@ -4,7 +4,9 @@ You were asked to write a recipe for agent-vm. This guide is everything you need
 
 ## 1. What a recipe is
 
-agent-vm runs AI agents and their tools in macOS virtual machines called boxes. A box is a copy of an image, and an image is macOS plus whatever its recipes installed. A recipe is one JSON file that says what to install: steps that run in the image while it is built, and checks that prove the steps worked.
+agent-vm runs AI agents and their tools in virtual machines called boxes. A box is a copy of an image, and an image is a system (macOS, or Linux: Debian) plus whatever its recipes installed. A recipe is one JSON file that says what to install: steps that run in the image while it is built, and checks that prove the steps worked.
+
+- **A recipe is written for one system.** Ask the person which one unless they said. This guide describes macOS images; what differs in a Linux image is in section 3, under "In a Linux image", and a recipe for one says `"guest": "linux"`.
 
 - **Where to put it:** a folder of its own, named after what it installs, holding `recipe.json` and, when the recipe copies files into the image, a `files/` folder beside it. The folder's name is the recipe's name. Ask the person where the folder should go; never write into agent-vm's own `Recipes/` folder.
 - **One recipe, one thing:** a tool and what it needs. Several recipes can go into one image, in order, so do not repeat what another recipe installs (Homebrew, Node): say that yours needs it (section 7).
@@ -19,7 +21,8 @@ A recipe is a JSON object. A key that is not in these tables is an error.
 |---|---|---|
 | `version` | yes | Always `1`. |
 | `description` | no | One line saying what the recipe installs. Always write one. |
-| `commandLineTools` | no | `false` skips Xcode's Command Line Tools (git, clang, make, python3). Leave it out unless told otherwise. |
+| `guest` | no | The system the recipe is for: `"macos"` (the default), `"linux"`, or `"any"` for commands that are the same on both (an `npm install`). A recipe for the other system is refused before anything is built. |
+| `commandLineTools` | no | `false` skips Xcode's Command Line Tools (git, clang, make, python3); in a Linux image, the compiler and make. Leave it out unless told otherwise. |
 | `steps` | no | A list of steps, run in order while the image is built. |
 | `update` | no | A list of steps that bring what the recipe installed up to date. `agent-vm image update` runs them, never the build. |
 | `checks` | no | A list of shell commands, run as the box user after the steps and again after every update. Each must exit 0 within 300 seconds. Its first line of output is shown. |
@@ -104,6 +107,19 @@ A step has either `run`, or `copy` with `to`. The same keys are used in `steps` 
 - **Checks must hold forever:** after the build and after any later update. Check that the tool runs (`tool --version`), not an exact version number.
 - **Pin nothing you do not have to.** If a version must be pinned, make it a parameter with a default, so it can be moved without editing the recipe.
 
+### In a Linux image
+
+A recipe with `"guest": "linux"` runs in Debian 13 on ARM (`arm64`, which `uname -m` calls `aarch64`). The rules above hold, with these differences:
+
+- **The box user's home is `/home/$AGENT_VM_BOX_USER`**, and the account is no administrator: it is in no group but its own and has no password.
+- **There is no `sudo` for the box user at all,** in a step or in a box. Everything that needs root is a root step. Do not add a sudo rule in your recipe: tell the person that `Recipes/linux-sudo` exists, and let them decide.
+- **The path** is `~/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin`. `~/.local/bin` is first, so what `pip`, `pipx`, `uv`, `cargo install --root ~/.local` and `npm install --global` (with the Node recipe's settings) put there is found by later steps, by checks and in a box, with no link and no root step. There is no Homebrew.
+- **Packages come from apt, in a root step that asks nothing:** `"run": "apt-get -q -y update && apt-get -q -y install ripgrep"` with `"env": {"DEBIAN_FRONTEND": "noninteractive"}`. Run `apt-get update` in the same step: the image's package lists may be old. An update step upgrades the same packages with `apt-get -q -y install --only-upgrade ...`. Do not run `apt-get upgrade` or `dist-upgrade` in a recipe: the system's own updates are `agent-vm image update`'s.
+- **What the image has:** `bash`, `git`, `curl`, `jq`, `tar`, `xz`, `unzip`, `zip`, `python3`, and unless turned off `gcc`, `g++` and `make`. Not there: `pip`, Node. For Node say that your recipe needs `Recipes/linux-node` (Debian's own Node is too old to use a box's proxy).
+- **A file downloaded from a tool's site is checked before it is used,** against a checksum the site publishes (`sha256sum --check`), as `linux-node` does. apt checks its own packages.
+- **In a box the network is a proxy and nothing else** (by default): there is no network card. Tools that read `HTTPS_PROXY` work; one that does not cannot reach anything. `apt-get` in a box, as root from the Mac, needs `--allow pack:debian`.
+- **No services.** A box is not a server: do not enable systemd units, and install no ssh server (the image was built without one on purpose).
+
 ## 4. The loop: check, then build
 
 Work in two rounds. Do not skip the first, and do not stop after it.
@@ -114,7 +130,7 @@ Work in two rounds. Do not skip the first, and do not stop after it.
 agent-vm recipe check --strict path/to/recipe.json
 ```
 
-- **On success** it prints `path/to/recipe.json: ok (<name>: 2 steps, 1 update step, 2 checks)` and exits 0. A line starting with `note` is not a problem.
+- **On success** it prints `path/to/recipe.json: ok (<name>: for macOS, 2 steps, 1 update step, 2 checks)` and exits 0 (`for Linux`, or `for any guest`, as the recipe's `guest` says). A line starting with `note` is not a problem.
 - **On a mistake** it prints `path/to/recipe.json: error: <what is wrong and where>` and exits 1. It reports the first mistake only: fix it and run again.
 - **A warning** (`warning (step 3): ...`) also exits 1 with `--strict`. Fix what it names. If you are sure a warning is wrong, say so to the person and go on without `--strict`.
 - This needs no virtual machine and changes nothing, so it also works inside a sandbox.
@@ -122,7 +138,7 @@ agent-vm recipe check --strict path/to/recipe.json
 
 ### Round 2: build (minutes, once round 1 passes)
 
-1. Find a ready image to build from: `agent-vm image list --json` (each has a `name` and a `state`; use one whose state is `ready`). If there are several, or none, ask the person (section 5).
+1. Find a ready image to build from: `agent-vm image list --json` (each has a `name`, a `state` and a `guest`, `macos` or `linux`; use one whose state is `ready` and whose guest is the one your recipe is for). If there are several, or none, ask the person (section 5).
 2. Build under a scratch name that no image has, starting with `scratch-`:
 
    ```sh
@@ -173,6 +189,11 @@ The shipped recipes are in the `Recipes` folder beside the agent-vm program, the
 | `acp-agents/recipe.json` | Versions pinned as parameters with defaults; checks that run each program. |
 | `xcode/recipe.json` | An input file; what was unpacked from it is checked before it is used; root steps. |
 | `xcode-platforms/recipe.json` | Parameters that hold a list; a long download with a large timeout. |
+| `linux-node/recipe.json` | For Linux: a script copied into the image and run as root, a download checked against the site's checksum list, a setting made as the box user, an update step that does nothing when there is nothing new. |
+| `linux-python/recipe.json` | For Linux: packages from apt in a root step that asks nothing, a tool installed into `~/.local/bin` as the box user, update steps for both. |
+| `linux-sudo/recipe.json` | For Linux: a system file written by a root step and checked before it is put in place. Not something to copy into another recipe. |
+
+`agent-clis` and `acp-agents` say `"guest": "any"`: the same npm commands serve both systems, and their first step names the Node recipe of each.
 
 **Saying what your recipe needs:** when it needs something another recipe installs, make its first step test for that and fail with a message that names the recipe to put before it, as node's does:
 

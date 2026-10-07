@@ -148,6 +148,24 @@ import Testing
             == ["sudo @ step 2", "sudo @ update step 1", "sudo @ check 1"])
         // Root is asked for no password: a root step may use sudo to run one thing as the box user.
         #expect(try codes(#"{"version": 1, "steps": [{"user": "root", "run": "sudo -u \"$AGENT_VM_BOX_USER\" true"}], "update": [{"user": "root", "run": "sudo -u x true"}], "checks": ["true"]}"#).isEmpty)
+        // In a Linux image a recipe can give the box user a sudo rule; its check that never
+        // asks is no mistake. A step that runs sudo still is, and so is a check that would ask.
+        #expect(try codes(#"{"version": 1, "guest": "linux", "steps": [{"run": "sudo true"}], "checks": ["sudo -n true && echo ok", "sudo id"]}"#)
+            == ["sudo @ step 1", "sudo @ check 2"])
+        // Taking `sudo -n` away must not hide a second sudo by joining two words.
+        #expect(try codes(#"{"version": 1, "guest": "any", "checks": ["xsudo -n sudo id", "sudo -n true; sudo id", "sudo -n true"]}"#)
+            == ["sudo @ check 1", "sudo @ check 2"])
+    }
+
+    @Test func checkReportsTheGuest() throws {
+        let scratch = try Scratch()
+        let paths = [try write(#"{"version": 1, "checks": ["true"]}"#, as: "mac", in: scratch),
+                     try write(#"{"version": 1, "guest": "linux", "checks": ["true"]}"#, as: "debian", in: scratch),
+                     try write(#"{"version": 1, "guest": "any", "checks": ["true"]}"#, as: "both", in: scratch),
+                     try write(#"{"version": 1, "guest": "windows", "checks": ["true"]}"#, as: "other", in: scratch)]
+        let result = RecipeCheck.check(paths: paths)
+        #expect(result.recipes.map(\.guest) == ["macos", "linux", "any", nil])
+        #expect(result.recipes[3].error == #""guest" must be one of "macos", "linux", "any"; leave it out for a macOS recipe"#)
     }
 
     /// A variable read only by a script the recipe copies is used.
@@ -228,12 +246,20 @@ import Testing
         let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted().filter {
             FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).appendingPathComponent("recipe.json").path)
         }
-        #expect(names.count >= 7)
+        #expect(names.count >= 10)
         let result = RecipeCheck.check(paths: names.map { folder.appendingPathComponent($0).appendingPathComponent("recipe.json").path })
         for report in result.recipes {
             #expect(report.error == nil, "\(report.path)")
             #expect(report.warnings.isEmpty, "\(report.path): \(report.warnings)")
         }
+        // Each says which guest it is for: the Linux ones by their names, the two that are npm
+        // commands for both, the rest (which say nothing) for macOS.
+        var guests: [String: String] = [:]
+        for report in result.recipes {
+            guests[report.name ?? ""] = report.guest
+        }
+        #expect(guests == ["acp-agents": "any", "agent-clis": "any", "homebrew": "macos", "linux-node": "linux", "linux-python": "linux",
+                           "linux-sudo": "linux", "node": "macos", "python": "macos", "xcode": "macos", "xcode-platforms": "macos"])
     }
 
     /// The JSON the application reads: these keys, and nothing about a file that does not load
@@ -245,7 +271,7 @@ import Testing
         let data = try JSONEncoder().encode(RecipeCheck.check(paths: [good, bad]))
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         let recipes = try #require(object["recipes"] as? [[String: Any]])
-        #expect(Set(recipes[0].keys) == ["path", "name", "description", "digest", "steps", "updateSteps", "checks", "inputs", "parameters", "warnings", "notes"])
+        #expect(Set(recipes[0].keys) == ["path", "name", "description", "guest", "digest", "steps", "updateSteps", "checks", "inputs", "parameters", "warnings", "notes"])
         let parameter = try #require((recipes[0]["parameters"] as? [[String: Any]])?.first)
         #expect(parameter["name"] as? String == "token" && parameter["default"] as? String == "x")
         let warning = try #require((recipes[0]["warnings"] as? [[String: Any]])?.first)

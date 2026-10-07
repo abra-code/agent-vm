@@ -914,7 +914,9 @@ test_what_is_not_done_with_a_linux_image_yet() {
     printf '%s\n' '{ "version": 1, "description": "t", "steps": [ { "name": "n", "run": "true" } ] }' > "$SCRATCH/recipe.json"
     run_avm image create deb2 --from deb --recipe "$SCRATCH/recipe.json"
     assert_status 1 || return 1
-    assert_err_contains "image deb runs Linux, and this agent-vm cannot build an image from a Linux image yet" || return 1
+    # Building from a Linux image is there; a recipe that does not say it is for Linux is not
+    # taken into one.
+    assert_err_contains "recipe.json: it is for macOS images, and image deb runs Linux" || return 1
     assert_missing "$AGENT_VM_HOME/Images/deb2" || return 1
     run_avm image update deb
     assert_status 1 || return 1

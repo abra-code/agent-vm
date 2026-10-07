@@ -84,14 +84,12 @@ extension ImageBuilder {
         if let problem = MachineSize.problem(cpuCount: options.cpuCount, memoryBytes: options.memoryBytes) {
             throw AgentVMError.virtualMachine(operation: "configure \(options.name)", message: problem)
         }
+        for recipe in options.recipes {
+            try recipe.check(serves: .linux, image: options.name)
+        }
         let daemon = LocalGuestDaemon.inspectLinux(options.guestDaemon)
         guard daemon.error == nil, let daemonDigest = daemon.digest else {
             throw AgentVMError.hostNotReady("the Linux guest daemon \(options.guestDaemon.path) is missing or not a Linux program (\(daemon.error ?? "no digest")); Scripts/build.sh builds it when the swift.org toolchain and its static Linux SDK are installed")
-        }
-        // Recipes for a Linux guest take no input files yet: the folder they are sent to is a
-        // macOS path.
-        if let recipe = options.recipes.first(where: { !$0.inputFiles.isEmpty }) {
-            throw AgentVMError.invalidRecipe(path: recipe.name, reason: "recipe inputs are not there for Linux images yet")
         }
         if FileSystem.exists(store.imagesDirectory.appendingPathComponent(options.name).path) {
             let state = (try? store.image(named: options.name))?.record.state.rawValue ?? "unreadable"
@@ -251,6 +249,8 @@ extension ImageBuilder {
                                                       output: "expected \(user), got \"\(Printable.line(identity.stdout.trimmingCharacters(in: .whitespacesAndNewlines), limit: 80))\" \(Printable.line(identity.stderr, limit: 200))")
             }
             log("  programs run as \(user)")
+            // Before the recipes: one of them may give the account sudo on purpose.
+            try await sealCheck(machine, checks: [LinuxSetup.accountCheck(user: user)], what: "account check")
             if options.commandLineTools {
                 let version = try await guestCapture(machine, Self.rootRequest(LinuxSetup.toolsVersion))
                 let label = try LinuxSetup.packageVersion(version.stdout, package: LinuxSetup.toolsPackage)
@@ -261,7 +261,7 @@ extension ImageBuilder {
 
             progress("seal", "Sealing the image: no ssh server, no background updates, no first-boot setup")
             try await runLinuxSteps(LinuxSetup.seal, machine: machine, offset: steps.count, count: count)
-            try await sealCheck(machine, user: user)
+            try await sealCheck(machine, checks: LinuxSetup.sealChecks())
             // The kernel a box of this image boots, after the updates.
             try await shutDown(machine, guest: .linux)
         } catch {
@@ -276,6 +276,43 @@ extension ImageBuilder {
             record.provisionSeconds = seconds
             record.systemCheckedAt = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
         }
+    }
+
+    /// What a derived Linux image gets once its daemon answers: the network card's address
+    /// (a recipe's first step may download), the compiler and make when asked for and
+    /// missing, then the recipes in order. Returns the updated image.
+    func configureLinux(_ image: GoldenImage, machine: GuestMachine, commandLineTools: Bool, recipes: [ImageRecipe]) async throws -> GoldenImage {
+        var current = image
+        var steps = [LinuxSetup.waitForNetwork]
+        var installsTools = false
+        if commandLineTools {
+            if let installed = current.record.commandLineTools {
+                log("  the compiler and make are already installed (\(installed))")
+            } else {
+                steps += [LinuxSetup.packageLists, LinuxSetup.tools]
+                installsTools = true
+            }
+        }
+        try await runLinuxSteps(steps, machine: machine, offset: 0, count: steps.count)
+        if installsTools {
+            let version = try await guestCapture(machine, Self.rootRequest(LinuxSetup.toolsVersion))
+            let label = try LinuxSetup.packageVersion(version.stdout, package: LinuxSetup.toolsPackage)
+            current = try store.update(current) { $0.commandLineTools = "\(LinuxSetup.toolsPackage) \(label)" }
+        }
+        return try await applyRecipes(recipes, to: current, machine: machine)
+    }
+
+    /// After a disk was made longer: the root file system must have grown into it (the
+    /// system does that by itself at boot), or the new image would be the old size for good.
+    func checkRootGrew(_ machine: GuestMachine, diskBytes: UInt64) async throws {
+        let result = try await guestCapture(machine, Self.rootRequest(LinuxSetup.rootSize))
+        let size = UInt64(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        // Nine tenths: the boot partitions and the file system's own tables take the rest.
+        guard result.report == ExitReport(status: 0), size >= diskBytes / 10 * 9 else {
+            throw AgentVMError.guestCommandFailed(command: "check the disk's size", status: result.report.shellStatus,
+                                                  output: "the root file system has \(size >> 20) MB on a \(diskBytes >> 30) GB disk: it did not grow")
+        }
+        log("  root file system grown to \(size >> 30) GB")
     }
 
     /// A script run as root, with apt told to ask nothing.
@@ -335,16 +372,15 @@ extension ImageBuilder {
 
     /// Checks what sealing must have left, as the macOS build checks that SSH no longer
     /// answers; the first check that fails fails the build, with what it found.
-    func sealCheck(_ machine: GuestMachine, user: String) async throws {
-        let checks = LinuxSetup.sealChecks(user: user)
+    func sealCheck(_ machine: GuestMachine, checks: [LinuxSetup.Step], what: String = "seal check") async throws {
         for check in checks {
             let result = try await guestCapture(machine, Self.rootRequest(check.script))
             guard result.report == ExitReport(status: 0) else {
                 let found = Printable.line((result.stdout + result.stderr).trimmingCharacters(in: .whitespacesAndNewlines), limit: 400)
-                throw AgentVMError.guestCommandFailed(command: "seal check \"\(check.name)\"", status: result.report.shellStatus, output: found)
+                throw AgentVMError.guestCommandFailed(command: "\(what) \"\(check.name)\"", status: result.report.shellStatus, output: found)
             }
         }
-        log("  sealed: \(checks.map(\.name).joined(separator: "; "))")
+        log("  checked: \(checks.map(\.name).joined(separator: "; "))")
     }
 
     /// Clears what must differ between the boots of one disk (LinuxSetup.prepareForCloning).

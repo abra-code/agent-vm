@@ -71,8 +71,7 @@ enum GuestSystemText {
 /// Why a command turns down a Linux image or box: what has no meaning for a Linux guest, and
 /// what this agent-vm does not do for one yet.
 enum LinuxGuest {
-    /// What this agent-vm does not do with a Linux image yet: `what` is "build an image from",
-    /// "update" or "rebuild".
+    /// What this agent-vm does not do with a Linux image yet: `what` is "update" or "rebuild".
     static func cannotYet(_ what: String, image: String) -> AgentVMError {
         return .notForThisGuest("image \(image) runs Linux, and this agent-vm cannot \(what) a Linux image yet")
     }

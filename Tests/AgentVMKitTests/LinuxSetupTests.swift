@@ -11,7 +11,8 @@ import Testing
 
 @Suite struct LinuxSetupTests {
     static var everyStep: [LinuxSetup.Step] {
-        return [LinuxSetup.waitForFirstBoot] + LinuxSetup.steps(user: "agent", tools: true) + LinuxSetup.seal + LinuxSetup.sealChecks(user: "agent")
+        return [LinuxSetup.waitForFirstBoot] + LinuxSetup.steps(user: "agent", tools: true) + LinuxSetup.seal + LinuxSetup.sealChecks()
+            + [LinuxSetup.accountCheck(user: "agent"), LinuxSetup.waitForNetwork, LinuxSetup.packageLists, LinuxSetup.tools]
     }
 
     /// The first word of every command in `script`: after the start, `;`, `&&`, `||`, `|`,
@@ -38,7 +39,7 @@ import Testing
                                       LinuxSetup.Step("kernel", LinuxSetup.kernel), LinuxSetup.Step("arch", LinuxSetup.architecture),
                                       LinuxSetup.Step("size", LinuxSetup.rootSize), LinuxSetup.Step("tools", LinuxSetup.toolsVersion)] {
             for word in Self.commandWords(step.script) where !shell.contains(word) && !word.contains("=") && !word.hasSuffix(")") {
-                #expect(word.hasPrefix("/usr/bin/") || word.hasPrefix("/usr/sbin/"), "\(step.name): \(word)")
+                #expect(word.hasPrefix("/usr/bin/") || word.hasPrefix("/usr/sbin/") || word.hasPrefix("/usr/lib/systemd/"), "\(step.name): \(word)")
             }
         }
         // The same for what the first boot runs from the seed disk.
@@ -77,18 +78,20 @@ import Testing
         #expect(seal.contains("console=hvc0"))
         #expect(seal.contains("LLMNR=no"))
         #expect(seal.contains("vmw_vsock_virtio_transport"))
-        let checks = LinuxSetup.sealChecks(user: "dev", daemonPort: 1024)
+        let checks = LinuxSetup.sealChecks(daemonPort: 1024)
         #expect(checks.map(\.name) == ["no ssh server", "no ssh server unit", "nothing listens on TCP port 22", "no TCP port is open to the network",
                                        "nothing listens on vsock but the guest daemon", "the removed packages are gone", "no update timer is on",
-                                       "no account has a usable password",
-                                       "the box user has no sudo rule and no group but its own", "cloud-init is off"])
+                                       "no account has a usable password", "cloud-init is off"])
         // The daemon's own port is the one vsock listener allowed, and the user is the image's.
         #expect(checks[4].script.contains("[:*]1024[[:space:]]"))
         // ... and it must be there: an empty list proves nothing.
         #expect(checks[4].script.contains(#"[ "$own" != "1" ]"#))
-        #expect(checks[8].script.contains("/usr/bin/id -nG dev") && checks[8].script.contains("/usr/bin/sudo -n -l -U dev"))
+        // The account is checked before the recipes, which may give it sudo on purpose: the
+        // check is not among those run after them.
+        let account = LinuxSetup.accountCheck(user: "dev")
+        #expect(account.script.contains("/usr/bin/id -nG dev") && account.script.contains("/usr/bin/sudo -n -l -U dev"))
         // Every check ends with a status other than 0 when it finds something.
-        for check in checks {
+        for check in checks + [account] {
             #expect(check.script.contains("exit 1"), "\(check.name)")
         }
         #expect(LinuxSetup.prepareForCloning.contains("/usr/bin/truncate -s 0 /etc/machine-id"))

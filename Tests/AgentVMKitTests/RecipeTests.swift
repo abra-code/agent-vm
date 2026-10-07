@@ -336,6 +336,73 @@ import Testing
         #expect(reason(url)?.contains("outside the recipe's folder") == true)
     }
 
+    @Test func theGuestKeyIsRead() throws {
+        let scratch = try Scratch()
+        #expect(try ImageRecipe.load(from: recipe(#"{"version": 1, "guest": "linux"}"#, in: scratch)).guest == .linux)
+        #expect(try ImageRecipe.load(from: recipe(#"{"version": 1, "guest": "any"}"#, in: scratch)).guest == .any)
+        #expect(try ImageRecipe.load(from: recipe(#"{"version": 1, "guest": "macos"}"#, in: scratch)).guest == .macOS)
+        // Every recipe written before there were Linux images says nothing, and is a macOS one.
+        #expect(try ImageRecipe.load(from: recipe(#"{"version": 1}"#, in: scratch)).guest == .macOS)
+        #expect(reason(try recipe(#"{"version": 1, "guest": "Linux"}"#, in: scratch)) == #""guest" must be one of "macos", "linux", "any"; leave it out for a macOS recipe"#)
+        #expect(reason(try recipe(#"{"version": 1, "guest": 1}"#, in: scratch)) == #"the recipe: "guest" must be a string"#)
+        // The key is part of the file, so of the digest: the same steps for another guest are
+        // another recipe.
+        let plain = try ImageRecipe.load(from: recipe(#"{"version": 1}"#, in: scratch))
+        #expect(try ImageRecipe.load(from: recipe(#"{"version": 1, "guest": "any"}"#, in: scratch)).digest != plain.digest)
+    }
+
+    @Test func aRecipeForTheOtherGuestIsRefused() throws {
+        let scratch = try Scratch()
+        func refusal(_ json: String, _ kind: GuestKind) throws -> String? {
+            do {
+                try ImageRecipe.load(from: recipe(json, in: scratch)).check(serves: kind, image: "img")
+                return nil
+            } catch let AgentVMError.invalidRecipe(path, reason) {
+                #expect(path.hasSuffix("/recipe/recipe.json"))
+                return reason
+            }
+        }
+        #expect(try refusal(#"{"version": 1}"#, .macOS) == nil)
+        #expect(try refusal(#"{"version": 1}"#, .linux)
+            == #"it is for macOS images, and image img runs Linux (a recipe for Linux images says "guest": "linux", one for both "guest": "any")"#)
+        #expect(try refusal(#"{"version": 1, "guest": "linux"}"#, .linux) == nil)
+        #expect(try refusal(#"{"version": 1, "guest": "linux"}"#, .macOS) == "it is for Linux images, and image img runs macOS")
+        #expect(try refusal(#"{"version": 1, "guest": "any"}"#, .macOS) == nil)
+        #expect(try refusal(#"{"version": 1, "guest": "any"}"#, .linux) == nil)
+    }
+
+    /// A Linux guest has no /private: its inputs go under /var/tmp, and the request that
+    /// removes them names that folder and nothing else.
+    @Test func linuxInputsGoUnderVarTmp() throws {
+        let scratch = try Scratch()
+        let file = scratch.root.appendingPathComponent("data.tar")
+        try Data("x".utf8).write(to: file)
+        let bound = try ImageRecipe.load(from: recipe(#"{"version": 1, "guest": "any", "inputs": {"data": {}}, "parameters": {"p": {"default": "v"}}}"#, in: scratch))
+            .binding(inputs: ["data": file.path], parameters: [:])
+        #expect(bound.variables(for: .linux) == ["AGENT_VM_INPUT_DATA": "/var/tmp/agent-vm-inputs/data/data.tar", "AGENT_VM_PARAM_P": "v"])
+        #expect(bound.variables(for: .macOS) == ["AGENT_VM_INPUT_DATA": "/private/var/tmp/agent-vm-inputs/data/data.tar", "AGENT_VM_PARAM_P": "v"])
+        #expect(bound.variables == bound.variables(for: .macOS))
+        #expect(ImageRecipe.removeInputsRequest(for: .linux).argv == ["/bin/rm", "-rf", "/var/tmp/agent-vm-inputs"])
+        #expect(ImageRecipe.removeInputsRequest(for: .macOS).argv == ["/bin/rm", "-rf", "/private/var/tmp/agent-vm-inputs"])
+        #expect(ImageRecipe.removeInputsRequest(for: .linux).user == "root")
+    }
+
+    /// Replacing the daemon in a Linux image: Debian's tools, and no group named wheel. The
+    /// macOS commands are the ones they were.
+    @Test func theDaemonIsReplacedWithTheGuestsOwnTools() {
+        let digest = String(repeating: "a", count: 64)
+        let mac = GuestDaemon.replaceCommand(digest: digest)
+        #expect(mac == GuestDaemon.replaceCommand(digest: digest, guest: .macOS))
+        #expect(mac.contains("/usr/bin/shasum -a 256 -c -s") && mac.contains("root:wheel"))
+        let linux = GuestDaemon.replaceCommand(digest: digest, guest: .linux)
+        #expect(!linux.contains("shasum") && !linux.contains("wheel"))
+        #expect(linux.hasPrefix("/usr/bin/cat > /usr/local/libexec/agent-vm-guest.new && /usr/bin/echo '\(digest)  /usr/local/libexec/agent-vm-guest.new' | /usr/bin/sha256sum -c --status && "))
+        #expect(linux.contains("/usr/bin/chown root:root /usr/local/libexec/agent-vm-guest.new && /usr/bin/mv -f /usr/local/libexec/agent-vm-guest.new /usr/local/libexec/agent-vm-guest && /usr/bin/sync"))
+        #expect(linux.hasSuffix("&& /usr/bin/sha256sum /usr/local/libexec/agent-vm-guest"))
+        #expect(GuestDaemon.digestCommand(for: .macOS) == ["/usr/bin/shasum", "-a", "256", "/usr/local/libexec/agent-vm-guest"])
+        #expect(GuestDaemon.digestCommand(for: .linux) == ["/usr/bin/sha256sum", "/usr/local/libexec/agent-vm-guest"])
+    }
+
     @Test func requests() {
         let step = ImageRecipe.Step(name: "n", action: .run("echo hi"), user: nil, environment: ["X": "1"], timeoutSeconds: 10)
         let run = ImageRecipe.runRequest(step, command: "echo hi", boxUser: "agent")

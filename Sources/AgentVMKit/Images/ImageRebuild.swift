@@ -203,6 +203,13 @@ extension ImageBuilder {
             if let base, base.record.state != .ready {
                 throw AgentVMError.wrongImageState(name: base.name, state: base.record.state.rawValue, operation: "build an image from")
             }
+            // An image built from a Linux image is a Linux one: not this image built again.
+            if let base, base.record.effectiveGuest != image.record.effectiveGuest {
+                func runs(_ kind: GuestKind) -> String {
+                    return kind == .linux ? "Linux" : "macOS"
+                }
+                throw AgentVMError.notForThisGuest("image \(base.name) runs \(runs(base.record.effectiveGuest)) and \(image.name) runs \(runs(image.record.effectiveGuest)): an image is rebuilt from an image of its own system")
+            }
         }
 
         // Which recipes ran on the disk, with what the image recorded about each.

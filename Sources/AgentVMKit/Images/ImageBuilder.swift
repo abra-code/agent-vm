@@ -233,6 +233,9 @@ public final class ImageBuilder {
         guard access(options.guestDaemon.path, X_OK) == 0 else {
             throw AgentVMError.hostNotReady("the guest daemon \(options.guestDaemon.path) is missing; Scripts/build.sh builds it next to agent-vm")
         }
+        for recipe in options.recipes {
+            try recipe.check(serves: .macOS, image: options.name)
+        }
         // Fail on an existing name before reading the multi-GB restore image.
         if FileSystem.exists(store.imagesDirectory.appendingPathComponent(options.name).path) {
             let state = (try? store.image(named: options.name))?.record.state.rawValue ?? "unreadable"
@@ -315,7 +318,9 @@ public final class ImageBuilder {
     /// Builds an image from a ready one: clones it (instant, copy-on-write; its own MAC and
     /// machine identifier), boots it on NAT, and applies the Command Line Tools if asked and
     /// missing, then the recipe, through the guest daemon. Minutes instead of a macOS install,
-    /// and one base can carry several tool sets.
+    /// and one base can carry several tool sets. The new image runs what its base runs: for a
+    /// Linux base the files cloned are a Linux machine's, a larger disk is the file made
+    /// longer, and the compiler and make stand where the Command Line Tools do.
     public func derive(_ options: ImageDeriveOptions) async throws -> GoldenImage {
         guard ImageStore.isValidName(options.name) else {
             throw AgentVMError.invalidImageName(options.name)
@@ -329,15 +334,17 @@ public final class ImageBuilder {
         guard base.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: base.name, state: base.record.state.rawValue, operation: "build an image from")
         }
-        guard base.record.effectiveGuest == .macOS else {
-            throw LinuxGuest.cannotYet("build an image from", image: base.name)
+        let guest = base.record.effectiveGuest
+        // Before anything is cloned or booted: a Homebrew recipe has nothing to do in Debian.
+        for recipe in options.recipes {
+            try recipe.check(serves: guest, image: base.name)
         }
         guard base.record.guestProtocol == AgentVM.guestProtocolVersion else {
             throw AgentVMError.wrongImageState(name: base.name, state: "built with guest protocol \(base.record.guestProtocol.map(String.init) ?? "none"), not \(AgentVM.guestProtocolVersion)", operation: "build an image from")
         }
         try Self.checkHost(HostFacts.current(storeRoot: store.root), minimumFree: Self.minimumFreeBytesToDerive)
-        if let guestDaemon = options.guestDaemon, access(guestDaemon.path, X_OK) != 0 {
-            throw AgentVMError.hostNotReady("the guest daemon \(guestDaemon.path) is missing; Scripts/build.sh builds it next to agent-vm")
+        if let guestDaemon = options.guestDaemon {
+            try Self.requireLocalDaemon(guestDaemon, guest: guest)
         }
         let cpuCount = options.cpuCount ?? base.record.cpuCount
         let memoryBytes = options.memoryBytes ?? base.record.memoryBytes
@@ -345,10 +352,12 @@ public final class ImageBuilder {
               memoryBytes <= VZVirtualMachineConfiguration.maximumAllowedMemorySize else {
             throw AgentVMError.virtualMachine(operation: "configure \(options.name)", message: "\(cpuCount) CPUs and \(memoryBytes >> 30) GB exceed what this Mac allows")
         }
-        // Moving the recovery container needs a few GB past it; a disk never shrinks.
+        // A disk never shrinks. A macOS disk's recovery container is moved to the new end,
+        // which needs a few GB past it; a Linux disk has nothing behind its root.
         if let diskBytes = options.diskBytes, diskBytes != base.record.diskBytes {
-            guard diskBytes >= base.record.diskBytes + Self.minimumDiskGrowth else {
-                throw AgentVMError.virtualMachine(operation: "configure \(options.name)", message: "the disk can only grow, by at least \(Self.minimumDiskGrowth >> 30) GB: \(base.name)'s is \(base.record.diskBytes >> 30) GB")
+            let growth = guest == .linux ? Self.minimumLinuxDiskGrowth : Self.minimumDiskGrowth
+            guard diskBytes >= base.record.diskBytes + growth else {
+                throw AgentVMError.virtualMachine(operation: "configure \(options.name)", message: "the disk can only grow, by at least \(growth >> 30) GB: \(base.name)'s is \(base.record.diskBytes >> 30) GB")
             }
         }
 
@@ -362,9 +371,11 @@ public final class ImageBuilder {
             throw error
         }
         // The build needs the account's password only once its guest runs: asked for now,
-        // before anything is cloned.
+        // before anything is cloned. (A Linux image's account has none.)
         do {
-            try base.requireAccountPassword(keychain: store.passwords)
+            if guest == .macOS {
+                try base.requireAccountPassword(keychain: store.passwords)
+            }
         } catch {
             baseLock.release()
             throw error
@@ -413,11 +424,16 @@ public final class ImageBuilder {
             do {
                 defer { baseLock.release() }
                 try BoxStore.cloneFile(base.diskURL, to: image.diskURL)
-                try BoxStore.cloneFile(base.auxiliaryStorageURL, to: image.auxiliaryStorageURL)
-                try BoxStore.cloneFile(base.hardwareModelURL, to: image.hardwareModelURL)
-                // A password in the Keychain is shared by its identifier, in the record.
-                if base.record.passwordID == nil {
-                    try BoxStore.cloneFile(base.passwordURL, to: image.passwordURL)
+                switch guest {
+                case .macOS:
+                    try BoxStore.cloneFile(base.auxiliaryStorageURL, to: image.auxiliaryStorageURL)
+                    try BoxStore.cloneFile(base.hardwareModelURL, to: image.hardwareModelURL)
+                    // A password in the Keychain is shared by its identifier, in the record.
+                    if base.record.passwordID == nil {
+                        try BoxStore.cloneFile(base.passwordURL, to: image.passwordURL)
+                    }
+                case .linux:
+                    try BoxStore.cloneFile(base.efiVariableStoreURL, to: image.efiVariableStoreURL)
                 }
                 if inherited != nil, FileSystem.exists(base.recipesURL.path) {
                     do {
@@ -426,43 +442,71 @@ public final class ImageBuilder {
                         throw AgentVMError.system(operation: "copy \(base.recipesURL.path)", code: FileSystem.posixCode(error))
                     }
                 }
-                try VZMacMachineIdentifier().dataRepresentation.write(to: image.machineIdentifierURL)
+                switch guest {
+                case .macOS:
+                    try VZMacMachineIdentifier().dataRepresentation.write(to: image.machineIdentifierURL)
+                case .linux:
+                    try LinuxMachineSpec.createIdentifier(image.machineIdentifierURL)
+                }
             }
             let grown = options.diskBytes.map { $0 > base.record.diskBytes } ?? false
             if grown, let diskBytes = options.diskBytes {
                 progress("grow-disk", "Growing the disk from \(base.record.diskBytes >> 30) to \(diskBytes >> 30) GB")
-                let moved = try GuestDisk.grow(image.diskURL, to: diskBytes)
-                log("  recovery container moved to the end (\((moved.sectors * UInt64(GuestDisk.sectorSize)) >> 20) MB)")
+                switch guest {
+                case .macOS:
+                    let moved = try GuestDisk.grow(image.diskURL, to: diskBytes)
+                    log("  recovery container moved to the end (\((moved.sectors * UInt64(GuestDisk.sectorSize)) >> 20) MB)")
+                case .linux:
+                    // The file made longer is all of it: the system grows its root partition
+                    // and file system into the new space when it boots.
+                    guard truncate(image.diskURL.path, off_t(diskBytes)) == 0 else {
+                        throw AgentVMError.system(operation: "size \(image.diskURL.path)", code: errno)
+                    }
+                }
                 image = try store.update(image) { $0.diskBytes = diskBytes }
             }
             image = try store.update(image) { $0.state = .provisioning }
 
-            let machine = try makeMachine(for: image)
+            // Closed as soon as the guest stopped: the boot that checks a new daemon writes
+            // the same file.
+            let console: ConsoleLog? = guest == .linux ? try ConsoleLog(url: image.consoleLogURL) : nil
+            defer { console?.close() }
+            let machine = try makeMachine(for: image, extras: LinuxMachineExtras(console: console?.writeHandle))
             var replacedDaemon: (digest: String, requirement: String?, replaced: Bool)?
             try checkCanceled()
             progress("boot", "Booting")
-            try await machine.start(provisioning: nil)
+            try await start(machine, guest: guest)
             booted = true
             do {
-                // A clone boots like any box: the daemon answers once macOS is up.
-                let hello = try await waitForDaemon(machine, attempts: 180)
+                // A clone boots like any box: the daemon answers once the system is up.
+                let hello = try await waitForDaemon(machine, attempts: 180, guest: guest)
                 log("  agent-vm-guest \(hello.version ?? "?") answers over vsock")
                 image = try store.update(image) { record in
                     record.guestVersion = hello.version
                     record.guestFeatures = hello.features
                 }
-                if grown {
-                    try await growContainer(machine)
+                switch guest {
+                case .macOS:
+                    if grown {
+                        try await growContainer(machine)
+                    }
+                    image = try await configure(image, machine: machine, commandLineTools: options.commandLineTools, recipes: options.recipes)
+                case .linux:
+                    if grown {
+                        try await checkRootGrew(machine, diskBytes: image.record.diskBytes)
+                    }
+                    image = try await configureLinux(image, machine: machine, commandLineTools: options.commandLineTools, recipes: options.recipes)
                 }
-                image = try await configure(image, machine: machine, commandLineTools: options.commandLineTools, recipes: options.recipes)
                 // Last, so the recipe ran under the daemon it was tested with.
                 if let guestDaemon = options.guestDaemon {
-                    replacedDaemon = try await replaceGuestDaemon(guestDaemon, machine: machine)
+                    replacedDaemon = try await replaceGuestDaemon(guestDaemon, machine: machine, guest: guest)
                 }
-                try await shutDown(machine)
+                try await shutDown(machine, guest: guest)
+                console?.close()
             } catch {
                 let error = canceledError(error)
                 await stopAfterFailure(machine)
+                console?.close()
                 throw error
             }
             if let replacedDaemon, replacedDaemon.replaced {
@@ -741,6 +785,8 @@ public final class ImageBuilder {
 
     /// Growing a disk moves its recovery container (about 5 GB) past the new space.
     static let minimumDiskGrowth: UInt64 = 8 << 30
+    /// A Linux disk grows by any whole number of GB.
+    static let minimumLinuxDiskGrowth: UInt64 = 1 << 30
 
     /// What every image gets once its guest daemon answers: Spotlight indexing off, a desktop
     /// that never locks, names the image and hides its widgets, the Command Line Tools when
@@ -786,7 +832,7 @@ public final class ImageBuilder {
             let folder = "\(inherited.count + index + 1)-\(recipe.name.isEmpty ? "recipe" : recipe.name)"
             try recipe.write(to: current.recipesURL.appendingPathComponent(folder, isDirectory: true))
             let inputs = try await apply(recipe, machine: machine, boxUser: current.record.userName,
-                                         position: recipes.count > 1 ? (index + 1, recipes.count) : nil)
+                                         position: recipes.count > 1 ? (index + 1, recipes.count) : nil, guest: current.record.effectiveGuest)
             own.append(ImageRecord.RecipeInfo(description: recipe.description, digest: recipe.digest,
                                               inputs: inputs.isEmpty ? nil : inputs,
                                               parameters: recipe.parameterValues.isEmpty ? nil : recipe.parameterValues,
@@ -834,14 +880,41 @@ public final class ImageBuilder {
         try await ssh.check("/usr/bin/sudo -S -p '' /bin/sh -c '\(GuestDaemon.installCommand)'", input: Data((password + "\n").utf8))
     }
 
+    /// Refuses a guest daemon on this Mac that cannot go into an image of `guest`: a missing
+    /// file, or for a Linux image one that is not a Linux program.
+    nonisolated static func requireLocalDaemon(_ executable: URL, guest: GuestKind) throws {
+        switch guest {
+        case .macOS:
+            guard access(executable.path, X_OK) == 0 else {
+                throw AgentVMError.hostNotReady("the guest daemon \(executable.path) is missing; Scripts/build.sh builds it next to agent-vm")
+            }
+        case .linux:
+            let daemon = LocalGuestDaemon.inspectLinux(executable)
+            guard daemon.error == nil, daemon.digest != nil else {
+                throw AgentVMError.hostNotReady("the Linux guest daemon \(executable.path) is missing or not a Linux program (\(daemon.error ?? "no digest")); Scripts/build.sh builds it when the swift.org toolchain and its static Linux SDK are installed")
+            }
+        }
+    }
+
+    /// Starts an image's machine: a macOS guest with no provisioning, a Linux guest as it is.
+    func start(_ machine: GuestMachine, guest: GuestKind) async throws {
+        switch guest {
+        case .macOS:
+            try await machine.start(provisioning: nil)
+        case .linux:
+            try await machine.start()
+        }
+    }
+
     /// Puts `executable` in the guest in place of its agent-vm-guest when the two differ (by
     /// SHA-256), through the running daemon; the new one runs from the next boot.
     /// `willReplace` is called just before the guest's daemon file is changed.
-    func replaceGuestDaemon(_ executable: URL, machine: GuestMachine, willReplace: () -> Void = {}) async throws -> (digest: String, requirement: String?, replaced: Bool) {
+    func replaceGuestDaemon(_ executable: URL, machine: GuestMachine, guest: GuestKind = .macOS,
+                            willReplace: () -> Void = {}) async throws -> (digest: String, requirement: String?, replaced: Bool) {
         let digest = try Self.sha256(of: executable)
-        let requirement = CodeSignature.designatedRequirement(of: executable)
-        let installed = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/shasum", "-a", "256", GuestDaemon.executablePath],
-                                                                     cwd: "/", user: "root"))
+        // A Linux program has no code signature to require.
+        let requirement = guest == .macOS ? CodeSignature.designatedRequirement(of: executable) : nil
+        let installed = try await guestCapture(machine, GuestRequest(op: .exec, argv: GuestDaemon.digestCommand(for: guest), cwd: "/", user: "root"))
         if installed.report == ExitReport(status: 0), installed.stdout.hasPrefix(digest + " ") {
             log("  agent-vm-guest is already this agent-vm's")
             return (digest, requirement, false)
@@ -850,7 +923,7 @@ public final class ImageBuilder {
         let data = try Data(contentsOf: executable)
         try checkCanceled()
         willReplace()
-        let request = GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDaemon.replaceCommand(digest: digest)], cwd: "/", user: "root")
+        let request = GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDaemon.replaceCommand(digest: digest, guest: guest)], cwd: "/", user: "root")
         let replaced = try await withGuest(machine, "replace agent-vm-guest", readTimeout: 120) { try GuestClient.capture($0, request, input: data) }
         guard replaced.report == ExitReport(status: 0), replaced.stdout.hasPrefix(digest + " ") else {
             throw AgentVMError.guestCommandFailed(command: "replace agent-vm-guest", status: replaced.report.shellStatus,
@@ -863,20 +936,31 @@ public final class ImageBuilder {
     /// this agent-vm knows, brings the desktop up to date (wallpaper, widgets), records it, and
     /// shuts down.
     private func checkGuestDaemon(_ image: GoldenImage, digest: String, requirement: String?) async throws -> GoldenImage {
-        let machine = try makeMachine(for: image)
+        let guest = image.record.effectiveGuest
+        let console: ConsoleLog? = guest == .linux ? try ConsoleLog(url: image.consoleLogURL) : nil
+        defer { console?.close() }
+        let machine = try makeMachine(for: image, extras: LinuxMachineExtras(console: console?.writeHandle))
         try checkCanceled()
         progress("check-guest-daemon", "Booting again to check the new agent-vm-guest")
-        try await machine.start(provisioning: nil)
+        try await start(machine, guest: guest)
         do {
-            let hello = try await waitForDaemon(machine, attempts: 180)
-            let missing = GuestFeature.all(for: image.record.effectiveGuest).filter { !(hello.features ?? []).contains($0) }
+            let hello = try await waitForDaemon(machine, attempts: 180, guest: guest)
+            let missing = GuestFeature.all(for: guest).filter { !(hello.features ?? []).contains($0) }
             guard missing.isEmpty else {
                 throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the new agent-vm-guest lacks \(missing.joined(separator: ", "))")
             }
+            // The Linux daemon cannot be asked for its version on the Mac: a stale build of
+            // it shows here.
+            guard guest == .macOS || hello.version == AgentVM.version else {
+                throw AgentVMError.hostNotReady("the Linux guest daemon beside agent-vm is version \(Printable.line(hello.version ?? "?", limit: 32)) and agent-vm is \(AgentVM.version); build both with Scripts/build.sh")
+            }
             log("  agent-vm-guest \(hello.version ?? "?") answers (\((hello.features ?? []).joined(separator: ", ")))")
-            await prepareDesktop(image, machine: machine, features: hello.features)
-            let checked = try await recordFullDiskAccess(image, machine: machine, digest: digest, requirement: requirement)
-            try await shutDown(machine)
+            var checked = image
+            if guest == .macOS {
+                await prepareDesktop(image, machine: machine, features: hello.features)
+                checked = try await recordFullDiskAccess(image, machine: machine, digest: digest, requirement: requirement)
+            }
+            try await shutDown(machine, guest: guest)
             return try store.update(checked) { record in
                 record.guestVersion = hello.version
                 record.guestProtocol = hello.v
@@ -985,7 +1069,8 @@ public final class ImageBuilder {
     /// Runs a recipe: streams its inputs into the guest, runs its steps, then its checks, and
     /// deletes the inputs again; any failure fails the build with the step's name and the end
     /// of its output. Returns what was sent as inputs.
-    func apply(_ recipe: ImageRecipe, machine: GuestMachine, boxUser: String, position: (index: Int, count: Int)? = nil) async throws -> [ImageRecord.InputInfo] {
+    func apply(_ recipe: ImageRecipe, machine: GuestMachine, boxUser: String, position: (index: Int, count: Int)? = nil,
+               guest: GuestKind = .macOS) async throws -> [ImageRecord.InputInfo] {
         let clock = ContinuousClock()
         let began = clock.now
         progress("recipe", "Recipe\(position.map { " \($0.index) of \($0.count)" } ?? "")\(recipe.description.map { ": \($0)" } ?? "") (\(recipe.steps.count) steps, \(recipe.checks.count) checks)",
@@ -995,17 +1080,17 @@ public final class ImageBuilder {
         }
         let inputs: [ImageRecord.InputInfo]
         do {
-            inputs = try await sendInputs(recipe, machine: machine)
-            try await runSteps(recipe.steps, checks: recipe.checks, variables: recipe.variables, machine: machine, boxUser: boxUser)
+            inputs = try await sendInputs(recipe, machine: machine, guest: guest)
+            try await runSteps(recipe.steps, checks: recipe.checks, variables: recipe.variables(for: guest), machine: machine, boxUser: boxUser)
         } catch {
             if !recipe.inputFiles.isEmpty {
-                _ = try? await guestCapture(machine, ImageRecipe.removeInputsRequest)
+                _ = try? await guestCapture(machine, ImageRecipe.removeInputsRequest(for: guest))
             }
             throw error
         }
         if !recipe.inputFiles.isEmpty {
             // Inputs are for the steps; an image keeps only what the steps made of them.
-            let removed = try await guestCapture(machine, ImageRecipe.removeInputsRequest)
+            let removed = try await guestCapture(machine, ImageRecipe.removeInputsRequest(for: guest))
             guard removed.report == ExitReport(status: 0) else {
                 throw AgentVMError.guestCommandFailed(command: "delete the recipe's inputs", status: removed.report.shellStatus,
                                                       output: (removed.stderr + removed.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1016,14 +1101,14 @@ public final class ImageBuilder {
     }
 
     /// Streams each input into the guest, in name order, as `ImageRecipe.guestInputPath`.
-    private func sendInputs(_ recipe: ImageRecipe, machine: GuestMachine) async throws -> [ImageRecord.InputInfo] {
+    private func sendInputs(_ recipe: ImageRecipe, machine: GuestMachine, guest: GuestKind) async throws -> [ImageRecord.InputInfo] {
         let clock = ContinuousClock()
         var sent: [ImageRecord.InputInfo] = []
         if !recipe.inputFiles.isEmpty {
             // Root writes there; whatever a base image left at that path (a link, say) goes first.
-            let cleared = try await guestCapture(machine, ImageRecipe.removeInputsRequest)
+            let cleared = try await guestCapture(machine, ImageRecipe.removeInputsRequest(for: guest))
             guard cleared.report == ExitReport(status: 0) else {
-                throw AgentVMError.guestCommandFailed(command: "clear \(ImageRecipe.guestInputsFolder)", status: cleared.report.shellStatus,
+                throw AgentVMError.guestCommandFailed(command: "clear \(ImageRecipe.guestInputsFolder(for: guest))", status: cleared.report.shellStatus,
                                                       output: (cleared.stderr + cleared.stdout).trimmingCharacters(in: .whitespacesAndNewlines))
             }
         }
@@ -1032,7 +1117,7 @@ public final class ImageBuilder {
                 continue
             }
             let began = clock.now
-            let path = ImageRecipe.guestInputPath(name, file: file)
+            let path = ImageRecipe.guestInputPath(name, file: file, guest: guest)
             progress("recipe-input", "  input \(name): \(file.path)")
             // Output comes only at the end, when the guest has the whole file; the read timeout
             // covers the wait for it. A guest program that exits early drops the rest of the

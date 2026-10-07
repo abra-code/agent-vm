@@ -84,12 +84,35 @@ public enum GuestDaemon {
             """
     }
 
+    /// Run as root through the daemon: prints the SHA-256 of the guest's agent-vm-guest, first
+    /// on the line.
+    static func digestCommand(for guest: GuestKind) -> [String] {
+        switch guest {
+        case .macOS:
+            return ["/usr/bin/shasum", "-a", "256", executablePath]
+        case .linux:
+            return ["/usr/bin/sha256sum", executablePath]
+        }
+    }
+
     /// Run as root through the daemon, with the new executable on stdin: put it in place and
     /// print its SHA-256. The running daemon keeps its old file (a rename does not touch it) and
     /// the new one runs from the next boot. A copy cut short (the host gone, so cat sees an early
     /// end of input) never replaces the old one: its SHA-256 must be `digest` before the rename,
     /// and the rename is on disk before the answer.
-    static func replaceCommand(digest: String) -> String {
+    static func replaceCommand(digest: String, guest: GuestKind = .macOS) -> String {
+        // Debian has sha256sum where macOS has shasum, and no group named wheel.
+        if guest == .linux {
+            return [
+                "/usr/bin/cat > \(executablePath).new",
+                "/usr/bin/echo '\(digest)  \(executablePath).new' | /usr/bin/sha256sum -c --status",
+                "/usr/bin/chmod 755 \(executablePath).new",
+                "/usr/bin/chown root:root \(executablePath).new",
+                "/usr/bin/mv -f \(executablePath).new \(executablePath)",
+                "/usr/bin/sync",
+                "/usr/bin/sha256sum \(executablePath)",
+            ].joined(separator: " && ")
+        }
         return [
             "/bin/cat > \(executablePath).new",
             "/bin/echo '\(digest)  \(executablePath).new' | /usr/bin/shasum -a 256 -c -s",

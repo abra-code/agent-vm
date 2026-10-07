@@ -1,10 +1,11 @@
 {
   "version": 1,
-  "description": "Claude Code, Codex and opencode (needs Node: put Recipes/homebrew and Recipes/node before it)",
+  "guest": "any",
+  "description": "Claude Code, Codex and opencode (needs Node: put Recipes/node, or Recipes/linux-node in a Linux image, before it)",
   "steps": [
     {
       "name": "Node is there",
-      "run": "command -v npm > /dev/null || { echo 'Node is not in this image: put Recipes/homebrew and Recipes/node before this recipe' >&2; exit 1; }"
+      "run": "command -v npm > /dev/null || { echo 'Node is not in this image: put Recipes/node (after Recipes/homebrew) or, in a Linux image, Recipes/linux-node before this recipe' >&2; exit 1; }"
     },
     {
       "name": "Agent command-line tools from npm",

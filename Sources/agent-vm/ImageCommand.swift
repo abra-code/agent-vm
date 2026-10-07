@@ -30,7 +30,9 @@ struct ImageCommand: ParsableCommand {
                 --linux, the distribution's own cloud image is downloaded (0.2 GB, kept in the \
                 store's Cache/linux and checked against the distribution's checksum list every \
                 time) and set up (about a minute). With \
-                --from, a ready image is cloned and the recipes applied to the clone (minutes). \
+                --from, a ready image (macOS or Linux) is cloned and the recipes applied to the \
+                clone (minutes, or seconds for Linux). A recipe says which system it is for, and \
+                one for the other system is refused before anything is built. \
                 Several --recipe options put several tool sets into one image, in the order \
                 given; --input and --set go to every recipe that declares the name. SIGINT or SIGTERM stops the build at \
                 the next safe point, shuts the guest down and marks the image failed (canceled); \
@@ -49,7 +51,7 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .customLong("cloud-image"), help: ArgumentHelp("With --linux: a cloud image file of your own (.tar.xz or .raw) in place of the download. It is trusted because you give it, and its SHA-512 is recorded.", valueName: "path"))
         var cloudImage: String?
 
-        @Option(name: .long, help: "A ready image to start from instead of a restore image.")
+        @Option(name: .long, help: "A ready image to start from instead of a restore image or a cloud image; the new image runs the system its base runs.")
         var from: String?
 
         @Option(name: .long, help: "Virtual CPUs (default \(ImageBuildOptions.defaultCPUCount), or the base image's).")
@@ -157,6 +159,9 @@ struct ImageCommand: ParsableCommand {
                     commandLineTools: commandLineTools ?? recipesWantTools ?? true,
                     recipes: recipes))
             } else if let from {
+                // The new image runs what its base runs, and gets that guest's daemon. (A base
+                // that is not there is refused by the build, in its own words.)
+                let guest = (try? options.imageStore.image(named: from))?.record.effectiveGuest ?? .macOS
                 image = try await builder.derive(ImageDeriveOptions(
                     name: name,
                     base: from,
@@ -165,7 +170,7 @@ struct ImageCommand: ParsableCommand {
                     cpuCount: cpus,
                     memoryBytes: memoryGB.map { UInt64($0) << 30 },
                     diskBytes: diskGB.map { UInt64($0) << 30 },
-                    guestDaemon: try ImageCommand.localGuestDaemon()))
+                    guestDaemon: try ImageCommand.localGuestDaemon(for: guest)))
             } else {
                 image = try await builder.build(ImageBuildOptions(
                     name: name,

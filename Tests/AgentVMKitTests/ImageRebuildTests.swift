@@ -108,6 +108,13 @@ import Testing
         #expect(reason(options("tools", inputs: ["ipa": other.path]))?.contains("--input ipa: no recipe to run has that input (they have: xcode)") == true)
         #expect(reason(options("plain"))?.contains("was installed from a restore image: give --ipsw") == true)
         #expect(reason(options("dev", base: "plain")) == nil)
+        // A start that runs the other system: an image built from a Linux image is a Linux one.
+        var debian = ImageStoreTests.record("deb", state: .ready)
+        debian.guest = .linux
+        debian.formatVersion = ImageRecord.formatVersion(passwordID: nil, guest: .linux)
+        let (_, debianLock) = try store.create(debian)
+        debianLock.release()
+        #expect(reason(options("dev", base: "deb"))?.contains("image deb runs Linux and dev runs macOS") == true)
         #expect(reason(options("dev", base: "dev"))?.contains("cannot be rebuilt from itself") == true)
         #expect(reason(options("plain", base: "dev"))?.contains("keeps no recipe that dev lacks") == true)
         #expect(reason(options("tools", base: "nosuch"))?.contains("nosuch") == true)

@@ -100,7 +100,8 @@ struct RecipeCommand: ParsableCommand {
             let contents = [counted(report.steps ?? 0, "step", "steps"), counted(report.updateSteps ?? 0, "update step", "update steps"),
                             counted(report.checks ?? 0, "check", "checks")].joined(separator: ", ")
             let verdict = report.warnings.isEmpty ? "ok" : "ok, \(counted(report.warnings.count, "warning", "warnings"))"
-            var lines = ["\(report.path): \(verdict) (\(report.name ?? "recipe"): \(contents))"]
+            let guest = report.guest.map { $0 == "any" ? "for any guest, " : "for \($0 == "linux" ? "Linux" : "macOS"), " } ?? ""
+            var lines = ["\(report.path): \(verdict) (\(report.name ?? "recipe"): \(guest)\(contents))"]
             lines += report.warnings.map { "  warning (\($0.place)): \($0.message)" }
             lines += report.notes.map { "  note (\($0.place)): \($0.message)" }
             return lines

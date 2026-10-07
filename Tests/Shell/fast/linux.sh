@@ -54,6 +54,36 @@ test_linux_create_checks_the_account_and_the_disk() {
     assert_missing "$AGENT_VM_HOME/Images/x" || return 1
 }
 
+# A recipe says which guest it is for (one that says nothing is for macOS), and one for the
+# other guest is refused before anything is cloned, downloaded or booted.
+test_a_recipe_for_the_other_guest_is_refused_before_anything_boots() {
+    fake_linux_image deb
+    fake_image dev
+    local _recipes="$TESTS_DIR/../../Recipes"
+    run_avm image create x --from deb --recipe "$_recipes/homebrew/recipe.json"
+    assert_status 1 || return 1
+    assert_err_contains "Recipes/homebrew/recipe.json: it is for macOS images, and image deb runs Linux" || return 1
+    assert_err_contains '(a recipe for Linux images says "guest": "linux", one for both "guest": "any")' || return 1
+    run_avm image create x --from dev --recipe "$_recipes/linux-node/recipe.json"
+    assert_status 1 || return 1
+    assert_err_contains "Recipes/linux-node/recipe.json: it is for Linux images, and image dev runs macOS" || return 1
+    # The second of two is found too, and a new Linux image refuses a macOS recipe as well.
+    run_avm image create x --from deb --recipe "$_recipes/linux-node/recipe.json" --recipe "$_recipes/node/recipe.json"
+    assert_status 1 || return 1
+    assert_err_contains "Recipes/node/recipe.json: it is for macOS images, and image deb runs Linux" || return 1
+    run_avm image create x --linux debian-13 --recipe "$_recipes/homebrew/recipe.json"
+    assert_status 1 || return 1
+    assert_err_contains "Recipes/homebrew/recipe.json: it is for macOS images, and image x runs Linux" || return 1
+    assert_missing "$AGENT_VM_HOME/Images/x" || return 1
+    assert_missing "$AGENT_VM_HOME/Cache" || return 1
+    # recipe check says which guest each is for.
+    run_avm recipe check "$_recipes/linux-node/recipe.json" "$_recipes/agent-clis/recipe.json" "$_recipes/node/recipe.json"
+    assert_status 0 || return 1
+    assert_out_contains "linux-node/recipe.json: ok (linux-node: for Linux, 3 steps, 1 update step, 3 checks)" || return 1
+    assert_out_contains "agent-clis/recipe.json: ok (agent-clis: for any guest, " || return 1
+    assert_out_contains "node/recipe.json: ok (node: for macOS, " || return 1
+}
+
 # A cloud image of one's own must exist and be an archive or a raw disk; it is looked at before
 # an image is created.
 test_a_cloud_image_of_ones_own_is_looked_at_first() {

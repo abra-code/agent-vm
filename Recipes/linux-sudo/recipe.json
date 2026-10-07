@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "guest": "linux",
+  "description": "sudo without a password for the box user: any program in a box can then become root",
+  "steps": [
+    {
+      "name": "A sudo rule for the box user, checked before it is put in place",
+      "user": "root",
+      "run": "rule=/etc/sudoers.d/agent-vm; printf '%s ALL=(ALL:ALL) NOPASSWD: ALL\\n' \"$AGENT_VM_BOX_USER\" > \"$rule.new\" && chmod 440 \"$rule.new\" && visudo -c -q -f \"$rule.new\" && mv -f \"$rule.new\" \"$rule\" && visudo -c -q || { rm -f \"$rule.new\" \"$rule\"; echo 'the sudo rule was refused' >&2; exit 1; }"
+    }
+  ],
+  "checks": [
+    "sudo -n true && echo \"no password is asked of $(id -un)\"",
+    "[ \"$(sudo -n id -u)\" = 0 ] && echo 'root, without a password'"
+  ]
+}

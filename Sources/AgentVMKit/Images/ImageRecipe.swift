@@ -8,6 +8,7 @@
 //   {
 //     "version": 1,
 //     "description": "Node and the agent CLIs",
+//     "guest": "macos",
 //     "commandLineTools": true,
 //     "steps": [
 //       { "name": "Homebrew folder", "user": "root", "run": "mkdir -p /opt/homebrew && chown $AGENT_VM_BOX_USER /opt/homebrew" },
@@ -63,7 +64,28 @@ public struct ImageRecipe: Equatable, Sendable {
         public var defaultValue: String?
     }
 
+    /// Which guest a recipe is for. A recipe that says nothing is a macOS one: every recipe
+    /// written before there were Linux images keeps its meaning.
+    public enum Guest: String, Sendable, CaseIterable {
+        case macOS = "macos"
+        case linux
+        /// Commands that are the same on both (npm, pip).
+        case any
+
+        public func serves(_ kind: GuestKind) -> Bool {
+            switch self {
+            case .macOS:
+                return kind == .macOS
+            case .linux:
+                return kind == .linux
+            case .any:
+                return true
+            }
+        }
+    }
+
     public var description: String?
+    public var guest: Guest = .macOS
     /// nil: the default (install them).
     public var commandLineTools: Bool?
     public var steps: [Step]
@@ -94,7 +116,7 @@ public struct ImageRecipe: Equatable, Sendable {
     public static let defaultTimeoutSeconds = 1800
     /// Every key the format knows, by where it stands; anything else is refused. The guide for
     /// agents (Recipes/WRITING-RECIPES.md) lists the same keys, and a test holds it to these.
-    static let recipeKeys: Set<String> = ["version", "description", "commandLineTools", "steps", "update", "checks", "inputs", "parameters"]
+    static let recipeKeys: Set<String> = ["version", "description", "guest", "commandLineTools", "steps", "update", "checks", "inputs", "parameters"]
     static let stepKeys: Set<String> = ["name", "run", "copy", "to", "mode", "user", "env", "timeoutSeconds"]
     static let inputKeys: Set<String> = ["description"]
     static let parameterKeys: Set<String> = ["description", "default"]
@@ -193,6 +215,13 @@ public struct ImageRecipe: Equatable, Sendable {
             throw fail("version \(version) is not supported; this agent-vm reads version \(currentVersion)")
         }
         let description = try optionalString(root, "description", at: "the recipe", fail)
+        var guest = Guest.macOS
+        if let value = try optionalString(root, "guest", at: "the recipe", fail) {
+            guard let known = Guest(rawValue: value) else {
+                throw fail("\"guest\" must be one of \(Guest.allCases.map { "\"\($0.rawValue)\"" }.joined(separator: ", ")); leave it out for a macOS recipe")
+            }
+            guest = known
+        }
         var commandLineTools: Bool?
         if let value = root["commandLineTools"] {
             guard let flag = value as? Bool, CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID() else {
@@ -306,7 +335,7 @@ public struct ImageRecipe: Equatable, Sendable {
             throw fail("\(shared) is both an input and a parameter")
         }
         let digest = hex(hasher.finalize())
-        return ImageRecipe(description: description, commandLineTools: commandLineTools, steps: steps, updateSteps: updateSteps, checks: checks,
+        return ImageRecipe(description: description, guest: guest, commandLineTools: commandLineTools, steps: steps, updateSteps: updateSteps, checks: checks,
                            digest: digest, text: text, path: path, inputs: inputs, parameters: parameters)
     }
 
@@ -422,11 +451,33 @@ public struct ImageRecipe: Equatable, Sendable {
         }
     }
 
-    /// Where an input is put in the guest while the recipe runs; the folder is deleted after.
-    public static let guestInputsFolder = "/private/var/tmp/agent-vm-inputs"
+    /// Refuses a recipe that is for the other guest, before anything boots. `image` is the
+    /// image being built, or the one it starts from.
+    public func check(serves kind: GuestKind, image: String) throws {
+        guard !guest.serves(kind) else {
+            return
+        }
+        switch kind {
+        case .linux:
+            throw AgentVMError.invalidRecipe(path: path, reason: "it is for macOS images, and image \(image) runs Linux (a recipe for Linux images says \"guest\": \"linux\", one for both \"guest\": \"any\")")
+        case .macOS:
+            throw AgentVMError.invalidRecipe(path: path, reason: "it is for Linux images, and image \(image) runs macOS")
+        }
+    }
 
-    static func guestInputPath(_ name: String, file: URL) -> String {
-        return "\(guestInputsFolder)/\(name)/\(file.lastPathComponent)"
+    /// Where an input is put in the guest while the recipe runs; the folder is deleted after.
+    /// The macOS path is the real folder behind /var/tmp, which is a link there.
+    public static func guestInputsFolder(for kind: GuestKind) -> String {
+        switch kind {
+        case .macOS:
+            return "/private/var/tmp/agent-vm-inputs"
+        case .linux:
+            return "/var/tmp/agent-vm-inputs"
+        }
+    }
+
+    static func guestInputPath(_ name: String, file: URL, guest: GuestKind = .macOS) -> String {
+        return "\(guestInputsFolder(for: guest))/\(name)/\(file.lastPathComponent)"
     }
 
     static func inputVariable(_ name: String) -> String {
@@ -437,15 +488,20 @@ public struct ImageRecipe: Equatable, Sendable {
         return "AGENT_VM_PARAM_" + name.uppercased()
     }
 
-    /// The variables every step and check sees: each parameter's value and each input's path
-    /// in the guest.
+    /// The variables every step and check sees in a macOS guest.
     var variables: [String: String] {
+        return variables(for: .macOS)
+    }
+
+    /// The variables every step and check sees: each parameter's value and each input's path
+    /// in a guest of `kind`.
+    func variables(for kind: GuestKind) -> [String: String] {
         var result: [String: String] = [:]
         for (name, value) in parameterValues {
             result[Self.parameterVariable(name)] = value
         }
         for (name, file) in inputFiles {
-            result[Self.inputVariable(name)] = Self.guestInputPath(name, file: file)
+            result[Self.inputVariable(name)] = Self.guestInputPath(name, file: file, guest: kind)
         }
         return result
     }
@@ -582,5 +638,7 @@ public struct ImageRecipe: Equatable, Sendable {
     }
 
     /// The request that deletes every input from the guest.
-    static let removeInputsRequest = GuestRequest(op: .exec, argv: ["/bin/rm", "-rf", guestInputsFolder], cwd: "/", user: "root")
+    static func removeInputsRequest(for kind: GuestKind) -> GuestRequest {
+        return GuestRequest(op: .exec, argv: ["/bin/rm", "-rf", guestInputsFolder(for: kind)], cwd: "/", user: "root")
+    }
 }

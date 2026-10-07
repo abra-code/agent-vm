@@ -88,6 +88,12 @@ agent-vm image create tools --from dev --recipe Recipes/homebrew/recipe.json --r
 agent-vm box create web --image tools
 ```
 
+For a Linux image the recipes are the ones written for Linux (since 0.7.7; a recipe says which system it is for, and one for the other system is refused before anything is built):
+
+```sh
+agent-vm image create deb-tools --from deb --recipe Recipes/linux-node/recipe.json --recipe Recipes/agent-clis/recipe.json
+```
+
 One image with everything you use, like the tools on your own Mac, is the simplest to keep: there is one image to maintain, and every box has every tool. Layers (an image built `--from` another, each with one recipe) save time only while you are still trying recipes out; each layer is one more image that does not follow the one below it.
 
 The recipes record what was installed, so the image can be built again the same way. Tools that need room, such as Xcode and its simulator runtimes (about 4 GB, then 8 GB per runtime), get it with `--disk-gb`: a derived image's disk can be larger than its base's, and images built from it inherit the size. A recipe can also ask for a file you downloaded yourself, such as Xcode's `.xip` (`--input`), and for choices (`--set`); [Recipes/](../Recipes/README.md) has an Xcode example. Recipes are described in [image-recipes.md](image-recipes.md), and examples are in [Recipes/](../Recipes/README.md). A derived image is a clone too: it does not change when its base image changes later.
