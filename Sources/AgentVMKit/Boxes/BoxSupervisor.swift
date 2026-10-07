@@ -19,7 +19,7 @@ public final class BoxSupervisor {
     public private(set) var box: Box
     private let log: @MainActor (String) -> Void
     private let state = SupervisorState()
-    private var machine: MacMachine?
+    private var machine: GuestMachine?
     private var signalSources: [DispatchSourceSignal] = []
     /// The dead-end network card's host end (allowlist and off modes).
     private var link: DeadEndLink?
@@ -153,7 +153,7 @@ public final class BoxSupervisor {
         let network = box.record.effectiveNetwork
         let packs = try NetworkPacks.needed(for: network, store: box.directory.deletingLastPathComponent().deletingLastPathComponent())
         let proxy = ProxyServer(policy: try CompiledPolicy(network, packs: packs), log: NetworkLog(url: box.networkLogURL))
-        let attachment: MacMachineSpec.Network
+        let attachment: MachineNetwork
         if network.usesProxy {
             let link = try DeadEndLink()
             self.link = link
@@ -161,10 +161,7 @@ public final class BoxSupervisor {
         } else {
             attachment = .nat
         }
-        let spec = MacMachineSpec(cpuCount: box.record.cpuCount, memoryBytes: box.record.memoryBytes, macAddress: box.record.macAddress)
-        let configuration = try spec.configuration(for: box.machineFiles, auxiliaryStorage: VZMacAuxiliaryStorage(url: box.auxiliaryStorageURL),
-                                                   network: attachment, shareTag: ProjectShare.tag)
-        let machine = MacMachine(configuration: configuration)
+        let machine = try MachineBuilder.machine(MachineShape(box.record), files: box.machineFiles, network: attachment, share: true)
         self.machine = machine
 
         let name = box.name
@@ -301,7 +298,7 @@ public final class BoxSupervisor {
 
     /// The box's name as its wallpaper, and on its first start hidden widgets (GuestDesktop), in
     /// the background: the box is ready without it, and the desktop comes up a little later.
-    private func prepareDesktop(_ machine: MacMachine, features: [String]) {
+    private func prepareDesktop(_ machine: GuestMachine, features: [String]) {
         let record = box.record
         Task { @MainActor [weak self] in
             do {
@@ -317,7 +314,7 @@ public final class BoxSupervisor {
     }
 
     /// Guest requests on `machine`, with stdin, each on a fresh vsock connection (GuestDesktop).
-    private static func guestRunner(_ machine: MacMachine) -> GuestDesktop.Run {
+    private static func guestRunner(_ machine: GuestMachine) -> GuestDesktop.Run {
         return { request, input in
             let connection = try await machine.connect(toPort: GuestProtocol.port)
             defer { connection.close() }
@@ -327,7 +324,7 @@ public final class BoxSupervisor {
         }
     }
 
-    private func waitForDaemon(_ machine: MacMachine) async -> GuestResponse? {
+    private func waitForDaemon(_ machine: GuestMachine) async -> GuestResponse? {
         let deadline = ContinuousClock.now + Self.bootTimeout
         while ContinuousClock.now < deadline && machine.isRunning && !state.stopRequested {
             if let connection = try? await machine.connect(toPort: GuestProtocol.port) {
@@ -469,7 +466,7 @@ public final class BoxSupervisor {
     }
 
     /// Runs one guest request; throws unless it exits with status 0.
-    private func guestRun(_ machine: MacMachine, _ request: GuestRequest) async throws {
+    private func guestRun(_ machine: GuestMachine, _ request: GuestRequest) async throws {
         let result = try await guestCapture(machine, request)
         guard result.report == ExitReport(status: 0) else {
             throw AgentVMError.guestCommandFailed(command: request.argv?.joined(separator: " ") ?? "?", status: result.report.shellStatus,
@@ -478,7 +475,7 @@ public final class BoxSupervisor {
     }
 
     /// Runs one guest request to the end on a fresh vsock connection, off the main actor.
-    private func guestCapture(_ machine: MacMachine, _ request: GuestRequest) async throws -> (report: ExitReport, stdout: String, stderr: String) {
+    private func guestCapture(_ machine: GuestMachine, _ request: GuestRequest) async throws -> (report: ExitReport, stdout: String, stderr: String) {
         let connection = try await machine.connect(toPort: GuestProtocol.port)
         defer { connection.close() }
         let descriptor = connection.descriptor
@@ -487,7 +484,7 @@ public final class BoxSupervisor {
     }
 
     /// Applies the network mode inside the guest (address, DNS, system proxy) as root.
-    private func configureNetwork(_ machine: MacMachine, mode: BoxNetwork.Mode) async throws {
+    private func configureNetwork(_ machine: GuestMachine, mode: BoxNetwork.Mode) async throws {
         let connection = try await machine.connect(toPort: GuestProtocol.port)
         defer { connection.close() }
         let descriptor = connection.descriptor
@@ -500,7 +497,7 @@ public final class BoxSupervisor {
         log("Network: \(mode.rawValue)\(mode == .open ? " (NAT)" : " (dead-end card, proxy on vsock port \(GuestRelay.hostPort))")")
     }
 
-    private func shutDown(_ machine: MacMachine) async {
+    private func shutDown(_ machine: GuestMachine) async {
         state.set(.stopping, guestVersion: nil)
         log("Shutting down")
         if let connection = try? await machine.connect(toPort: GuestProtocol.port) {
@@ -656,7 +653,7 @@ final class SupervisorState: @unchecked Sendable {
 final class SupervisorControl: ControlHandler, @unchecked Sendable {
     private let state: SupervisorState
     /// Main-actor isolated; used only from the MainActor task below.
-    private let machine: MacMachine
+    private let machine: GuestMachine
     private let box: Box
     private let proxy: ProxyServer
     private let share: @Sendable @MainActor (String, Bool, Bool) async throws -> Void
@@ -664,7 +661,7 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
     private let type: @Sendable @MainActor (String?) async throws -> Void
     private let syncClock: @Sendable @MainActor () async throws -> Double
 
-    init(state: SupervisorState, machine: MacMachine, box: Box, proxy: ProxyServer,
+    init(state: SupervisorState, machine: GuestMachine, box: Box, proxy: ProxyServer,
          share: @escaping @Sendable @MainActor (String, Bool, Bool) async throws -> Void,
          view: @escaping @Sendable @MainActor (Bool) throws -> Void,
          type: @escaping @Sendable @MainActor (String?) async throws -> Void,

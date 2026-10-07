@@ -7,6 +7,7 @@
 
 import Foundation
 import Testing
+import Virtualization
 @testable import AgentVMKit
 
 @Suite struct GuestRecordTests {
@@ -180,7 +181,7 @@ import Testing
 
     // MARK: - What a Linux record is not asked
 
-    @Test func aBoxIsNotMadeFromALinuxImageYet() throws {
+    @Test func aLinuxBoxGetsItsThreeFilesAndItsImagesSystem() throws {
         let scratch = try Scratch()
         let root = scratch.root.appendingPathComponent("store", isDirectory: true)
         let images = ImageStore(root: root)
@@ -188,11 +189,77 @@ import Testing
         let (image, lock) = try images.create(Self.linuxRecord())
         lock.release()
         try Data("disk".utf8).write(to: image.diskURL)
-        #expect(throws: AgentVMError.notForThisGuest("image deb runs Linux, and this agent-vm cannot run Linux guests yet")) {
-            _ = try boxes.create(name: "b1", from: image, imageStore: images)
+        try Data("variables".utf8).write(to: image.efiVariableStoreURL)
+        try LinuxMachineSpec.createIdentifier(image.machineIdentifierURL)
+
+        let box = try boxes.create(name: "b1", from: image, imageStore: images)
+        #expect(box.record.guest == .linux)
+        #expect(box.record.linux == Self.debian)
+        #expect(box.record.formatVersion == 3)
+        #expect(box.record.macOSVersion == nil && box.record.passwordID == nil)
+        #expect(box.record.macAddress != image.record.macAddress)
+        // The disk and the firmware's variables are the image's; the identifier is its own.
+        #expect(try Data(contentsOf: box.diskURL) == Data("disk".utf8))
+        #expect(try Data(contentsOf: box.efiVariableStoreURL) == Data("variables".utf8))
+        let identifier = try Data(contentsOf: box.machineIdentifierURL)
+        #expect(VZGenericMachineIdentifier(dataRepresentation: identifier) != nil)
+        #expect(identifier != (try Data(contentsOf: image.machineIdentifierURL)))
+        // Nothing a Mac guest has.
+        for url in [box.auxiliaryStorageURL, box.hardwareModelURL, box.passwordURL] {
+            #expect(!FileSystem.exists(url.path), "\(url.lastPathComponent)")
         }
-        // Nothing was claimed by the refusal.
-        #expect(try boxes.list().boxes.isEmpty)
+        guard case let .linux(variables, machineIdentifier) = box.machineFiles.platform else {
+            Issue.record("a Linux box's machine files are a Mac's")
+            return
+        }
+        #expect(variables == box.efiVariableStoreURL && machineIdentifier == box.machineIdentifierURL)
+
+        // A box is made again from its image, with the image's system as it is now.
+        var newer = Self.debian
+        newer.version = "14"
+        let updated = try images.update(image) { $0.linux = newer }
+        let again = try boxes.recreate(name: "b1", from: updated, imageStore: images)
+        #expect(again.record.linux?.version == "14")
+        #expect(FileSystem.exists(again.efiVariableStoreURL.path))
+
+        // An image without its variable store makes no box, and leaves no folder.
+        try FileManager.default.removeItem(at: image.efiVariableStoreURL)
+        #expect(throws: AgentVMError.self) {
+            _ = try boxes.create(name: "b2", from: updated, imageStore: images)
+        }
+        #expect(try boxes.list().boxes.map(\.name) == ["b1"])
+    }
+
+    @Test func settleMovesALinuxUpdate() throws {
+        let scratch = try Scratch()
+        let images = ImageStore(root: scratch.root.appendingPathComponent("store", isDirectory: true))
+        var (image, lock) = try images.create(Self.linuxRecord())
+        defer { lock.release() }
+        try Data("old disk".utf8).write(to: image.diskURL)
+        try Data("old variables".utf8).write(to: image.efiVariableStoreURL)
+        // An update that was decided and then interrupted: its folder holds the new files.
+        let commit = image.updateCommitURL
+        try FileManager.default.createDirectory(at: commit, withIntermediateDirectories: true)
+        try Data("new disk".utf8).write(to: commit.appendingPathComponent(ImageStore.diskName))
+        try Data("new variables".utf8).write(to: commit.appendingPathComponent(ImageStore.efiVariableStoreName))
+        var record = image.record
+        record.revision = 1
+        try SessionStore.encoder.encode(record).write(to: commit.appendingPathComponent(ImageStore.recordName))
+
+        image = try images.settle(image)
+        #expect(image.record.revision == 1)
+        #expect(try Data(contentsOf: image.diskURL) == Data("new disk".utf8))
+        #expect(try Data(contentsOf: image.efiVariableStoreURL) == Data("new variables".utf8))
+        #expect(!FileSystem.exists(commit.path))
+        // The copies an update works on are the disk and the variables; the identifier stays.
+        let work = image.machineFiles.working(in: image.updateURL)
+        guard case let .linux(variables, identifier) = work.platform else {
+            Issue.record("a Linux image's machine files are a Mac's")
+            return
+        }
+        #expect(work.disk == image.updateURL.appendingPathComponent(ImageStore.diskName))
+        #expect(variables == image.updateURL.appendingPathComponent(ImageStore.efiVariableStoreName))
+        #expect(identifier == image.machineIdentifierURL)
     }
 
     @Test func whatHasNoMeaningForLinuxSaysSo() {

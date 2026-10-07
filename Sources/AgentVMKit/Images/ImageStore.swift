@@ -194,16 +194,18 @@ public struct ImageStore: Sendable {
 
     /// Brings an image's folder to rest after `image update`, for whoever is about to use its
     /// disk (they hold its lock): a decided update (`Update.commit`) is finished, its disk,
-    /// auxiliary storage and record moved into place in that order, so the record changes
-    /// last; an undecided one (`Update`, left by an agent-vm that was killed) is deleted, and
-    /// the image is as it was. An `Update` folder whose update is still running (its update
+    /// auxiliary storage (a Linux image: its firmware variables) and record moved into place in
+    /// that order, so the record changes last; an undecided one (`Update`, left by an agent-vm
+    /// that was killed) is deleted, and the image is as it was. An `Update` folder whose update is still running (its update
     /// lock is held) is left alone; `updating` is for that update itself, which holds the
     /// lock and clears what an earlier one left. Returns the image as it is now.
     @discardableResult
     public func settle(_ image: GoldenImage, updating: Bool = false) throws -> GoldenImage {
         let commit = image.updateCommitURL
         if FileSystem.exists(commit.path) {
-            for name in [Self.diskName, Self.auxiliaryStorageName, Self.recordName] {
+            // Whichever of them the update made: a Mac's auxiliary storage or a Linux guest's
+            // firmware variables.
+            for name in [Self.diskName, Self.auxiliaryStorageName, Self.efiVariableStoreName, Self.recordName] {
                 let source = commit.appendingPathComponent(name).path
                 // Moved already by the run that was interrupted.
                 guard FileSystem.exists(source) else {

@@ -159,7 +159,7 @@ public final class ImageBuilder {
     /// Otherwise, and after any other failure, the VM is stopped at once. Returns whether the
     /// guest shut down by itself (or was not running).
     @discardableResult
-    func stopAfterFailure(_ machine: MacMachine, waitForDaemon: Bool = true) async -> Bool {
+    func stopAfterFailure(_ machine: GuestMachine, waitForDaemon: Bool = true) async -> Bool {
         guard machine.isRunning else {
             return true
         }
@@ -273,7 +273,7 @@ public final class ImageBuilder {
             // One machine for both steps: a second VZVirtualMachine on the same auxiliary
             // storage fails to start ("Failed to lock auxiliary storage") while the installer's
             // machine is still being torn down.
-            let machine: MacMachine
+            let machine: GuestMachine
             (image, machine) = try await install(image, restore: restore, from: options.restoreImage)
             image = try await provision(image, machine: machine, options: options)
             return image
@@ -437,8 +437,7 @@ public final class ImageBuilder {
             }
             image = try store.update(image) { $0.state = .provisioning }
 
-            let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
-            let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
+            let machine = try makeMachine(for: image)
             var replacedDaemon: (digest: String, requirement: String?, replaced: Bool)?
             try checkCanceled()
             progress("boot", "Booting")
@@ -524,8 +523,7 @@ public final class ImageBuilder {
         // update's leftover.
         image = try store.settle(image, updating: true)
 
-        let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
-        let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
+        let machine = try makeMachine(for: image)
         try checkCanceled()
         progress("boot", "Booting \(image.name)")
         try await machine.start(provisioning: nil)
@@ -603,7 +601,7 @@ public final class ImageBuilder {
 
     // MARK: - Steps
 
-    private func install(_ image: GoldenImage, restore: RestoreImage.Info, from restoreImage: URL) async throws -> (GoldenImage, MacMachine) {
+    private func install(_ image: GoldenImage, restore: RestoreImage.Info, from restoreImage: URL) async throws -> (GoldenImage, GuestMachine) {
         let clock = ContinuousClock()
         let began = clock.now
         try restore.hardwareModel.write(to: image.hardwareModelURL)
@@ -623,7 +621,7 @@ public final class ImageBuilder {
         } catch {
             throw AgentVMError.virtualMachine(operation: "create auxiliary storage", message: error.localizedDescription)
         }
-        let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
+        let machine = try makeMachine(for: image, auxiliaryStorage: auxiliaryStorage)
 
         progress("install", "Installing macOS (a few minutes)...", fraction: 0)
         var reported = -1
@@ -656,7 +654,7 @@ public final class ImageBuilder {
         return (installed, machine)
     }
 
-    private func provision(_ image: GoldenImage, machine: MacMachine, options: ImageBuildOptions) async throws -> GoldenImage {
+    private func provision(_ image: GoldenImage, machine: GuestMachine, options: ImageBuildOptions) async throws -> GoldenImage {
         let clock = ContinuousClock()
         let began = clock.now
         try checkCanceled()
@@ -729,7 +727,7 @@ public final class ImageBuilder {
 
     /// Grows the guest's main APFS container into the space `GuestDisk.grow` freed before it,
     /// and reports the free space that results.
-    private func growContainer(_ machine: MacMachine) async throws {
+    private func growContainer(_ machine: GuestMachine) async throws {
         let resized = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/bin/sh", "-c", GuestDisk.resizeCommand], cwd: "/", user: "root"),
                                              readTimeout: 600)
         guard resized.report == ExitReport(status: 0) else {
@@ -747,7 +745,7 @@ public final class ImageBuilder {
     /// What every image gets once its guest daemon answers: Spotlight indexing off, a desktop
     /// that never locks, names the image and hides its widgets, the Command Line Tools when
     /// asked for and missing, then the recipes in order. Returns the updated image.
-    private func configure(_ image: GoldenImage, machine: MacMachine, commandLineTools: Bool, recipes: [ImageRecipe]) async throws -> GoldenImage {
+    private func configure(_ image: GoldenImage, machine: GuestMachine, commandLineTools: Bool, recipes: [ImageRecipe]) async throws -> GoldenImage {
         var current = image
         // Boxes have no use for Spotlight, and indexing the whole new disk competes with the
         // first boot's installs: the Command Line Tools took 26 minutes during the first
@@ -799,7 +797,7 @@ public final class ImageBuilder {
     }
 
     /// `requestStop()` leaves a logged-in guest running; the daemon shuts it down.
-    func shutDown(_ machine: MacMachine) async throws {
+    func shutDown(_ machine: GuestMachine) async throws {
         progress("shutdown", "Shutting down")
         // Checked once: the request itself is not cut short, or a guest already shutting down
         // would lose power.
@@ -828,7 +826,7 @@ public final class ImageBuilder {
     /// Puts `executable` in the guest in place of its agent-vm-guest when the two differ (by
     /// SHA-256), through the running daemon; the new one runs from the next boot.
     /// `willReplace` is called just before the guest's daemon file is changed.
-    func replaceGuestDaemon(_ executable: URL, machine: MacMachine, willReplace: () -> Void = {}) async throws -> (digest: String, requirement: String?, replaced: Bool) {
+    func replaceGuestDaemon(_ executable: URL, machine: GuestMachine, willReplace: () -> Void = {}) async throws -> (digest: String, requirement: String?, replaced: Bool) {
         let digest = try Self.sha256(of: executable)
         let requirement = CodeSignature.designatedRequirement(of: executable)
         let installed = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/shasum", "-a", "256", GuestDaemon.executablePath],
@@ -854,8 +852,7 @@ public final class ImageBuilder {
     /// this agent-vm knows, brings the desktop up to date (wallpaper, widgets), records it, and
     /// shuts down.
     private func checkGuestDaemon(_ image: GoldenImage, digest: String, requirement: String?) async throws -> GoldenImage {
-        let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
-        let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
+        let machine = try makeMachine(for: image)
         try checkCanceled()
         progress("check-guest-daemon", "Booting again to check the new agent-vm-guest")
         try await machine.start(provisioning: nil)
@@ -888,7 +885,7 @@ public final class ImageBuilder {
     }
 
     /// Waits until the daemon answers hello (launchd starts it within a second or two).
-    func waitForDaemon(_ machine: MacMachine, attempts: Int = 30) async throws -> GuestResponse {
+    func waitForDaemon(_ machine: GuestMachine, attempts: Int = 30) async throws -> GuestResponse {
         var lastError: Error = AgentVMError.guestUnreachable("the guest daemon did not answer")
         for _ in 0..<attempts {
             try checkCanceled()
@@ -926,7 +923,7 @@ public final class ImageBuilder {
 
     /// Sets the guest's clock to the Mac's. A failure is a note (a cancel is not): the build
     /// does not need the right time.
-    private func syncClock(_ machine: MacMachine) async throws {
+    private func syncClock(_ machine: GuestMachine) async throws {
         do {
             let offset = try await withGuest(machine, "time-sync", readTimeout: 10) { try GuestClient.syncTime($0) }
             if abs(offset) >= 1 {
@@ -941,7 +938,7 @@ public final class ImageBuilder {
 
     /// Installs the Command Line Tools through softwareupdate (over the image build's NAT) and
     /// checks them as the box user; returns the installed label.
-    private func installCommandLineTools(_ machine: MacMachine) async throws -> String {
+    private func installCommandLineTools(_ machine: GuestMachine) async throws -> String {
         let clock = ContinuousClock()
         let began = clock.now
         progress("command-line-tools", "Installing the Command Line Tools (about 530 MB)")
@@ -972,7 +969,7 @@ public final class ImageBuilder {
     /// Runs a recipe: streams its inputs into the guest, runs its steps, then its checks, and
     /// deletes the inputs again; any failure fails the build with the step's name and the end
     /// of its output. Returns what was sent as inputs.
-    func apply(_ recipe: ImageRecipe, machine: MacMachine, boxUser: String, position: (index: Int, count: Int)? = nil) async throws -> [ImageRecord.InputInfo] {
+    func apply(_ recipe: ImageRecipe, machine: GuestMachine, boxUser: String, position: (index: Int, count: Int)? = nil) async throws -> [ImageRecord.InputInfo] {
         let clock = ContinuousClock()
         let began = clock.now
         progress("recipe", "Recipe\(position.map { " \($0.index) of \($0.count)" } ?? "")\(recipe.description.map { ": \($0)" } ?? "") (\(recipe.steps.count) steps, \(recipe.checks.count) checks)",
@@ -1003,7 +1000,7 @@ public final class ImageBuilder {
     }
 
     /// Streams each input into the guest, in name order, as `ImageRecipe.guestInputPath`.
-    private func sendInputs(_ recipe: ImageRecipe, machine: MacMachine) async throws -> [ImageRecord.InputInfo] {
+    private func sendInputs(_ recipe: ImageRecipe, machine: GuestMachine) async throws -> [ImageRecord.InputInfo] {
         let clock = ContinuousClock()
         var sent: [ImageRecord.InputInfo] = []
         if !recipe.inputFiles.isEmpty {
@@ -1084,7 +1081,7 @@ public final class ImageBuilder {
     }
 
     /// A recipe's steps (or its update steps), then its checks. `kind` names a step in errors.
-    func runSteps(_ steps: [ImageRecipe.Step], checks: [String], variables: [String: String], machine: MacMachine, boxUser: String,
+    func runSteps(_ steps: [ImageRecipe.Step], checks: [String], variables: [String: String], machine: GuestMachine, boxUser: String,
                   kind: String = "step") async throws {
         let clock = ContinuousClock()
         for (index, step) in steps.enumerated() {
@@ -1155,7 +1152,7 @@ public final class ImageBuilder {
 
     /// Runs one request with its output shown line by line in the build log (indented) through
     /// `emit`, and `input` as its standard input; returns how it ended.
-    func runStreaming(_ machine: MacMachine, _ what: String, _ request: GuestRequest, input: Data?, readTimeout: Int, emit: LineEmitter) async throws -> ExitReport {
+    func runStreaming(_ machine: GuestMachine, _ what: String, _ request: GuestRequest, input: Data?, readTimeout: Int, emit: LineEmitter) async throws -> ExitReport {
         return try await withGuest(machine, what, readTimeout: readTimeout) { descriptor in
             let session = try ExecSession(descriptor: descriptor, request: request)
             // A step that ended first (a quick one, or one that failed before reading its
@@ -1169,7 +1166,7 @@ public final class ImageBuilder {
         }
     }
 
-    func guestCapture(_ machine: MacMachine, _ request: GuestRequest, readTimeout: Int = 60) async throws -> (report: ExitReport, stdout: String, stderr: String) {
+    func guestCapture(_ machine: GuestMachine, _ request: GuestRequest, readTimeout: Int = 60) async throws -> (report: ExitReport, stdout: String, stderr: String) {
         return try await withGuest(machine, Self.describe(request), readTimeout: readTimeout) { try GuestClient.capture($0, request) }
     }
 
@@ -1192,7 +1189,7 @@ public final class ImageBuilder {
     /// guestUnreachable naming `what`, except the read timeout, which callers tell apart.
     /// `cancellable`: a cancel refuses the exchange, or ends it by shutting the connection
     /// down (the guest daemon then stops the program); off for the shutdown after a cancel.
-    func withGuest<T: Sendable>(_ machine: MacMachine, _ what: String, readTimeout: Int = 60, cancellable: Bool = true,
+    func withGuest<T: Sendable>(_ machine: GuestMachine, _ what: String, readTimeout: Int = 60, cancellable: Bool = true,
                                 redeliver: Bool = true, _ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
         let cancellation = cancellable ? self.cancellation : nil
         do {
@@ -1262,7 +1259,7 @@ public final class ImageBuilder {
     }
 
     /// One connection and one exchange; see withGuest.
-    private func exchange<T: Sendable>(_ machine: MacMachine, readTimeout: Int, cancellation: BuildCancellation?,
+    private func exchange<T: Sendable>(_ machine: GuestMachine, readTimeout: Int, cancellation: BuildCancellation?,
                                        _ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
         try checkCanceled(cancellation)
         let connection: GuestConnection
@@ -1298,7 +1295,7 @@ public final class ImageBuilder {
     }
 
     /// Waits for the guest's DHCP lease and for its SSH port to accept connections.
-    private func waitForSSH(_ machine: MacMachine, macAddress: String) async throws -> String {
+    private func waitForSSH(_ machine: GuestMachine, macAddress: String) async throws -> String {
         let deadline = ContinuousClock.now + Self.provisionTimeout
         var announced: String?
         var contact = FirstContact()
@@ -1352,8 +1349,12 @@ public final class ImageBuilder {
         throw lastError
     }
 
-    func spec(_ image: GoldenImage) -> MacMachineSpec {
-        return MacMachineSpec(cpuCount: image.record.cpuCount, memoryBytes: image.record.memoryBytes, macAddress: image.record.macAddress)
+    /// The machine of `image`, as its record describes it: from the image's own files, or from
+    /// `files` (the copies an update works on). `auxiliaryStorage` is what a macOS install just
+    /// created; `extras` are a Linux machine's seed disk and console.
+    func makeMachine(for image: GoldenImage, files: MachineFiles? = nil, auxiliaryStorage: VZMacAuxiliaryStorage? = nil,
+                     extras: LinuxMachineExtras = LinuxMachineExtras()) throws -> GuestMachine {
+        return try MachineBuilder.machine(MachineShape(image.record), files: files ?? image.machineFiles, auxiliaryStorage: auxiliaryStorage, extras: extras)
     }
 
     // MARK: - Files

@@ -15,6 +15,10 @@
 //   Boxes/<name>/MachineIdentifier   the box's own
 //   Boxes/<name>/Password            copy of the image's (the account is the same); not there
 //                                    when the record names a Keychain item (AccountPassword)
+//   Boxes/<name>/EFIVariableStore    a Linux box's boot firmware variables, a clone of the
+//                                    image's; such a box has no AuxiliaryStorage, no
+//                                    HardwareModel and no Password
+//   Boxes/<name>/console.log         what a Linux guest printed on its console (ConsoleLog)
 //   Boxes/<name>/tombstone           a disposable box that stopped; `box gc` deletes the folder
 //   Boxes/.gc.lock                   held while `box gc` runs, so only one collects at a time
 //
@@ -183,8 +187,7 @@ public struct Box: Sendable {
 
     /// The machine files, as the VM configuration reads them.
     var machineFiles: MachineFiles {
-        return MachineFiles(name: name, directory: directory, disk: diskURL, auxiliaryStorage: auxiliaryStorageURL,
-                            hardwareModel: hardwareModelURL, machineIdentifier: machineIdentifierURL)
+        return MachineFiles(name: name, directory: directory, guest: record.effectiveGuest)
     }
 }
 
@@ -248,10 +251,6 @@ public struct BoxStore: Sendable {
         guard current.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: current.name, state: current.record.state.rawValue, operation: "create a box from")
         }
-        // A Linux box has another set of machine files, which this agent-vm does not make yet.
-        guard current.record.effectiveGuest == .macOS else {
-            throw LinuxGuest.cannotRunYet("image \(current.name)")
-        }
 
         try StoreRoot.prepare(root)
         try FileSystem.makeDirectories(boxesDirectory.path)
@@ -278,13 +277,21 @@ public struct BoxStore: Sendable {
         let box = Box(record: record, directory: directory)
         do {
             try Self.cloneFile(current.diskURL, to: box.diskURL)
-            try Self.cloneFile(current.auxiliaryStorageURL, to: box.auxiliaryStorageURL)
-            try Self.cloneFile(current.hardwareModelURL, to: box.hardwareModelURL)
-            // A password in the Keychain is shared by its identifier, in the record.
-            if current.record.passwordID == nil {
-                try Self.cloneFile(current.passwordURL, to: box.passwordURL)
+            switch current.record.effectiveGuest {
+            case .macOS:
+                try Self.cloneFile(current.auxiliaryStorageURL, to: box.auxiliaryStorageURL)
+                try Self.cloneFile(current.hardwareModelURL, to: box.hardwareModelURL)
+                // A password in the Keychain is shared by its identifier, in the record.
+                if current.record.passwordID == nil {
+                    try Self.cloneFile(current.passwordURL, to: box.passwordURL)
+                }
+                try VZMacMachineIdentifier().dataRepresentation.write(to: box.machineIdentifierURL)
+            case .linux:
+                // The firmware's variables go with the disk they were written for; there is
+                // no account password to carry.
+                try Self.cloneFile(current.efiVariableStoreURL, to: box.efiVariableStoreURL)
+                try LinuxMachineSpec.createIdentifier(box.machineIdentifierURL)
             }
-            try VZMacMachineIdentifier().dataRepresentation.write(to: box.machineIdentifierURL)
             try save(box)
         } catch {
             try? FileSystem.removeTree(directory.path)
@@ -454,11 +461,6 @@ public struct BoxStore: Sendable {
         _ = try CompiledPolicy(network, packs: try NetworkPacks.needed(for: network, store: root, builtIn: builtInPacks))
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "create a box from")
-        }
-        // Before the old box is deleted: what `create` would refuse is refused here, with the
-        // box still there.
-        guard image.record.effectiveGuest == .macOS, old.record.effectiveGuest == .macOS else {
-            throw LinuxGuest.cannotRunYet(old.record.effectiveGuest == .linux ? "box \(name)" : "image \(image.name)")
         }
         guard let imageLock = try imageStore.tryLock(image) else {
             throw AgentVMError.imageBusy(image.name)

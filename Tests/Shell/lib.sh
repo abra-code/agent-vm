@@ -249,8 +249,8 @@ fake_linux_image() {
 EOF
 }
 
-# fake_linux_box <name> <image>: the record of a stopped Linux box, which no command can make
-# while agent-vm cannot run Linux guests.
+# fake_linux_box <name> <image>: the record of a stopped Linux box, for tests that need one
+# without a `box create`.
 fake_linux_box() {
     local _name="$1"
     local _dir="$AGENT_VM_HOME/Boxes/$_name"

@@ -25,6 +25,15 @@ public enum ProjectShare {
     /// see above for why.
     public static let tag = "com.apple.virtio-fs.automount"
 
+    /// The tag of a Linux box's device. Apple's automount tag means nothing to Linux, and a
+    /// name of its own says whose device it is in the guest's mount table.
+    public static let linuxTag = "agent-vm-project"
+
+    /// The tag of the project share device in a guest of this kind.
+    public static func tag(for guest: GuestKind) -> String {
+        return guest == .linux ? linuxTag : tag
+    }
+
     /// The canonical folder for `path`, or why it cannot be shared: the session rules (exists,
     /// a folder, not the disk or the home folder or a folder containing it, clear of the
     /// agent-vm store), and nothing inside ~/Library or a hidden folder of the home folder

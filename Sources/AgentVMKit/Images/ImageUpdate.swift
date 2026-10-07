@@ -231,11 +231,8 @@ extension ImageBuilder {
         var updatedRecipes: [String] = []
         var previousGuest: String?
         do {
-            let files = MachineFiles(name: image.name, directory: image.directory, disk: work.appendingPathComponent(ImageStore.diskName),
-                                     auxiliaryStorage: work.appendingPathComponent(ImageStore.auxiliaryStorageName),
-                                     hardwareModel: image.hardwareModelURL, machineIdentifier: image.machineIdentifierURL)
-            let auxiliaryStorage = VZMacAuxiliaryStorage(url: files.auxiliaryStorage)
-            let machine = MacMachine(configuration: try spec(image).configuration(for: files, auxiliaryStorage: auxiliaryStorage))
+            let files = image.machineFiles.working(in: work)
+            let machine = try makeMachine(for: image, files: files)
             try checkCanceled()
             progress("boot", "Booting a copy of \(image.name)\(image.record.updateSeconds.map { " (the last update took \(Int($0.rounded())) s)" } ?? "")",
                      expectedSeconds: image.record.updateSeconds)
@@ -362,7 +359,7 @@ extension ImageBuilder {
 
     /// Whether agent-vm-guest has Full Disk Access now, as the record keeps it; a grant the
     /// record had and the guest lost is a notice.
-    private func probedFullDiskAccess(_ machine: MacMachine, record: ImageRecord, image: String) async throws -> ImageRecord.FullDiskAccess {
+    private func probedFullDiskAccess(_ machine: GuestMachine, record: ImageRecord, image: String) async throws -> ImageRecord.FullDiskAccess {
         let granted = try await hasFullDiskAccess(machine)
         if !granted, record.fullDiskAccess?.granted == true {
             notice("  note: agent-vm-guest lost Full Disk Access in the update (macOS ties it to the daemon's code signature; one signed with a Developer ID keeps it); run `agent-vm image setup \(image)` to grant it again")
@@ -382,11 +379,10 @@ extension ImageBuilder {
         // in that moment can take the last one: wait for a slot rather than lose the update.
         let deadline = ContinuousClock.now + Self.slotPatience
         var waiting = false
-        var machine: MacMachine
+        var machine: GuestMachine
         while true {
             // A new machine for every try: one that was refused is not started again.
-            let auxiliaryStorage = VZMacAuxiliaryStorage(url: files.auxiliaryStorage)
-            machine = MacMachine(configuration: try spec(image).configuration(for: files, auxiliaryStorage: auxiliaryStorage))
+            machine = try makeMachine(for: image, files: files)
             do {
                 try await machine.start(provisioning: nil)
                 break
@@ -461,7 +457,7 @@ extension ImageBuilder {
     /// Installs the macOS update Apple offers within the image's major version, and waits for
     /// the guest to come back on the new build. Returns the new version and build, or nil when
     /// none is offered.
-    private func updateMacOS(_ machine: MacMachine, image: GoldenImage) async throws -> (version: String, build: String)? {
+    private func updateMacOS(_ machine: GuestMachine, image: GoldenImage) async throws -> (version: String, build: String)? {
         let clock = ContinuousClock()
         let began = clock.now
         progress("macos-check", "Asking Apple for macOS updates")
@@ -542,7 +538,7 @@ extension ImageBuilder {
 
     /// The guest's macOS version and build. `quiet`: one attempt, for a guest that may be
     /// restarting.
-    private func macOSVersion(_ machine: MacMachine, quiet: Bool = false) async throws -> (version: String, build: String) {
+    private func macOSVersion(_ machine: GuestMachine, quiet: Bool = false) async throws -> (version: String, build: String) {
         let request = MacOSUpdate.versionRequest
         let result = try await withGuest(machine, "sw_vers", readTimeout: 15, redeliver: !quiet) { try GuestClient.capture($0, request) }
         let lines = result.stdout.split(whereSeparator: \.isNewline).map(String.init)
@@ -555,7 +551,7 @@ extension ImageBuilder {
 
     /// Installs a newer Command Line Tools package when the image has the tools and Apple
     /// offers one; returns its label.
-    private func updateCommandLineTools(_ machine: MacMachine, installed: String?) async throws -> String? {
+    private func updateCommandLineTools(_ machine: GuestMachine, installed: String?) async throws -> String? {
         guard let installed else {
             return nil
         }
@@ -578,7 +574,7 @@ extension ImageBuilder {
     }
 
     /// One recipe's update steps, then its checks.
-    private func runUpdate(_ recipe: ImageRecipe, machine: MacMachine, boxUser: String, position: (index: Int, count: Int)) async throws {
+    private func runUpdate(_ recipe: ImageRecipe, machine: GuestMachine, boxUser: String, position: (index: Int, count: Int)) async throws {
         let clock = ContinuousClock()
         let began = clock.now
         progress("tools-update", "Updating \(recipe.name) (\(position.index) of \(position.count))\(recipe.description.map { ": \($0)" } ?? "")",
@@ -592,7 +588,7 @@ extension ImageBuilder {
 
     /// Shuts the updated guest down. A macOS 27 guest sometimes restarts instead of powering
     /// off: one that answers again is asked again, rather than losing the whole update.
-    private func shutDownAfterUpdate(_ machine: MacMachine) async throws {
+    private func shutDownAfterUpdate(_ machine: GuestMachine) async throws {
         let attempts = 3
         for attempt in 1...attempts {
             do {

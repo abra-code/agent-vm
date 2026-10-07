@@ -21,7 +21,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     private let name: String
     /// What the window shows: "box", or "image" for `image setup` and `image view`.
     private let kind: String
-    private let machine: MacMachine
+    private let machine: GuestMachine
     /// Gives the guest account's password, typed by the Type Password button (interactive
     /// only). Asked when the button is pressed, away from the main actor: read from the
     /// Keychain, it can wait for the person's answer to a question from macOS.
@@ -46,7 +46,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     /// Stop was pressed or the window closed: no further item starts.
     private var stopRequested = false
 
-    init(name: String, kind: String = "box", machine: MacMachine, password: (@Sendable () throws -> String)? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil,
+    init(name: String, kind: String = "box", machine: GuestMachine, password: (@Sendable () throws -> String)? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil,
          log: (@MainActor (String) -> Void)? = nil) {
         self.name = name
         self.kind = kind

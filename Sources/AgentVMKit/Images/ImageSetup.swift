@@ -56,8 +56,7 @@ extension ImageBuilder {
         image = try store.settle(image, updating: true)
         let password = try image.accountPassword(keychain: store.passwords)
 
-        let auxiliaryStorage = VZMacAuxiliaryStorage(url: image.auxiliaryStorageURL)
-        let machine = MacMachine(configuration: try spec(image).configuration(for: image.machineFiles, auxiliaryStorage: auxiliaryStorage))
+        let machine = try makeMachine(for: image)
         // Control-C (or SIGTERM) at any point ends the setup at the next step, with a clean
         // shutdown: killed, the process would take the image's VM down mid-write.
         let done = SetupDone()
@@ -116,7 +115,7 @@ extension ImageBuilder {
 
     /// The window part: shows the screen, opens the settings (with `guide`), and waits for the
     /// window to close. Returns whether agent-vm-guest has Full Disk Access at the end.
-    private func grantFullDiskAccess(_ machine: MacMachine, image: GoldenImage, password: String, done: SetupDone, guide: Bool) async throws -> Bool {
+    private func grantFullDiskAccess(_ machine: GuestMachine, image: GoldenImage, password: String, done: SetupDone, guide: Bool) async throws -> Bool {
         let viewer = BoxViewer(name: image.name, kind: "image", machine: machine, password: { password },
                                note: !guide ? Self.viewNote : "Full Disk Access for agent-vm-guest: in Settings, drag agent-vm-guest from the Finder window into the list (or use +), turn it on, and use Type Password when asked. Close this window when done.",
                                onClose: { done.finish() }, log: { [weak self] in self?.log($0) })
@@ -171,7 +170,7 @@ extension ImageBuilder {
     /// Probes Full Disk Access for the running daemon and records it for `digest` and
     /// `requirement` (the daemon's). A grant lost to a new daemon is said so: macOS ties it to
     /// the daemon's designated code requirement, which only a Developer ID keeps across builds.
-    func recordFullDiskAccess(_ image: GoldenImage, machine: MacMachine, digest: String?, requirement: String?) async throws -> GoldenImage {
+    func recordFullDiskAccess(_ image: GoldenImage, machine: GuestMachine, digest: String?, requirement: String?) async throws -> GoldenImage {
         let granted = try await hasFullDiskAccess(machine)
         if !granted, let previous = image.record.fullDiskAccess, previous.granted, previous.guestDigest != digest {
             let keep = requirement.map(CodeSignature.namesASigner) == true ? "" : "; a daemon signed with a Developer ID (Scripts/build.sh --identity) keeps it across updates"
@@ -184,13 +183,13 @@ extension ImageBuilder {
     }
 
     /// Whether agent-vm-guest may read a file only Full Disk Access opens (never prompts).
-    func hasFullDiskAccess(_ machine: MacMachine) async throws -> Bool {
+    func hasFullDiskAccess(_ machine: GuestMachine) async throws -> Bool {
         let probe = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/head", "-c", "16", Self.fullDiskAccessProbe], cwd: "/", user: "root"))
         return probe.report == ExitReport(status: 0)
     }
 
     /// No screen saver, no display sleep and no screen lock for the box user (GuestDesktop).
-    func keepDesktopUnlocked(_ machine: MacMachine, user: String, password: String) async throws {
+    func keepDesktopUnlocked(_ machine: GuestMachine, user: String, password: String) async throws {
         let note = try await GuestDesktop.keepUnlocked(user: user, password: password, run: guestRunner(machine))
         if let note {
             notice("  note: \(note)")
@@ -204,7 +203,7 @@ extension ImageBuilder {
     /// An older daemon sets no wallpaper, without a note: every caller either replaces it next
     /// (`image create --from`) or already runs this agent-vm's (`image create`, `update-guest`).
     /// Only looks: a failure is logged, never fails the build or update.
-    func prepareDesktop(_ image: GoldenImage, machine: MacMachine, features: [String]?) async {
+    func prepareDesktop(_ image: GoldenImage, machine: GuestMachine, features: [String]?) async {
         let features = features ?? []
         do {
             var shown = image.record
@@ -224,7 +223,7 @@ extension ImageBuilder {
     }
 
     /// Guest requests on this machine, with stdin, for GuestDesktop.
-    func guestRunner(_ machine: MacMachine) -> GuestDesktop.Run {
+    func guestRunner(_ machine: GuestMachine) -> GuestDesktop.Run {
         return { [self] request, input in
             try await withGuest(machine, Self.describe(request)) { descriptor in
                 try GuestClient.capture(descriptor, request, input: input)
@@ -232,7 +231,7 @@ extension ImageBuilder {
         }
     }
 
-    private func userID(_ machine: MacMachine, user: String) async throws -> String {
+    private func userID(_ machine: GuestMachine, user: String) async throws -> String {
         return try await GuestDesktop.userID(user, run: guestRunner(machine))
     }
 }

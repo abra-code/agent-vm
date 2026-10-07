@@ -873,6 +873,38 @@ test_commands_without_a_linux_meaning_refuse() {
     assert_err_contains "agent-vm exec --box work -- sh -c 'cat > f' < f" || return 1
 }
 
+# A box made from a Linux image has a Linux machine's files and none of a Mac's, and says which
+# system it holds; made again, it is still one.
+test_a_linux_box_has_its_own_files() {
+    fake_linux_image deb
+    run_avm box create b1 --image deb --json
+    assert_status 0 || return 1
+    assert_json guest linux || return 1
+    run_avm box list
+    assert_out_contains "b1  stopped   image deb (Debian 13)  4 CPUs  4 GB" || return 1
+    local _box="$AGENT_VM_HOME/Boxes/b1"
+    assert_eq "$(/bin/cat "$_box/Disk.img")" "disk" "the box's disk" || return 1
+    assert_eq "$(/bin/cat "$_box/EFIVariableStore")" "vars" "the box's firmware variables" || return 1
+    [ -s "$_box/MachineIdentifier" ] || { fail "the box has no machine identifier"; return 1; }
+    # An identifier of its own, not the image's.
+    [ "$(/bin/cat "$_box/MachineIdentifier")" != "id" ] || { fail "the box has the image's machine identifier"; return 1; }
+    assert_missing "$_box/AuxiliaryStorage" || return 1
+    assert_missing "$_box/HardwareModel" || return 1
+    assert_missing "$_box/Password" || return 1
+    assert_eq "$(/usr/bin/jq -r '.formatVersion' "$_box/box.json")" "3" "the box record's format" || return 1
+    assert_eq "$(/usr/bin/jq -r '.linux.version' "$_box/box.json")" "13" "the box record's system" || return 1
+    local _address
+    _address="$(/usr/bin/jq -r '.macAddress' "$_box/box.json")"
+    run_avm box recreate b1 --json
+    assert_status 0 || return 1
+    assert_json guest linux || return 1
+    assert_eq "$(/bin/cat "$_box/EFIVariableStore")" "vars" "the firmware variables after recreate" || return 1
+    [ "$(/usr/bin/jq -r '.macAddress' "$_box/box.json")" != "$_address" ] || { fail "the recreated box kept its network card address"; return 1; }
+    run_avm box delete b1
+    assert_status 0 || return 1
+    assert_missing "$_box" || return 1
+}
+
 # Until agent-vm can run a Linux guest, every command that would start one says so, and names
 # what it was asked about. Nothing is created or changed by the refusals.
 test_linux_guests_cannot_be_run_yet() {
@@ -880,18 +912,9 @@ test_linux_guests_cannot_be_run_yet() {
     fake_linux_box work deb
     local _record
     _record="$(/bin/cat "$AGENT_VM_HOME/Images/deb/image.json")"
-    run_avm box create b1 --image deb
-    assert_status 1 || return 1
-    assert_err_contains "image deb runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
-    assert_missing "$AGENT_VM_HOME/Boxes/b1" || return 1
     run_avm box start work
     assert_status 1 || return 1
     assert_err_contains "box work runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
-    # Recreating deletes the box first: the refusal must come before that.
-    run_avm box recreate work
-    assert_status 1 || return 1
-    assert_err_contains "box work runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
-    [ -f "$AGENT_VM_HOME/Boxes/work/box.json" ] || { fail "box recreate deleted the box it then refused to make"; return 1; }
     printf '%s\n' '{ "version": 1, "description": "t", "steps": [ { "name": "n", "run": "true" } ] }' > "$SCRATCH/recipe.json"
     run_avm image create deb2 --from deb --recipe "$SCRATCH/recipe.json"
     assert_status 1 || return 1
