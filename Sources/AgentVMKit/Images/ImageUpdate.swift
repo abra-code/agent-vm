@@ -18,6 +18,13 @@
 //
 // A macOS update rewrites about 15 GB of the disk (measured), which the image then no longer
 // shares with boxes and images cloned from it earlier.
+//
+// A Linux image is updated the same way, on a copy of its disk and its firmware variables. Its
+// system update is the distribution's own (apt-get update, dist-upgrade, autoremove, clean):
+// seconds to a few minutes, and what changed is told by comparing the list of installed
+// packages before and after. When it installed a kernel newer than the one running, the copy
+// is booted once more before it takes the image's place, as after a replaced guest daemon, so
+// an image whose new kernel does not come up is never the one boxes are made from.
 
 import Darwin
 import Foundation
@@ -25,8 +32,10 @@ import Virtualization
 
 public struct ImageUpdateOptions: Sendable {
     public var name: String
-    /// Install the macOS update Apple offers, and the Command Line Tools' when the image has them.
-    public var macOS: Bool
+    /// The system's own updates. For a macOS image: the macOS update Apple offers, and the
+    /// Command Line Tools' when the image has them. For a Linux image: the distribution's
+    /// package updates.
+    public var system: Bool
     /// Run the `update` steps of the recipes the image keeps.
     public var tools: Bool
     /// New values for the recipes' parameters (`--set`), recorded with the image.
@@ -34,9 +43,9 @@ public struct ImageUpdateOptions: Sendable {
     /// The agent-vm-guest to put in the image when it has another one (nil: leave the image's).
     public var guestDaemon: URL?
 
-    public init(name: String, macOS: Bool, tools: Bool, parameters: [String: String] = [:], guestDaemon: URL? = nil) {
+    public init(name: String, system: Bool, tools: Bool, parameters: [String: String] = [:], guestDaemon: URL? = nil) {
         self.name = name
-        self.macOS = macOS
+        self.system = system
         self.tools = tools
         self.parameters = parameters
         self.guestDaemon = guestDaemon
@@ -54,6 +63,11 @@ public struct ImageUpdateResult: Sendable {
     public var recipes: [String]
     /// The image's agent-vm-guest version before it was replaced, when it was.
     public var previousGuestVersion: String?
+    /// A Linux image: how many packages the system update installed, removed or changed; nil
+    /// when it changed none or was not asked for.
+    public var systemPackages: Int? = nil
+    /// A Linux image: the kernel before the update, when the update installed another one.
+    public var previousKernel: String? = nil
 }
 
 /// A macOS update as `softwareupdate --list` offers it.
@@ -146,6 +160,8 @@ extension ImageBuilder {
     /// Free space on the Mac an update is refused below: a macOS update rewrites about 15 GB.
     static let minimumFreeBytesForMacOSUpdate: Int64 = 20 << 30
     static let minimumFreeBytesForToolsUpdate: Int64 = 5 << 30
+    /// A Linux system update rewrites what the packages hold: hundreds of MB, seldom more.
+    static let minimumFreeBytesForLinuxUpdate: Int64 = 3 << 30
     /// How long the download and preparation may go without any output, and how long the
     /// restart may take to bring the new build up (measured: 2 minutes).
     static let macOSUpdateSilenceSeconds = 3600
@@ -170,16 +186,20 @@ extension ImageBuilder {
     /// For a command that updates several images, so the last one's mistake does not surface
     /// after the first took its minutes.
     public func checkUpdate(_ options: ImageUpdateOptions) throws {
-        let image = try updatableImage(named: options.name, operation: "update")
+        let image = try updatableImage(named: options.name, operation: "update", inPlace: false)
         if options.tools {
             _ = try toolsPlans(image, set: options.parameters)
+        }
+        // A Linux image's daemon is built only where the Linux toolchain is installed.
+        if let guestDaemon = options.guestDaemon {
+            try Self.requireLocalDaemon(guestDaemon, guest: image.record.effectiveGuest)
         }
     }
 
     /// Updates a ready image in place (see the top of this file). Returns the image as it is
     /// now; `changed` is false when there was nothing to update, and the image is untouched.
     public func update(_ options: ImageUpdateOptions) async throws -> ImageUpdateResult {
-        var image = try updatableImage(named: options.name, operation: "update")
+        var image = try updatableImage(named: options.name, operation: "update", inPlace: false)
         subject = image.name
         // Held throughout: one command changes an image at a time.
         guard let changeLock = try store.tryLockForChange(image) else {
@@ -197,27 +217,42 @@ extension ImageBuilder {
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "update")
         }
-        try Self.checkHost(HostFacts.current(storeRoot: store.root),
-                           minimumFree: options.macOS ? Self.minimumFreeBytesForMacOSUpdate : Self.minimumFreeBytesForToolsUpdate)
+        let guest = image.record.effectiveGuest
+        let minimumFree: Int64
+        switch (guest, options.system) {
+        case (.macOS, true):
+            minimumFree = Self.minimumFreeBytesForMacOSUpdate
+        case (.linux, _):
+            minimumFree = Self.minimumFreeBytesForLinuxUpdate
+        case (.macOS, false):
+            minimumFree = Self.minimumFreeBytesForToolsUpdate
+        }
+        try Self.checkHost(HostFacts.current(storeRoot: store.root), minimumFree: minimumFree)
         // A macOS update is given the account's password, minutes in.
-        if options.macOS {
+        if options.system, guest == .macOS {
             try image.requireAccountPassword(keychain: store.passwords)
         }
         // Read before anything boots: a recipe that no longer loads, or a --set no recipe
         // takes, fails in a second.
         let plans = try options.tools ? toolsPlans(image, set: options.parameters) : []
-        if let guestDaemon = options.guestDaemon, access(guestDaemon.path, X_OK) != 0 {
-            throw AgentVMError.hostNotReady("the guest daemon \(guestDaemon.path) is missing; Scripts/build.sh builds it next to agent-vm")
+        if let guestDaemon = options.guestDaemon {
+            try Self.requireLocalDaemon(guestDaemon, guest: guest)
         }
         if !options.tools, let name = options.parameters.keys.sorted().first {
-            throw AgentVMError.invalidRecipe(path: image.recipesURL.path, reason: "--set \(name) changes a recipe's parameter; it needs the tools update (add --tools, or leave out --macos and --guest)")
+            throw AgentVMError.invalidRecipe(path: image.recipesURL.path, reason: "--set \(name) changes a recipe's parameter; it needs the tools update (add --tools, or leave out --system and --guest)")
         }
 
         let work = image.updateURL
         do {
             try FileSystem.makeDirectories(work.path)
             try BoxStore.cloneFile(image.diskURL, to: work.appendingPathComponent(ImageStore.diskName))
-            try BoxStore.cloneFile(image.auxiliaryStorageURL, to: work.appendingPathComponent(ImageStore.auxiliaryStorageName))
+            // What the guest writes besides its disk.
+            switch guest {
+            case .macOS:
+                try BoxStore.cloneFile(image.auxiliaryStorageURL, to: work.appendingPathComponent(ImageStore.auxiliaryStorageName))
+            case .linux:
+                try BoxStore.cloneFile(image.efiVariableStoreURL, to: work.appendingPathComponent(ImageStore.efiVariableStoreName))
+            }
         } catch {
             try? FileSystem.removeTree(work.path)
             throw error
@@ -230,17 +265,30 @@ extension ImageBuilder {
         var previousBuild: String?
         var updatedRecipes: [String] = []
         var previousGuest: String?
+        var systemPackages: Int?
+        var previousKernel: String?
+        var bootedAgain = false
         do {
             let files = image.machineFiles.working(in: work)
-            let machine = try makeMachine(for: image, files: files)
+            // A Linux guest's console goes to the image's console.log, for both boots of the
+            // update: what a boot that failed printed outlives the copy it ran on.
+            let console: ConsoleLog? = guest == .linux ? try ConsoleLog(url: image.consoleLogURL) : nil
+            defer { console?.close() }
+            let extras = LinuxMachineExtras(console: console?.writeHandle)
+            let machine = try makeMachine(for: image, files: files, extras: extras)
             try checkCanceled()
             progress("boot", "Booting a copy of \(image.name)\(image.record.updateSeconds.map { " (the last update took \(Int($0.rounded())) s)" } ?? "")",
                      expectedSeconds: image.record.updateSeconds)
-            try await machine.start(provisioning: nil)
+            try await start(machine, guest: guest)
             do {
-                let hello = try await waitForDaemon(machine, attempts: 180)
+                let hello = try await waitForDaemon(machine, attempts: 180, guest: guest)
                 log("  agent-vm-guest \(hello.version ?? "?") answers over vsock")
-                if options.macOS {
+                // A newer kernel than the one running is installed: the copy is booted once
+                // more, to see that it comes up, before it takes the image's place.
+                var bootsNewKernel = false
+                var ranKernel: String?
+                switch (guest, options.system) {
+                case (.macOS, true):
                     if let installed = try await updateMacOS(machine, image: image) {
                         previousBuild = record.macOSBuild
                         record.macOSVersion = installed.version
@@ -251,10 +299,30 @@ extension ImageBuilder {
                         record.commandLineTools = label
                         changed = true
                     }
+                case (.linux, true):
+                    let outcome = try await updateLinuxSystem(machine, record: record)
+                    if outcome.packages > 0 {
+                        systemPackages = outcome.packages
+                        record.commandLineTools = outcome.tools ?? record.commandLineTools
+                        changed = true
+                    }
+                    bootsNewKernel = outcome.kernelNeedsBoot
+                    ranKernel = outcome.kernel
+                    // What a box of the image boots, when no newer kernel is waiting (a second
+                    // boot records its own). Kept only with an update that changed something.
+                    if !bootsNewKernel {
+                        record.linux?.kernel = outcome.kernel
+                    }
+                case (_, false):
+                    // A tools update in a Linux image downloads too, and the daemon answers
+                    // before the network card has its address.
+                    if guest == .linux, !plans.isEmpty {
+                        try await runLinuxSteps([LinuxSetup.waitForNetwork], machine: machine, offset: 0, count: 1)
+                    }
                 }
                 let updates = plans.filter { !$0.checksOnly }
                 for (position, plan) in updates.enumerated() {
-                    try await runUpdate(plan.recipe, machine: machine, boxUser: record.userName, position: (position + 1, updates.count))
+                    try await runUpdate(plan.recipe, machine: machine, boxUser: record.userName, position: (position + 1, updates.count), guest: guest)
                     record.recipes?[plan.index].parameters = plan.recipe.parameterValues.isEmpty ? nil : plan.recipe.parameterValues
                     updatedRecipes.append(plan.recipe.name)
                     changed = true
@@ -265,22 +333,37 @@ extension ImageBuilder {
                 for (position, plan) in checked.enumerated() {
                     progress("tools-check", "Checking \(plan.recipe.name) (\(position + 1) of \(checked.count))\(plan.recipe.description.map { ": \($0)" } ?? "")",
                              index: position + 1, count: checked.count)
-                    try await runSteps([], checks: plan.recipe.checks, variables: plan.recipe.variables, machine: machine, boxUser: record.userName)
+                    try await runSteps([], checks: plan.recipe.checks, variables: plan.recipe.variables(for: guest), machine: machine, boxUser: record.userName)
                 }
-                // Last, so macOS and the recipes were updated under the daemon that was there.
+                // Last, so the system and the recipes were updated under the daemon that was there.
                 var replaced: (digest: String, requirement: String?, replaced: Bool)?
                 if let guestDaemon = options.guestDaemon {
-                    replaced = try await replaceGuestDaemon(guestDaemon, machine: machine)
+                    replaced = try await replaceGuestDaemon(guestDaemon, machine: machine, guest: guest)
                 }
-                if changed, replaced?.replaced != true {
+                if guest == .macOS, changed, replaced?.replaced != true {
                     // An update can change what macOS grants the daemon; boxes need to know.
                     record.fullDiskAccess = try await probedFullDiskAccess(machine, record: record, image: image.name)
                 }
-                try await shutDownAfterUpdate(machine)
-                if let replaced, replaced.replaced {
-                    previousGuest = record.guestVersion ?? "?"
-                    record = try await checkReplacedGuestDaemon(files, image: image, record: record, digest: replaced.digest, requirement: replaced.requirement)
-                    changed = true
+                try await shutDownAfterUpdate(machine, guest: guest)
+                let newDaemon = replaced.flatMap { $0.replaced ? (digest: $0.digest, requirement: $0.requirement) : nil }
+                if newDaemon != nil || bootsNewKernel {
+                    if newDaemon != nil {
+                        previousGuest = record.guestVersion ?? "?"
+                    }
+                    bootedAgain = true
+                    record = try await checkSecondBoot(files, image: image, record: record, newDaemon: newDaemon, extras: extras)
+                    if let ranKernel, record.linux?.kernel != ranKernel {
+                        previousKernel = ranKernel
+                    }
+                    if newDaemon != nil || previousKernel != nil {
+                        changed = true
+                    } else {
+                        // The newest kernel file is not the one the system boots (another
+                        // flavor installed beside it, say). Nothing changed by this boot: an
+                        // image that is otherwise current must not get a new revision, and
+                        // its boxes a "needs recreate", at every update.
+                        notice("  note: \(image.name) has a kernel newer than the one it boots (\(record.linux?.kernel ?? "?")), and boots the same one after the update")
+                    }
                 }
             } catch {
                 let error = canceledError(error)
@@ -289,12 +372,20 @@ extension ImageBuilder {
             }
             let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
             // What this run looked at, and how long a run without a macOS install takes.
-            // Of a tools update only, and not one that also replaced the daemon (a second boot,
-            // and maybe a wait for a slot): the time a client shows before a wait it chose.
-            let seconds = options.tools && previousBuild == nil && previousGuest == nil ? Self.seconds(ContinuousClock.now - began).rounded() : nil
+            // Of a tools update only, and not one that also replaced the daemon or checked a new
+            // kernel (a second boot, and maybe a wait for a slot): the time a client shows
+            // before a wait it chose.
+            let seconds = options.tools && previousBuild == nil && !bootedAgain && systemPackages == nil
+                ? Self.seconds(ContinuousClock.now - began).rounded() : nil
             func stamp(_ record: inout ImageRecord) {
-                if options.macOS {
-                    record.macOSCheckedAt = now
+                if options.system {
+                    // Each guest has its own stamp for its system.
+                    switch guest {
+                    case .macOS:
+                        record.macOSCheckedAt = now
+                    case .linux:
+                        record.systemCheckedAt = now
+                    }
                 }
                 if options.tools {
                     record.toolsCheckedAt = now
@@ -306,9 +397,9 @@ extension ImageBuilder {
             guard changed else {
                 try FileSystem.removeTree(work.path)
                 log("Nothing to update in \(image.name)")
-                // Only the record, when this run looked at macOS or the tools: the image's
-                // files are as they were.
-                if options.macOS || options.tools {
+                // Only the record, when this run looked at the system or the tools: the
+                // image's files are as they were.
+                if options.system || options.tools {
                     let lock = try await lockToCommit(image)
                     defer { lock.release() }
                     image = try store.update(try store.image(named: image.name)) { stamp(&$0) }
@@ -338,7 +429,62 @@ extension ImageBuilder {
             throw error
         }
         image = try store.image(named: image.name)
-        return ImageUpdateResult(image: image, changed: true, previousMacOSBuild: previousBuild, recipes: updatedRecipes, previousGuestVersion: previousGuest)
+        return ImageUpdateResult(image: image, changed: true, previousMacOSBuild: previousBuild, recipes: updatedRecipes, previousGuestVersion: previousGuest,
+                                 systemPackages: systemPackages, previousKernel: previousKernel)
+    }
+
+    /// Installs the distribution's package updates in a Linux image (LinuxSetup.systemUpdate).
+    /// Returns how many packages changed, whether a newer kernel than the running one is
+    /// installed now, the kernel that ran, and the compiler package's label when the image
+    /// has it. What the first build sealed and the update undid (an ssh server back as a
+    /// dependency, a timer on again) fails the update; what a recipe changed on purpose
+    /// before it does not: a check counts only when it passed before the update.
+    private func updateLinuxSystem(_ machine: GuestMachine, record: ImageRecord) async throws -> (packages: Int, kernelNeedsBoot: Bool, kernel: String, tools: String?) {
+        func answer(_ script: String, _ what: String) async throws -> String {
+            let result = try await guestCapture(machine, Self.rootRequest(script), readTimeout: 120)
+            guard result.report == ExitReport(status: 0) else {
+                throw AgentVMError.guestCommandFailed(command: what, status: result.report.shellStatus, output: Printable.line(result.stderr, limit: 300))
+            }
+            return result.stdout
+        }
+        let clock = ContinuousClock()
+        let began = clock.now
+        let checks = LinuxSetup.sealChecks()
+        let held = try await passingChecks(checks, machine: machine)
+        let before = try await answer(LinuxSetup.packageList, "list the packages")
+        progress("system-update", "Installing \(record.systemShort)'s package updates")
+        let steps = [LinuxSetup.waitForNetwork] + LinuxSetup.systemUpdate
+        try await runLinuxSteps(steps, machine: machine, offset: 0, count: steps.count)
+        let packages = LinuxSetup.packageChanges(before: before, after: try await answer(LinuxSetup.packageList, "list the packages"))
+        let holds = try await passingChecks(checks, machine: machine)
+        if let undone = checks.first(where: { held.contains($0.name) && !holds.contains($0.name) }) {
+            throw AgentVMError.guestCommandFailed(command: "check what the update left", status: 1,
+                                                  output: "\"\(undone.name)\" was so before the update and is not after it")
+        }
+        let running = try LinuxSetup.token(try await answer(LinuxSetup.kernel, "read the kernel's version"), what: "kernel version")
+        let needsBoot = LinuxSetup.kernelNeedsBoot(running: running, newest: try await answer(LinuxSetup.newestKernel, "find the newest kernel"))
+        var tools: String?
+        if packages > 0, record.commandLineTools != nil {
+            tools = "\(LinuxSetup.toolsPackage) \(try LinuxSetup.packageVersion(try await answer(LinuxSetup.toolsVersion, "read the compiler's version"), package: LinuxSetup.toolsPackage))"
+        }
+        if packages == 0 {
+            log("  \(record.systemShort) has every update its package lists offer")
+        } else {
+            log("  \(packages) \(packages == 1 ? "package" : "packages") changed in \(Int(Self.seconds(clock.now - began))) s\(needsBoot ? "; a new kernel is installed" : "")")
+        }
+        return (packages, needsBoot, running, tools)
+    }
+
+    /// The names of the checks that pass now.
+    private func passingChecks(_ checks: [LinuxSetup.Step], machine: GuestMachine) async throws -> Set<String> {
+        var passing = Set<String>()
+        for check in checks {
+            let result = try await guestCapture(machine, Self.rootRequest(check.script))
+            if result.report == ExitReport(status: 0) {
+                passing.insert(check.name)
+            }
+        }
+        return passing
     }
 
     /// The image's own lock, for making the update's copy and for putting the finished update
@@ -368,13 +514,21 @@ extension ImageBuilder {
                                           checkedAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)))
     }
 
-    /// Boots the updated copy once more, now under its new agent-vm-guest: checks that it
-    /// answers with every feature this agent-vm knows, brings the desktop up to date, probes
-    /// Full Disk Access, and shuts down. Returns the record with the new daemon in it.
-    private func checkReplacedGuestDaemon(_ files: MachineFiles, image: GoldenImage, record: ImageRecord, digest: String, requirement: String?) async throws -> ImageRecord {
+    /// Boots the updated copy once more and shuts it down: under its new agent-vm-guest
+    /// (`newDaemon`), which must answer with every feature this agent-vm knows, or, for a
+    /// Linux image, only to see that it comes up on the kernel the update installed. A macOS
+    /// image also has its desktop brought up to date and Full Disk Access probed. Returns the
+    /// record with the new daemon, and for Linux the kernel that ran, in it.
+    private func checkSecondBoot(_ files: MachineFiles, image: GoldenImage, record: ImageRecord, newDaemon: (digest: String, requirement: String?)?,
+                                 extras: LinuxMachineExtras) async throws -> ImageRecord {
         var record = record
+        let guest = image.record.effectiveGuest
         try checkCanceled()
-        progress("check-guest-daemon", "Booting again to check the new agent-vm-guest")
+        if newDaemon != nil {
+            progress("check-guest-daemon", "Booting again to check the new agent-vm-guest")
+        } else {
+            progress("check-boot", "Booting again to check the new kernel")
+        }
         // Between the two boots the update holds no virtual machine slot, and a box started
         // in that moment can take the last one: wait for a slot rather than lose the update.
         let deadline = ContinuousClock.now + Self.slotPatience
@@ -382,9 +536,9 @@ extension ImageBuilder {
         var machine: GuestMachine
         while true {
             // A new machine for every try: one that was refused is not started again.
-            machine = try makeMachine(for: image, files: files)
+            machine = try makeMachine(for: image, files: files, extras: extras)
             do {
-                try await machine.start(provisioning: nil)
+                try await start(machine, guest: guest)
                 break
             } catch AgentVMError.noFreeVMSlot where ContinuousClock.now < deadline {
                 if !waiting {
@@ -396,25 +550,50 @@ extension ImageBuilder {
             }
         }
         do {
-            let hello = try await waitForDaemon(machine, attempts: 180)
-            let missing = GuestFeature.all(for: image.record.effectiveGuest).filter { !(hello.features ?? []).contains($0) }
-            guard missing.isEmpty else {
-                throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the new agent-vm-guest lacks \(missing.joined(separator: ", "))")
+            let hello = try await waitForDaemon(machine, attempts: 180, guest: guest)
+            if newDaemon != nil {
+                let missing = GuestFeature.all(for: guest).filter { !(hello.features ?? []).contains($0) }
+                guard missing.isEmpty else {
+                    throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the new agent-vm-guest lacks \(missing.joined(separator: ", "))")
+                }
+                // The Linux daemon cannot be asked for its version on the Mac: a stale build
+                // of it shows here, and the image keeps the daemon it had.
+                guard guest == .macOS || hello.version == AgentVM.version else {
+                    throw AgentVMError.hostNotReady("the Linux guest daemon beside agent-vm is version \(Printable.line(hello.version ?? "?", limit: 32)) and agent-vm is \(AgentVM.version); build both with Scripts/build.sh")
+                }
             }
             log("  agent-vm-guest \(hello.version ?? "?") answers (\((hello.features ?? []).joined(separator: ", ")))")
-            await prepareDesktop(image, machine: machine, features: hello.features)
-            record.guestVersion = hello.version
-            record.guestProtocol = hello.v
-            record.guestFeatures = hello.features
-            // The grant is asked about before the record names the new daemon: it was the old one's.
-            let had = record
-            record.guestDigest = digest
-            record.guestRequirement = requirement
-            var access = try await probedFullDiskAccess(machine, record: had, image: image.name)
-            access.guestDigest = digest
-            access.guestRequirement = requirement
-            record.fullDiskAccess = access
-            try await shutDownAfterUpdate(machine)
+            if let newDaemon {
+                record.guestVersion = hello.version
+                record.guestProtocol = hello.v
+                record.guestFeatures = hello.features
+            }
+            switch guest {
+            case .macOS:
+                await prepareDesktop(image, machine: machine, features: hello.features)
+                if let newDaemon {
+                    // The grant is asked about before the record names the new daemon: it was the old one's.
+                    let had = record
+                    record.guestDigest = newDaemon.digest
+                    record.guestRequirement = newDaemon.requirement
+                    var access = try await probedFullDiskAccess(machine, record: had, image: image.name)
+                    access.guestDigest = newDaemon.digest
+                    access.guestRequirement = newDaemon.requirement
+                    record.fullDiskAccess = access
+                }
+            case .linux:
+                if let newDaemon {
+                    record.guestDigest = newDaemon.digest
+                    record.guestRequirement = newDaemon.requirement
+                }
+                // The kernel a box of the image boots from now on.
+                let kernel = try await guestCapture(machine, Self.rootRequest(LinuxSetup.kernel))
+                if kernel.report == ExitReport(status: 0), let running = try? LinuxSetup.token(kernel.stdout, what: "kernel version") {
+                    log("  kernel \(running)")
+                    record.linux?.kernel = running
+                }
+            }
+            try await shutDownAfterUpdate(machine, guest: guest)
             return record
         } catch {
             let error = canceledError(error)
@@ -574,7 +753,7 @@ extension ImageBuilder {
     }
 
     /// One recipe's update steps, then its checks.
-    private func runUpdate(_ recipe: ImageRecipe, machine: GuestMachine, boxUser: String, position: (index: Int, count: Int)) async throws {
+    private func runUpdate(_ recipe: ImageRecipe, machine: GuestMachine, boxUser: String, position: (index: Int, count: Int), guest: GuestKind) async throws {
         let clock = ContinuousClock()
         let began = clock.now
         progress("tools-update", "Updating \(recipe.name) (\(position.index) of \(position.count))\(recipe.description.map { ": \($0)" } ?? "")",
@@ -582,17 +761,17 @@ extension ImageBuilder {
         if !recipe.parameterValues.isEmpty {
             log("  parameters: \(recipe.parameterValues.keys.sorted().map { "\($0)=\(recipe.parameterValues[$0] ?? "")" }.joined(separator: ", "))")
         }
-        try await runSteps(recipe.updateSteps, checks: recipe.checks, variables: recipe.variables, machine: machine, boxUser: boxUser, kind: "update step")
+        try await runSteps(recipe.updateSteps, checks: recipe.checks, variables: recipe.variables(for: guest), machine: machine, boxUser: boxUser, kind: "update step")
         log("  \(recipe.name) updated in \(Int(Self.seconds(clock.now - began))) s")
     }
 
     /// Shuts the updated guest down. A macOS 27 guest sometimes restarts instead of powering
     /// off: one that answers again is asked again, rather than losing the whole update.
-    private func shutDownAfterUpdate(_ machine: GuestMachine) async throws {
+    private func shutDownAfterUpdate(_ machine: GuestMachine, guest: GuestKind) async throws {
         let attempts = 3
         for attempt in 1...attempts {
             do {
-                try await shutDown(machine)
+                try await shutDown(machine, guest: guest)
                 return
             } catch let AgentVMError.guestUnreachable(reason) {
                 guard attempt < attempts, machine.isRunning, cancellation?.isCanceled != true else {
@@ -600,7 +779,7 @@ extension ImageBuilder {
                 }
                 notice("  note: the guest did not power off (\(reason)); waiting for it to answer and asking again")
                 do {
-                    _ = try await waitForDaemon(machine, attempts: 180)
+                    _ = try await waitForDaemon(machine, attempts: 180, guest: guest)
                 } catch AgentVMError.guestUnreachable where !machine.isRunning && machine.failure == nil && cancellation?.isCanceled != true {
                     // It powered off after all, only later than `shutDown` waits.
                     return

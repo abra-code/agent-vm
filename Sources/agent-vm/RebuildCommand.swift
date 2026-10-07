@@ -19,7 +19,8 @@ extension ImageCommand {
                 is built beside the old one (as <image>.rebuild) with everything `image create` \
                 does, and takes its place in one step only when it is ready: until then the \
                 old image stays ready and boxes can be made from it, and a failure or a cancel \
-                leaves it as it was. With --ipsw, macOS is installed from the restore image and \
+                leaves it as it was. With --linux, a Linux image is built again from its \
+                release's cloud image and every recipe runs again. With --ipsw, macOS is installed from the restore image and \
                 every recipe that ran on the image's disk runs again, in order, so an image \
                 built in layers comes back as one image; its Full Disk Access must be granted \
                 again (`image setup`). With --from, the recipes the base does not already hold \
@@ -40,6 +41,12 @@ extension ImageCommand {
         @Option(name: .long, help: ArgumentHelp("Install macOS from this restore image and run every recipe again (as `image create --ipsw`: a path, a downloaded file's name, or latest).", valueName: "path|name|latest"))
         var ipsw: String?
 
+        @Option(name: .long, help: ArgumentHelp("For a Linux image: build from this release's cloud image again and run every recipe again (as `image create --linux`).", valueName: "release"))
+        var linux: String?
+
+        @Option(name: .customLong("cloud-image"), help: ArgumentHelp("With --linux: a cloud image file of your own (.tar.xz or .raw) in place of the download.", valueName: "path"))
+        var cloudImage: String?
+
         @Option(name: .long, help: "A ready image to start from (default: the image this one was built from).")
         var from: String?
 
@@ -55,6 +62,12 @@ extension ImageCommand {
             if ipsw != nil && from != nil {
                 throw ValidationError("give either --ipsw (install macOS) or --from (start from a ready image), not both")
             }
+            if linux != nil && (ipsw != nil || from != nil) {
+                throw ValidationError("give one of --ipsw (install macOS), --linux (a Linux cloud image) or --from (start from a ready image)")
+            }
+            guard cloudImage == nil || linux != nil else {
+                throw ValidationError("--cloud-image is a Linux cloud image: give --linux <release> with it")
+            }
             for pair in inputs + settings where !pair.contains("=") || pair.hasPrefix("=") {
                 throw ValidationError("\(pair): give name=value")
             }
@@ -64,12 +77,15 @@ extension ImageCommand {
         func run() async throws {
             let json = options.json
             let builder = ImageBuilder(store: options.imageStore, events: Events.handler(json: json))
+            // The image first: a mistyped name should not be answered with a missing restore
+            // image. It gets the guest daemon built for its own system.
+            let kind = try options.imageStore.image(named: name).record.effectiveGuest
+            try ImageBuilder.checkFreshStart(for: kind, image: name, restoreImage: ipsw != nil, linux: linux != nil)
             var rebuild = ImageRebuildOptions(
-                name: name, base: from, inputs: try Create.pairs(inputs, option: "--input"),
+                name: name, base: from, linux: try linux.map { ImageRebuildOptions.LinuxStart(base: try LinuxBase.named($0), cloudImage: cloudImage) },
+                inputs: try Create.pairs(inputs, option: "--input"),
                 parameters: try Create.pairs(settings, option: "--set"),
-                guestDaemon: try ImageCommand.localGuestDaemon(), askpassProgram: try AskpassEntry.executablePath())
-            // The image first: a mistyped name should not be answered with a missing restore image.
-            _ = try options.imageStore.image(named: name)
+                guestDaemon: try ImageCommand.localGuestDaemon(for: kind), askpassProgram: try AskpassEntry.executablePath())
             if let ipsw {
                 rebuild.restoreImage = try await RestoreImageCache(root: SessionStore.defaultRoot()).resolve(ipsw)
             }

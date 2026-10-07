@@ -50,9 +50,10 @@ import Testing
         return (store, xip)
     }
 
-    private func options(_ name: String, base: String? = nil, restore: Bool = false, inputs: [String: String] = [:],
+    private func options(_ name: String, base: String? = nil, restore: Bool = false, linux: Bool = false, inputs: [String: String] = [:],
                          parameters: [String: String] = [:]) -> ImageRebuildOptions {
         return ImageRebuildOptions(name: name, base: base, restoreImage: restore ? URL(fileURLWithPath: "/tmp/restore.ipsw") : nil,
+                                   linux: linux ? ImageRebuildOptions.LinuxStart(base: LinuxBase.known[0]) : nil,
                                    inputs: inputs, parameters: parameters, guestDaemon: URL(fileURLWithPath: "/usr/bin/true"), askpassProgram: "/usr/bin/true")
     }
 
@@ -115,6 +116,7 @@ import Testing
         let (_, debianLock) = try store.create(debian)
         debianLock.release()
         #expect(reason(options("dev", base: "deb"))?.contains("image deb runs Linux and dev runs macOS") == true)
+        #expect(reason(options("dev", base: "plain", linux: true))?.contains("give one start: a Linux release, a restore image, or an image to start from") == true)
         #expect(reason(options("dev", base: "dev"))?.contains("cannot be rebuilt from itself") == true)
         #expect(reason(options("plain", base: "dev"))?.contains("keeps no recipe that dev lacks") == true)
         #expect(reason(options("tools", base: "nosuch"))?.contains("nosuch") == true)
@@ -217,6 +219,67 @@ import Testing
         let foreign = try build(.ready, at: 240)
         try store.markRebuilt(foreign, of: "other")
         #expect(try leftover() == "none")
+    }
+
+    /// A Linux image starts again from its release's cloud image or from a Linux image, never
+    /// from a restore image; a macOS image never from a Linux release.
+    @MainActor
+    @Test func aLinuxImageWantsLinuxOrFrom() throws {
+        let scratch = try Scratch()
+        let store = try ImageStore(root: scratch.root.appendingPathComponent("store"))
+        func make(_ record: ImageRecord, recipe: String? = nil) throws {
+            let (image, lock) = try store.create(record)
+            lock.release()
+            if let recipe {
+                let url = image.recipesURL.appendingPathComponent("1-tool", isDirectory: true)
+                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                try Data(recipe.utf8).write(to: url.appendingPathComponent("recipe.json"))
+            }
+        }
+        func linux(_ name: String) -> ImageRecord {
+            var record = ImageStoreTests.record(name, state: .ready)
+            record.guest = .linux
+            record.formatVersion = ImageRecord.formatVersion(passwordID: nil, guest: .linux)
+            return record
+        }
+        let tool = ImageRecord.RecipeInfo(description: "Tool", digest: "aa", name: "tool", folder: "1-tool")
+        var deb = linux("deb")
+        deb.base = ImageRecord.BaseSource(release: "debian-13", file: "debian-13.tar.xz", url: nil, sha512: String(repeating: "a", count: 128), build: nil)
+        try make(deb)
+        var tools = linux("debtools")
+        tools.derivedFrom = ImageRecord.DerivedFrom(image: "deb", recipeDigest: nil)
+        tools.recipes = [tool]
+        tools.commandLineTools = "build-essential 12.12"
+        try make(tools, recipe: #"{"version": 1, "guest": "linux", "steps": [{"run": "true"}]}"#)
+        var odd = linux("debodd")
+        odd.derivedFrom = ImageRecord.DerivedFrom(image: "deb", recipeDigest: nil)
+        odd.recipes = [tool]
+        try make(odd, recipe: #"{"version": 1, "steps": [{"run": "true"}]}"#)
+        try make(ImageStoreTests.record("dev", state: .ready))
+
+        let builder = ImageBuilder(store: store) { (_: ProgressEvent) in }
+        func reason(_ options: ImageRebuildOptions) -> String? {
+            do {
+                _ = try builder.rebuildPlan(options)
+                return nil
+            } catch {
+                return "\(error)"
+            }
+        }
+        // Made from a cloud image: it says which release, and what to give.
+        #expect(reason(options("deb"))?.contains("deb was made from a cloud image (debian-13): give --linux (a release to start from again) or --from (a ready image)") == true)
+        // From its release again: every recipe runs, on no base.
+        var plan = try builder.rebuildPlan(options("debtools", linux: true))
+        #expect(plan.base == nil && plan.recipes.map(\.name) == ["tool"] && plan.commandLineTools)
+        // With nothing given, from the image it was built from.
+        plan = try builder.rebuildPlan(options("debtools"))
+        #expect(plan.base == "deb" && plan.recipes.map(\.name) == ["tool"])
+        // The other system's start is refused, in both directions.
+        #expect(reason(options("debtools", restore: true)) == "--ipsw installs macOS, and image debtools runs Linux: give --linux (a release to start from again) or --from (a ready image)")
+        #expect(reason(options("dev", linux: true)) == "--linux builds a Linux image, and image dev runs macOS: give --ipsw (a restore image to install) or --from (a ready image)")
+        #expect(reason(options("debtools", base: "dev")) == "image dev runs macOS and debtools runs Linux: an image is rebuilt from an image of its own system")
+        // A kept recipe that is not for Linux (a folder edited by hand) is caught by the plan.
+        #expect(reason(options("debodd", linux: true))?.contains("it is for macOS images, and image debodd runs Linux") == true)
     }
 
     @Test func anInputRecordsWhereItsFileWas() throws {

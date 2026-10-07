@@ -47,7 +47,7 @@ agent-vm box create work --image deb-tools --allow pack:anthropic --allow pack:o
 - **A recipe says which system it is for** (`"guest"` in the recipe; see [../Docs/image-recipes.md](../Docs/image-recipes.md)). One for the other system is refused before anything is built, so `Recipes/homebrew` cannot end up in Debian by mistake.
 - **Why not Debian's own Node:** Debian 13 has Node 20, whose `fetch` cannot use a proxy, and the proxy is a box's only way out. Node 24 can (`exec` sets `NODE_USE_ENV_PROXY=1`).
 - **Where the tools are:** `/usr/local/bin` (Node) and `~/.local/bin` (uv, and everything `npm install --global` installs, the agents among them). `~/.local/bin` is first on the path of every program run with `exec`.
-- **`image update`** does not serve Linux images yet. When it does, linux-node installs the newest release of its major version, linux-python the distribution's newest packages and the newest uv.
+- **`image update`** (since 0.7.8) installs Debian's package updates and runs the recipes' update steps: linux-node installs the newest release of its major version, linux-python the distribution's newest packages and the newest uv, agent-clis the newest agents. `agent-vm image update deb-tools --tools` does only the recipes' part.
 
 ### sudo in a Linux box
 

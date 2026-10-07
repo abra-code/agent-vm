@@ -115,6 +115,14 @@ agent-vm image rebuild tools --ipsw latest --input xcode=~/Downloads/Xcode_28.xi
 agent-vm image setup tools                                 # Full Disk Access, once more
 ```
 
+A Linux image is kept up to date by the same two commands (since 0.7.8):
+
+```sh
+agent-vm image update deb-tools                            # Debian's package updates, the tools, the guest daemon; seconds to a few minutes
+agent-vm image update deb-tools --system                   # only the system's packages
+agent-vm image rebuild deb --linux debian-13               # from Debian's newest cloud image, every recipe again, same name
+```
+
 The old image stays ready and usable until the new one takes its place; a failed rebuild changes nothing. The recipes run with the parameters and input files the image recorded, unless `--set` or `--input` gives others.
 
 `image update` installs the macOS update Apple offers (within the same major version), runs the `update` steps of the recipes the image was built with, such as the newest agents, and puts in the guest daemon of the agent-vm you run, when the image has an older one. It works on a copy of the image's disk and puts it in place only when everything succeeded, so a failed update leaves the image as it was. `box list` then says "needs recreate" for the boxes made before. A macOS update costs about 15 GB of disk that the image no longer shares with its older boxes, until they are recreated or deleted.

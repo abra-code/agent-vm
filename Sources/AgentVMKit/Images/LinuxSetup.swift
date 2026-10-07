@@ -63,7 +63,7 @@ enum LinuxSetup {
                  "if /usr/bin/getent passwd debian > /dev/null || /usr/bin/getent passwd ubuntu > /dev/null; then /usr/bin/echo 'the first boot made a default account'; exit 1; fi; "
                  + "/usr/sbin/useradd --create-home --shell /bin/bash --uid 1000 --user-group \(user) && /usr/bin/passwd --lock \(user) > /dev/null && /usr/bin/id \(user)"),
             packageLists,
-            Step("system updates", "\(apt) -o Dpkg::Options::=--force-confold dist-upgrade", timeout: 1800),
+            systemUpdates,
             Step(packages.joined(separator: ", "), "\(apt) install \(packages.joined(separator: " "))", timeout: 900),
         ]
         if tools {
@@ -77,7 +77,56 @@ enum LinuxSetup {
         return steps
     }
 
-    static let packageLists = Step("package lists", "\(apt) update", timeout: 600)
+    /// A list that cannot be fetched fails the step: left to itself, apt-get update warns and
+    /// exits 0, and an upgrade after it would find nothing new and call that up to date. A fetch
+    /// that fails is tried three more times first: one slow mirror must not fail a build.
+    static let packageLists = Step("package lists", "\(apt) -o APT::Update::Error-Mode=any -o Acquire::Retries=3 update", timeout: 600)
+    /// A changed configuration file keeps what the image has (what sealing wrote among it).
+    static let systemUpdates = Step("system updates", "\(apt) -o Dpkg::Options::=--force-confold dist-upgrade", timeout: 1800)
+
+    /// What `image update --system` runs in a Linux image: the distribution's updates, then
+    /// what they left behind (an older kernel, downloaded packages).
+    static let systemUpdate: [Step] = [
+        packageLists,
+        systemUpdates,
+        Step("remove what is no longer needed", "\(apt) autoremove --purge && \(apt) clean", timeout: 900),
+    ]
+
+    /// Every package with its version and state, one to a line: compared before and after an
+    /// update to tell whether anything changed.
+    static let packageList = #"/usr/bin/dpkg-query -W -f '${Package}:${Architecture} ${Version} ${db:Status-Status}\n'"#
+    /// The newest kernel in /boot, as its file's path ("/boot/vmlinuz-6.12.48+deb13-cloud-arm64").
+    static let newestKernel = "/usr/bin/ls /boot/vmlinuz-* | /usr/bin/sort -V | /usr/bin/tail -n 1"
+
+    /// How many packages differ between two outputs of `packageList`: installed in one and
+    /// not the other, or at another version. A line that is not a package's is not counted.
+    static func packageChanges(before: String, after: String) -> Int {
+        func installed(_ text: String) -> [String: String] {
+            var result: [String: String] = [:]
+            for line in text.split(whereSeparator: \.isNewline) {
+                let fields = line.split(separator: " ", omittingEmptySubsequences: true)
+                if fields.count == 3, fields[2] == "installed" {
+                    result[String(fields[0])] = String(fields[1])
+                }
+            }
+            return result
+        }
+        let old = installed(before)
+        let new = installed(after)
+        return Set(old.keys).union(new.keys).filter { old[$0] != new[$0] }.count
+    }
+
+    /// Whether a boot is needed to run the newest installed kernel: `newest` is the path
+    /// `newestKernel` printed, `running` what `uname -r` says. An answer that names no kernel
+    /// asks for no boot.
+    static func kernelNeedsBoot(running: String, newest: String) -> Bool {
+        let prefix = "/boot/vmlinuz-"
+        let path = newest.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard path.hasPrefix(prefix), path.count > prefix.count else {
+            return false
+        }
+        return String(path.dropFirst(prefix.count)) != running.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
     static let tools = Step("the compiler and make (\(toolsPackage))", "\(apt) install \(toolsPackage)", timeout: 1800)
 
     /// Run first in every later boot that builds on an image (a derived image, an update):

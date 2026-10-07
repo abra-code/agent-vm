@@ -69,8 +69,9 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 | Step | What happens |
 |---|---|
 | `clone` | Cloning the base image. |
-| `grow-disk` | With a larger `--disk-gb`: moving the recovery container. |
+| `grow-disk` | With a larger `--disk-gb`: moving the recovery container (a Linux image: making the disk file longer). |
 | `boot` | Booting the clone. |
+| `linux-setup` | A Linux image: waiting for the network, and the compiler and make when asked for and missing, each with `index` and `count`. |
 | `command-line-tools`, `recipe`, `recipe-input`, `recipe-step` | As above. |
 | `replace-guest-daemon` | Putting this agent-vm's `agent-vm-guest` into the image, when it differs. |
 | `shutdown` | Shutting the guest down. |
@@ -85,16 +86,18 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 | `macos-download` | An update is offered: `softwareupdate` downloads and prepares it, with `fraction` at every 10% (it stays in the nineties for minutes while it prepares); its output lines follow as `log` events with `output`. |
 | `macos-restart` | The guest restarts and installs; the step ends when its daemon answers on the new build. |
 | `command-line-tools` | A newer Command Line Tools package is installed. |
+| `system-update` | A Linux image (since 0.7.8), in place of the three `macos-` steps: the distribution's package updates begin. Its steps follow as `linux-setup` with `index` and `count` (the network, the package lists, the updates, the cleanup), their output as `log` events with `output`. |
 | `tools-update` | One recipe's update steps begin, with `index` and `count` (which recipe of how many that have update steps). |
 | `recipe-step` | Each update step, as in `image create`. |
 | `recipe-check` | Each of the recipe's checks, with `index` and `count`. |
 | `tools-check` | The checks of a recipe that has no update steps begin (`index` and `count` among such recipes), after every recipe's update steps; `recipe-check` follows for each check. |
-| `replace-guest-daemon` | Putting this agent-vm's `agent-vm-guest` into the image, when it differs (unless `--macos` or `--tools` alone). |
+| `replace-guest-daemon` | Putting this agent-vm's `agent-vm-guest` into the image, when it differs (unless `--system` or `--tools` alone). |
 | `shutdown` | Shutting the guest down. |
 | `check-guest-daemon` | Booting again to check the new `agent-vm-guest` (only when it was replaced), then `shutdown` again. |
+| `check-boot` | A Linux image whose update installed a new kernel, when the daemon was not replaced too: booting again to check that the system comes up on it, then `shutdown` again. |
 | `commit` | The updated disk takes the image's place. Left out when there was nothing to update. |
 
-`image rebuild`: the steps of `image create` (with `--ipsw`, or with `--from`), their `image` being the image's own name and not the name it is built under, then `replace`: the rebuilt image takes the old one's place.
+`image rebuild`: the steps of `image create` (with `--ipsw`, `--linux`, or `--from`), their `image` being the image's own name and not the name it is built under, then `replace`: the rebuilt image takes the old one's place.
 
 `image update-guest`: `boot`, then, when the daemon differs, `replace-guest-daemon`, `shutdown`, `check-guest-daemon` and `shutdown` again (otherwise just `shutdown`), for each image in turn. A failure in one image skips the rest, with a `notice` naming them.
 

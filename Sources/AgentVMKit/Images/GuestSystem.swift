@@ -71,9 +71,15 @@ enum GuestSystemText {
 /// Why a command turns down a Linux image or box: what has no meaning for a Linux guest, and
 /// what this agent-vm does not do for one yet.
 enum LinuxGuest {
-    /// What this agent-vm does not do with a Linux image yet: `what` is "update" or "rebuild".
-    static func cannotYet(_ what: String, image: String) -> AgentVMError {
-        return .notForThisGuest("image \(image) runs Linux, and this agent-vm cannot \(what) a Linux image yet")
+    /// `image update --macos` names macOS; the system's part of an update is `--system` for
+    /// both guests.
+    static func macOSOption(image: String) -> AgentVMError {
+        return .notForThisGuest("--macos is for macOS images; image \(image) runs Linux: use --system")
+    }
+
+    /// The deprecated `image update-guest` boots the image itself; see `updatableImage`.
+    static func noUpdateGuest(image: String) -> AgentVMError {
+        return .notForThisGuest("image update-guest is not there for Linux images; use `agent-vm image update \(image) --guest`, which works on a copy of the image")
     }
 
     static func noFullDiskAccess(image: String) -> AgentVMError {

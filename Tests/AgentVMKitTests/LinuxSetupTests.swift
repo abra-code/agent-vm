@@ -11,7 +11,8 @@ import Testing
 
 @Suite struct LinuxSetupTests {
     static var everyStep: [LinuxSetup.Step] {
-        return [LinuxSetup.waitForFirstBoot] + LinuxSetup.steps(user: "agent", tools: true) + LinuxSetup.seal + LinuxSetup.sealChecks()
+        return [LinuxSetup.waitForFirstBoot] + LinuxSetup.steps(user: "agent", tools: true) + LinuxSetup.seal + LinuxSetup.sealChecks() + LinuxSetup.systemUpdate
+            + [LinuxSetup.Step("packages", LinuxSetup.packageList), LinuxSetup.Step("newest kernel", LinuxSetup.newestKernel)]
             + [LinuxSetup.accountCheck(user: "agent"), LinuxSetup.waitForNetwork, LinuxSetup.packageLists, LinuxSetup.tools]
     }
 

@@ -311,18 +311,20 @@ struct ImageCommand: ParsableCommand {
     struct Update: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "update",
-            abstract: "Bring ready images up to date in place: macOS, the tools their recipes installed, and the guest daemon.",
+            abstract: "Bring ready images up to date in place: the system, the tools their recipes installed, and the guest daemon.",
             discussion: """
-                macOS: installs the update Apple offers within the image's major version \
+                System, for a macOS image: installs the update Apple offers within the image's major version \
                 (softwareupdate in the guest, unattended; about 15 minutes, and about 15 GB \
                 of disk the image then no longer shares with its older boxes), then a newer \
-                Command Line Tools package when the image has the tools. Tools: runs the \
+                Command Line Tools package when the image has the tools. For a Linux image: \
+                the distribution's package updates (apt-get dist-upgrade, seconds to minutes); \
+                when they bring a new kernel, the copy is booted once more to check it. Tools: runs the \
                 `update` steps of the recipes the image keeps, in the order they were applied, \
                 and each recipe's checks again, with the parameters the image recorded, then \
                 the checks of the recipes that have no update steps; --set \
                 changes one (a pinned version, say) and records it. Guest daemon: puts this \
                 agent-vm's agent-vm-guest into the image when it has another one, and boots once \
-                more to check it (what `image update-guest` does). With none of --macos, --tools \
+                more to check it (what `image update-guest` does). With none of --system, --tools \
                 and --guest, all three. The update works on a copy of the image's disk and puts it in \
                 place only when every step and check passed: a failure or a cancel leaves the \
                 image as it was, still ready. Boxes made from the image earlier keep what they \
@@ -336,7 +338,10 @@ struct ImageCommand: ParsableCommand {
         @Argument(help: ArgumentHelp("The images to update.", valueName: "image"))
         var names: [String]
 
-        @Flag(name: .customLong("macos"), help: "Update macOS (and the Command Line Tools).")
+        @Flag(name: .long, help: "Update the image's system: macOS (and the Command Line Tools), or a Linux image's packages.")
+        var system = false
+
+        @Flag(name: .customLong("macos"), help: "The same as --system, for macOS images only.")
         var macOS = false
 
         @Flag(name: .long, help: "Run the update steps of the image's recipes.")
@@ -348,7 +353,7 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .customLong("set"), help: ArgumentHelp("A new value for a parameter of the image's recipes, for the tools update (repeatable).", valueName: "name=value"))
         var settings: [String] = []
 
-        @Option(name: .customLong("if-older-than"), help: ArgumentHelp("Skip an image when the parts asked for (macOS, tools) were updated, or checked and found current, less than this many hours ago, and its guest daemon need not be replaced; nothing is booted for it.", valueName: "hours"))
+        @Option(name: .customLong("if-older-than"), help: ArgumentHelp("Skip an image when the parts asked for (the system, tools) were updated, or checked and found current, less than this many hours ago, and its guest daemon need not be replaced; nothing is booted for it.", valueName: "hours"))
         var ifOlderThan: Double?
 
         @OptionGroup var options: StoreOptions
@@ -360,8 +365,23 @@ struct ImageCommand: ParsableCommand {
             if let ifOlderThan, !(ifOlderThan >= 0 && ifOlderThan.isFinite) {
                 throw ValidationError("--if-older-than takes a number of hours, 0 or more")
             }
-            if (macOS || guest) && !tools && !settings.isEmpty {
-                throw ValidationError("--set changes a recipe's parameter for the tools update; add --tools, or leave out --macos and --guest")
+            if (macOS || system || guest) && !tools && !settings.isEmpty {
+                throw ValidationError("--set changes a recipe's parameter for the tools update; add --tools, or leave out --system and --guest")
+            }
+        }
+
+        /// The guest daemon built with this agent-vm for each system, looked up once.
+        private struct LocalDaemons {
+            private var found: [GuestKind: (url: URL, digest: String?)] = [:]
+
+            mutating func daemon(for kind: GuestKind) throws -> (url: URL, digest: String?) {
+                if let known = found[kind] {
+                    return known
+                }
+                let url = try ImageCommand.localGuestDaemon(for: kind)
+                let entry = (url, try? ImageBuilder.sha256(of: url))
+                found[kind] = entry
+                return entry
             }
         }
 
@@ -376,24 +396,36 @@ struct ImageCommand: ParsableCommand {
             }
             let parameters = try Create.pairs(settings, option: "--set")
             // No flag: everything.
-            let both = !macOS && !tools && !guest
-            let guestDaemon = guest || both ? try ImageCommand.localGuestDaemon() : nil
+            let both = !macOS && !system && !tools && !guest
+            let system = system || macOS || both
+            var daemons = LocalDaemons()
+            // What one image's update is asked to do; its guest daemon is its own system's.
+            func update(_ name: String) throws -> (options: ImageUpdateOptions, localDigest: String?) {
+                let kind = (try? options.imageStore.image(named: name))?.record.effectiveGuest ?? .macOS
+                let daemon = guest || both ? try daemons.daemon(for: kind) : nil
+                return (ImageUpdateOptions(name: name, system: system, tools: tools || both, parameters: parameters, guestDaemon: daemon?.url), daemon?.digest)
+            }
             // A mistyped last name should not surface after the first images took minutes each.
             for name in names {
-                try builder.checkUpdate(ImageUpdateOptions(name: name, macOS: macOS || both, tools: tools || both, parameters: parameters, guestDaemon: guestDaemon))
+                try builder.checkUpdate(try update(name).options)
+                // After the name was checked: an image that is not there is refused as that.
+                if macOS, try options.imageStore.image(named: name).record.effectiveGuest == .linux {
+                    throw ImageBuilder.macOSOptionRefusal(image: name)
+                }
             }
             let signals = BuildCancellation.watchingSignals()
             defer { signals.stop() }
             builder.cancellation = signals.cancellation
             var records: [ImageRecord] = []
-            let localDigest = guestDaemon.flatMap { try? ImageBuilder.sha256(of: $0) }
             for (index, name) in names.enumerated() {
+                let asked = try update(name)
                 // Skipped only when no part asked for is due; a guest daemon that differs is due.
                 if let ifOlderThan, let image = try? options.imageStore.image(named: name),
-                   !image.record.isUpdateDue(macOS: macOS || both, tools: tools || both, olderThanHours: ifOlderThan),
-                   guestDaemon == nil || (localDigest != nil && image.record.guestDigest == localDigest) {
+                   !image.record.isUpdateDue(system: system, tools: tools || both, olderThanHours: ifOlderThan),
+                   asked.options.guestDaemon == nil || (asked.localDigest != nil && image.record.guestDigest == asked.localDigest) {
                     records.append(image.record)
-                    let what = [macOS || both ? "macOS" : nil, tools || both ? "its tools" : nil].compactMap { $0 }.joined(separator: " and ")
+                    let systemName = image.record.effectiveGuest == .linux ? image.record.systemShort : "macOS"
+                    let what = [system ? systemName : nil, tools || both ? "its tools" : nil].compactMap { $0 }.joined(separator: " and ")
                     let text = "Image \(name): \(what.isEmpty ? "its guest daemon is this agent-vm's" : "\(what) checked less than \(Self.hours(ifOlderThan)) ago"): not checked again"
                     if json {
                         Events.emit(ProgressEvent(.log, text, image: name), json: true)
@@ -404,7 +436,7 @@ struct ImageCommand: ParsableCommand {
                 }
                 let result: ImageUpdateResult
                 do {
-                    result = try await builder.update(ImageUpdateOptions(name: name, macOS: macOS || both, tools: tools || both, parameters: parameters, guestDaemon: guestDaemon))
+                    result = try await builder.update(asked.options)
                 } catch {
                     var canceledBy: Int32?
                     if case let AgentVMError.canceled(signal) = error {
@@ -459,6 +491,12 @@ struct ImageCommand: ParsableCommand {
             if let previous = result.previousMacOSBuild {
                 parts.append("macOS \(record.macOSVersion ?? "?") (\(record.macOSBuild ?? "?"), was \(previous))")
             }
+            if let packages = result.systemPackages {
+                let kernel = result.previousKernel.map { ", kernel \(record.linux?.kernel ?? "?") (was \($0))" } ?? ""
+                parts.append("\(record.systemShort): \(packages) \(packages == 1 ? "package" : "packages")\(kernel)")
+            } else if let previous = result.previousKernel {
+                parts.append("kernel \(record.linux?.kernel ?? "?") (was \(previous))")
+            }
             if !result.recipes.isEmpty {
                 parts.append("tools of \(result.recipes.joined(separator: ", "))")
             }
@@ -466,7 +504,8 @@ struct ImageCommand: ParsableCommand {
                 parts.append("agent-vm-guest \(record.guestVersion ?? "?") (was \(previous))")
             }
             if parts.isEmpty {
-                parts.append("the Command Line Tools")
+                // A Linux image with nothing else to name was booted again for its kernel.
+                parts.append(record.effectiveGuest == .linux ? "kernel \(record.linux?.kernel ?? "?")" : "the Command Line Tools")
             }
             return "Image \(record.name) is updated (revision \(record.revision ?? 0)): \(parts.joined(separator: "; ")). Boxes made from it before need `agent-vm box recreate`."
         }

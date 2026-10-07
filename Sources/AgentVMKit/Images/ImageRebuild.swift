@@ -1,7 +1,7 @@
 // Sources/AgentVMKit/Images/ImageRebuild.swift
 //
 // `agent-vm image rebuild`: builds an image again under its own name, from a fresh start (a
-// restore image, or a ready image) and the recipes the image keeps in its `Recipes/` folder,
+// restore image, a Linux release's cloud image, or a ready image) and the recipes the image keeps in its `Recipes/` folder,
 // with the parameters it recorded. What `image update` cannot do in place is done this way: a
 // new major macOS, a new Xcode, a base that moved on, or a disk that gathered years of updates.
 //
@@ -32,12 +32,28 @@ public struct ImageRebuildOptions: Sendable {
     public var parameters: [String: String]
     public var guestDaemon: URL
     public var askpassProgram: String
+    /// For a Linux image: the release to build from again, from its cloud image, instead of
+    /// starting from an image (what `restoreImage` is for a macOS image).
+    public var linux: LinuxStart?
 
-    public init(name: String, base: String? = nil, restoreImage: URL? = nil, inputs: [String: String] = [:],
+    /// A fresh start for a Linux image.
+    public struct LinuxStart: Sendable {
+        public var base: LinuxBase
+        /// A cloud image file of the person's own, in place of a download.
+        public var cloudImage: String?
+
+        public init(base: LinuxBase, cloudImage: String? = nil) {
+            self.base = base
+            self.cloudImage = cloudImage
+        }
+    }
+
+    public init(name: String, base: String? = nil, restoreImage: URL? = nil, linux: LinuxStart? = nil, inputs: [String: String] = [:],
                 parameters: [String: String] = [:], guestDaemon: URL, askpassProgram: String) {
         self.name = name
         self.base = base
         self.restoreImage = restoreImage
+        self.linux = linux
         self.inputs = inputs
         self.parameters = parameters
         self.guestDaemon = guestDaemon
@@ -51,7 +67,8 @@ public struct ImageRebuildPlan: Sendable {
     public var image: GoldenImage
     /// The name the new image is built under, beside the old one.
     public var buildName: String
-    /// The image it starts from; nil when macOS is installed from the restore image.
+    /// The image it starts from; nil when macOS is installed from the restore image, or a
+    /// Linux image built from its release's cloud image.
     public var base: String?
     /// The recipes to run, in order, with their inputs and parameters.
     public var recipes: [ImageRecipe]
@@ -164,6 +181,18 @@ extension ImageBuilder {
     /// holds it for a moment).
     static let replacePatience: Duration = .seconds(120)
 
+    /// A fresh start is the guest's own kind: macOS installs from a restore image, Linux is
+    /// built from a release's cloud image. Refuses the other one. (Also for the command line,
+    /// before it looks for the restore image.)
+    public nonisolated static func checkFreshStart(for guest: GuestKind, image: String, restoreImage: Bool, linux: Bool) throws {
+        if guest == .linux, restoreImage {
+            throw AgentVMError.notForThisGuest("--ipsw installs macOS, and image \(image) runs Linux: give --linux (a release to start from again) or --from (a ready image)")
+        }
+        if guest == .macOS, linux {
+            throw AgentVMError.notForThisGuest("--linux builds a Linux image, and image \(image) runs macOS: give --ipsw (a restore image to install) or --from (a ready image)")
+        }
+    }
+
     /// What `rebuild` would do, and everything it would refuse without booting anything: no
     /// such image, no start to build from, a kept recipe that no longer loads, an input whose
     /// file is gone, a `--set` or `--input` no recipe takes.
@@ -175,9 +204,7 @@ extension ImageBuilder {
         guard image.record.state == .ready || image.record.state == .failed else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "rebuild")
         }
-        guard image.record.effectiveGuest == .macOS else {
-            throw LinuxGuest.cannotYet("rebuild", image: image.name)
-        }
+        let guest = image.record.effectiveGuest
         let buildName = ImageStore.rebuildName(for: image.name)
         guard ImageStore.isValidName(buildName) else {
             throw refuse("the name is too long to rebuild: the new image is built as \(buildName), and an image name has at most 63 characters")
@@ -185,12 +212,21 @@ extension ImageBuilder {
         guard options.base == nil || options.restoreImage == nil else {
             throw refuse("give a restore image or an image to start from, not both")
         }
+        guard options.linux == nil || (options.base == nil && options.restoreImage == nil) else {
+            throw refuse("give one start: a Linux release, a restore image, or an image to start from")
+        }
+        try Self.checkFreshStart(for: guest, image: image.name, restoreImage: options.restoreImage != nil, linux: options.linux != nil)
 
         // Where it starts.
         var base: GoldenImage?
-        if options.restoreImage == nil {
+        if options.restoreImage == nil, options.linux == nil {
             guard let baseName = options.base ?? image.record.derivedFrom?.image else {
-                throw refuse("\(image.name) was installed from a restore image: give --ipsw (a restore image to install), or --from (a ready image to start from)")
+                switch guest {
+                case .macOS:
+                    throw refuse("\(image.name) was installed from a restore image: give --ipsw (a restore image to install), or --from (a ready image to start from)")
+                case .linux:
+                    throw refuse("\(image.name) was made from a cloud image\(image.record.base.map { " (\($0.release))" } ?? ""): give --linux (a release to start from again) or --from (a ready image)")
+                }
             }
             guard baseName != image.name else {
                 throw refuse("an image cannot be rebuilt from itself")
@@ -198,7 +234,7 @@ extension ImageBuilder {
             do {
                 base = try store.image(named: baseName)
             } catch AgentVMError.imageNotFound where options.base == nil {
-                throw refuse("the image it was built from, \(baseName), is gone: give --from (a ready image to start from) or --ipsw (a restore image to install)")
+                throw refuse("the image it was built from, \(baseName), is gone: give --from (a ready image to start from) or \(guest == .linux ? "--linux (a release to start from again)" : "--ipsw (a restore image to install)")")
             }
             if let base, base.record.state != .ready {
                 throw AgentVMError.wrongImageState(name: base.name, state: base.record.state.rawValue, operation: "build an image from")
@@ -277,6 +313,11 @@ extension ImageBuilder {
             return try recipe.binding(inputs: inputs, parameters: parameters)
         }
         let asked = recipes.compactMap(\.commandLineTools)
+        // A recipe the image keeps is one its guest took; a hand-edited folder is caught here
+        // and not after the old image's place was prepared.
+        for recipe in recipes {
+            try recipe.check(serves: guest, image: image.name)
+        }
         return ImageRebuildPlan(image: image, buildName: buildName, base: base?.name, recipes: recipes,
                                 commandLineTools: image.record.commandLineTools != nil || asked.contains(true))
     }
@@ -298,7 +339,7 @@ extension ImageBuilder {
         switch try store.clearRebuildLeftover(of: old) {
         case let .finished(left):
             log("\(plan.buildName) is already built (\(left.record.createdAt.formatted(.iso8601))): only putting it in place")
-            if options.restoreImage != nil || options.base != nil || !options.inputs.isEmpty || !options.parameters.isEmpty {
+            if options.restoreImage != nil || options.linux != nil || options.base != nil || !options.inputs.isEmpty || !options.parameters.isEmpty {
                 notice("  note: the options given are not used: that build is finished. To build again with them, delete it first: `agent-vm image delete \(plan.buildName)`")
             }
             built = left
@@ -306,27 +347,36 @@ extension ImageBuilder {
             // Events, and the wallpaper the image shows, name the image and not its build name.
             shownName = old.name
             defer { shownName = nil }
-            log("Rebuilding \(old.name) as \(plan.buildName), \(plan.base.map { "from \($0)" } ?? "from \(options.restoreImage?.lastPathComponent ?? "a restore image")"); \(old.name) stays usable until it is replaced")
+            let start = plan.base.map { "from \($0)" } ?? options.linux.map { "from \($0.base.name)'s cloud image" }
+                ?? "from \(options.restoreImage?.lastPathComponent ?? "a restore image")"
+            log("Rebuilding \(old.name) as \(plan.buildName), \(start); \(old.name) stays usable until it is replaced")
             if plan.recipes.isEmpty {
                 log("  no recipes to run")
             } else {
                 log("  recipes: \(plan.recipes.map(\.name).joined(separator: ", "))")
             }
-            if let restoreImage = options.restoreImage {
+            if let linux = options.linux {
+                built = try await buildLinux(LinuxImageBuildOptions(
+                    name: plan.buildName, base: linux.base, cloudImage: linux.cloudImage, cpuCount: old.record.cpuCount, memoryBytes: old.record.memoryBytes,
+                    diskBytes: old.record.diskBytes, userName: old.record.userName, guestDaemon: options.guestDaemon,
+                    commandLineTools: plan.commandLineTools, recipes: plan.recipes))
+            } else if let restoreImage = options.restoreImage {
                 built = try await build(ImageBuildOptions(
                     name: plan.buildName, restoreImage: restoreImage, cpuCount: old.record.cpuCount, memoryBytes: old.record.memoryBytes,
                     diskBytes: old.record.diskBytes, userName: old.record.userName, askpassProgram: options.askpassProgram,
                     guestDaemon: options.guestDaemon, commandLineTools: plan.commandLineTools, recipes: plan.recipes))
             } else if let base = plan.base {
                 let baseRecord = try store.image(named: base).record
-                // A disk only grows, and by a few GB at least: the old size when that is one.
-                let grown = old.record.diskBytes >= baseRecord.diskBytes + Self.minimumDiskGrowth
+                // A disk only grows, and by a few GB at least (a Linux disk: by one): the old
+                // size when that is one.
+                let growth = baseRecord.effectiveGuest == .linux ? Self.minimumLinuxDiskGrowth : Self.minimumDiskGrowth
+                let grown = old.record.diskBytes >= baseRecord.diskBytes + growth
                 built = try await derive(ImageDeriveOptions(
                     name: plan.buildName, base: base, recipes: plan.recipes, commandLineTools: plan.commandLineTools,
                     cpuCount: old.record.cpuCount, memoryBytes: old.record.memoryBytes,
                     diskBytes: grown ? old.record.diskBytes : nil, guestDaemon: options.guestDaemon))
             } else {
-                throw AgentVMError.invalidRecipe(path: old.directory.path, reason: "no restore image and no image to start from")
+                throw AgentVMError.invalidRecipe(path: old.directory.path, reason: "no restore image, no Linux release and no image to start from")
             }
             try store.markRebuilt(built, of: old.name)
         }

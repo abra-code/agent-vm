@@ -627,15 +627,24 @@ public final class ImageBuilder {
         }
     }
 
+    /// What `image update --macos` says about a Linux image.
+    public nonisolated static func macOSOptionRefusal(image: String) -> AgentVMError {
+        return LinuxGuest.macOSOption(image: image)
+    }
+
     /// The image `updateGuest` would update, or the reason it would refuse (no such image, or
     /// not ready), without booting anything: several images are checked before the first boot.
-    public func updatableImage(named name: String, operation: String = "update the guest daemon of") throws -> GoldenImage {
+    /// `inPlace` is that command's way, which boots the image's own disk. A Linux image is not
+    /// updated that way: a boot gives it a machine id, and a boot that did not end through the
+    /// build's own shutdown (a cancel, a failure) would leave the id for every later box to
+    /// share. `image update --guest` works on a copy.
+    public func updatableImage(named name: String, operation: String = "update the guest daemon of", inPlace: Bool = true) throws -> GoldenImage {
         let image = try store.image(named: name)
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: operation)
         }
-        guard image.record.effectiveGuest == .macOS else {
-            throw LinuxGuest.cannotYet("update", image: image.name)
+        if inPlace, image.record.effectiveGuest == .linux {
+            throw LinuxGuest.noUpdateGuest(image: image.name)
         }
         return image
     }

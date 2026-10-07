@@ -229,15 +229,17 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     public var updateSeconds: Double?
 
     /// Whether an update of the parts named is due: for one of them, none ended well within
-    /// the last `hours`.
-    public func isUpdateDue(macOS: Bool, tools: Bool, olderThanHours hours: Double, now: Date = Date()) -> Bool {
+    /// the last `hours`. `system` is macOS for a macOS image and the distribution's packages
+    /// for a Linux one.
+    public func isUpdateDue(system: Bool, tools: Bool, olderThanHours hours: Double, now: Date = Date()) -> Bool {
         func due(_ checked: Date?) -> Bool {
             guard let checked else {
                 return true
             }
             return now.timeIntervalSince(checked) >= hours * 3600
         }
-        return (macOS && due(macOSCheckedAt)) || (tools && due(toolsCheckedAt))
+        // Each guest has its own stamp for its system: a macOS image never has the Linux one.
+        return (system && due(effectiveGuest == .linux ? systemCheckedAt : macOSCheckedAt)) || (tools && due(toolsCheckedAt))
     }
 
     /// The image this one was built from (`image create --from`), and that image's recipe

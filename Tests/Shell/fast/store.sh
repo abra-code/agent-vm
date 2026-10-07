@@ -226,7 +226,7 @@ test_update_checks_every_name_first() {
     assert_err_contains "--set changes a recipe's parameter for the tools update" || return 1
     run_avm image update dev --guest --set channel=beta
     assert_status 64 || return 1
-    assert_err_contains "leave out --macos and --guest" || return 1
+    assert_err_contains "leave out --system and --guest" || return 1
     run_avm image update dev --tools --set channel
     assert_status 64 || return 1
     assert_err_contains "channel: give name=value" || return 1
@@ -905,32 +905,80 @@ test_a_linux_box_has_its_own_files() {
     assert_missing "$_box" || return 1
 }
 
-# What agent-vm does not do with a Linux image yet, it says, and names the image. Nothing is
-# created or changed by the refusals.
-test_what_is_not_done_with_a_linux_image_yet() {
+# The system's part of an update is --system for both guests; --macos names macOS, and says so
+# about a Linux image before anything boots. Nothing is created or changed by the refusals.
+test_update_macos_on_a_linux_image_says_system() {
     fake_linux_image deb
+    # Passwords in files are a macOS record's: a Linux one has none to move, and none is asked for.
+    run_avm doctor --json
+    assert_json checks.6.status ok || return 1
+    fake_image dev
     local _record
     _record="$(/bin/cat "$AGENT_VM_HOME/Images/deb/image.json")"
     printf '%s\n' '{ "version": 1, "description": "t", "steps": [ { "name": "n", "run": "true" } ] }' > "$SCRATCH/recipe.json"
     run_avm image create deb2 --from deb --recipe "$SCRATCH/recipe.json"
     assert_status 1 || return 1
-    # Building from a Linux image is there; a recipe that does not say it is for Linux is not
-    # taken into one.
+    # A recipe that does not say it is for Linux is not taken into a Linux image.
     assert_err_contains "recipe.json: it is for macOS images, and image deb runs Linux" || return 1
     assert_missing "$AGENT_VM_HOME/Images/deb2" || return 1
-    run_avm image update deb
+    run_avm image update deb --macos
     assert_status 1 || return 1
-    assert_err_contains "image deb runs Linux, and this agent-vm cannot update a Linux image yet" || return 1
-    run_avm image update deb --guest
+    assert_err_contains "--macos is for macOS images; image deb runs Linux: use --system" || return 1
+    run_avm image update deb --macos --tools --json
     assert_status 1 || return 1
-    assert_err_contains "image deb runs Linux, and this agent-vm cannot update a Linux image yet" || return 1
+    assert_err_contains "--macos is for macOS images; image deb runs Linux: use --system" || return 1
+    # Every name is looked at before the first image boots, the macOS one before it included.
+    run_avm image update dev deb --macos
+    assert_status 1 || return 1
+    assert_err_contains "--macos is for macOS images; image deb runs Linux: use --system" || return 1
+    run_avm image update nosuch --macos
+    assert_status 1 || return 1
+    assert_err_contains "nosuch" || return 1
+    assert_not_contains "$ERR" "use --system" "an image that is not there" || return 1
+    # The deprecated command boots the image itself, which a Linux image is not put through;
+    # refused before the macOS image named with it is touched.
+    run_avm image update-guest dev deb
+    assert_status 1 || return 1
+    assert_err_contains "image update-guest is not there for Linux images; use \`agent-vm image update deb --guest\`, which works on a copy of the image" || return 1
+    run_avm image update deb --system --set channel=beta
+    assert_status 64 || return 1
+    assert_err_contains "leave out --system and --guest" || return 1
+    assert_missing "$AGENT_VM_HOME/Images/deb/Update" || return 1
+    assert_missing "$AGENT_VM_HOME/Images/dev/Update" || return 1
+    assert_eq "$(/bin/cat "$AGENT_VM_HOME/Images/deb/image.json")" "$_record" "the image's record" || return 1
+}
+
+# A Linux image is built again from its release's cloud image (--linux) or from a Linux image
+# (--from), a macOS one from a restore image or a macOS image; each says what it wants.
+test_rebuild_linux_names_its_sources() {
+    fake_linux_image deb
+    fake_image dev
+    local _record
+    _record="$(/bin/cat "$AGENT_VM_HOME/Images/deb/image.json")"
     run_avm image rebuild deb
     assert_status 1 || return 1
-    assert_err_contains "image deb runs Linux, and this agent-vm cannot rebuild a Linux image yet" || return 1
+    assert_err_contains "deb was made from a cloud image: give --linux (a release to start from again) or --from (a ready image)" || return 1
+    run_avm image rebuild deb --ipsw /nowhere.ipsw
+    assert_status 1 || return 1
+    assert_err_contains "--ipsw installs macOS, and image deb runs Linux: give --linux (a release to start from again) or --from (a ready image)" || return 1
+    run_avm image rebuild dev --linux debian-13
+    assert_status 1 || return 1
+    assert_err_contains "--linux builds a Linux image, and image dev runs macOS: give --ipsw (a restore image to install) or --from (a ready image)" || return 1
+    run_avm image rebuild deb --from dev
+    assert_status 1 || return 1
+    assert_err_contains "image dev runs macOS and deb runs Linux: an image is rebuilt from an image of its own system" || return 1
+    run_avm image rebuild deb --linux nope
+    assert_status 1 || return 1
+    assert_err_contains "--linux nope: this agent-vm knows debian-13" || return 1
+    run_avm image rebuild deb --linux debian-13 --from dev
+    assert_status 64 || return 1
+    assert_err_contains "give one of --ipsw (install macOS), --linux (a Linux cloud image) or --from (start from a ready image)" || return 1
+    run_avm image rebuild deb --cloud-image /nowhere.tar.xz
+    assert_status 64 || return 1
+    assert_err_contains "--cloud-image is a Linux cloud image: give --linux <release> with it" || return 1
+    assert_missing "$AGENT_VM_HOME/Images/deb.rebuild" || return 1
+    assert_missing "$AGENT_VM_HOME/Cache" || return 1
     assert_eq "$(/bin/cat "$AGENT_VM_HOME/Images/deb/image.json")" "$_record" "the image's record" || return 1
-    # Passwords in files are a macOS record's: a Linux one has none to move, and none is asked for.
-    run_avm doctor --json
-    assert_json checks.6.status ok || return 1
 }
 
 # A Linux box whose files are not a machine's does not start, says which file, and leaves no

@@ -201,21 +201,78 @@ import Testing
     @Test func anUpdateIsDueWhenNoneEndedWellLately() {
         var record = ImageStoreTests.record("tools", state: .ready)
         let now = Date(timeIntervalSince1970: 1_800_100_000)
-        #expect(record.isUpdateDue(macOS: true, tools: true, olderThanHours: 24, now: now))
+        #expect(record.isUpdateDue(system: true, tools: true, olderThanHours: 24, now: now))
         record.toolsCheckedAt = now.addingTimeInterval(-23 * 3600)
         // Each part by itself: a tools update says nothing about macOS.
-        #expect(!record.isUpdateDue(macOS: false, tools: true, olderThanHours: 24, now: now))
-        #expect(record.isUpdateDue(macOS: false, tools: true, olderThanHours: 23, now: now))
-        #expect(record.isUpdateDue(macOS: true, tools: false, olderThanHours: 24, now: now))
-        #expect(record.isUpdateDue(macOS: true, tools: true, olderThanHours: 24, now: now))
+        #expect(!record.isUpdateDue(system: false, tools: true, olderThanHours: 24, now: now))
+        #expect(record.isUpdateDue(system: false, tools: true, olderThanHours: 23, now: now))
+        #expect(record.isUpdateDue(system: true, tools: false, olderThanHours: 24, now: now))
+        #expect(record.isUpdateDue(system: true, tools: true, olderThanHours: 24, now: now))
         record.macOSCheckedAt = now.addingTimeInterval(-3600)
-        #expect(!record.isUpdateDue(macOS: true, tools: true, olderThanHours: 24, now: now))
-        #expect(record.isUpdateDue(macOS: true, tools: true, olderThanHours: 0, now: now))
-        #expect(!record.isUpdateDue(macOS: false, tools: false, olderThanHours: 0, now: now))
+        #expect(!record.isUpdateDue(system: true, tools: true, olderThanHours: 24, now: now))
+        #expect(record.isUpdateDue(system: true, tools: true, olderThanHours: 0, now: now))
+        #expect(!record.isUpdateDue(system: false, tools: false, olderThanHours: 0, now: now))
+        // A Linux image's system has a stamp of its own; the macOS one says nothing about it.
+        var linux = record
+        linux.guest = .linux
+        #expect(linux.isUpdateDue(system: true, tools: false, olderThanHours: 24, now: now))
+        #expect(!linux.isUpdateDue(system: false, tools: true, olderThanHours: 24, now: now))
+        linux.systemCheckedAt = now.addingTimeInterval(-3600)
+        #expect(!linux.isUpdateDue(system: true, tools: true, olderThanHours: 24, now: now))
+        #expect(linux.isUpdateDue(system: true, tools: false, olderThanHours: 0.5, now: now))
+        // ... and a macOS image is not excused by a Linux stamp.
+        record.macOSCheckedAt = nil
+        record.systemCheckedAt = now
+        #expect(record.isUpdateDue(system: true, tools: false, olderThanHours: 24, now: now))
         // The expected duration travels in the event's JSON.
         var event = ProgressEvent(.progress, "Booting", step: "boot")
         event.expectedSeconds = 85
         #expect(event.jsonLine.contains("\"expectedSeconds\":85"))
+    }
+
+    /// Whether a Linux system update changed anything is told by the list of installed
+    /// packages before and after it.
+    @Test func thePackageListTellsAChange() {
+        let before = """
+            adduser:all 3.152 installed
+            libc6:arm64 2.41-12 installed
+            linux-image-6.12.107+deb13-cloud-arm64:arm64 6.12.107-1 installed
+            openssh-server:arm64 1:10.0p1-7 config-files
+            zip:arm64 3.0-15 installed
+            """
+        #expect(LinuxSetup.packageChanges(before: before, after: before) == 0)
+        #expect(LinuxSetup.packageChanges(before: before, after: before + "\n") == 0)
+        // One upgraded, one removed, one added.
+        let after = """
+            adduser:all 3.152 installed
+            libc6:arm64 2.41-12+deb13u1 installed
+            linux-image-6.12.111+deb13-cloud-arm64:arm64 6.12.111-1 installed
+            openssh-server:arm64 1:10.0p1-7 config-files
+            zip:arm64 3.0-15 installed
+            """
+        #expect(LinuxSetup.packageChanges(before: before, after: after) == 3)
+        // A package that is no longer installed counts, whatever dpkg still knows of it; what
+        // is not a package's line does not.
+        #expect(LinuxSetup.packageChanges(before: "a:arm64 1 installed\nb:arm64 1 installed", after: "a:arm64 1 installed\nb:arm64 1 config-files\nnoise") == 1)
+        #expect(LinuxSetup.packageChanges(before: "", after: "") == 0)
+        // The same name for two architectures is two packages.
+        #expect(LinuxSetup.packageChanges(before: "a:arm64 1 installed", after: "a:arm64 1 installed\na:armhf 1 installed") == 1)
+        #expect(LinuxSetup.packageList.contains("${Package}:${Architecture} ${Version} ${db:Status-Status}"))
+    }
+
+    @Test func aNewKernelAsksForASecondBoot() {
+        #expect(LinuxSetup.kernelNeedsBoot(running: "6.12.107+deb13-cloud-arm64\n", newest: "/boot/vmlinuz-6.12.111+deb13-cloud-arm64\n"))
+        #expect(!LinuxSetup.kernelNeedsBoot(running: "6.12.111+deb13-cloud-arm64\n", newest: "/boot/vmlinuz-6.12.111+deb13-cloud-arm64\n"))
+        #expect(!LinuxSetup.kernelNeedsBoot(running: "6.12.111+deb13-cloud-arm64", newest: "/boot/vmlinuz-6.12.111+deb13-cloud-arm64"))
+        // An answer that names no kernel asks for nothing.
+        #expect(!LinuxSetup.kernelNeedsBoot(running: "6.12.111", newest: ""))
+        #expect(!LinuxSetup.kernelNeedsBoot(running: "6.12.111", newest: "/boot/vmlinuz-"))
+        #expect(!LinuxSetup.kernelNeedsBoot(running: "6.12.111", newest: "ls: cannot access"))
+        // A failed list of packages must not pass for an update that found nothing: the step
+        // itself fails.
+        #expect(LinuxSetup.packageLists.script.contains("APT::Update::Error-Mode=any"))
+        #expect(LinuxSetup.systemUpdate.map(\.name) == ["package lists", "system updates", "remove what is no longer needed"])
+        #expect(LinuxSetup.systemUpdate[1].script.contains("--force-confold dist-upgrade"))
     }
 
     @Test func anImageBehindTheNewestMacOSIsNamed() throws {
