@@ -27,15 +27,22 @@ import Foundation
 import Virtualization
 
 public struct BoxRecord: Codable, Equatable, Sendable {
-    /// 2: the record names its password's Keychain item (see `ImageRecord.formatVersion`).
-    public static let currentFormatVersion = 2
+    /// The newest format this agent-vm reads. 2: the record names its password's Keychain
+    /// item; 3: the box is a Linux guest (see `ImageRecord.formatVersion`, which says what a
+    /// new record is written as).
+    public static let currentFormatVersion = 3
 
     public var formatVersion: Int
     public var name: String
     /// The image the box was cloned from, and what it held at that time.
     public var image: String
-    public var macOSVersion: String
-    public var macOSBuild: String
+    /// nil in a Linux box.
+    public var macOSVersion: String?
+    public var macOSBuild: String?
+    /// The system the box runs, as its image said when the box was made; nil in records written
+    /// before there were Linux guests, which are macOS ones (`effectiveGuest`).
+    public var guest: GuestKind?
+    public var linux: LinuxSystem?
     public var guestProtocol: Int?
     public var createdAt: Date
     public var cpuCount: Int
@@ -64,6 +71,25 @@ public struct BoxRecord: Codable, Equatable, Sendable {
         return network ?? .legacy
     }
 
+    public var effectiveGuest: GuestKind {
+        return guest ?? .macOS
+    }
+
+    /// "macOS 27.0 (26A428)", "Debian GNU/Linux 13 (trixie)".
+    public var systemDescription: String {
+        return GuestSystemText.description(guest: effectiveGuest, macOSVersion: macOSVersion, macOSBuild: macOSBuild, linux: linux)
+    }
+
+    /// "macOS 27.0", "Debian 13".
+    public var systemShort: String {
+        return GuestSystemText.short(guest: effectiveGuest, macOSVersion: macOSVersion, linux: linux)
+    }
+
+    /// "macOS 26A428", "Debian 13": the system by what tells two states of it apart.
+    public var systemBuild: String {
+        return GuestSystemText.build(guest: effectiveGuest, macOSBuild: macOSBuild, linux: linux)
+    }
+
     /// What the box lacks next to `image`, its image's record now (nil when it is gone): a
     /// `recreate` when the image is no longer what the box was cloned from. In the order
     /// checked: another image was built under the name, `image update` changed it, or its
@@ -75,10 +101,10 @@ public struct BoxRecord: Codable, Equatable, Sendable {
         }
         if let builtAt = imageCreatedAt {
             if builtAt != image.createdAt {
-                return [BoxNeed(kind: .recreate, reason: .imageRebuilt, macOSBuild: image.macOSBuild)]
+                return [BoxNeed(kind: .recreate, reason: .imageRebuilt, macOSBuild: image.macOSBuild, system: image.systemBuild)]
             }
             if (imageRevision ?? 0) != (image.revision ?? 0) {
-                return [BoxNeed(kind: .recreate, reason: .imageUpdated, macOSBuild: image.macOSBuild)]
+                return [BoxNeed(kind: .recreate, reason: .imageUpdated, macOSBuild: image.macOSBuild, system: image.systemBuild)]
             }
         }
         if let mine = guestDigest, let theirs = image.guestDigest, mine != theirs {
@@ -109,14 +135,17 @@ public struct BoxNeed: Codable, Equatable, Sendable {
     /// guest-update: the image's agent-vm-guest version now.
     public var guestVersion: String?
     public var reason: Reason?
-    /// image-updated and image-rebuilt: the image's macOS build now.
+    /// image-updated and image-rebuilt: the image's macOS build now (macOS images only), and
+    /// its system now in words, for either guest ("macOS 26A434", "Debian 13").
     public var macOSBuild: String?
+    public var system: String?
 
-    public init(kind: Kind, guestVersion: String? = nil, reason: Reason? = nil, macOSBuild: String? = nil) {
+    public init(kind: Kind, guestVersion: String? = nil, reason: Reason? = nil, macOSBuild: String? = nil, system: String? = nil) {
         self.kind = kind
         self.guestVersion = guestVersion
         self.reason = reason
         self.macOSBuild = macOSBuild
+        self.system = system
     }
 }
 
@@ -130,6 +159,9 @@ public struct Box: Sendable {
     public var auxiliaryStorageURL: URL { directory.appendingPathComponent(ImageStore.auxiliaryStorageName) }
     public var hardwareModelURL: URL { directory.appendingPathComponent(ImageStore.hardwareModelName) }
     public var machineIdentifierURL: URL { directory.appendingPathComponent(ImageStore.machineIdentifierName) }
+    /// A Linux box's boot firmware variables, and what its guest printed on its console.
+    public var efiVariableStoreURL: URL { directory.appendingPathComponent(ImageStore.efiVariableStoreName) }
+    public var consoleLogURL: URL { directory.appendingPathComponent(ImageStore.consoleLogName) }
     public var passwordURL: URL { directory.appendingPathComponent(ImageStore.passwordName) }
     public var lockPath: String { directory.appendingPathComponent(BoxStore.lockName).path }
     public var controlSocketPath: String { directory.appendingPathComponent(BoxStore.controlSocketName).path }
@@ -216,6 +248,10 @@ public struct BoxStore: Sendable {
         guard current.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: current.name, state: current.record.state.rawValue, operation: "create a box from")
         }
+        // A Linux box has another set of machine files, which this agent-vm does not make yet.
+        guard current.record.effectiveGuest == .macOS else {
+            throw LinuxGuest.cannotRunYet("image \(current.name)")
+        }
 
         try StoreRoot.prepare(root)
         try FileSystem.makeDirectories(boxesDirectory.path)
@@ -228,8 +264,9 @@ public struct BoxStore: Sendable {
             throw AgentVMError.system(operation: "create \(directory.path)", code: code)
         }
         let record = BoxRecord(
-            formatVersion: ImageRecord.formatVersion(passwordID: current.record.passwordID), name: name, image: current.name,
+            formatVersion: ImageRecord.formatVersion(passwordID: current.record.passwordID, guest: current.record.guest), name: name, image: current.name,
             macOSVersion: current.record.macOSVersion, macOSBuild: current.record.macOSBuild,
+            guest: current.record.guest, linux: current.record.linux,
             // Whole seconds: the record is stored with ISO 8601 dates, which drop fractions.
             guestProtocol: current.record.guestProtocol, createdAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)),
             cpuCount: cpuCount ?? current.record.cpuCount, memoryBytes: memoryBytes ?? current.record.memoryBytes,
@@ -418,6 +455,11 @@ public struct BoxStore: Sendable {
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "create a box from")
         }
+        // Before the old box is deleted: what `create` would refuse is refused here, with the
+        // box still there.
+        guard image.record.effectiveGuest == .macOS, old.record.effectiveGuest == .macOS else {
+            throw LinuxGuest.cannotRunYet(old.record.effectiveGuest == .linux ? "box \(name)" : "image \(image.name)")
+        }
         guard let imageLock = try imageStore.tryLock(image) else {
             throw AgentVMError.imageBusy(image.name)
         }
@@ -536,7 +578,7 @@ public struct BoxStore: Sendable {
     func setPasswordID(_ id: String, of box: Box) throws {
         var record = box.record
         record.passwordID = id
-        record.formatVersion = ImageRecord.formatVersion(passwordID: id)
+        record.formatVersion = ImageRecord.formatVersion(passwordID: id, guest: record.guest)
         try save(Box(record: record, directory: box.directory))
     }
 

@@ -1,8 +1,9 @@
 // Sources/AgentVMKit/Images/ImageRecord.swift
 //
-// A golden image is an installed and set-up macOS guest that boxes are cloned from. The record
-// below is what `image.json` holds; the machine itself is the set of files next to it (disk,
-// auxiliary storage, hardware model, machine identifier), whose formats Apple defines.
+// A golden image is an installed and set-up guest, macOS or Linux, that boxes are cloned from.
+// The record below is what `image.json` holds; the machine itself is the set of files next to
+// it (for macOS: disk, auxiliary storage, hardware model, machine identifier, whose formats
+// Apple defines; for Linux: disk, the boot firmware's variable store, machine identifier).
 
 import Foundation
 
@@ -20,15 +21,20 @@ public struct ImageRecord: Codable, Equatable, Sendable {
         case failed
     }
 
-    /// Bumped on incompatible changes to this record.
-    public static let currentFormatVersion = 2
+    /// The newest format this agent-vm reads. Bumped on incompatible changes to this record.
+    public static let currentFormatVersion = 3
 
-    /// The format a new record is written in. 2 is a record that names its password's Keychain
+    /// The format a new record is written in: the oldest whose readers can use the record.
+    /// 3 is a record of a Linux guest: an agent-vm before 0.7.2 would start it as a Mac, so it
+    /// must refuse the record instead. 2 is a macOS record that names its password's Keychain
     /// item: an agent-vm before 0.6.0 would look for a `Password` file that is not there, and
-    /// drop the identifier when it rewrote the record, so it must refuse the record instead.
-    /// A record with a file stays in format 1, which those read.
-    public static func formatVersion(passwordID: String?) -> Int {
-        return passwordID == nil ? 1 : currentFormatVersion
+    /// drop the identifier when it rewrote the record. A macOS record with a file stays in
+    /// format 1, which every agent-vm reads.
+    public static func formatVersion(passwordID: String?, guest: GuestKind?) -> Int {
+        if (guest ?? .macOS) == .linux {
+            return 3
+        }
+        return passwordID == nil ? 1 : 2
     }
 
     public var formatVersion: Int
@@ -38,9 +44,58 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     public var createdAt: Date
     /// Version of agent-vm that created the image.
     public var createdBy: String
-    /// From the restore image, for example "27.0" and "26A428".
-    public var macOSVersion: String
-    public var macOSBuild: String
+    /// From the restore image, for example "27.0" and "26A428"; nil in a Linux image.
+    public var macOSVersion: String?
+    public var macOSBuild: String?
+    /// The system the image runs; nil in records written before there were Linux guests, which
+    /// are macOS ones (`effectiveGuest`).
+    public var guest: GuestKind?
+    /// A Linux image's system; nil in a macOS image.
+    public var linux: LinuxSystem?
+    /// What a Linux image's disk was unpacked from; nil in a macOS image and in a derived one.
+    public var base: BaseSource?
+    /// Linux: when `image update` last installed the system's package updates and ended well.
+    public var systemCheckedAt: Date?
+
+    /// The distribution's own disk image a Linux image started from.
+    public struct BaseSource: Codable, Equatable, Sendable {
+        /// The release as agent-vm names it: "debian-13".
+        public var release: String
+        /// The file's name, and where it was downloaded from (nil for a file the user gave).
+        public var file: String
+        public var url: String?
+        /// SHA-512 of the file as it was used.
+        public var sha512: String
+        /// The distribution's build of it, when it says one.
+        public var build: String?
+
+        public init(release: String, file: String, url: String? = nil, sha512: String, build: String? = nil) {
+            self.release = release
+            self.file = file
+            self.url = url
+            self.sha512 = sha512
+            self.build = build
+        }
+    }
+
+    public var effectiveGuest: GuestKind {
+        return guest ?? .macOS
+    }
+
+    /// "macOS 27.0 (26A428)", "Debian GNU/Linux 13 (trixie)".
+    public var systemDescription: String {
+        return GuestSystemText.description(guest: effectiveGuest, macOSVersion: macOSVersion, macOSBuild: macOSBuild, linux: linux)
+    }
+
+    /// "macOS 27.0", "Debian 13".
+    public var systemShort: String {
+        return GuestSystemText.short(guest: effectiveGuest, macOSVersion: macOSVersion, linux: linux)
+    }
+
+    /// "macOS 26A428", "Debian 13": the system by what tells two states of it apart.
+    public var systemBuild: String {
+        return GuestSystemText.build(guest: effectiveGuest, macOSBuild: macOSBuild, linux: linux)
+    }
     public var cpuCount: Int
     public var memoryBytes: UInt64
     /// Logical size of the disk; the file is sparse and takes only what the guest wrote.
@@ -126,9 +181,13 @@ public struct ImageRecord: Codable, Equatable, Sendable {
             return []
         }
         var needs: [ImageNeed] = []
-        let missing = GuestFeature.all.filter { !(guestFeatures ?? []).contains($0) }
+        let missing = GuestFeature.all(for: effectiveGuest).filter { !(guestFeatures ?? []).contains($0) }
         if !missing.isEmpty {
             needs.append(ImageNeed(kind: .guestUpdate, missing: missing))
+        }
+        // Full Disk Access is macOS's: a Linux image has none to grant.
+        guard effectiveGuest == .macOS else {
+            return needs
         }
         switch hasFullDiskAccess {
         case true?:
@@ -304,6 +363,9 @@ public struct GoldenImage: Sendable {
     public var auxiliaryStorageURL: URL { directory.appendingPathComponent(ImageStore.auxiliaryStorageName) }
     public var hardwareModelURL: URL { directory.appendingPathComponent(ImageStore.hardwareModelName) }
     public var machineIdentifierURL: URL { directory.appendingPathComponent(ImageStore.machineIdentifierName) }
+    /// A Linux image's boot firmware variables, and what its guest printed on its console.
+    public var efiVariableStoreURL: URL { directory.appendingPathComponent(ImageStore.efiVariableStoreName) }
+    public var consoleLogURL: URL { directory.appendingPathComponent(ImageStore.consoleLogName) }
     public var passwordURL: URL { directory.appendingPathComponent(ImageStore.passwordName) }
     public var knownHostsURL: URL { directory.appendingPathComponent(ImageStore.knownHostsName) }
     public var recipeURL: URL { directory.appendingPathComponent(ImageStore.recipeName) }

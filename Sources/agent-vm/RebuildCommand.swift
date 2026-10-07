@@ -119,7 +119,7 @@ extension ImageCommand {
 
         /// For a person: what the image is now, and what is left to do.
         static func summary(_ record: ImageRecord) -> String {
-            var text = "Image \(record.name) is rebuilt: macOS \(record.macOSVersion) (\(record.macOSBuild))"
+            var text = "Image \(record.name) is rebuilt: \(record.systemDescription)"
             let recipes = (record.recipes ?? []).compactMap(\.name)
             if !recipes.isEmpty {
                 text += ", recipes \(recipes.joined(separator: ", "))"

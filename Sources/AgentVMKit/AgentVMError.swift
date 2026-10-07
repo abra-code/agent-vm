@@ -45,6 +45,9 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case invalidUserName(String)
     /// This Mac or this binary cannot do what was asked (entitlement, free space).
     case hostNotReady(String)
+    /// A command that has no meaning for the guest an image or box runs, or that this agent-vm
+    /// does not do for it; the text says which.
+    case notForThisGuest(String)
     /// An image recipe that cannot be used as it is.
     case invalidRecipe(path: String, reason: String)
     /// The guide to writing recipes is not where the installer puts it.
@@ -184,6 +187,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "\(name) is not a usable account name (lower-case letters, digits and \"_\", starting with a letter; not a name macOS reserves)"
         case let .hostNotReady(reason):
             return "cannot build here: \(reason)"
+        case let .notForThisGuest(reason):
+            return reason
         case let .invalidRecipe(path, reason):
             return "recipe \(path): \(reason)"
         case let .recipeGuideMissing(path, reason):

@@ -210,6 +210,79 @@ $_features_line
 EOF
 }
 
+# fake_linux_image <name> [state]: the record of a Linux image with stand-in machine files, as
+# an image build writes it: format 3, `guest` and `linux`, the three features a Linux guest
+# daemon has, and no macOS key, password or Mac machine file.
+fake_linux_image() {
+    local _name="$1"
+    local _state="${2:-ready}"
+    local _dir="$AGENT_VM_HOME/Images/$_name"
+    /bin/mkdir -p "$_dir"
+    /bin/chmod 700 "$AGENT_VM_HOME" "$AGENT_VM_HOME/Images" "$_dir"
+    printf 'disk' > "$_dir/Disk.img"
+    printf 'vars' > "$_dir/EFIVariableStore"
+    printf 'id' > "$_dir/MachineIdentifier"
+    /bin/cat > "$_dir/image.json" <<EOF
+{
+  "formatVersion" : 3,
+  "name" : "$_name",
+  "state" : "$_state",
+  "createdAt" : "2026-10-07T10:00:00Z",
+  "createdBy" : "test",
+  "guest" : "linux",
+  "linux" : {
+    "distribution" : "debian",
+    "version" : "13",
+    "name" : "Debian GNU/Linux 13 (trixie)",
+    "kernel" : "6.12.48+deb13-cloud-arm64",
+    "architecture" : "arm64"
+  },
+  "cpuCount" : 4,
+  "memoryBytes" : 4294967296,
+  "diskBytes" : 34359738368,
+  "macAddress" : "da:51:72:d4:e5:73",
+  "userName" : "agent",
+  "guestFeatures" : ["terminal", "time-sync", "terminal-pixels"],
+  "guestVersion" : "test",
+  "guestProtocol" : 1
+}
+EOF
+}
+
+# fake_linux_box <name> <image>: the record of a stopped Linux box, which no command can make
+# while agent-vm cannot run Linux guests.
+fake_linux_box() {
+    local _name="$1"
+    local _dir="$AGENT_VM_HOME/Boxes/$_name"
+    /bin/mkdir -p "$_dir"
+    /bin/chmod 700 "$AGENT_VM_HOME" "$AGENT_VM_HOME/Boxes" "$_dir"
+    printf 'disk' > "$_dir/Disk.img"
+    printf 'vars' > "$_dir/EFIVariableStore"
+    printf 'id' > "$_dir/MachineIdentifier"
+    /bin/cat > "$_dir/box.json" <<EOF
+{
+  "formatVersion" : 3,
+  "name" : "$_name",
+  "image" : "$2",
+  "guest" : "linux",
+  "linux" : {
+    "distribution" : "debian",
+    "version" : "13",
+    "name" : "Debian GNU/Linux 13 (trixie)",
+    "architecture" : "arm64"
+  },
+  "guestProtocol" : 1,
+  "createdAt" : "2026-10-07T10:05:00Z",
+  "cpuCount" : 4,
+  "memoryBytes" : 4294967296,
+  "macAddress" : "da:51:72:d4:e5:74",
+  "userName" : "agent",
+  "imageCreatedAt" : "2026-10-07T10:00:00Z",
+  "imageRevision" : 0
+}
+EOF
+}
+
 # ---- Extended tests: real boxes ----------------------------------------------------------
 
 # The ready image extended tests build their boxes from.

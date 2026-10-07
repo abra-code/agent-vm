@@ -125,7 +125,7 @@ public enum AccountPasswordMove {
             try move(owner, label: "agent-vm account password (\(image.name))", current: image.record.passwordID, file: image.passwordURL, write: { id in
                 _ = try images.update(image) { record in
                     record.passwordID = id
-                    record.formatVersion = ImageRecord.formatVersion(passwordID: id)
+                    record.formatVersion = ImageRecord.formatVersion(passwordID: id, guest: record.guest)
                 }
             }, named: { (try? images.image(named: image.name))?.record.passwordID })
         }

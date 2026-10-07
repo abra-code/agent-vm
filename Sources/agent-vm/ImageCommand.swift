@@ -424,11 +424,11 @@ struct ImageCommand: ParsableCommand {
         static func summary(_ result: ImageUpdateResult) -> String {
             let record = result.image.record
             guard result.changed else {
-                return "Image \(record.name) is up to date: macOS \(record.macOSVersion) (\(record.macOSBuild))"
+                return "Image \(record.name) is up to date: \(record.systemDescription)"
             }
             var parts: [String] = []
             if let previous = result.previousMacOSBuild {
-                parts.append("macOS \(record.macOSVersion) (\(record.macOSBuild), was \(previous))")
+                parts.append("macOS \(record.macOSVersion ?? "?") (\(record.macOSBuild ?? "?"), was \(previous))")
             }
             if !result.recipes.isEmpty {
                 parts.append("tools of \(result.recipes.joined(separator: ", "))")
@@ -575,11 +575,17 @@ struct ImageCommand: ParsableCommand {
                 case updating
                 case macOSUpdate
                 case passwordStorage
+                case guest
+                case system
             }
 
             func encode(to encoder: Encoder) throws {
                 try record.encode(to: encoder)
                 var container = encoder.container(keyedBy: Keys.self)
+                // Always there, whatever the record says or leaves out: `macos` or `linux`, and
+                // the system in words ("macOS 27.0 (26A428)", "Debian GNU/Linux 13 (trixie)").
+                try container.encode(record.effectiveGuest, forKey: .guest)
+                try container.encode(record.systemDescription, forKey: .system)
                 try container.encode(path, forKey: .path)
                 try container.encodeIfPresent(diskUsage, forKey: .diskUsage)
                 try container.encodeIfPresent(addedOverBase, forKey: .addedOverBase)
@@ -588,8 +594,11 @@ struct ImageCommand: ParsableCommand {
                     try container.encode(true, forKey: .updating)
                 }
                 try container.encodeIfPresent(macOSUpdate, forKey: .macOSUpdate)
-                // Where the account's password is: keychain or file.
-                try container.encode(record.passwordID == nil ? AccountPassword.Storage.file : .keychain, forKey: .passwordStorage)
+                // Where the account's password is: keychain or file. A Linux image's account
+                // has none.
+                if record.effectiveGuest == .macOS {
+                    try container.encode(record.passwordID == nil ? AccountPassword.Storage.file : .keychain, forKey: .passwordStorage)
+                }
             }
 
             /// The entry for a person: a line with the essentials, the folder (and with sizes,
@@ -597,7 +606,7 @@ struct ImageCommand: ParsableCommand {
             var lines: [String] {
                 let record = self.record
                 let state = record.state.rawValue.padding(toLength: 12, withPad: " ", startingAt: 0)
-                var line = "\(record.name)  \(state)  macOS \(record.macOSVersion) (\(record.macOSBuild))  \(record.cpuCount) CPUs  \(record.memoryBytes >> 30) GB  created \(Output.time(record.createdAt))"
+                var line = "\(record.name)  \(state)  \(record.systemDescription)  \(record.cpuCount) CPUs  \(record.memoryBytes >> 30) GB  created \(Output.time(record.createdAt))"
                 if let updatedAt = record.updatedAt {
                     line += "  updated \(Output.time(updatedAt))"
                 }

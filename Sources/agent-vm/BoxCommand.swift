@@ -151,18 +151,26 @@ struct BoxCommand: ParsableCommand {
                 case diskUsage
                 case needs
                 case passwordStorage
+                case guest
+                case system
             }
 
             func encode(to encoder: Encoder) throws {
                 try status.encode(to: encoder)
                 var container = encoder.container(keyedBy: Keys.self)
                 try container.encode(box, forKey: .box)
+                // Always there, whatever the record says or leaves out: `macos` or `linux`, and
+                // the system in words, as the box's image had it when the box was made.
+                try container.encode(box.effectiveGuest, forKey: .guest)
+                try container.encode(box.systemDescription, forKey: .system)
                 try container.encode(running, forKey: .running)
                 try container.encode(path, forKey: .path)
                 try container.encodeIfPresent(diskUsage, forKey: .diskUsage)
                 try container.encode(needs, forKey: .needs)
-                // Where the account's password is: keychain or file.
-                try container.encode(box.passwordID == nil ? AccountPassword.Storage.file : .keychain, forKey: .passwordStorage)
+                // Where the account's password is: keychain or file. A Linux box's account has none.
+                if box.effectiveGuest == .macOS {
+                    try container.encode(box.passwordID == nil ? AccountPassword.Storage.file : .keychain, forKey: .passwordStorage)
+                }
             }
 
             /// Every image's record by name, for the entries' needs; images that cannot be
@@ -182,7 +190,7 @@ struct BoxCommand: ParsableCommand {
                 // padding(toLength:) truncates: "unresponsive" is longer than the column.
                 let name = status.state.rawValue
                 let state = name.padding(toLength: max(8, name.count), withPad: " ", startingAt: 0)
-                var lines = ["\(box.name)  \(state)  image \(box.image) (macOS \(box.macOSBuild))  \(box.cpuCount) CPUs  \(box.memoryBytes >> 30) GB  network \(box.effectiveNetwork.mode.rawValue)\(box.disposable == true ? "  disposable" : "")"]
+                var lines = ["\(box.name)  \(state)  image \(box.image) (\(box.systemBuild))  \(box.cpuCount) CPUs  \(box.memoryBytes >> 30) GB  network \(box.effectiveNetwork.mode.rawValue)\(box.disposable == true ? "  disposable" : "")"]
                 if status.state != .stopped {
                     if let pid = status.pid {
                         var line = "    supervisor pid \(pid)"
@@ -220,7 +228,7 @@ struct BoxCommand: ParsableCommand {
                     let why: String
                     switch need.reason {
                     case .imageUpdated?:
-                        why = "image \(box.image) was updated since this box was made\(need.macOSBuild.map { $0 == box.macOSBuild ? "" : " (macOS \($0) now)" } ?? "")"
+                        why = "image \(box.image) was updated since this box was made\(need.system.map { $0 == box.systemBuild ? "" : " (\($0) now)" } ?? "")"
                     case .imageRebuilt?:
                         why = "image \(box.image) was built again since this box was made"
                     default:
@@ -490,6 +498,7 @@ struct BoxCommand: ParsableCommand {
         func run() throws {
             let interactive = self.interactive || typePassword || type != nil
             let box = try options.boxStore.box(named: name)
+            try box.record.requireScreen()
             guard box.isRunning else {
                 throw AgentVMError.boxNotRunning(box.name)
             }

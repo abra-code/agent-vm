@@ -783,3 +783,140 @@ test_json_output_keeps_what_was_logged() {
     assert_eq "$_followed" "$_listed" "the host in netlog --follow --json" || return 1
     assert_not_contains "$_followed" "?" "the host in netlog --follow --json" || return 1
 }
+
+# ---- Linux records: listed with their system, and not asked what a Linux guest has not --------
+
+test_linux_images_are_listed_with_their_system() {
+    fake_linux_image deb
+    run_avm image list
+    assert_status 0 || return 1
+    assert_out_contains "deb  ready         Debian GNU/Linux 13 (trixie)  4 CPUs  4 GB" || return 1
+    assert_not_contains "$OUT" "macOS" "image list" || return 1
+    # Nothing is missing: a Linux guest daemon has three features, and no Full Disk Access.
+    assert_not_contains "$OUT" "needs" "image list" || return 1
+    run_avm image list --json
+    assert_status 0 || return 1
+    assert_json 0.guest linux || return 1
+    assert_json 0.system "Debian GNU/Linux 13 (trixie)" || return 1
+    assert_json 0.linux.distribution debian || return 1
+    assert_json 0.needs 0 || return 1
+    assert_not_contains "$OUT" "macOSVersion" "image list --json" || return 1
+    assert_not_contains "$OUT" "macOSBuild" "image list --json" || return 1
+    assert_not_contains "$OUT" "passwordStorage" "image list --json" || return 1
+    run_avm image info deb --json
+    assert_status 0 || return 1
+    assert_json guest linux || return 1
+    run_avm status
+    assert_status 0 || return 1
+    assert_out_contains "Debian GNU/Linux 13 (trixie)" || return 1
+    run_avm status --json
+    assert_json images.0.guest linux || return 1
+}
+
+test_macos_images_keep_their_keys() {
+    fake_image dev
+    run_avm image list
+    assert_out_contains "dev  ready         macOS 27.0 (26A428)  4 CPUs  8 GB" || return 1
+    run_avm image list --json
+    assert_status 0 || return 1
+    assert_json 0.guest macos || return 1
+    assert_json 0.system "macOS 27.0 (26A428)" || return 1
+    assert_json 0.macOSVersion 27.0 || return 1
+    assert_json 0.macOSBuild 26A428 || return 1
+    assert_json 0.passwordStorage file || return 1
+    # The record itself is not rewritten with keys an older agent-vm does not know.
+    run_avm box create b1 --image dev
+    assert_status 0 || return 1
+    assert_not_contains "$(/bin/cat "$AGENT_VM_HOME/Boxes/b1/box.json")" '"guest"' "the box's record" || return 1
+    assert_contains "$(/bin/cat "$AGENT_VM_HOME/Boxes/b1/box.json")" '"formatVersion" : 1' "the box's record" || return 1
+    run_avm box list
+    assert_out_contains "image dev (macOS 26A428)" || return 1
+    run_avm box list --json
+    assert_json 0.guest macos || return 1
+    assert_json 0.system "macOS 27.0 (26A428)" || return 1
+    assert_json 0.passwordStorage file || return 1
+}
+
+test_linux_boxes_are_listed_with_their_system() {
+    fake_linux_image deb
+    fake_linux_box work deb
+    run_avm box list
+    assert_status 0 || return 1
+    assert_out_contains "work  stopped   image deb (Debian 13)  4 CPUs  4 GB" || return 1
+    run_avm box list --json
+    assert_status 0 || return 1
+    assert_json 0.guest linux || return 1
+    assert_json 0.system "Debian GNU/Linux 13 (trixie)" || return 1
+    assert_not_contains "$OUT" "passwordStorage" "box list --json" || return 1
+    # An image that moved on is named by its system, as a macOS one is by its build.
+    /usr/bin/sed -i '' -e 's/"version" : "13"/"version" : "14"/' -e 's/"guestProtocol" : 1/"guestProtocol" : 1, "revision" : 1/' "$AGENT_VM_HOME/Images/deb/image.json"
+    run_avm box list
+    assert_out_contains "needs recreate: image deb was updated since this box was made (Debian 14 now)" || return 1
+}
+
+test_commands_without_a_linux_meaning_refuse() {
+    fake_linux_image deb
+    fake_linux_box work deb
+    run_avm image setup deb
+    assert_status 1 || return 1
+    assert_err_contains "image deb runs Linux: there is no Full Disk Access to grant" || return 1
+    run_avm image view deb
+    assert_status 1 || return 1
+    assert_err_contains "image deb runs Linux, which has no screen to show" || return 1
+    run_avm box view work
+    assert_status 1 || return 1
+    assert_err_contains "box work runs Linux, which has no screen to show; open a shell with" || return 1
+    printf 'x' > "$SCRATCH/f"
+    run_avm box send work "$SCRATCH/f"
+    assert_status 1 || return 1
+    assert_err_contains "box send is not there for Linux boxes yet" || return 1
+    assert_err_contains "agent-vm exec --box work -- sh -c 'cat > f' < f" || return 1
+}
+
+# Until agent-vm can run a Linux guest, every command that would start one says so, and names
+# what it was asked about. Nothing is created or changed by the refusals.
+test_linux_guests_cannot_be_run_yet() {
+    fake_linux_image deb
+    fake_linux_box work deb
+    local _record
+    _record="$(/bin/cat "$AGENT_VM_HOME/Images/deb/image.json")"
+    run_avm box create b1 --image deb
+    assert_status 1 || return 1
+    assert_err_contains "image deb runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
+    assert_missing "$AGENT_VM_HOME/Boxes/b1" || return 1
+    run_avm box start work
+    assert_status 1 || return 1
+    assert_err_contains "box work runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
+    # Recreating deletes the box first: the refusal must come before that.
+    run_avm box recreate work
+    assert_status 1 || return 1
+    assert_err_contains "box work runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
+    [ -f "$AGENT_VM_HOME/Boxes/work/box.json" ] || { fail "box recreate deleted the box it then refused to make"; return 1; }
+    printf '%s\n' '{ "version": 1, "description": "t", "steps": [ { "name": "n", "run": "true" } ] }' > "$SCRATCH/recipe.json"
+    run_avm image create deb2 --from deb --recipe "$SCRATCH/recipe.json"
+    assert_status 1 || return 1
+    assert_err_contains "image deb runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
+    assert_missing "$AGENT_VM_HOME/Images/deb2" || return 1
+    run_avm image update deb
+    assert_status 1 || return 1
+    assert_err_contains "image deb runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
+    run_avm image update deb --guest
+    assert_status 1 || return 1
+    assert_err_contains "image deb runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
+    run_avm image rebuild deb
+    assert_status 1 || return 1
+    assert_err_contains "image deb runs Linux, and this agent-vm cannot run Linux guests yet" || return 1
+    assert_eq "$(/bin/cat "$AGENT_VM_HOME/Images/deb/image.json")" "$_record" "the image's record" || return 1
+    # Passwords in files are a macOS record's: a Linux one has none to move, and none is asked for.
+    run_avm doctor --json
+    assert_json checks.6.status ok || return 1
+}
+
+# A record written by an agent-vm that knows more is not guessed at.
+test_a_record_of_a_newer_format_is_refused() {
+    fake_linux_image deb
+    /usr/bin/sed -i '' -e 's/"formatVersion" : 3/"formatVersion" : 4/' "$AGENT_VM_HOME/Images/deb/image.json"
+    run_avm image info deb
+    assert_status 1 || return 1
+    assert_err_contains "written by a newer agent-vm (format 4)" || return 1
+}

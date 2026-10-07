@@ -42,6 +42,7 @@ extension BoxCommand {
 
         func run() throws {
             let box = try options.boxStore.box(named: name)
+            try box.record.requireSend()
             guard box.isRunning else {
                 throw AgentVMError.boxNotRunning(box.name)
             }

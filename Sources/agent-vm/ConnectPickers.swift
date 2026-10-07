@@ -21,6 +21,9 @@ enum ConnectPickers {
         var reason: String?
     }
 
+    /// Why a Linux image or box is shown and cannot be chosen.
+    static let linuxNotYet = "runs Linux, which this agent-vm cannot run yet"
+
     /// A box the picker shows, and why it cannot be chosen when it cannot.
     struct Offer {
         var box: Box
@@ -49,6 +52,9 @@ enum ConnectPickers {
             case .stopped:
                 if offer.temporary {
                     continue
+                }
+                if box.record.effectiveGuest == .linux {
+                    offer.reason = linuxNotYet
                 }
                 stopped.append(offer)
                 continue
@@ -162,11 +168,11 @@ enum ConnectPickers {
         return agent.secretsNeeded == .one ? "needs one of: \(names)" : "optional: \(names)"
     }
 
-    /// The image picker's rows: name, macOS version, the recipe's description; an image whose
+    /// The image picker's rows: name, system, the recipe's description; an image whose
     /// guest daemon cannot run terminal sessions is shown but cannot be chosen.
     static func imageSections(_ images: [ImageOffer], remembered: String?) -> (sections: [PickerSection], selected: String?) {
         let rows = images.map { offer in
-            PickerRow(id: offer.image.name, columns: [offer.image.name, "macOS \(offer.image.record.macOSVersion)", offer.image.record.recipe?.description ?? ""],
+            PickerRow(id: offer.image.name, columns: [offer.image.name, offer.image.record.systemShort, offer.image.record.recipe?.description ?? ""],
                       note: offer.reason, enabled: offer.reason == nil)
         }
         let selected = images.contains { $0.image.name == remembered && $0.reason == nil } ? remembered : nil
@@ -225,7 +231,7 @@ enum ConnectPickers {
         var lines = ["Images for a new box (new <image>)"]
         let width = images.map(\.image.name.count).max() ?? 0
         for offer in images {
-            var line = "  " + offer.image.name.padding(toLength: width, withPad: " ", startingAt: 0) + "  macOS \(offer.image.record.macOSVersion)"
+            var line = "  " + offer.image.name.padding(toLength: width, withPad: " ", startingAt: 0) + "  \(offer.image.record.systemShort)"
             if let reason = offer.reason {
                 line += "  (\(reason))"
             } else if let description = offer.image.record.recipe?.description {
@@ -264,15 +270,21 @@ enum ConnectPickers {
     }
 
     /// A ready image in `connect list --json`: every key present, null when it does not apply.
+    /// `guest` is `macos` or `linux`, `system` the system in words ("macOS 27.0 (26A428)");
+    /// `macOSVersion` is null for a Linux image.
     struct ImageEntry: Encodable {
         var name: String
-        var macOSVersion: String
+        var guest: GuestKind
+        var system: String
+        var macOSVersion: String?
         var description: String?
         var offered: Bool
         var reason: String?
 
         init(_ offer: ImageOffer) {
             name = offer.image.name
+            guest = offer.image.record.effectiveGuest
+            system = offer.image.record.systemDescription
             macOSVersion = offer.image.record.macOSVersion
             description = offer.image.record.recipe?.description
             offered = offer.reason == nil
@@ -280,12 +292,14 @@ enum ConnectPickers {
         }
 
         private enum Keys: String, CodingKey {
-            case name, macOSVersion, description, offered, reason
+            case name, guest, system, macOSVersion, description, offered, reason
         }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: Keys.self)
             try container.encode(name, forKey: .name)
+            try container.encode(guest, forKey: .guest)
+            try container.encode(system, forKey: .system)
             try container.encode(macOSVersion, forKey: .macOSVersion)
             try container.encode(description, forKey: .description)
             try container.encode(offered, forKey: .offered)
@@ -296,6 +310,8 @@ enum ConnectPickers {
     struct BoxEntry: Encodable {
         var name: String
         var image: String
+        var guest: GuestKind
+        var system: String
         var state: String
         var temporary: Bool
         var project: String?
@@ -308,6 +324,8 @@ enum ConnectPickers {
         init(_ offer: Offer) {
             name = offer.box.name
             image = offer.box.record.image
+            guest = offer.box.record.effectiveGuest
+            system = offer.box.record.systemDescription
             state = offer.status.state.rawValue
             temporary = offer.temporary
             project = offer.status.project
@@ -319,13 +337,15 @@ enum ConnectPickers {
         }
 
         private enum Keys: String, CodingKey {
-            case name, image, state, temporary, project, projectReadOnly, activeExecs, ownerPid, offered, reason
+            case name, image, guest, system, state, temporary, project, projectReadOnly, activeExecs, ownerPid, offered, reason
         }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: Keys.self)
             try container.encode(name, forKey: .name)
             try container.encode(image, forKey: .image)
+            try container.encode(guest, forKey: .guest)
+            try container.encode(system, forKey: .system)
             try container.encode(state, forKey: .state)
             try container.encode(temporary, forKey: .temporary)
             try container.encode(project, forKey: .project)

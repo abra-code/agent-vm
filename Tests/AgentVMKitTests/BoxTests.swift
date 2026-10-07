@@ -300,7 +300,7 @@ final class BoxScratch {
             $0.revision = 1
             $0.macOSBuild = "26A434"
         }
-        #expect(box.record.needs(image: updated.record) == [BoxNeed(kind: .recreate, reason: .imageUpdated, macOSBuild: "26A434")])
+        #expect(box.record.needs(image: updated.record) == [BoxNeed(kind: .recreate, reason: .imageUpdated, macOSBuild: "26A434", system: "macOS 26A434")])
         let recreated = try fixture.boxes.recreate(name: "b1", from: updated, imageStore: fixture.images)
         #expect(recreated.record.imageRevision == 1)
         #expect(recreated.record.needs(image: updated.record).isEmpty)
@@ -308,7 +308,7 @@ final class BoxScratch {
         var rebuilt = updated.record
         rebuilt.createdAt = rebuilt.createdAt.addingTimeInterval(60)
         rebuilt.revision = nil
-        #expect(recreated.record.needs(image: rebuilt) == [BoxNeed(kind: .recreate, reason: .imageRebuilt, macOSBuild: "26A434")])
+        #expect(recreated.record.needs(image: rebuilt) == [BoxNeed(kind: .recreate, reason: .imageRebuilt, macOSBuild: "26A434", system: "macOS 26A434")])
 
         var old = recreated.record
         old.imageCreatedAt = nil

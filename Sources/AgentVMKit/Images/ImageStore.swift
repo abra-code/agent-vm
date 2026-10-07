@@ -15,6 +15,9 @@
 //   Images/<name>/Password            the guest account's password (0600); not there when the
 //                                     record names a Keychain item (AccountPassword)
 //   Images/<name>/known_hosts         the guest's SSH host key, recorded at first contact
+//   Images/<name>/EFIVariableStore    a Linux image's boot firmware variables, in place of the
+//                                     three files above it that are a Mac's
+//   Images/<name>/console.log         what a Linux guest printed on its console at its last boot
 //   Images/<name>/recipe.json         the recipe applied to the image, when it was one
 //   Images/<name>/Recipes/<n>-<name>/ each recipe that ran on the disk, in order: recipe.json
 //                                     and the files it copies, as they were
@@ -41,6 +44,8 @@ public struct ImageStore: Sendable {
     static let auxiliaryStorageName = "AuxiliaryStorage"
     static let hardwareModelName = "HardwareModel"
     static let machineIdentifierName = "MachineIdentifier"
+    static let efiVariableStoreName = "EFIVariableStore"
+    static let consoleLogName = "console.log"
     static let passwordName = "Password"
     static let knownHostsName = "known_hosts"
     static let recipeName = "recipe.json"
@@ -250,7 +255,7 @@ public struct ImageStore: Sendable {
     }
 
     static func placeholder(_ name: String) -> ImageRecord {
-        return ImageRecord(formatVersion: ImageRecord.currentFormatVersion, name: name, state: .failed, failure: nil,
+        return ImageRecord(formatVersion: 1, name: name, state: .failed, failure: nil,
                            createdAt: Date(timeIntervalSince1970: 0), createdBy: "", macOSVersion: "", macOSBuild: "",
                            cpuCount: 0, memoryBytes: 0, diskBytes: 0, macAddress: "", userName: "")
     }

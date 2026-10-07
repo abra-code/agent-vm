@@ -33,6 +33,9 @@ extension ImageBuilder {
     public func setUp(named name: String, fullDiskAccess: Bool = true) async throws -> GoldenImage {
         var image = try store.image(named: name)
         subject = image.name
+        guard image.record.effectiveGuest == .macOS else {
+            throw fullDiskAccess ? LinuxGuest.noFullDiskAccess(image: image.name) : LinuxGuest.noScreen("image \(image.name)")
+        }
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: fullDiskAccess ? "set up" : "view")
         }

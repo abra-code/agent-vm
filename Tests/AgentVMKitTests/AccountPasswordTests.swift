@@ -38,7 +38,7 @@ import Testing
         // A record that names an item is in the format an older agent-vm refuses: it would
         // look for a file, and drop the identifier when it rewrote the record.
         #expect(box.record.formatVersion == 2)
-        #expect(ImageRecord.formatVersion(passwordID: Self.id) == 2 && ImageRecord.formatVersion(passwordID: nil) == 1)
+        #expect(ImageRecord.formatVersion(passwordID: Self.id, guest: nil) == 2 && ImageRecord.formatVersion(passwordID: nil, guest: nil) == 1)
     }
 
     /// Building from an image, or updating its macOS, needs the password minutes in: a missing

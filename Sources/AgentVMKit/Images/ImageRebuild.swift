@@ -175,6 +175,9 @@ extension ImageBuilder {
         guard image.record.state == .ready || image.record.state == .failed else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "rebuild")
         }
+        guard image.record.effectiveGuest == .macOS else {
+            throw LinuxGuest.cannotRunYet("image \(image.name)")
+        }
         let buildName = ImageStore.rebuildName(for: image.name)
         guard ImageStore.isValidName(buildName) else {
             throw refuse("the name is too long to rebuild: the new image is built as \(buildName), and an image name has at most 63 characters")

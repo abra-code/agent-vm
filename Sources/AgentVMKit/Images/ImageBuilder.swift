@@ -252,7 +252,7 @@ public final class ImageBuilder {
         log("macOS \(restore.version) (\(restore.build)); \(cpuCount) CPUs, \(memoryBytes >> 30) GB memory, \(options.diskBytes >> 30) GB disk")
 
         var record = ImageRecord(
-            formatVersion: ImageRecord.currentFormatVersion, name: options.name, state: .installing, failure: nil,
+            formatVersion: ImageRecord.formatVersion(passwordID: nil, guest: .macOS), name: options.name, state: .installing, failure: nil,
             createdAt: Date(), createdBy: AgentVM.version, macOSVersion: restore.version, macOSBuild: restore.build,
             cpuCount: cpuCount, memoryBytes: memoryBytes, diskBytes: options.diskBytes,
             macAddress: VZMACAddress.randomLocallyAdministered().string, userName: options.userName,
@@ -260,7 +260,7 @@ public final class ImageBuilder {
         // Named in the record before the item exists: an item no record names is a leftover,
         // and is removed as one.
         record.passwordID = keepsPasswordsInKeychain ? UUID().uuidString.lowercased() : nil
-        record.formatVersion = ImageRecord.formatVersion(passwordID: record.passwordID)
+        record.formatVersion = ImageRecord.formatVersion(passwordID: record.passwordID, guest: record.guest)
         // A cancel while the restore image was read: nothing is created. Past this point no
         // await comes before the installer starts, so its progress is never canceled early.
         try checkCanceled()
@@ -329,6 +329,9 @@ public final class ImageBuilder {
         guard base.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: base.name, state: base.record.state.rawValue, operation: "build an image from")
         }
+        guard base.record.effectiveGuest == .macOS else {
+            throw LinuxGuest.cannotRunYet("image \(base.name)")
+        }
         guard base.record.guestProtocol == AgentVM.guestProtocolVersion else {
             throw AgentVMError.wrongImageState(name: base.name, state: "built with guest protocol \(base.record.guestProtocol.map(String.init) ?? "none"), not \(AgentVM.guestProtocolVersion)", operation: "build an image from")
         }
@@ -368,7 +371,7 @@ public final class ImageBuilder {
         }
         var record = base.record
         // Written by this agent-vm, so in its format, whatever format the base was written in.
-        record.formatVersion = ImageRecord.formatVersion(passwordID: record.passwordID)
+        record.formatVersion = ImageRecord.formatVersion(passwordID: record.passwordID, guest: record.guest)
         record.name = options.name
         record.state = .installing
         record.failure = nil
@@ -406,7 +409,7 @@ public final class ImageBuilder {
         let began = clock.now
         var booted = false
         do {
-            progress("clone", "Cloning \(base.name) (macOS \(base.record.macOSBuild)\(base.record.recipe.map { ", recipe \($0.description ?? String($0.digest.prefix(12)))" } ?? ""))")
+            progress("clone", "Cloning \(base.name) (\(base.record.systemBuild)\(base.record.recipe.map { ", recipe \($0.description ?? String($0.digest.prefix(12)))" } ?? ""))")
             do {
                 defer { baseLock.release() }
                 try BoxStore.cloneFile(base.diskURL, to: image.diskURL)
@@ -588,6 +591,9 @@ public final class ImageBuilder {
         let image = try store.image(named: name)
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: operation)
+        }
+        guard image.record.effectiveGuest == .macOS else {
+            throw LinuxGuest.cannotRunYet("image \(image.name)")
         }
         return image
     }
@@ -855,7 +861,7 @@ public final class ImageBuilder {
         try await machine.start(provisioning: nil)
         do {
             let hello = try await waitForDaemon(machine, attempts: 180)
-            let missing = GuestFeature.all.filter { !(hello.features ?? []).contains($0) }
+            let missing = GuestFeature.all(for: image.record.effectiveGuest).filter { !(hello.features ?? []).contains($0) }
             guard missing.isEmpty else {
                 throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the new agent-vm-guest lacks \(missing.joined(separator: ", "))")
             }
@@ -1332,8 +1338,8 @@ public final class ImageBuilder {
                 guard lines.count == 3, lines[0] == image.record.userName else {
                     throw AgentVMError.guestCommandFailed(command: "id -un", status: 0, output: output)
                 }
-                if lines[1] != image.record.macOSBuild {
-                    notice("  note: the guest reports build \(lines[1]), the restore image \(image.record.macOSBuild)")
+                if let recorded = image.record.macOSBuild, lines[1] != recorded {
+                    notice("  note: the guest reports build \(lines[1]), the restore image \(recorded)")
                 }
                 return "user \(lines[0]), macOS \(lines[1]), console user \(lines[2])"
             } catch {

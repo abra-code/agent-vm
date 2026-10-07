@@ -66,13 +66,14 @@ public struct NewestMacOS: Codable, Equatable, Sendable {
     /// new image). An image whose own `image update --macos` asked Apple after this answer was
     /// kept has what softwareupdate offers it, which is what decides: it gets no hint.
     public func update(for record: ImageRecord) -> Update? {
-        guard record.state == .ready, record.macOSBuild != build else {
+        guard record.state == .ready, record.effectiveGuest == .macOS, let recordVersion = record.macOSVersion,
+              let recordBuild = record.macOSBuild, recordBuild != build else {
             return nil
         }
         if let asked = record.macOSCheckedAt, asked >= checkedAt {
             return nil
         }
-        let mine = MacOSUpdate.numbers(record.macOSVersion)
+        let mine = MacOSUpdate.numbers(recordVersion)
         let newest = MacOSUpdate.numbers(version)
         guard let major = mine.first, major == newest.first else {
             return nil
@@ -81,7 +82,7 @@ public struct NewestMacOS: Codable, Equatable, Sendable {
             return Update(version: version, build: build, checkedAt: checkedAt)
         }
         // The same version built again ("26A428" before "26A434").
-        guard mine == newest, record.macOSBuild.compare(build, options: .numeric) == .orderedAscending else {
+        guard mine == newest, recordBuild.compare(build, options: .numeric) == .orderedAscending else {
             return nil
         }
         return Update(version: version, build: build, checkedAt: checkedAt)

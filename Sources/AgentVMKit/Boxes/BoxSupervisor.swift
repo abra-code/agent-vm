@@ -113,6 +113,9 @@ public final class BoxSupervisor {
 
     /// Runs the box until it stops; returns when the VM is down and the socket is gone.
     public func run() async throws {
+        guard box.record.effectiveGuest == .macOS else {
+            throw LinuxGuest.cannotRunYet("box \(box.name)")
+        }
         guard let lock = try FolderLock.tryAcquire(box.lockPath, patience: FolderLock.testPatience) else {
             throw AgentVMError.boxRunning(box.name)
         }
@@ -915,6 +918,9 @@ public enum BoxLauncher {
     /// for a caller that shows the time passing.
     public static func start(_ box: Box, executable: String, ownerPid: Int32? = nil, timeout: Duration = .seconds(200),
                              tick: (() -> Void)? = nil, progress: (String) -> Void) throws -> ControlResponse {
+        guard box.record.effectiveGuest == .macOS else {
+            throw LinuxGuest.cannotRunYet("box \(box.name)")
+        }
         // One limit for the whole call, a wait for a stopping box included.
         let deadline = ContinuousClock.now + timeout
         // The owner's start time as it is now, right after the caller checked the number and

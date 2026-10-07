@@ -119,7 +119,7 @@ struct StatusCommand: AsyncParsableCommand {
         lines.append(summary.images.isEmpty ? "Images: none" : "Images:")
         for entry in summary.images {
             let record = entry.record
-            var line = "  \(column(record.name, width))  \(column(record.state.rawValue, 12))  macOS \(record.macOSVersion) (\(record.macOSBuild))"
+            var line = "  \(column(record.name, width))  \(column(record.state.rawValue, 12))  \(record.systemDescription)"
             if let base = record.derivedFrom {
                 line += "  from \(base.image)"
             }

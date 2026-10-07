@@ -454,6 +454,10 @@ struct ConnectRunner {
             warn(problem)
         }
         return images.filter { $0.record.state == .ready }.map { image in
+            // Shown, so it is not a riddle where the image went, and not to be chosen.
+            guard image.record.effectiveGuest == .macOS else {
+                return ConnectPickers.ImageOffer(image: image, reason: ConnectPickers.linuxNotYet)
+            }
             let terminal = (image.record.guestFeatures ?? []).contains(GuestFeature.terminal)
             return ConnectPickers.ImageOffer(image: image, reason: terminal ? nil : "needs agent-vm image update \(image.name) --guest")
         }

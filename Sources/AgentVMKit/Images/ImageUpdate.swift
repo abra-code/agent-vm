@@ -401,7 +401,7 @@ extension ImageBuilder {
         }
         do {
             let hello = try await waitForDaemon(machine, attempts: 180)
-            let missing = GuestFeature.all.filter { !(hello.features ?? []).contains($0) }
+            let missing = GuestFeature.all(for: image.record.effectiveGuest).filter { !(hello.features ?? []).contains($0) }
             guard missing.isEmpty else {
                 throw AgentVMError.guestCommandFailed(command: "hello", status: 0, output: "the new agent-vm-guest lacks \(missing.joined(separator: ", "))")
             }

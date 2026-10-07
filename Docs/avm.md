@@ -194,7 +194,7 @@ AgentVM - project ~/src/app  type to filter, arrows, Enter; Esc quits
 - **Drawing:** the list is drawn under the cursor, not on a separate screen, and erased when done, so the terminal's scrollback keeps what came before.
 - **Escape is a lone ESC with nothing after it for 50 ms.** Over a slow connection an arrow key's bytes can arrive further apart than that; they are then taken as Escape, then text for the filter.
 - **Without a terminal** (stdin or stdout not a terminal), avm prints the list and exits 64.
-- `avm list` prints the same rows, then the ready images for a new box, and needs no terminal. `--json` has `boxes` and `images` (each image's `name`, `macOSVersion`, `description`, `offered` and `reason`).
+- `avm list` prints the same rows, then the ready images for a new box, and needs no terminal. `--json` has `boxes` and `images` (each image's `name`, `guest`, `system`, `macOSVersion`, `description`, `offered` and `reason`; each box has `guest` and `system` too, since 0.7.2: `guest` is `macos` or `linux`, `system` the system in words, and `macOSVersion` is null for a Linux image).
 
 ## Remembered choices
 

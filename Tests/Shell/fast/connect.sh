@@ -450,3 +450,31 @@ test_build_made_the_avm_link() {
     _target="$(/usr/bin/readlink "$_dir/avm")"
     assert_eq "$_target" "agent-vm" "the avm link" || return 1
 }
+
+# Linux images and boxes are listed with their system; while agent-vm cannot run a Linux guest
+# they are shown and cannot be chosen.
+test_connect_list_names_the_system() {
+    make_boxes || return 1
+    fake_linux_image deb
+    fake_linux_box work deb
+    run_avm_link list --json --project "$SCRATCH/project"
+    assert_status 0 || return 1
+    assert_json boxes.0.guest macos || return 1
+    assert_json boxes.0.system "macOS 27.0 (26A428)" || return 1
+    assert_json boxes.2.name work || return 1
+    assert_json boxes.2.guest linux || return 1
+    assert_json boxes.2.system "Debian GNU/Linux 13 (trixie)" || return 1
+    assert_json boxes.2.offered false || return 1
+    assert_json images.0.name deb || return 1
+    assert_json images.0.guest linux || return 1
+    assert_json images.0.system "Debian GNU/Linux 13 (trixie)" || return 1
+    assert_json images.0.offered false || return 1
+    assert_json images.0.reason "runs Linux, which this agent-vm cannot run yet" || return 1
+    assert_json images.1.name dev || return 1
+    assert_json images.1.guest macos || return 1
+    assert_json images.1.macOSVersion 27.0 || return 1
+    run_avm_link list --project "$SCRATCH/project"
+    assert_status 0 || return 1
+    assert_out_contains "deb  Debian 13  (runs Linux, which this agent-vm cannot run yet)" || return 1
+    assert_out_contains "dev  macOS 27.0" || return 1
+}
