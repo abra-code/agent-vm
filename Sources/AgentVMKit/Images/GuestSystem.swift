@@ -77,10 +77,6 @@ enum LinuxGuest {
         return .notForThisGuest("image \(image) runs Linux, and this agent-vm cannot \(what) a Linux image yet")
     }
 
-    static func noProjectYet(box: String) -> AgentVMError {
-        return .notForThisGuest("box \(box) runs Linux, and this agent-vm cannot share a project folder into a Linux box yet; run the program without --project")
-    }
-
     static func noFullDiskAccess(image: String) -> AgentVMError {
         return .notForThisGuest("image \(image) runs Linux: there is no Full Disk Access to grant")
     }

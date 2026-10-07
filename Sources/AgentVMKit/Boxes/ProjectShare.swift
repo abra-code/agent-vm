@@ -83,6 +83,78 @@ public enum ProjectShare {
         return GuestRequest(op: .exec, argv: ["/usr/bin/find", parent, "-mindepth", "1", "!", "-type", "d", "-print", "-quit"], cwd: "/", user: "root")
     }
 
+    // MARK: - Linux
+    //
+    // A Linux guest mounts the folder itself at its own path: there is no privacy system that
+    // treats the mount as a network volume, and nothing writes into a volume's root, so the
+    // synthetic root and the mount on the parent are not needed.
+    //
+    // Measured on Debian 13 guests: Apple's virtiofs reports every file as owned by whoever
+    // asks, and remembers the answer for about a second. So nothing here looks at the mounted
+    // folder as root: after root's look the box user would see root's files for a second, and
+    // git would refuse the repository ("dubious ownership"). The mount itself does not
+    // disturb it. git is told, besides, that the project is a safe place (`safeDirectoryRequest`),
+    // for when a person runs something as root in the project and git as the user right after.
+
+    /// What the guest runs, as root, to mount the share for the project at `path`: for Linux,
+    /// on the path itself.
+    static func mountRequests(_ path: String, guest: GuestKind, readOnly: Bool) -> [GuestRequest] {
+        guard guest == .linux else {
+            return mountRequests(path)
+        }
+        // nosuid and nodev: a file on the Mac must not become a way to root in the box.
+        let options = "nosuid,nodev" + (readOnly ? ",ro" : "")
+        return [
+            GuestRequest(op: .exec, argv: ["/usr/bin/mkdir", "-p", path], cwd: "/", user: "root"),
+            GuestRequest(op: .exec, argv: ["/usr/bin/mount", "-t", "virtiofs", "-o", options, linuxTag, path], cwd: "/", user: "root"),
+        ]
+    }
+
+    /// What the guest runs, as root, before the mount: prints the first thing the share would
+    /// hide. For Linux that is anything but a folder in the path itself: folders alone are
+    /// what earlier mounts left (a project inside this one that was shared before).
+    static func hiddenContentsRequest(_ path: String, guest: GuestKind) -> GuestRequest {
+        guard guest == .linux else {
+            return parentContentsRequest(path)
+        }
+        return GuestRequest(op: .exec, argv: ["/usr/bin/find", path, "-mindepth", "1", "!", "-type", "d", "-print", "-quit"], cwd: "/", user: "root")
+    }
+
+    /// The folder the share hides in a guest of this kind, for messages.
+    static func mountPoint(_ path: String, guest: GuestKind) -> String {
+        return guest == .linux ? path : (path as NSString).deletingLastPathComponent
+    }
+
+    /// What the guest runs, as root, to unmount the share for the project at `path`.
+    static func unmountRequest(_ path: String, guest: GuestKind) -> GuestRequest {
+        guard guest == .linux else {
+            return unmountRequest(path)
+        }
+        // umount alone, with no look at the folder first. What it says when nothing is mounted
+        // there, or the folder is gone, counts as done: a lost mount must not block every
+        // later share. Its words are looked for after the path, which may hold the same words
+        // (a folder named "not mounted", busy, must not count as done). The path is an
+        // argument, never text of the script.
+        let script = #"out=$(LC_ALL=C /usr/bin/umount "$1" 2>&1) && exit 0; case "${out#*"$1"}" in *"not mounted"*|*"no mount point specified"*) exit 0;; esac; /usr/bin/printf '%s\n' "$out" >&2; exit 1"#
+        return GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script, "sh", path], cwd: "/", user: "root")
+    }
+
+    /// The file of agent-vm's own that a Linux image's git reads (see LinuxSetup).
+    static let linuxGitConfig = "/etc/agent-vm/gitconfig"
+
+    /// What a Linux guest runs, as root, once the project is mounted: git is told that the
+    /// project, and every repository under it (a submodule, a workspace of several), is a safe
+    /// place, and no other. With no path, the file is emptied.
+    static func safeDirectoryRequest(_ path: String?) -> GuestRequest {
+        var script = "/usr/bin/mkdir -p /etc/agent-vm && /usr/bin/git config --file \(linuxGitConfig) --unset-all safe.directory; "
+        if path != nil {
+            script += #"/usr/bin/git config --file \#(linuxGitConfig) --add safe.directory "$1" && /usr/bin/git config --file \#(linuxGitConfig) --add safe.directory "$1/*""#
+        } else {
+            script += "exit 0"
+        }
+        return GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script, "sh"] + (path.map { [$0] } ?? []), cwd: "/", user: "root")
+    }
+
     /// What the guest runs, as root, to unmount the share for the project at `path`. Succeeds
     /// when nothing is mounted there any more (the guest unmounted it, or a failed share never
     /// mounted it), so a lost mount cannot block every later share.

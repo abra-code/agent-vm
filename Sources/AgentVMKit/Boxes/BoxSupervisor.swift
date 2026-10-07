@@ -282,6 +282,11 @@ public final class BoxSupervisor {
             await shutDown(machine)
             throw error
         }
+        if guest == .linux {
+            // The box's disk remembers the project its last run shared; nothing is shared now.
+            // Before the box is ready, so that no share's own writing can come first.
+            _ = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest(nil))
+        }
         state.set(.ready, guestVersion: hello.version, guestFeatures: hello.features ?? [])
         log("Ready in \(Int(ImageBuilder.seconds(clock.now - began))) s: agent-vm-guest \(hello.version ?? "?")")
         if guest == .macOS {
@@ -482,10 +487,10 @@ public final class BoxSupervisor {
         guard let machine, state.snapshot.state == .ready else {
             throw AgentVMError.supervisorRefused("box \(box.name) is not ready")
         }
-        // A Linux guest mounts a share by other commands, which this agent-vm does not have yet.
-        guard guest == .macOS else {
-            throw LinuxGuest.noProjectYet(box: box.name)
-        }
+        let guest = self.guest
+        let tag = ProjectShare.tag(for: guest)
+        // A macOS guest gets the folder as the one entry of a root; a Linux guest the folder.
+        let layout: ShareLayout = guest == .linux ? .single : .namedEntry
         let storeRoot = box.directory.deletingLastPathComponent().deletingLastPathComponent()
         let project = try ProjectShare.validated(path, storeRoot: storeRoot)
         let current = state.project
@@ -496,12 +501,16 @@ public final class BoxSupervisor {
             throw AgentVMError.supervisorRefused("box \(box.name) is running programs on \(current.path)\(current.readOnly ? " (read only)" : ""); wait until they end, or use another box")
         }
         if let current {
-            let result = try await guestCapture(machine, ProjectShare.unmountRequest(current.path))
+            let result = try await guestCapture(machine, ProjectShare.unmountRequest(current.path, guest: guest))
             guard result.report == ExitReport(status: 0) else {
                 throw AgentVMError.supervisorRefused("\(current.path) is still in use in box \(box.name) (\(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))); end the programs using it first")
             }
             state.setProject(nil)
-            try machine.share(tag: ProjectShare.tag, directory: nil, readOnly: false)
+            try machine.share(tag: tag, directory: nil, readOnly: false, layout: layout)
+            if guest == .linux {
+                // No project, no safe place for git.
+                _ = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest(nil))
+            }
             log("Unshared \(current.path)")
             // While the previous project was mounted the guest could change folders on the
             // new one's path (a symlink swapped in); it has no access now, so resolve again.
@@ -509,27 +518,35 @@ public final class BoxSupervisor {
                 throw AgentVMError.unsuitableProject(path: project, reason: "its path changed while the previous project was being unshared")
             }
         }
-        try machine.share(tag: ProjectShare.tag, directory: URL(fileURLWithPath: project, isDirectory: true), readOnly: readOnly)
+        try machine.share(tag: tag, directory: URL(fileURLWithPath: project, isDirectory: true), readOnly: readOnly, layout: layout)
         var mountTried = false
         do {
-            let requests = ProjectShare.mountRequests(project)
+            let requests = ProjectShare.mountRequests(project, guest: guest, readOnly: readOnly)
             try await guestRun(machine, requests[0])
-            let found = try await guestCapture(machine, ProjectShare.parentContentsRequest(project))
+            let found = try await guestCapture(machine, ProjectShare.hiddenContentsRequest(project, guest: guest))
             let first = found.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             guard found.report == ExitReport(status: 0), first.isEmpty else {
-                let parent = (project as NSString).deletingLastPathComponent
+                let hidden = ProjectShare.mountPoint(project, guest: guest)
                 let what = first.isEmpty ? "cannot be examined (\(found.stderr.trimmingCharacters(in: .whitespacesAndNewlines)))" : "already holds \(first)"
-                throw AgentVMError.unsuitableProject(path: project, reason: "\(parent) in the box \(what), which the share would hide; share a folder whose parent is new or empty in the box")
+                let advice = guest == .linux ? "share a folder whose path is new or holds only folders in the box" : "share a folder whose parent is new or empty in the box"
+                throw AgentVMError.unsuitableProject(path: project, reason: "\(hidden) in the box \(what), which the share would hide; \(advice)")
             }
             mountTried = true
             try await guestRun(machine, requests[1])
+            if guest == .linux {
+                // Not fatal: the share works without it, and git says what it misses.
+                let told = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest(project))
+                if told?.report != ExitReport(status: 0) {
+                    log("Could not tell git in the box that \(project) is a safe place: \(told.map { ($0.stderr + $0.stdout).trimmingCharacters(in: .whitespacesAndNewlines) } ?? "no answer")")
+                }
+            }
         } catch {
             // Leave nothing mounted. If the guest cannot confirm that, keep the share recorded
             // so the next request unmounts it first (the unmount succeeds when nothing is there).
             // Before the mount the parent may be some other mount point: leave it alone.
-            let unmounted = mountTried ? try? await guestCapture(machine, ProjectShare.unmountRequest(project)) : nil
+            let unmounted = mountTried ? try? await guestCapture(machine, ProjectShare.unmountRequest(project, guest: guest)) : nil
             if !mountTried || unmounted?.report == ExitReport(status: 0) {
-                try? machine.share(tag: ProjectShare.tag, directory: nil, readOnly: false)
+                try? machine.share(tag: tag, directory: nil, readOnly: false, layout: layout)
             } else {
                 state.setProject((project, readOnly))
             }

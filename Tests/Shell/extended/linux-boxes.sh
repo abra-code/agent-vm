@@ -161,7 +161,7 @@ test_a_linux_box_stops_when_its_owner_exits() {
 
 # What a Linux box has no meaning for is refused by the command, and what agent-vm does not do
 # for one yet says so; the box goes on running.
-test_view_send_and_projects_are_refused() {
+test_view_and_send_are_refused() {
     require_linux_image || return $(( $? == 1 ? 0 : 1 ))
     local _box="shtest-lrefuse-$$"
     cleanup_on_exit box "$_box"
@@ -176,10 +176,6 @@ test_view_send_and_projects_are_refused() {
     run_avm box send "$_box" "$SCRATCH/f"
     assert_status 1 || return 1
     assert_err_contains "box send is not there for Linux boxes yet" || return 1
-    make_project "$SCRATCH/project"
-    run_avm exec --box "$_box" --project "$SCRATCH/project" -- /usr/bin/true
-    assert_status 125 || return 1
-    assert_err_contains "cannot share a project folder into a Linux box yet" || return 1
     run_avm exec --box "$_box" -- /usr/bin/id -un
     assert_eq "$OUT" "agent" "the box after the refusals" || return 1
     run_avm box stop "$_box"

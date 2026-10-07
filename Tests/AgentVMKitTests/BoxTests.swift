@@ -785,6 +785,74 @@ final class ShortFolder {
         #expect(ProjectShare.parentContentsRequest("/Users/me/src/app").argv?[1] == "/Users/me/src")
     }
 
+    @Test func linuxMountsThePathItself() {
+        let path = "/Users/me/src/app"
+        let mount = ProjectShare.mountRequests(path, guest: .linux, readOnly: false)
+        #expect(mount.map(\.argv) == [["/usr/bin/mkdir", "-p", path],
+                                      ["/usr/bin/mount", "-t", "virtiofs", "-o", "nosuid,nodev", "agent-vm-project", path]])
+        #expect(mount.allSatisfy { $0.user == "root" && $0.cwd == "/" })
+        // What the share would hide is anything in the path itself that is not a folder.
+        #expect(ProjectShare.hiddenContentsRequest(path, guest: .linux).argv == ["/usr/bin/find", path, "-mindepth", "1", "!", "-type", "d", "-print", "-quit"])
+        #expect(ProjectShare.mountPoint(path, guest: .linux) == path)
+        // A macOS guest is sent what it always was: its parent, its own tag.
+        #expect(ProjectShare.mountRequests(path, guest: .macOS, readOnly: true).map(\.argv) == ProjectShare.mountRequests(path).map(\.argv))
+        #expect(ProjectShare.hiddenContentsRequest(path, guest: .macOS).argv == ProjectShare.parentContentsRequest(path).argv)
+        #expect(ProjectShare.unmountRequest(path, guest: .macOS).argv == ProjectShare.unmountRequest(path).argv)
+        #expect(ProjectShare.mountPoint(path, guest: .macOS) == "/Users/me/src")
+    }
+
+    @Test func aReadOnlyShareIsMountedReadOnly() {
+        let mount = ProjectShare.mountRequests("/Users/me/src/app", guest: .linux, readOnly: true)
+        #expect(mount[1].argv?[4] == "nosuid,nodev,ro")
+    }
+
+    @Test func theTagsDiffer() {
+        #expect(ProjectShare.tag(for: .linux) == "agent-vm-project")
+        #expect(ProjectShare.tag(for: .macOS) == ProjectShare.tag)
+        #expect(ProjectShare.tag(for: .linux) != ProjectShare.tag(for: .macOS))
+    }
+
+    @Test func thePathIsAnArgumentNeverScriptText() {
+        let odd = "/Users/me/my app/it's $(x) `y`; z"
+        let requests = ProjectShare.mountRequests(odd, guest: .linux, readOnly: false)
+            + [ProjectShare.hiddenContentsRequest(odd, guest: .linux), ProjectShare.unmountRequest(odd, guest: .linux), ProjectShare.safeDirectoryRequest(odd)]
+        for request in requests {
+            let argv = request.argv ?? []
+            // Whole, as one argument; and where a shell runs, never inside its script.
+            #expect(argv.contains(odd), "\(argv)")
+            if argv.first == "/bin/sh" {
+                #expect(argv[1] == "-c" && !argv[2].contains("my app") && !argv[2].contains("$(x)"), "\(argv[2])")
+                #expect(argv.last == odd)
+                #expect(BoxNetworkTests.isValidShell(argv[2]))
+            }
+        }
+    }
+
+    @Test func linuxUnmountCountsNotMountedAsDone() {
+        let request = ProjectShare.unmountRequest("/Users/me/src/app", guest: .linux)
+        let script = request.argv?[2] ?? ""
+        // umount alone, in a fixed language, with no look at the folder before it.
+        #expect(script.hasPrefix(#"out=$(LC_ALL=C /usr/bin/umount "$1" 2>&1) && exit 0;"#))
+        // The words are looked for after the path: a busy folder named "not mounted" is not done.
+        #expect(script.contains(#"case "${out#*"$1"}" in *"not mounted"*|*"no mount point specified"*) exit 0;;"#))
+        #expect(!script.contains("stat") && !script.contains("[ -d"))
+        #expect(script.hasSuffix("exit 1"))
+        #expect(request.user == "root" && request.argv?.last == "/Users/me/src/app")
+    }
+
+    @Test func gitIsToldTheProjectIsSafeAndNothingElse() {
+        let told = ProjectShare.safeDirectoryRequest("/Users/me/src/app")
+        let script = told.argv?[2] ?? ""
+        // The old values go first, so only the project that is shared now is named.
+        #expect(script.contains("--file /etc/agent-vm/gitconfig --unset-all safe.directory; "))
+        #expect(script.contains(#"--add safe.directory "$1" && "#) && script.hasSuffix(#"--add safe.directory "$1/*""#))
+        #expect(told.argv?.last == "/Users/me/src/app" && told.user == "root")
+        // With no project, the file names none.
+        let cleared = ProjectShare.safeDirectoryRequest(nil)
+        #expect(cleared.argv?.count == 4 && cleared.argv?[2].contains("--add") == false)
+        #expect(BoxNetworkTests.isValidShell(script) && BoxNetworkTests.isValidShell(cleared.argv?[2] ?? "("))
+    }
+
     @Test func sessionsRefuseAliasesOfTheHomeFolder() throws {
         let scratch = try Scratch()
         let home = try FileSystem.canonicalPath(NSHomeDirectory())
