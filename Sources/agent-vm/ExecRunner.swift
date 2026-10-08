@@ -33,6 +33,8 @@ struct ExecRunner {
     var readOnly: Bool
     /// From --env-file and --env; the proxy settings and TERM are added here.
     var added: [String: String]
+    /// The secrets among them, by their names in the secret store (--secret).
+    var secretNames: [String] = []
     var argv: [String]
     var terminal: Bool
     var prompts: PromptPolicy = .wait
@@ -110,7 +112,8 @@ struct ExecRunner {
         let projectSession = projectPath.flatMap { sessions.activeSession(project: $0) }
         let failure = log.append(ExecLog.Entry(id: id, event: .start, time: Date(), argv: argv, user: user ?? box.record.userName, cwd: directory,
                                                project: projectPath, readOnly: projectPath == nil ? nil : readOnly, terminal: terminal ? true : nil,
-                                               hostPid: getpid(), session: projectSession?.id))
+                                               hostPid: getpid(), session: projectSession?.id,
+                                               envNames: ExecLog.names(added.keys), secretNames: ExecLog.names(secretNames)))
         if let failure {
             // The program still runs, but its audit trail is missing (for example under a
             // sandbox profile that does not let agent-vm write the box's folder): say so.

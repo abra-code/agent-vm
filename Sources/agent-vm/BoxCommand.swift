@@ -24,7 +24,7 @@ struct BoxCommand: ParsableCommand {
             shows what exec and shell ran there, `box status` shows its state without \
             starting anything, and `box info` adds the space it takes on disk.
             """,
-        subcommands: [Create.self, Recreate.self, SetSize.self, List.self, Status.self, Info.self, Start.self, GC.self, SyncClock.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self, Send.self,
+        subcommands: [Create.self, Recreate.self, SetSize.self, List.self, Status.self, Info.self, Start.self, GC.self, SyncClock.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self, EventLogCommand.self, Send.self,
                       Packs.self, Serve.self]
     )
 
@@ -708,7 +708,8 @@ struct BoxCommand: ParsableCommand {
         func run() throws {
             // The account's own shell: the guest daemon sets SHELL from the account.
             ExecRunner(store: options.boxStore, box: name, user: user, cwd: nil, project: project, readOnly: readOnly,
-                       added: SecretOptions.resolve(secrets), argv: ["/bin/sh", "-c", "exec \"$SHELL\" -l"], terminal: true).run()
+                       added: SecretOptions.resolve(secrets), secretNames: SecretOptions.names(secrets),
+                       argv: ["/bin/sh", "-c", "exec \"$SHELL\" -l"], terminal: true).run()
         }
     }
 
@@ -720,8 +721,9 @@ struct BoxCommand: ParsableCommand {
                 One entry per program: when it started, how long it ran, its exit status, the \
                 account and the command. The log is kept on this Mac (Boxes/<name>/exec.jsonl), \
                 out of the box's reach; when the box is deleted it is kept for \(KeptLogs.defaultHoldDays) days \
-                (`agent-vm store logs`). It never holds the \
-                programs' environment.
+                (`agent-vm store logs`). Of the programs' environment it holds the \
+                names of the variables agent-vm handed them (--env, --env-file, --secret), \
+                never a value.
 
                 --since and --until choose the programs by when they started. With --kept the \
                 name is that of a deleted box's kept logs.
@@ -782,6 +784,10 @@ struct BoxCommand: ParsableCommand {
                 line += "  \(Output.shellQuoted(record.argv))"
                 if let project = record.project {
                     line += "  [project \(project)\(record.readOnly == true ? ", read only" : "")]"
+                }
+                if let names = record.envNames {
+                    // Names only: which variables the program was handed, and which were secrets.
+                    line += "  {env \(names.joined(separator: ", "))\(record.secretNames.map { "; secrets \($0.joined(separator: ", "))" } ?? "")}"
                 }
                 if let prompts = record.prompts, !prompts.isEmpty {
                     let what = record.stoppedOnPrompt == true ? "stopped while waiting" : "waited"

@@ -9,6 +9,7 @@
 //   Boxes/<name>/network.jsonl       the proxy's refused and failed connections (allowlist and off modes)
 //   Boxes/<name>/network-allowed.jsonl  the connections it allowed (see NetworkLog)
 //   Boxes/<name>/exec.jsonl          what agent-vm exec and box shell ran (start and end lines)
+//   Boxes/<name>/events.jsonl        what happened to the box: started, shared, rules changed (BoxEventLog)
 //   Boxes/<name>/Disk.img            APFS clone of the image's disk
 //   Boxes/<name>/AuxiliaryStorage    APFS clone of the image's auxiliary storage
 //   Boxes/<name>/HardwareModel       copy of the image's
@@ -174,6 +175,7 @@ public struct Box: Sendable {
     public var logURL: URL { directory.appendingPathComponent(BoxStore.logName) }
     public var networkLogURL: URL { directory.appendingPathComponent(BoxStore.networkLogName) }
     public var execLogURL: URL { directory.appendingPathComponent(BoxStore.execLogName) }
+    public var eventsLogURL: URL { directory.appendingPathComponent(BoxStore.eventsLogName) }
     public var tombstoneURL: URL { directory.appendingPathComponent(BoxStore.tombstoneName) }
 
     /// A disposable box that stopped: it is not started again, only deleted. A tombstone in a
@@ -200,6 +202,7 @@ public struct BoxStore: Sendable {
     static let logName = "supervisor.log"
     static let networkLogName = "network.jsonl"
     static let execLogName = "exec.jsonl"
+    static let eventsLogName = "events.jsonl"
     static let tombstoneName = "tombstone"
     /// In Boxes/: held while `gc` runs (not a valid box name, so list skips it).
     static let gcLockName = ".gc.lock"
@@ -375,6 +378,8 @@ public struct BoxStore: Sendable {
         }
         defer { recordLock.release() }
         let current = try box(named: name)
+        // Before this takes the box's lock itself, which reads as running.
+        let wasRunning = current.isRunning
         // A mode change holds the box lock while saving, so no start can slip in between the
         // check and the write.
         var lock: FolderLock?
@@ -389,6 +394,10 @@ public struct BoxStore: Sendable {
         record.network = network
         let updated = Box(record: record, directory: current.directory)
         try save(updated)
+        // The network log is read against the rules in force at the time: this is when they changed.
+        if network != current.record.effectiveNetwork {
+            BoxEventLog(url: updated.eventsLogURL).append(.init(.rules, before: current.record.effectiveNetwork, after: network, running: wasRunning))
+        }
         return updated
     }
 

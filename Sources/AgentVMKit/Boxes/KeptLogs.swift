@@ -9,6 +9,7 @@
 //   Logs/<box>-<time>/network.jsonl.gz
 //   Logs/<box>-<time>/network-allowed.jsonl.gz
 //   Logs/<box>-<time>/exec.jsonl.gz
+//   Logs/<box>-<time>/events.jsonl.gz
 //   Logs/<box>-<time>/console.log.gz            a Linux box's
 //   kept-logs.json                              in the store: for how many days they are kept
 //
@@ -39,7 +40,7 @@ public struct KeptLogs: Sendable {
     static var logNames: [String] {
         let network = URL(fileURLWithPath: BoxStore.networkLogName)
         return [BoxStore.logName, BoxStore.networkLogName, NetworkLog.allowedURL(for: network).lastPathComponent,
-                BoxStore.execLogName, ImageStore.consoleLogName]
+                BoxStore.execLogName, BoxStore.eventsLogName, ImageStore.consoleLogName]
     }
 
     public struct Record: Codable, Equatable, Sendable {

@@ -102,7 +102,7 @@ struct ExecCommand: ParsableCommand {
             throw ValidationError("give the program to run after --")
         }
         ExecRunner(store: options.boxStore, box: box, user: user, cwd: cwd, project: project, readOnly: readOnly,
-                   added: added, argv: argv, terminal: tty, prompts: prompts ?? .default).run()
+                   added: added, secretNames: SecretOptions.names(secrets), argv: argv, terminal: tty, prompts: prompts ?? .default).run()
     }
 }
 

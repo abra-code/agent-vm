@@ -31,6 +31,8 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     private let onClose: (@MainActor () -> Void)?
     /// Where sends are recorded (the supervisor's or the image build's log).
     private let log: (@MainActor (String) -> Void)?
+    /// Told of each file or folder the Send button copied into the guest.
+    private let sent: (@MainActor (BoxEventLog.Item) -> Void)?
     private var window: NSWindow?
     private var screen: BoxScreen?
     private var shield: InputShield?
@@ -47,7 +49,8 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     private var stopRequested = false
 
     init(name: String, kind: String = "box", machine: GuestMachine, password: (@Sendable () throws -> String)? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil,
-         log: (@MainActor (String) -> Void)? = nil) {
+         log: (@MainActor (String) -> Void)? = nil, sent: (@MainActor (BoxEventLog.Item) -> Void)? = nil) {
+        self.sent = sent
         self.name = name
         self.kind = kind
         self.machine = machine
@@ -250,6 +253,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
                     let renamed = received == item ? "" : " as \(received)"
                     setSendStatus("Sent \(what) to Downloads\(renamed)")
                     log?("Send: \(url.path) to Downloads\(renamed)")
+                    sent?(BoxEventLog.Item(name: item, received: received == item ? nil : received, bytes: BoxEventLog.fileSize(url.path)))
                 } catch {
                     currentSend = nil
                     if sender.isCanceled {

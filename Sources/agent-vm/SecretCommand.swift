@@ -148,6 +148,11 @@ enum SecretOptions {
         }
     }
 
+    /// The secrets the options name, as the store names them, for the exec log.
+    static func names(_ specs: [String]) -> [String] {
+        return specs.compactMap { (try? SecretStore.option($0))?.secret }
+    }
+
     /// The variables, read from the Keychain (macOS may ask first). A secret that is missing or
     /// cannot be read ends the command with status 125, naming the secret.
     static func resolve(_ specs: [String]) -> [String: String] {

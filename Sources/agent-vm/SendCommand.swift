@@ -103,6 +103,7 @@ extension BoxCommand {
                 signals.current.set(nil)
                 meter.end()
                 sent.append(Sent(source: paths[index], name: received))
+                BoxEventLog(url: box.eventsLogURL).append(.init(.send, items: [.init(name: item, received: received == item ? nil : received, bytes: BoxEventLog.fileSize(source.path))]))
                 meter.say(.log, "Sent \(what) to Downloads\(received == item ? "" : " as \(received)")")
             }
         }

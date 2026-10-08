@@ -79,6 +79,10 @@ struct LogOptions: ParsableArguments {
             return ExecLog(url: folder.appendingPathComponent(box?.execLogURL.lastPathComponent ?? "exec.jsonl"))
         }
 
+        var eventLog: BoxEventLog {
+            return BoxEventLog(url: folder.appendingPathComponent(box?.eventsLogURL.lastPathComponent ?? "events.jsonl"))
+        }
+
         var networkLog: NetworkLog {
             return NetworkLog(url: folder.appendingPathComponent(box?.networkLogURL.lastPathComponent ?? "network.jsonl"))
         }

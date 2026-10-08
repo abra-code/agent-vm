@@ -85,10 +85,12 @@ public final class BoxSupervisor {
         // VM: from the Keychain, the read waits when macOS asks the person about it.
         let box = self.box
         let firstShow = self.viewer == nil
-        let viewer = self.viewer ?? BoxViewer(name: box.name, machine: machine, password: { try box.accountPassword() }, log: { [weak self] in self?.log($0) })
+        let viewer = self.viewer ?? BoxViewer(name: box.name, machine: machine, password: { try box.accountPassword() }, log: { [weak self] in self?.log($0) },
+                                                  sent: { [weak self] item in self?.note(.init(.send, items: [item])) })
         self.viewer = viewer
         viewer.show(interactive: interactive)
         log("Showing the screen\(interactive ? " (interactive)" : " (view only)")")
+        note(.init(.view, interactive: interactive))
         // The screen saver and screen lock are per machine, so a box starts with them on
         // (GuestDesktop): off while someone may be looking, without holding up the window.
         if firstShow {
@@ -108,6 +110,27 @@ public final class BoxSupervisor {
         }
     }
 
+    /// Writes one line of the box's event log (BoxEventLog). A line that cannot be written is
+    /// said in the supervisor's own log and holds nothing up.
+    private func note(_ event: BoxEventLog.Event) {
+        if let problem = BoxEventLog(url: box.eventsLogURL).append(event) {
+            log("Event log: \(event.event.rawValue) not recorded (\(problem))")
+        }
+    }
+
+    /// Whether the start under way has its `stop` line: each start gets one, however it ends.
+    private var stopNoted = true
+    /// Why the box is being stopped, when nobody asked for it: its owner process exited.
+    private var stopReason: String?
+
+    private func noteStop(_ detail: String? = nil) {
+        guard !stopNoted else {
+            return
+        }
+        stopNoted = true
+        note(.init(.stop, detail: detail ?? stopReason))
+    }
+
     /// Types the box password (or `text`) into the open window's focused field in the guest.
     private func type(text: String?) async throws {
         try box.record.requireScreen()
@@ -121,11 +144,13 @@ public final class BoxSupervisor {
         if let text {
             try await viewer.type(text)
             log("Typed \(text.count) characters into the screen")
+            note(.init(.type, characters: text.count))
         } else {
             let box = self.box
             let password = try await Task.detached { try box.accountPassword() }.value
             try await viewer.type(password)
             log("Typed the password into the screen")
+            note(.init(.type, password: true))
         }
     }
 
@@ -223,7 +248,10 @@ public final class BoxSupervisor {
             state.setOwner(ownerPid)
             log("Owner: process \(ownerPid); the box stops when it exits")
             // Called on the main queue, so on the main actor.
-            ownerWatch = OwnerWatch(pid: ownerPid, startedAt: ownerStartedAt, queue: .main) { [state, log] in
+            ownerWatch = OwnerWatch(pid: ownerPid, startedAt: ownerStartedAt, queue: .main) { [weak self, state, log] in
+                MainActor.assumeIsolated {
+                    self?.stopReason = "the owner process \(ownerPid) exited"
+                }
                 state.requestStop()
                 MainActor.assumeIsolated {
                     log("The owner process \(ownerPid) exited; stopping")
@@ -233,6 +261,10 @@ public final class BoxSupervisor {
         defer { ownerWatch?.cancel() }
 
         log("Starting box \(box.name) (\(box.record.cpuCount) CPUs, \(box.record.memoryBytes >> 30) GB, image \(box.record.image), network \(network.mode.rawValue))")
+        note(.init(.start, detail: "image \(box.record.image), network \(network.mode.rawValue)"))
+        stopNoted = false
+        // A start that fails on a way with no line of its own below (the VM did not start).
+        defer { noteStop("the start failed") }
         if guest == .linux {
             try await machine.start()
         } else {
@@ -259,19 +291,23 @@ public final class BoxSupervisor {
                 // No daemon to shut down through yet.
                 state.set(.stopping, guestVersion: nil)
                 log("Stop requested before the guest daemon answered; pulling the plug")
+                noteStop()
                 try? await machine.forceStop()
                 return
             }
             if !machine.isRunning {
                 log("The guest stopped while booting\(machine.failure.map { ": \($0)" } ?? "")")
+                noteStop("the guest stopped while booting\(machine.failure.map { ": \($0)" } ?? "")")
                 throw AgentVMError.guestUnreachable("the guest stopped while booting\(machine.failure.map { ": \($0)" } ?? "")\(consoleTail())")
             }
             if let refusal = daemonRefusal {
                 log("\(refusal); stopping")
+                noteStop(refusal)
                 try? await machine.forceStop()
                 throw AgentVMError.guestRefused(refusal)
             }
             log("The guest daemon did not answer within \(bootLimit); stopping")
+            noteStop("the guest daemon did not answer within \(bootLimit)")
             try? await machine.forceStop()
             throw AgentVMError.guestUnreachable("the guest daemon did not answer within \(bootLimit)\(consoleTail())")
         }
@@ -289,6 +325,7 @@ public final class BoxSupervisor {
         }
         state.set(.ready, guestVersion: hello.version, guestFeatures: hello.features ?? [])
         log("Ready in \(Int(ImageBuilder.seconds(clock.now - began))) s: agent-vm-guest \(hello.version ?? "?")")
+        note(.init(.ready, detail: "agent-vm-guest \(hello.version ?? "?")"))
         if guest == .macOS {
             prepareDesktop(machine, features: hello.features ?? [])
         }
@@ -339,6 +376,7 @@ public final class BoxSupervisor {
             await shutDown(machine)
         } else {
             log("The guest stopped\(machine.failure.map { ": \($0)" } ?? "")")
+            noteStop("the guest stopped\(machine.failure.map { ": \($0)" } ?? "")")
         }
     }
 
@@ -512,6 +550,7 @@ public final class BoxSupervisor {
                 _ = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest(nil))
             }
             log("Unshared \(current.path)")
+            note(.init(.unshare, path: current.path))
             // While the previous project was mounted the guest could change folders on the
             // new one's path (a symlink swapped in); it has no access now, so resolve again.
             guard try ProjectShare.validated(path, storeRoot: storeRoot) == project else {
@@ -554,6 +593,7 @@ public final class BoxSupervisor {
         }
         state.setProject((project, readOnly))
         log("Shared \(project)\(readOnly ? " (read only)" : "")")
+        note(.init(.share, path: project, readOnly: readOnly))
     }
 
     /// Runs one guest request; throws unless it exits with status 0.
@@ -592,6 +632,7 @@ public final class BoxSupervisor {
     private func shutDown(_ machine: GuestMachine) async {
         state.set(.stopping, guestVersion: nil)
         log("Shutting down")
+        noteStop()
         if let connection = try? await machine.connect(toPort: GuestProtocol.port) {
             let descriptor = connection.descriptor
             Self.setReadTimeout(descriptor, seconds: 10)

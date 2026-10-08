@@ -50,13 +50,20 @@ public final class ExecLog: @unchecked Sendable {
         /// On a start: the session that was active for the project when the program started
         /// (agent-vm 0.7.17 and later); absent without a project or a session.
         public var session: String?
+        /// On a start: the names of the environment variables agent-vm handed the program
+        /// (--env, --env-file, --secret), and of the secrets among them as the secret store
+        /// names them. Names only, never a value: what the run could have sent out.
+        public var envNames: [String]?
+        public var secretNames: [String]?
 
         public init(id: String, event: Event, time: Date, argv: [String]? = nil, user: String? = nil, cwd: String? = nil,
                     project: String? = nil, readOnly: Bool? = nil, terminal: Bool? = nil, hostPid: Int32? = nil,
                     guestPid: Int32? = nil, status: Int32? = nil, seconds: Double? = nil, prompts: [String]? = nil,
                     prompt: String? = nil, service: String? = nil, program: String? = nil, stopped: Bool? = nil,
-                    session: String? = nil) {
+                    session: String? = nil, envNames: [String]? = nil, secretNames: [String]? = nil) {
             self.session = session
+            self.envNames = envNames
+            self.secretNames = secretNames
             self.prompt = prompt
             self.service = service
             self.program = program
@@ -99,6 +106,10 @@ public final class ExecLog: @unchecked Sendable {
         public var stoppedOnPrompt: Bool?
         /// The session that was active for the project when the program started.
         public var session: String?
+        /// The names of the environment variables agent-vm handed the program, and of the
+        /// secrets among them; never a value.
+        public var envNames: [String]?
+        public var secretNames: [String]?
     }
 
     public let url: URL
@@ -109,6 +120,16 @@ public final class ExecLog: @unchecked Sendable {
     public static let maxLineBytes = 64 << 10
     static let maxArguments = 64
     static let maxArgumentLength = 200
+    /// The most variable names one start line holds, each cut to `maxArgumentLength`.
+    static let maxNames = 200
+
+    /// Names as a start line takes them: sorted, each once, nil when there are none. Only what
+    /// is a variable's name: `--env` takes whatever stands before the first "=" as the name, so
+    /// a value given without its name (a base64 key ends in "=") would be recorded as one.
+    public static func names(_ names: some Sequence<String>) -> [String]? {
+        let sorted = Set(names.filter(ExecEnvironment.isValidName)).sorted().prefix(maxNames).map { $0.count > maxArgumentLength ? String($0.prefix(maxArgumentLength)) + "..." : $0 }
+        return sorted.isEmpty ? nil : sorted
+    }
 
     public init(url: URL, maxBytes: Int64 = 16 << 20) {
         self.url = url
@@ -184,7 +205,8 @@ public final class ExecLog: @unchecked Sendable {
                 index[entry.id] = records.count
                 records.append(Record(id: entry.id, started: entry.time, argv: entry.argv ?? [], user: entry.user, cwd: entry.cwd,
                                       project: entry.project, readOnly: entry.readOnly, terminal: entry.terminal,
-                                      hostPid: entry.hostPid, guestPid: entry.guestPid, session: entry.session))
+                                      hostPid: entry.hostPid, guestPid: entry.guestPid, session: entry.session,
+                                      envNames: entry.envNames, secretNames: entry.secretNames))
             case .end:
                 guard let position = index[entry.id] else {
                     continue

@@ -1312,3 +1312,78 @@ test_kept_logs_are_counted_and_can_be_turned_off() {
     run_avm status --json
     assert_json keptLogs.holdDays 30 || return 1
 }
+
+# box events: a rule change is recorded with the rules before and after, also for a stopped box;
+# the log is asked by time, read back from a deleted box, and box execlog shows the names of the
+# variables a program was handed.
+test_box_events_record_rule_changes() {
+    fake_image dev
+    run_avm box create b1 --image dev --allow a.example
+    assert_status 0 || return 1
+    run_avm box events b1
+    assert_status 0 || return 1
+    assert_out_contains "No events are logged for box b1." || return 1
+    run_avm box network b1 --allow b.example
+    assert_status 0 || return 1
+    # Asking for the rules changes nothing and is no event.
+    run_avm box network b1
+    run_avm box network b1 --net off
+    assert_status 0 || return 1
+    run_avm box events b1 --json
+    assert_status 0 || return 1
+    assert_json 0.event rules || return 1
+    assert_json 0.before.allow.0 a.example || return 1
+    assert_json 0.after.allow.1 b.example || return 1
+    assert_json 0.running false || return 1
+    assert_json 1.after.mode off || return 1
+    assert_eq "$(printf '%s' "$OUT" | /usr/bin/jq -r 'length')" "2" "events" || return 1
+    run_avm box events b1
+    assert_status 0 || return 1
+    assert_out_contains "rules     allowlist: a.example  ->  allowlist: a.example, b.example  (the box was stopped)" || return 1
+    assert_out_contains "->  off  (the box was stopped)" || return 1
+    run_avm box events b1 --last 1 --json
+    assert_json 0.after.mode off || return 1
+    run_avm box events b1 --until 2026-01-01
+    assert_out_contains "No events are logged for box b1 in that time." || return 1
+
+    # What a supervisor and box send write, as lines of the file.
+    printf '%s\n' \
+        '{"event":"start","time":"2026-10-01T10:00:00Z","pid":1,"detail":"image dev, network off"}' \
+        '{"event":"share","time":"2026-10-01T10:00:05Z","pid":1,"path":"/Users/me/project","readOnly":true}' \
+        '{"event":"type","time":"2026-10-01T10:00:06Z","pid":1,"password":true}' \
+        '{"event":"send","time":"2026-10-01T10:00:07Z","pid":2,"items":[{"name":"tool.pkg","received":"tool 2.pkg","bytes":1500000}]}' \
+        >> "$AGENT_VM_HOME/Boxes/b1/events.jsonl"
+    run_avm box events b1 --since 2026-10-01T10:00:00Z --until 2026-10-01T11:00:00Z
+    assert_status 0 || return 1
+    assert_out_contains "start     image dev, network off" || return 1
+    assert_out_contains "share     /Users/me/project (read only)" || return 1
+    assert_out_contains "type      the account's password" || return 1
+    assert_out_contains "send      tool.pkg as tool 2.pkg (2 MB)" || return 1
+    assert_not_contains "$OUT" "rules" "events outside the time asked for" || return 1
+
+    # Text a box chose (the guest daemon's version, a file's name) starts no line of its own
+    # and does not reach the terminal as control characters.
+    printf '%s\n' \
+        '{"event":"ready","time":"2026-10-02T10:00:00Z","pid":1,"detail":"agent-vm-guest 1\n2026-10-02 10:00:01  rules     off  ->  open\u001b]0;title\u0007"}' \
+        >> "$AGENT_VM_HOME/Boxes/b1/events.jsonl"
+    run_avm box events b1 --since 2026-10-02T10:00:00Z --until 2026-10-02T11:00:00Z
+    assert_status 0 || return 1
+    assert_eq "$(printf '%s\n' "$OUT" | /usr/bin/wc -l | /usr/bin/tr -d ' ')" "1" "lines of one event" || return 1
+    assert_out_contains "ready     agent-vm-guest 1?2026-10-02 10:00:01  rules     off  ->  open?]0;title?" || return 1
+
+    printf '%s\n' '{"id":"p1","event":"start","time":"2026-10-01T10:00:00Z","argv":["/bin/agent"],"user":"agent","envNames":["API_TOKEN","LANG"],"secretNames":["api-token"]}' > "$AGENT_VM_HOME/Boxes/b1/exec.jsonl"
+    run_avm box execlog b1
+    assert_out_contains "/bin/agent  {env API_TOKEN, LANG; secrets api-token}" || return 1
+    run_avm box execlog b1 --json
+    assert_json 0.envNames.0 API_TOKEN || return 1
+    assert_json 0.secretNames.0 api-token || return 1
+
+    # Deleted, the box's events are among its kept logs.
+    run_avm box delete b1 --json
+    local _kept
+    _kept="$(json_value keptLogs)"
+    assert_exists "$_kept/events.jsonl.gz" || return 1
+    run_avm box events "$(/usr/bin/basename "$_kept")" --kept --json
+    assert_status 0 || return 1
+    assert_eq "$(printf '%s' "$OUT" | /usr/bin/jq -r '[.[].event] | join(" ")')" "rules rules start share type send ready" "the kept events" || return 1
+}
