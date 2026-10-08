@@ -40,6 +40,10 @@
     "swiftpm": {
       "description": "Swift packages from GitHub, the Swift Package Index and swift.org downloads.",
       "hosts": ["github.com", "codeload.github.com", "objects.githubusercontent.com", "swiftpackageindex.com", "download.swift.org"]
+    },
+    "ubuntu": {
+      "description": "Ubuntu packages for a Linux box: apt-get update and install, as root.",
+      "hosts": ["archive.ubuntu.com", "security.ubuntu.com"]
     }
   }
 }

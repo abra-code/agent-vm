@@ -42,7 +42,10 @@ test_the_project_is_at_its_own_path() {
     assert_out_contains "virtiofs" || return 1
     assert_out_contains "agent-vm-project" || return 1
     assert_out_contains "nosuid,nodev" || return 1
-    # A file edited on the Mac is read back in the box at once.
+    # A file edited on the Mac is read back in the box. The box looked at this file a moment
+    # ago, and a guest may go by what it saw of a file (its length, here) for a second:
+    # Ubuntu 26.04's kernel does, Debian 13's asks again.
+    /bin/sleep 1.5
     printf 'changed on the Mac\n' > "$_project/README.md"
     run_avm exec --box "$BOX" --project "$_project" -- /usr/bin/cat README.md
     assert_eq "$OUT" "changed on the Mac" "the Mac's edit, in the box" || return 1

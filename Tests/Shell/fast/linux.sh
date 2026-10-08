@@ -22,7 +22,7 @@ test_cloud_image_needs_linux() {
 test_linux_release_must_be_known() {
     run_avm image create x --linux nope
     assert_status 1 || return 1
-    assert_err_contains "--linux nope: this agent-vm knows debian-13 (debian means the newest)" || return 1
+    assert_err_contains "--linux nope: this agent-vm knows debian-13, ubuntu-26.04 (debian or ubuntu alone means its newest)" || return 1
     assert_missing "$AGENT_VM_HOME/Images/x" || return 1
     assert_missing "$AGENT_VM_HOME/Cache" || return 1
 }
@@ -99,6 +99,41 @@ test_a_cloud_image_of_ones_own_is_looked_at_first() {
     printf 'not a disk\n' > "$SCRATCH/notes.tar.xz"
     run_avm image create x --linux debian-13 --cloud-image "$SCRATCH/notes.tar.xz"
     assert_status 1 || return 1
-    assert_err_contains "it is neither an xz-compressed tar archive nor a raw disk with a partition table" || return 1
+    assert_err_contains "it is neither an xz-compressed tar archive, a qcow2 disk image, nor a raw disk with a partition table" || return 1
+    assert_missing "$AGENT_VM_HOME/Images/x" || return 1
+}
+
+# Ubuntu is a release this agent-vm knows, by its name and by the distribution's alone: the
+# command gets as far as looking at the file.
+test_linux_ubuntu_is_a_known_release() {
+    local _linux
+    _linux="$(/usr/bin/dirname "$AGENT_VM")/linux/agent-vm-guest"
+    if [ ! -x "$_linux" ]; then
+        skip "this build has no linux/agent-vm-guest"
+        return 0
+    fi
+    local _release
+    for _release in ubuntu-26.04 ubuntu; do
+        run_avm image create x --linux "$_release" --cloud-image "$SCRATCH/none.img"
+        assert_status 1 || return 1
+        assert_err_contains "--cloud-image $SCRATCH/none.img: no such file" || return 1
+    done
+    assert_missing "$AGENT_VM_HOME/Images/x" || return 1
+}
+
+# A qcow2 file that needs what agent-vm does not read is refused by its header, with what it
+# needs, before an image is created: here a version 2 file that names a backing file.
+test_cloud_image_of_the_wrong_kind_is_refused() {
+    local _linux
+    _linux="$(/usr/bin/dirname "$AGENT_VM")/linux/agent-vm-guest"
+    if [ ! -x "$_linux" ]; then
+        skip "this build has no linux/agent-vm-guest"
+        return 0
+    fi
+    printf 'QFI\373\0\0\0\2\0\0\0\0\0\0\1\0' > "$SCRATCH/backed.img"
+    /usr/bin/head -c 200 /dev/zero >> "$SCRATCH/backed.img"
+    run_avm image create x --linux ubuntu-26.04 --cloud-image "$SCRATCH/backed.img"
+    assert_status 1 || return 1
+    assert_err_contains "backed.img is not a disk image agent-vm can read: it needs a backing file" || return 1
     assert_missing "$AGENT_VM_HOME/Images/x" || return 1
 }

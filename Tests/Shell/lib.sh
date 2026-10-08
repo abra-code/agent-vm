@@ -352,8 +352,37 @@ start_file_box() {
 }
 
 # The ready Linux image the Linux extended tests build their boxes from; they skip without it.
-# Make one with: agent-vm image create <name> --linux debian-13
+# Make one with: agent-vm image create <name> --linux debian-13 (or ubuntu-26.04: the files
+# are run once with an image of each).
 LINUX_TEST_IMAGE="${AGENT_VM_TEST_LINUX_IMAGE:-}"
+
+# linux_test_distribution: the distribution of $LINUX_TEST_IMAGE ("debian", "ubuntu"), which is
+# also the name of the pack with its package servers.
+linux_test_distribution() {
+    "$AGENT_VM" image list --json | /usr/bin/jq -r --arg name "$LINUX_TEST_IMAGE" '.[] | select(.name == $name) | .linux.distribution'
+}
+
+# linux_test_system <short|long>: how messages name the system of $LINUX_TEST_IMAGE: "Debian 13"
+# or "Ubuntu 26.04" (short), and the start of the system's own name for itself (long).
+linux_test_system() {
+    local _distribution
+    _distribution="$(linux_test_distribution)"
+    case "$_distribution:$1" in
+        ubuntu:*) printf 'Ubuntu 26.04' ;;
+        *:short) printf 'Debian 13' ;;
+        *) printf 'Debian GNU/Linux 13' ;;
+    esac
+}
+
+# linux_test_release: the release `--linux` takes for the distribution of $LINUX_TEST_IMAGE.
+linux_test_release() {
+    local _distribution
+    _distribution="$(linux_test_distribution)"
+    case "$_distribution" in
+        ubuntu) printf 'ubuntu-26.04' ;;
+        *) printf 'debian-13' ;;
+    esac
+}
 
 # start_linux_file_box <name> [box create options...]: as start_file_box, from
 # $LINUX_TEST_IMAGE.

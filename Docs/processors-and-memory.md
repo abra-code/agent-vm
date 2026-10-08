@@ -31,7 +31,7 @@ At most two macOS boxes run at once (a macOS limit). `agent-vm doctor` prints yo
 
 **A Linux box** (default: 4 CPUs and 4 GB) is another matter:
 
-- **It takes what it uses, not what it was given:** about 0.5 GB of the Mac's memory when idle, growing as programs use more, up to its size. What it once used it keeps until it stops.
+- **It takes what it uses, not what it was given:** about 0.5 GB of the Mac's memory when idle (Debian 13; Ubuntu 26.04 about 0.7 GB), growing as programs use more, up to its size. What it once used it keeps until it stops.
 - **4 GB is enough** for a command-line agent, git, Node or Python work and small builds; give 8 GB to a large C++ or Rust build or a test run with many workers (`agent-vm box set <box> --memory-gb 8`).
 - **Several run at once,** beside two macOS boxes too; the limit is the Mac's memory, and agent-vm warns at a start when the running boxes together, by the sizes they were given, leave the Mac less than 6 GB.
 

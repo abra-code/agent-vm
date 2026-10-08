@@ -8,6 +8,7 @@ This page says what a Linux box is, what differs from a macOS box, and what to k
 
 ```sh
 agent-vm image create deb --linux debian-13          # about a minute after a 0.2 GB download; no clicks
+agent-vm image create ub --linux ubuntu-26.04        # or Ubuntu: two and a half minutes after a 0.9 GB download
 agent-vm image create deb-tools --from deb --recipe Recipes/linux-node/recipe.json --recipe Recipes/agent-clis/recipe.json
 agent-vm box create work --image deb-tools --allow pack:anthropic --allow pack:npm
 agent-vm box start work                              # ready in about 3 seconds
@@ -15,13 +16,13 @@ agent-vm exec --box work --project ~/Development/app -- npm test
 avm new deb-tools                                    # or a temporary box with your folder, on this terminal
 ```
 
-- **The system** is Debian 13 for ARM, built from Debian's own cloud image.
+- **The system** is Debian 13 or Ubuntu 26.04 (since 0.7.11) for ARM, built from the distribution's own cloud image. [Debian or Ubuntu](#debian-or-ubuntu) says what differs.
 - **No screen, no password, no ssh.** A Linux box is reached through `exec`, `box shell` and `avm`, and nothing else listens in it.
 - **The same protections as a macOS box:** one shared folder, the allowlist network through the proxy on your Mac, a snapshot and a report around every `avm` session, disposable boxes.
 
 ## Sizes and times
 
-Measured on a MacBook Air M5 with Debian 13.
+Measured on a MacBook Air M5 with Debian 13; Ubuntu's numbers are under [Debian or Ubuntu](#debian-or-ubuntu).
 
 | | Linux | macOS |
 |---|---|---|
@@ -36,14 +37,34 @@ Measured on a MacBook Air M5 with Debian 13.
 
 Defaults for a new Linux image: 4 CPUs, 4 GB of memory, a 32 GB disk, the user `agent`.
 
+## Debian or Ubuntu
+
+Both are built, sealed, run and updated by the same commands, and every test of Linux boxes passes on both. Choose by what your work expects to find.
+
+| | Debian 13 | Ubuntu 26.04 (since 0.7.11) |
+|---|---|---|
+| `--linux` | `debian-13`, or `debian` | `ubuntu-26.04`, or `ubuntu` |
+| The download | 0.2 GB from `cloud.debian.org`, checked against its SHA-512 list | 0.9 GB from `cloud-images.ubuntu.com`, checked against its SHA-256 list |
+| A new image, after the download | about 1 minute | about 2 minutes |
+| The image on disk | about 2 GB | about 3.4 GB |
+| Node, Python and three agents on top (the recipes) | about 1 minute | about 50 seconds |
+| A box starts | about 3 seconds | about 5 seconds |
+| An idle box's memory | about 0.5 GB of the Mac's | about 0.7 GB |
+| Kernel | 6.12 | 7.0 |
+| Python (`Recipes/linux-python`) | 3.13 | 3.14 |
+| `sudo`, and `ls`, `cp` and the like | sudo, GNU's tools | sudo-rs and uutils, written in Rust; scripts that parse their messages may see other words |
+| apt's servers, and the pack for them | HTTPS; `pack:debian` | plain HTTP through the proxy; `pack:ubuntu` |
+| Removed when the image is sealed | the ssh server, unattended-upgrades, polkitd | those, and snapd, the Ubuntu Pro client, the update and news notices, the firmware updater, the crash reporter, the release upgrader, needrestart, VMware's tools, multipath, iSCSI and udisks2 |
+| A file changed on the Mac | read right at once | can be read with its old length for a second (see [The shared folder](#the-shared-folder)) |
+
 ## What differs, command by command
 
 | Command | With a Linux image or box |
 |---|---|
-| `image create --linux <release>` | Builds the image from the release's cloud image (`debian-13`; `debian` means the newest known). `--cloud-image` takes a file of your own. |
+| `image create --linux <release>` | Builds the image from the release's cloud image: `debian-13` or `ubuntu-26.04` (`debian` or `ubuntu` alone means the newest known of it). `--cloud-image` takes a file of your own. |
 | `image create --from`, `--recipe`, `--input`, `--set`, `--cpus`, `--memory-gb`, `--disk-gb`, `--user` | As for macOS. A recipe must be for Linux (`"guest": "linux"` or `"any"`); see [image-recipes.md](image-recipes.md). |
 | `image create --command-line-tools` | Means the compiler and make (`build-essential`). On by default. |
-| `image update --system` | Installs Debian's package updates. `--macos` is refused, with this name. |
+| `image update --system` | Installs the distribution's package updates. `--macos` is refused, with this name. |
 | `image update --tools`, `--guest`, `--set`, `--if-older-than` | As for macOS. |
 | `image rebuild --linux <release>`, or `--from` | Builds again from a fresh cloud image, or from a Linux image. |
 | `image setup`, `image view`, `box view` | Refused: there is no screen, and no Full Disk Access to grant. |
@@ -53,7 +74,7 @@ Defaults for a new Linux image: 4 CPUs, 4 GB of memory, a 32 GB disk, the user `
 | `exec`, `box shell`, `avm` | As for macOS. `exec --prompts` is accepted and has no effect: there are no privacy prompts. |
 | `exec --project`, `box shell --project` | As for macOS, with the notes under [The shared folder](#the-shared-folder). |
 | `box send` | As for macOS (since 0.7.10): each item lands in the box user's `~/Downloads` under a free name, complete or not at all. See [Sending files](#sending-files). |
-| `image list`, `box list`, `status`, `avm list` | Show the system where a macOS entry shows its macOS version: "Debian 13" in `box list` and `avm list`, "Debian GNU/Linux 13 (trixie)" in `image list` and `status`. With `--json`, every entry has `guest` (`macos` or `linux`) and `system`. |
+| `image list`, `box list`, `status`, `avm list` | Show the system where a macOS entry shows its macOS version: "Debian 13" or "Ubuntu 26.04" in `box list` and `avm list`, "Debian GNU/Linux 13 (trixie)" or "Ubuntu 26.04.1 LTS" in `image list` and `status`. With `--json`, every entry has `guest` (`macos` or `linux`) and `system`. |
 | `doctor`, `status` | Count macOS guests against the limit of two; your running Linux boxes are counted apart (`linuxBoxes`). |
 
 ## The account, and root
@@ -61,7 +82,7 @@ Defaults for a new Linux image: 4 CPUs, 4 GB of memory, a 32 GB disk, the user `
 - **The box user** (`agent` unless you chose another name) has the home `/home/agent`, `bash` as its shell, no password, and no group but its own.
 - **It cannot become root by itself:** there is no sudo rule for it. Root is yours, from the Mac: `agent-vm exec --box work --user root -- apt-get install -y ripgrep` (on the allowlist network, with `--allow pack:debian`). Better still, a recipe, so that the next box has the package too.
 - **`Recipes/linux-sudo`** gives an image passwordless sudo for the box user, if you accept that every program in a box of it can be root. [The Recipes page](../Recipes/README.md) says what that widens.
-- **What an agent wanted root for** is in the box's journal: `agent-vm exec --box work --user root -- journalctl -t sudo` lists each refused `sudo` with its command (a `sudo -n`, which gives up before it asks for a password, leaves no line).
+- **What an agent wanted root for** is in the box's journal: `agent-vm exec --box work --user root -- journalctl -t sudo` lists each refused `sudo` with its command (a `sudo -n`, which gives up before it asks for a password, leaves no line). That is Debian's sudo; Ubuntu's (sudo-rs) refuses with "I'm sorry agent. I'm afraid I can't do that" and writes no line for a refusal.
 
 ## Where programs are found
 
@@ -75,17 +96,18 @@ Defaults for a new Linux image: 4 CPUs, 4 GB of memory, a 32 GB disk, the user `
 - **On the allowlist and `off` networks the box has no network card.** `ls /sys/class/net` shows the loopback and nothing else: no address, no route, no name lookup. The only way out is the proxy at `127.0.0.1:3128`, which the guest daemon relays to your Mac.
 - **Programs run with `exec`, `box shell` and `avm` get the proxy variables.** `apt` and `ssh` have their own settings, written at each start of the box. A program that reads none of these has no network at all, and most say so at once.
 - **Node needs version 24 or later** for `fetch` through a proxy; `Recipes/linux-node` installs it. Debian's own Node 20 cannot.
-- **`pack:debian`** allows Debian's package servers, for `apt-get` as root in a box.
+- **`pack:debian`** allows Debian's package servers, for `apt-get` as root in a box; **`pack:ubuntu`** Ubuntu's.
 - **On the `open` network** the box has a card on the Mac's NAT. Boxes started together can get the same address, so do not reach a box by its address.
 
 ## The shared folder
 
-The folder is mounted at the path it has on your Mac, read-write or read-only, and `git` works in it at once. Four things differ from a folder on a Linux disk:
+The folder is mounted at the path it has on your Mac, read-write or read-only, and `git` works in it at once. These things differ from a folder on a Linux disk:
 
 - **Every user in the box sees every file as its own**, and a file made in the box belongs to you on the Mac. Inside the box the share has no access control between users.
 - **It is as case-insensitive as your Mac's disk:** `Foo` and `foo` are one file.
 - **File watchers in the box do not see edits made on the Mac.** The content is current when it is read; the events are missing. A build tool that waits for changes needs polling (`CHOKIDAR_USEPOLLING=1`, `--poll`), or run it on the Mac.
 - **Many small files are slow:** 6 to 15 times slower than on the box's own disk. Keep build products and `node_modules` on the box's disk when a project allows it.
+- **In an Ubuntu box, a file's length can be a second old.** When a program in the box has just looked at a file and you change it on the Mac within about a second, the next read in the box can stop at the old length. A second later it is right. A Debian 13 box asks the Mac at every open and does not show this.
 
 ## Sending files
 
@@ -112,9 +134,9 @@ agent-vm box recreate work                           # each box, to get what the
 
 ## What a Linux image is made of
 
-- **Debian's cloud image**, fetched from `cloud.debian.org` and checked against Debian's SHA-512 list before anything reads it. The README's Images section says what is trusted.
+- **The distribution's cloud image:** Debian's from `cloud.debian.org`, checked against Debian's SHA-512 list, or Ubuntu's from `cloud-images.ubuntu.com`, checked against Ubuntu's SHA-256 list, before anything reads it. The README's Images section says what is trusted.
 - **Set up by agent-vm**, every step in the build log: the box user, the system's updates, `git`, `jq`, `unzip`, `zip`, the compiler and make, then your recipes.
-- **Sealed:** no ssh server (removed, not only disabled), no background updates, the first-boot setup switched off, nothing listening for the network, no account with a usable password. The build checks each of these and fails if one is not so.
+- **Sealed:** no ssh server (removed, not only disabled), no background updates, the first-boot setup switched off, nothing listening for the network, no account with a usable password; in an Ubuntu image also no snapd and none of Ubuntu's background services. The build checks each of these and fails if one is not so.
 - **Its files** in the store: `Disk.img`, `EFIVariableStore` (the boot firmware's variables), `MachineIdentifier`, and `console.log`, what the guest printed at its last boot (at most 2 MB, in two files). A box has the same, and when a box does not come up, the error ends with the console's last lines.
 
 ## Not there, and why
@@ -122,7 +144,8 @@ agent-vm box recreate work                           # each box, to get what the
 | | |
 |---|---|
 | A screen (`box view`) and a desktop | Several GB of packages and a second display path, for a box whose use is the terminal. |
-| Other distributions | Each has its own package tool and its own list of what to seal. Debian 13 is the one that was measured. |
+| Other distributions | Each has its own package tool and its own list of what to seal. Debian 13 and Ubuntu 26.04 are the ones that were measured. |
+| `snap` and `add-apt-repository` in an Ubuntu box | snapd is a daemon of root's that any user can reach and that updates programs by itself; `add-apt-repository` needs polkitd. Add a source by its file in `/etc/apt/sources.list.d`, in a recipe. |
 | Docker in the box | Wants its own settings for the proxy and its own measurements. |
 | Port forwards from the Mac into a box | Not built for either system. |
 | Memory given back to the Mac | A box keeps what it has touched until it stops. |

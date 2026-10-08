@@ -162,7 +162,7 @@ Since 0.7.7 a Linux image takes recipes with `--from` as it does with `--linux`,
 - **`LANG=C.UTF-8`**, and `SHELL=/bin/bash`.
 - **Packages** come from apt in a root step: `apt-get -q -y update && apt-get -q -y install <packages>` with `"env": {"DEBIAN_FRONTEND": "noninteractive"}`. The image has `git`, `curl`, `jq`, `unzip`, `zip`, `xz`, `python3` and, unless turned off, `build-essential`.
 - **The network is up when the first step runs**: the build waits up to half a minute for the network card's address before the recipes.
-- **`--disk-gb` with `--from`** makes the disk file longer on the Mac, by 1 GB or more; the system grows its root file system into the new space when it boots, and the build fails if it did not. (A macOS disk grows by 8 GB or more: its recovery container has to move.)
+- **`--disk-gb` with `--from`** makes the disk file longer on the Mac, by 1 GB or more; the root file system is grown into the new space at the build's boot (Debian does it by itself, in Ubuntu the build does it), and the build fails if it did not grow. (A macOS disk grows by 8 GB or more: its recovery container has to move.)
 - **The new image gets this agent-vm's Linux guest daemon** when its base has another one, and is booted once more to check it, as a macOS image is.
 - **Before each shutdown of a build** the machine id, any ssh host keys and the random seed are cleared, so the image and every box of it get their own.
 - **What a recipe leaves is not sealed again.** The first build removed the ssh server and checked that nothing listens for the network; a recipe that installs a server puts one into every box of the image. Read a recipe before you use it.

@@ -27,7 +27,7 @@ Measured in boxes on macOS 27 guests:
 A Linux box on the allowlist network (or `off`) has no network card at all, so there is no system proxy to set. The proxy is offered in these ways:
 
 - **Environment variables** for programs run with `exec` and `box shell`, the same set as for a macOS box.
-- **A file for apt**, `/etc/apt/apt.conf.d/90agent-vm-proxy`, so `apt-get` works as root whatever its environment. Its hosts need a rule: `pack:debian`.
+- **A file for apt**, `/etc/apt/apt.conf.d/90agent-vm-proxy`, so `apt-get` works as root whatever its environment. Its hosts need a rule: `pack:debian`, or `pack:ubuntu` in an Ubuntu box (whose package servers are plain HTTP, which the proxy takes too).
 - **The ssh setting**, the same three lines as in a macOS box (Debian's `nc` speaks to the proxy too).
 - **A profile file**, `/etc/profile.d/agent-vm-proxy.sh`, with the variables for login shells that `exec` did not start.
 

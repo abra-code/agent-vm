@@ -6,16 +6,17 @@
 // - The checksum list is asked for at every `image create --linux`, over HTTPS from the
 //   distribution's own host. A redirect of the list is refused: the list is what the image is
 //   trusted by, and it is taken from one place only.
-// - The image may come from a mirror. Its SHA-512 is computed over the finished file (a
-//   resumed download has no hash of the bytes already on disk) and must be the list's before
-//   the file gets its name.
-// - A cached file is hashed again each time it is used (a fifth of a GB: about a second), and
-//   used when the list names that digest; else the new image is downloaded in its place.
+// - The image may come from a mirror. Its checksum, of the kind the list holds (SHA-512 for
+//   Debian, SHA-256 for Ubuntu), is computed over the finished file (a resumed download has no
+//   hash of the bytes already on disk) and must be the list's before the file gets its name.
+// - A cached file is hashed again each time it is used (a fifth of a GB to a GB: one to three
+//   seconds), and used when the list names that digest; else the new image is downloaded in
+//   its place.
 // - When the list cannot be fetched, a cached file that still has the digest it was checked
 //   with is used, and a notice says so.
 //
 //   Cache/linux/<file>               the image
-//   Cache/linux/<file>.json          where it came from, its SHA-512, when
+//   Cache/linux/<file>.json          where it came from, its checksums, when
 //   Cache/linux/<file>.partial       a download in progress (and <file>.partial.json)
 
 import CryptoKit
@@ -51,6 +52,7 @@ public struct LinuxBaseCache: Sendable {
     public struct Resolved: Sendable, Equatable {
         public var file: URL
         public var sha512: String
+        public var sha256: String
         /// Where it was downloaded from; nil for a file the person gave.
         public var url: String?
         /// The distribution's name for this build of the image, when it publishes one.
@@ -63,6 +65,8 @@ public struct LinuxBaseCache: Sendable {
     struct Note: Codable, Equatable {
         var url: String
         var sha512: String
+        /// Absent in a note written before 0.7.11.
+        var sha256: String?
         var bytes: Int64
         var fetchedAt: Date
         var build: String?
@@ -104,16 +108,18 @@ public struct LinuxBaseCache: Sendable {
             }
             // Without the list nothing new can be trusted; a copy that is still what was
             // checked once can.
-            if let note = try? SessionStore.decoder.decode(Note.self, from: Data(contentsOf: noteFile(cached))),
-               FileSystem.exists(cached.path), try await Self.sha512(of: cached) == note.sha512 {
-                progress(.offline(reason: "\(error)", file: base.file, checkedAt: note.fetchedAt))
-                return Resolved(file: cached, sha512: note.sha512, url: note.url, build: note.build, downloaded: false)
+            if let note = try? SessionStore.decoder.decode(Note.self, from: Data(contentsOf: noteFile(cached))), FileSystem.exists(cached.path) {
+                let found = try await Self.digests(of: cached)
+                if found.sha512 == note.sha512 {
+                    progress(.offline(reason: "\(error)", file: base.file, checkedAt: note.fetchedAt))
+                    return Resolved(file: cached, sha512: found.sha512, sha256: found.sha256, url: note.url, build: note.build, downloaded: false)
+                }
             }
             throw AgentVMError.linuxBase("cannot ask \(host) for the image's checksum (\(error)), and no checked copy is cached; with a file of your own: --cloud-image <path>")
         }
         let expected: String
         do {
-            expected = try LinuxBase.digest(for: base.file, inList: list)
+            expected = try LinuxBase.digest(for: base.file, inList: list, kind: base.digest)
         } catch {
             throw AgentVMError.linuxBase("\(listURL.absoluteString): \(error)")
         }
@@ -121,11 +127,12 @@ public struct LinuxBaseCache: Sendable {
 
         if FileSystem.exists(cached.path) {
             progress(.hashing(file: base.file))
-            if try await Self.sha512(of: cached) == expected {
-                let note = try? SessionStore.decoder.decode(Note.self, from: Data(contentsOf: noteFile(cached)))
+            let found = try await Self.digests(of: cached)
+            if found.value(base.digest) == expected {
+                // The note is this file's when it names the same SHA-512.
+                let note = (try? SessionStore.decoder.decode(Note.self, from: Data(contentsOf: noteFile(cached)))).flatMap { $0.sha512 == found.sha512 ? $0 : nil }
                 progress(.reusing(file: base.file))
-                return Resolved(file: cached, sha512: expected, url: note?.sha512 == expected ? note?.url : nil,
-                                build: note?.sha512 == expected ? note?.build : nil, downloaded: false)
+                return Resolved(file: cached, sha512: found.sha512, sha256: found.sha256, url: note?.url, build: note?.build, downloaded: false)
             }
             // Damaged, or the distribution published a newer image under the same name.
             try? FileManager.default.removeItem(at: cached)
@@ -140,9 +147,13 @@ public struct LinuxBaseCache: Sendable {
                                             part: URL(fileURLWithPath: cached.path + ".partial"),
                                             stateFile: URL(fileURLWithPath: cached.path + ".partial.json"), noun: "Linux cloud image")
         let name = base.file
+        let kind = base.digest
+        let checked = Checked()
         try await ResumableDownload.download(answered, place: place, remote: remote, minimumFreeAfter: minimumFree, cancellation: cancellation, finish: { part in
             progress(.hashing(file: name))
-            let got = try await Self.sha512(of: part)
+            let found = try await Self.digests(of: part)
+            checked.set(found)
+            let got = found.value(kind)
             guard got == expected else {
                 try? FileManager.default.removeItem(at: part)
                 try? FileManager.default.removeItem(at: place.stateFile)
@@ -153,13 +164,35 @@ public struct LinuxBaseCache: Sendable {
         })
         let build = await self.build(of: base, list: list)
         let bytes = ((try? FileManager.default.attributesOfItem(atPath: cached.path))?[.size] as? Int64) ?? 0
-        let note = Note(url: answered.absoluteString, sha512: expected, bytes: bytes, fetchedAt: Date(), build: build)
+        // The download's last step always ran, and left what it computed.
+        guard let found = checked.value else {
+            throw AgentVMError.linuxBase("\(cached.path) was not checked against \(host)'s checksum list; try again")
+        }
+        let note = Note(url: answered.absoluteString, sha512: found.sha512, sha256: found.sha256, bytes: bytes, fetchedAt: Date(), build: build)
         try? SessionStore.encoder.encode(note).write(to: noteFile(cached), options: .atomic)
-        return Resolved(file: cached, sha512: expected, url: answered.absoluteString, build: build, downloaded: true)
+        return Resolved(file: cached, sha512: found.sha512, sha256: found.sha256, url: answered.absoluteString, build: build, downloaded: true)
+    }
+
+    /// What the download's last step computed, for the lines after it.
+    private final class Checked: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Digests?
+
+        func set(_ digests: Digests) {
+            lock.lock()
+            stored = digests
+            lock.unlock()
+        }
+
+        var value: Digests? {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
     }
 
     /// A cloud image file the person gave (`--cloud-image`): trusted because they supplied it,
-    /// as a restore image is; its SHA-512 goes into the record.
+    /// as a restore image is; its checksums go into the record.
     public func local(_ path: String, currentDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)) async throws -> Resolved {
         let file = URL(fileURLWithPath: (path as NSString).expandingTildeInPath, relativeTo: currentDirectory).absoluteURL.resolvingSymlinksInPath()
         var isDirectory: ObjCBool = false
@@ -167,7 +200,8 @@ public struct LinuxBaseCache: Sendable {
             throw AgentVMError.linuxBase("--cloud-image \(path): no such file")
         }
         _ = try DiskUnpack.kind(of: file)
-        return Resolved(file: file, sha512: try await Self.sha512(of: file), url: nil, build: nil, downloaded: false)
+        let found = try await Self.digests(of: file)
+        return Resolved(file: file, sha512: found.sha512, sha256: found.sha256, url: nil, build: nil, downloaded: false)
     }
 
     private func checkCanceled(_ cancellation: BuildCancellation?) throws {
@@ -180,9 +214,9 @@ public struct LinuxBaseCache: Sendable {
     /// Only for showing: nil whenever the file is missing, does not match the list, or does not
     /// say it in so many words.
     func build(of base: LinuxBase, list: String) async -> String? {
-        guard let manifest = base.manifest, let expected = try? LinuxBase.digest(for: manifest, inList: list),
+        guard let manifest = base.manifest, let expected = try? LinuxBase.digest(for: manifest, inList: list, kind: base.digest),
               let data = try? await Self.fetchSmall(folder(of: base).appendingPathComponent(manifest), limit: Self.manifestLimit, redirects: true),
-              SHA512.hash(data: data).map({ String(format: "%02x", $0) }).joined() == expected else {
+              Digests(of: data).value(base.digest) == expected else {
             return nil
         }
         return Self.build(inManifest: data)
@@ -209,8 +243,28 @@ public struct LinuxBaseCache: Sendable {
         return version.flatMap { Printable.isToken($0) ? $0 : nil }
     }
 
-    /// The SHA-512 of a file, read in pieces, off the caller's actor.
-    static func sha512(of file: URL) async throws -> String {
+    /// A file's checksums, of both kinds a list may hold.
+    struct Digests: Sendable, Equatable {
+        var sha512: String
+        var sha256: String
+
+        init(sha512: String, sha256: String) {
+            self.sha512 = sha512
+            self.sha256 = sha256
+        }
+
+        init(of data: Data) {
+            sha512 = SHA512.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            sha256 = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+
+        func value(_ kind: LinuxBase.Digest) -> String {
+            return kind == .sha512 ? sha512 : sha256
+        }
+    }
+
+    /// The checksums of a file, read once in pieces, off the caller's actor.
+    static func digests(of file: URL) async throws -> Digests {
         return try await Task.detached {
             let handle: FileHandle
             do {
@@ -219,11 +273,13 @@ public struct LinuxBaseCache: Sendable {
                 throw AgentVMError.system(operation: "read \(file.path)", code: FileSystem.posixCode(error))
             }
             defer { try? handle.close() }
-            var hasher = SHA512()
+            var long = SHA512()
+            var short = SHA256()
             while let chunk = try handle.read(upToCount: 4 << 20), !chunk.isEmpty {
-                hasher.update(data: chunk)
+                long.update(data: chunk)
+                short.update(data: chunk)
             }
-            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            return Digests(sha512: long.finalize().map { String(format: "%02x", $0) }.joined(), sha256: short.finalize().map { String(format: "%02x", $0) }.joined())
         }.value
     }
 

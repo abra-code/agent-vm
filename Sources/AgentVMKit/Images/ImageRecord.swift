@@ -66,14 +66,18 @@ public struct ImageRecord: Codable, Equatable, Sendable {
         public var url: String?
         /// SHA-512 of the file as it was used.
         public var sha512: String
+        /// Its SHA-256, for a release whose checksum list holds that kind (Ubuntu), so the
+        /// record has what can be compared with the distribution's list.
+        public var sha256: String?
         /// The distribution's build of it, when it says one.
         public var build: String?
 
-        public init(release: String, file: String, url: String? = nil, sha512: String, build: String? = nil) {
+        public init(release: String, file: String, url: String? = nil, sha512: String, sha256: String? = nil, build: String? = nil) {
             self.release = release
             self.file = file
             self.url = url
             self.sha512 = sha512
+            self.sha256 = sha256
             self.build = build
         }
     }

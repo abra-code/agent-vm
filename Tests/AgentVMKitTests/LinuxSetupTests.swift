@@ -11,7 +11,8 @@ import Testing
 
 @Suite struct LinuxSetupTests {
     static var everyStep: [LinuxSetup.Step] {
-        return [LinuxSetup.waitForFirstBoot] + LinuxSetup.steps(user: "agent", tools: true) + LinuxSetup.seal + LinuxSetup.sealChecks() + LinuxSetup.systemUpdate
+        return [LinuxSetup.waitForFirstBoot] + LinuxSetup.steps(user: "agent", tools: true) + LinuxSetup.seal(distribution: "debian") + LinuxSetup.sealChecks()
+            + LinuxSetup.seal(distribution: "ubuntu") + LinuxSetup.sealChecks(distribution: "ubuntu") + LinuxSetup.systemUpdate + [LinuxSetup.removeNeedrestart]
             + [LinuxSetup.Step("packages", LinuxSetup.packageList), LinuxSetup.Step("newest kernel", LinuxSetup.newestKernel)]
             + [LinuxSetup.accountCheck(user: "agent"), LinuxSetup.waitForNetwork, LinuxSetup.packageLists, LinuxSetup.tools]
     }
@@ -35,10 +36,10 @@ import Testing
         #expect(Self.commandWords(LinuxSetup.steps(user: "agent", tools: false)[0].script).contains("/usr/sbin/useradd"))
         #expect(Self.commandWords("a; b && c | d").count == 4)
         // Words of the shell itself, and assignments.
-        let shell: Set<String> = ["if", "fi", "case", "esac", "exit", "[", "*)", "Q", "Q)", ")"]
+        let shell: Set<String> = ["if", "fi", "case", "esac", "exit", "[", "*)", "Q", "Q)", ")", "for", "done"]
         for step in Self.everyStep + [LinuxSetup.Step("clone", LinuxSetup.prepareForCloning), LinuxSetup.Step("os", LinuxSetup.osRelease),
                                       LinuxSetup.Step("kernel", LinuxSetup.kernel), LinuxSetup.Step("arch", LinuxSetup.architecture),
-                                      LinuxSetup.Step("size", LinuxSetup.rootSize), LinuxSetup.Step("tools", LinuxSetup.toolsVersion)] {
+                                      LinuxSetup.Step("size", LinuxSetup.rootSize), LinuxSetup.Step("tools", LinuxSetup.toolsVersion), LinuxSetup.growRoot] {
             for word in Self.commandWords(step.script) where !shell.contains(word) && !word.contains("=") && !word.hasSuffix(")") {
                 #expect(word.hasPrefix("/usr/bin/") || word.hasPrefix("/usr/sbin/") || word.hasPrefix("/usr/lib/systemd/"), "\(step.name): \(word)")
             }
@@ -81,7 +82,8 @@ import Testing
         #expect(seal.contains("/etc/cloud/cloud-init.disabled"))
         #expect(seal.contains(#"name: "en*""#))
         #expect(seal.contains("/usr/bin/rm -f /etc/netplan/50-cloud-init.yaml"))
-        #expect(seal.contains("console=hvc0"))
+        // Last on the kernel's line, whatever the image's own settings name before it.
+        #expect(seal.contains(#"GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0""#))
         #expect(seal.contains("LLMNR=no"))
         #expect(seal.contains("vmw_vsock_virtio_transport"))
         let checks = LinuxSetup.sealChecks(daemonPort: 1024)
@@ -101,6 +103,38 @@ import Testing
             #expect(check.script.contains("exit 1"), "\(check.name)")
         }
         #expect(LinuxSetup.prepareForCloning.contains("/usr/bin/truncate -s 0 /etc/machine-id"))
+    }
+
+    @Test func ubuntuSealsWhatItAlonehas() {
+        // Debian's list is the shared one.
+        #expect(LinuxSetup.seal(distribution: "debian") == LinuxSetup.seal)
+        let ubuntu = LinuxSetup.seal(distribution: "ubuntu")
+        #expect(ubuntu.count == LinuxSetup.seal.count + 1)
+        // After the shared removal, before the rest.
+        #expect(ubuntu[0] == LinuxSetup.seal[0] && Array(ubuntu.dropFirst(2)) == Array(LinuxSetup.seal.dropFirst()))
+        let own = ubuntu[1].script
+        for package in ["snapd", "lxd-installer", "ubuntu-pro-client", "update-notifier-common", "needrestart", "udisks2", "open-vm-tools"] {
+            #expect(own.contains(" \(package) ") || own.contains(" \(package) &&"), "\(package)")
+        }
+        // A purge that fails fails the step.
+        #expect(own.contains("clean || exit 1; /usr/bin/rm -rf /snap "))
+        // needrestart goes first of all, right after the account, and only on Ubuntu; until it
+        // is gone, and in a derived build of an image that has it, the environment stops it.
+        let setup = LinuxSetup.steps(user: "agent", tools: true, distribution: "ubuntu")
+        #expect(setup[1] == LinuxSetup.removeNeedrestart && setup[2] == LinuxSetup.packageLists)
+        #expect(setup.count == LinuxSetup.steps(user: "agent", tools: true).count + 1)
+        #expect(!LinuxSetup.steps(user: "agent", tools: true).contains(LinuxSetup.removeNeedrestart))
+        #expect(LinuxSetup.environment["NEEDRESTART_SUSPEND"] == "1")
+        // The news timer stays with its package and is switched off.
+        #expect(own.contains("motd-news.timer") && own.contains(#"/usr/bin/systemctl disable --now "$timer" || exit 1"#))
+        // The checks name what was removed and switched off, for each system its own.
+        let checks = LinuxSetup.sealChecks(distribution: "ubuntu", daemonPort: 1024)
+        #expect(checks.map(\.name) == LinuxSetup.sealChecks(daemonPort: 1024).map(\.name))
+        #expect(checks[5].script.contains("openssh-server unattended-upgrades polkitd snapd lxd-installer"))
+        #expect(checks[6].script.contains("apt-daily.timer apt-daily-upgrade.timer motd-news.timer"))
+        let debian = LinuxSetup.sealChecks(daemonPort: 1024)
+        #expect(!debian[5].script.contains("snapd") && !debian[6].script.contains("motd-news"))
+        #expect(debian[6].script.contains("for timer in apt-daily.timer apt-daily-upgrade.timer; do"))
     }
 
     @Test func osReleaseIsReadStrictly() throws {
@@ -150,6 +184,7 @@ import Testing
             #expect(LinuxSetup.isValidUserName(name), "\(name)")
         }
         for name in ["bin", "sys", "sync", "games", "man", "mail", "news", "proxy", "backup", "list", "irc", "sudo", "adm", "users", "debian",
+                     "ubuntu", "admin", "lxd", "syslog", "staff", "www-data",
                      "systemd-network", "systemd", "_apt", "root", "nobody", "Agent", "a b", ""] {
             #expect(!LinuxSetup.isValidUserName(name), "\(name)")
         }

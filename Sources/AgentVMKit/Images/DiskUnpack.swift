@@ -4,7 +4,8 @@
 // one member, the raw disk: 3 GB, mostly zeros. tar writes that member to a pipe and nothing
 // to a folder; what comes out of the pipe is written to the disk file with holes in the place
 // of blocks of zeros (tar itself would write every zero), so the file takes what the system
-// takes, under 2 GB. A raw disk given as it is, is cloned.
+// takes, under 2 GB. Ubuntu ships a qcow2 file, which Qcow2Reader reads. A raw disk given as it
+// is, is cloned.
 //
 // The archive is checked against its checksum before this reads it (LinuxBaseCache), or it is
 // a file the person named. It is still read as a file from the network: the output is limited
@@ -22,6 +23,8 @@ enum DiskUnpack {
         case tarXZ
         /// A raw disk with a partition table.
         case raw
+        /// A qcow2 disk image (Qcow2Reader).
+        case qcow2
     }
 
     static func kind(of file: URL) throws -> Kind {
@@ -35,11 +38,26 @@ enum DiskUnpack {
         if count >= 6, Array(head[0..<6]) == [0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00] {
             return .tarXZ
         }
+        if count >= 4, Qcow2Reader.isQcow2(Array(head[0..<4])) {
+            // Its header is checked here, so a file that cannot be read is refused before an
+            // image is made for it.
+            do {
+                _ = try Qcow2Reader.header(of: file)
+            } catch let problem as Qcow2Reader.Problem {
+                throw unreadable(file, problem, operation: "read")
+            }
+            return .qcow2
+        }
         // A GUID partition table's header is the second 512-byte block.
         if count >= 520, Array(head[512..<520]) == Array("EFI PART".utf8) {
             return .raw
         }
-        throw AgentVMError.virtualMachine(operation: "read \(file.path)", message: "it is neither an xz-compressed tar archive nor a raw disk with a partition table")
+        throw AgentVMError.virtualMachine(operation: "read \(file.path)", message: "it is neither an xz-compressed tar archive, a qcow2 disk image, nor a raw disk with a partition table")
+    }
+
+    /// A qcow2 file this cannot read, with the reader's reason.
+    private static func unreadable(_ file: URL, _ problem: Qcow2Reader.Problem, operation: String) -> AgentVMError {
+        return .virtualMachine(operation: "\(operation) \(file.path)", message: "\(file.lastPathComponent) is not a disk image agent-vm can read: \(problem)")
     }
 
     /// Writes the disk in `source` to `disk` (which must not exist) and returns its size. For
@@ -71,6 +89,16 @@ enum DiskUnpack {
                 return size
             case .tarXZ:
                 return try extract(source, member: member, to: disk, limit: limit, cancellation: cancellation)
+            case .qcow2:
+                do {
+                    // Before anything is written: the size is in the header.
+                    guard try Qcow2Reader.header(of: source).size <= limit else {
+                        throw tooLarge(source, limit: limit)
+                    }
+                    return try Qcow2Reader.convert(source, to: disk, cancellation: cancellation)
+                } catch let problem as Qcow2Reader.Problem {
+                    throw unreadable(source, problem, operation: "unpack")
+                }
             }
         } catch {
             try? FileManager.default.removeItem(at: disk)

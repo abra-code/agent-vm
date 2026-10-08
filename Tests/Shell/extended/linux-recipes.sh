@@ -191,7 +191,7 @@ test_linux_inputs_are_streamed_and_removed() {
     assert_contains "$_output" "cannot access '/private'" "a macOS path in a Linux guest" || return 1
 }
 
-# An image has no sudo for the box user: sudo is refused, and the refusal with the command is
+# An image has no sudo for the box user: sudo is refused, and (in a Debian box) the refusal with the command is
 # in the system's journal, which is how one sees what an agent tried to install.
 test_an_image_without_the_sudo_recipe_refuses_sudo() {
     require_linux_image || return $(( $? == 1 ? 0 : 1 ))
@@ -209,6 +209,13 @@ test_an_image_without_the_sudo_recipe_refuses_sudo() {
     local _journal="$OUT"
     "$AGENT_VM" box stop "$_box"
     "$AGENT_VM" box delete "$_box"
+    if [ "$(linux_test_distribution)" = "ubuntu" ]; then
+        # Ubuntu's sudo is sudo-rs: it refuses in its own words, and writes no line to the
+        # journal for a refusal.
+        assert_contains "$_quiet" "1 sudo: I'm sorry agent. I'm afraid I can't do that" "sudo -n" || return 1
+        assert_contains "$_asked" "1 sudo: I'm sorry agent. I'm afraid I can't do that" "sudo" || return 1
+        return 0
+    fi
     assert_contains "$_quiet" "1 sudo: a password is required" "sudo -n" || return 1
     assert_contains "$_asked" "1 sudo: a terminal is required to read the password" "sudo" || return 1
     assert_contains "$_journal" "agent : user NOT in sudoers" "the journal" || return 1

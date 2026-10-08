@@ -17,7 +17,7 @@ The recipes above are for macOS images, except agent-clis and acp-agents, which 
 | Recipe | Installs | Needs |
 |---|---|---|
 | [linux-node](linux-node/recipe.json) | Node and npm from nodejs.org in `/usr/local`: the newest release of one major version (`--set major=24`, the default), checked against nodejs.org's checksum list. `npm install --global` is set to put packages into `~/.local` for the box user, so it needs no root | nothing |
-| [linux-python](linux-python/recipe.json) | Debian's Python (3.13 in Debian 13) with `venv`, `pip`, `pipx`, the headers, and `python` as a name for it; uv, from PyPI through pipx, in `~/.local/bin`. Debian's pip refuses `pip install` outside a virtual environment, so work in one (`python3 -m venv .venv`, or `uv venv`); boxes on the allowlist network need `--allow pack:pypi` | nothing |
+| [linux-python](linux-python/recipe.json) | the distribution's Python (3.13 in Debian 13, 3.14 in Ubuntu 26.04) with `venv`, `pip`, `pipx`, the headers, and `python` as a name for it; uv, from PyPI through pipx, in `~/.local/bin`. Debian's pip refuses `pip install` outside a virtual environment, so work in one (`python3 -m venv .venv`, or `uv venv`); boxes on the allowlist network need `--allow pack:pypi` | nothing |
 | [linux-sudo](linux-sudo/recipe.json) | A rule that lets the box user run anything as root with `sudo`, without a password. Read "sudo in a Linux box" below before you use it | nothing |
 | [agent-clis](agent-clis/recipe.json), [acp-agents](acp-agents/recipe.json) | As above: the same npm commands | Node: the linux-node recipe before it |
 
@@ -51,7 +51,7 @@ agent-vm box create work --image deb-tools --allow pack:anthropic --allow pack:o
 
 ### sudo in a Linux box
 
-The box user of a Linux image cannot become root: it has no password, no sudo rule and no group but its own. Root is yours, from the Mac: `agent-vm exec --box <box> --user root -- apt-get install -y ripgrep` (on the allowlist network with `--allow pack:debian`), or better a recipe, so that the next box has the package too.
+The box user of a Linux image cannot become root: it has no password, no sudo rule and no group but its own. Root is yours, from the Mac: `agent-vm exec --box <box> --user root -- apt-get install -y ripgrep` (on the allowlist network with `--allow pack:debian`, or `pack:ubuntu`), or better a recipe, so that the next box has the package too.
 
 `Recipes/linux-sudo` changes that for an image: `agent-vm image create deb-sudo --from deb --recipe Recipes/linux-sudo/recipe.json`. In every box of such an image, any program, an agent included, runs anything as root.
 

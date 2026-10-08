@@ -449,7 +449,7 @@ extension ImageBuilder {
         }
         let clock = ContinuousClock()
         let began = clock.now
-        let checks = LinuxSetup.sealChecks()
+        let checks = LinuxSetup.sealChecks(distribution: record.linux?.distribution ?? "debian")
         let held = try await passingChecks(checks, machine: machine)
         let before = try await answer(LinuxSetup.packageList, "list the packages")
         progress("system-update", "Installing \(record.systemShort)'s package updates")

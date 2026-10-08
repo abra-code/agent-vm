@@ -61,7 +61,9 @@ import Testing
     @Test func debianMeansTheNewest() throws {
         #expect(try LinuxBase.named("debian-13").id == "debian-13")
         #expect(try LinuxBase.named("debian").id == LinuxBase.known.first { $0.distribution == "debian" }?.id)
-        #expect(throws: AgentVMError.linuxBase("--linux nope: this agent-vm knows debian-13 (debian means the newest)")) {
+        #expect(try LinuxBase.named("ubuntu-26.04").name == "Ubuntu 26.04")
+        #expect(try LinuxBase.named("ubuntu").id == "ubuntu-26.04")
+        #expect(throws: AgentVMError.linuxBase("--linux nope: this agent-vm knows debian-13, ubuntu-26.04 (debian or ubuntu alone means its newest)")) {
             _ = try LinuxBase.named("nope")
         }
         // What was typed is shown made printable, and cut.
@@ -241,7 +243,7 @@ final class FolderServer: @unchecked Sendable {
             scratch = try Scratch()
             server = try FolderServer()
             base = LinuxBase(id: "test-1", name: "Test 1", distribution: "test", version: "1", folder: server.folder,
-                             file: "test-1-arm64.tar.xz", checksumList: "SHA512SUMS", member: "disk.raw", manifest: "test-1-arm64.json")
+                             file: "test-1-arm64.tar.xz", checksumList: "SHA512SUMS", digest: .sha512, member: "disk.raw", manifest: "test-1-arm64.json")
             image = Data((0..<300_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ $0 / 251) })
             cache = try LinuxBaseCache(root: scratch.root.appendingPathComponent("store", isDirectory: true), environment: [:])
             cache.minimumFree = 0
@@ -548,7 +550,7 @@ final class FolderServer: @unchecked Sendable {
         // A file that is neither is named for what it is not.
         let text = scratch.root.appendingPathComponent("x.tar.xz")
         try Data("plain text".utf8).write(to: text)
-        #expect(throws: AgentVMError.virtualMachine(operation: "read \(text.path)", message: "it is neither an xz-compressed tar archive nor a raw disk with a partition table")) {
+        #expect(throws: AgentVMError.virtualMachine(operation: "read \(text.path)", message: "it is neither an xz-compressed tar archive, a qcow2 disk image, nor a raw disk with a partition table")) {
             _ = try DiskUnpack.kind(of: text)
         }
     }

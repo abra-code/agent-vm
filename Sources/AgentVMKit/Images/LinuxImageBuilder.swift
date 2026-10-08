@@ -112,7 +112,8 @@ extension ImageBuilder {
         // What was asked for, so a list names the system while it is built (and when the build
         // fails early); what the guest says of itself takes its place once it is read.
         record.linux = LinuxSystem(distribution: options.base.distribution, version: options.base.version, name: options.base.name)
-        record.base = ImageRecord.BaseSource(release: options.base.id, file: source.file.lastPathComponent, url: source.url, sha512: source.sha512, build: source.build)
+        record.base = ImageRecord.BaseSource(release: options.base.id, file: source.file.lastPathComponent, url: source.url, sha512: source.sha512,
+                                             sha256: options.base.digest == .sha256 ? source.sha256 : nil, build: source.build)
         let created = try store.create(record)
         var image = created.0
         let lock = created.1
@@ -138,7 +139,8 @@ extension ImageBuilder {
         if let path = options.cloudImage {
             progress("base-check", "Reading \(path)")
             let local = try await cache.local(path)
-            log("  SHA-512 \(local.sha512.prefix(16))... (your own file: not checked against \(options.base.name)'s list)")
+            let digest = options.base.digest
+            log("  \(digest.name) \((digest == .sha256 ? local.sha256 : local.sha512).prefix(16))... (your own file: not checked against \(options.base.name)'s list)")
             return local
         }
         let events = report
@@ -235,8 +237,9 @@ extension ImageBuilder {
             }
 
             var steps = [LinuxSetup.waitForFirstBoot]
-            steps += LinuxSetup.steps(user: user, tools: options.commandLineTools)
-            let count = steps.count + LinuxSetup.seal.count
+            steps += LinuxSetup.steps(user: user, tools: options.commandLineTools, distribution: options.base.distribution)
+            let seal = LinuxSetup.seal(distribution: options.base.distribution)
+            let count = steps.count + seal.count
             try await runLinuxSteps([LinuxSetup.waitForFirstBoot], machine: machine, offset: 0, count: count)
             let system = try await readLinuxSystem(machine, base: options.base, diskBytes: current.record.diskBytes)
             log("  \(system.name), kernel \(system.kernel ?? "?"), \(system.architecture)")
@@ -260,8 +263,8 @@ extension ImageBuilder {
             current = try await applyRecipes(options.recipes, to: current, machine: machine)
 
             progress("seal", "Sealing the image: no ssh server, no background updates, no first-boot setup")
-            try await runLinuxSteps(LinuxSetup.seal, machine: machine, offset: steps.count, count: count)
-            try await sealCheck(machine, checks: LinuxSetup.sealChecks())
+            try await runLinuxSteps(seal, machine: machine, offset: steps.count, count: count)
+            try await sealCheck(machine, checks: LinuxSetup.sealChecks(distribution: options.base.distribution))
             // The kernel a box of this image boots, after the updates.
             try await shutDown(machine, guest: .linux)
         } catch {
@@ -302,9 +305,15 @@ extension ImageBuilder {
         return try await applyRecipes(recipes, to: current, machine: machine)
     }
 
-    /// After a disk was made longer: the root file system must have grown into it (the
-    /// system does that by itself at boot), or the new image would be the old size for good.
+    /// After a disk was made longer: the root file system is grown into it, and must then
+    /// have the size, or the new image would be the old size for good.
     func checkRootGrew(_ machine: GuestMachine, diskBytes: UInt64) async throws {
+        // Not every system grows it by itself (LinuxSetup.growRoot). What this cannot do, the
+        // check below reports with the sizes.
+        let grown = try await guestCapture(machine, Self.rootRequest(LinuxSetup.growRoot.script), readTimeout: LinuxSetup.growRoot.timeout)
+        if grown.report != ExitReport(status: 0) {
+            log("  growing the root file system: \(Printable.line((grown.stdout + grown.stderr).trimmingCharacters(in: .whitespacesAndNewlines), limit: 300))")
+        }
         let result = try await guestCapture(machine, Self.rootRequest(LinuxSetup.rootSize))
         let size = UInt64(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
         // Nine tenths: the boot partitions and the file system's own tables take the rest.

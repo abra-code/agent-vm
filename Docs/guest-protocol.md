@@ -50,7 +50,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 ```
 
 - `ok`: false with `error` (a message for a person) when the request is refused; the guest then closes the connection.
-- `version`, `osBuild`: hello only (agent-vm-guest's version, and the guest system's build: macOS's build, or on Linux the `VERSION_ID` of `/etc/os-release`, `13` for Debian 13). Each is 1 to 32 ASCII letters, digits, `.`, `+`, `-` and `_`; so is every feature name, of which there are at most 64. A host refuses any other hello (since 0.5.10): it keeps and shows these.
+- `version`, `osBuild`: hello only (agent-vm-guest's version, and the guest system's build: macOS's build, or on Linux the `VERSION_ID` of `/etc/os-release`, `13` for Debian 13, `26.04` for Ubuntu 26.04). Each is 1 to 32 ASCII letters, digits, `.`, `+`, `-` and `_`; so is every feature name, of which there are at most 64. A host refuses any other hello (since 0.5.10): it keeps and shows these.
 - `os`: hello only (since 0.7.1), the system the daemon runs on: `macos` or `linux`, under the same rule as `version`. A hello without it comes from an older daemon, on macOS. It is what the guest says, like everything in a hello.
 - `features`: hello only, what the daemon supports beyond this document's base (see Versioning). A macOS daemon today: `terminal`, `prompt-notices`, `wallpaper`, `time-sync`, `user-session` and `terminal-pixels`. A Linux daemon: `terminal`, `time-sync` and `terminal-pixels`; a Linux box has no screen and no login session, which the other three are about.
 - `pid`: exec only, the started process: a positive number. A host treats an accepted exec without one as a protocol error (since 0.6.3).

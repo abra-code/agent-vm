@@ -17,7 +17,7 @@ AgentVM runs an agent and its tools in a virtual machine (a "box", running macOS
 | macOS on your Mac and Apple's Virtualization framework | The wall between the box and the Mac is theirs. |
 | The `agent-vm` you installed, with the `packs.json` and `agents.json` beside it | It runs as you. |
 | The restore image from Apple | macOS in the box is installed from it. |
-| Debian's cloud image, and Debian's package servers | A Linux box's system is built from them (see Linux boxes). |
+| The distribution's cloud image and its package servers (Debian's, or Ubuntu's) | A Linux box's system is built from them (see Linux boxes). |
 | The recipes you build images with, and the files and installers you send into a box | They run as root or as the box user while the image is built, with the open network. |
 
 | Not trusted | What it controls |
@@ -126,6 +126,9 @@ Everything above holds for a Linux box, with the differences each line names. Wh
 | What | The risk | What answers it |
 |---|---|---|
 | Debian's cloud image | A tampered download | Its SHA-512 must be the one in Debian's list, fetched over HTTPS from `cloud.debian.org` and from no other host, before anything reads the file; a cached file is checked again at every use. Debian publishes no signature beside the list, so HTTPS to that host is what the image is trusted by. |
+| Ubuntu's cloud image (since 0.7.11) | A tampered download | The same rule with Ubuntu's `SHA256SUMS` from `cloud-images.ubuntu.com`. Ubuntu signs its list; agent-vm does not check the signature (macOS has no tool for it), so here too HTTPS to that host is what the image is trusted by. |
+| The reader of Ubuntu's disk format (qcow2) | A crafted file: a parser on your Mac, of a file from the network | It reads only a file that passed the checksum (or one you named). Every offset the file names is checked against the file's length before it is read; memory is taken by the cluster size (2 MiB at most) and a table of 32 MB at most, never by an unchecked number; a compressed cluster must inflate to exactly one cluster; the disk may not be larger than the image's, nor than 64 GB; a backing file, encryption, an external data file and unknown feature bits are refused. It names no file but the one it reads and the one it writes. |
+| Ubuntu's packages over plain HTTP | A changed package on the way | apt checks the signed index and each package's checksum with the keys in the image, as it does over HTTPS; the proxy allows the two hosts by name. What plain HTTP gives away is which packages a box asks for. |
 | Debian's packages; the Node archive of `Recipes/linux-node` | What the image is built from | apt checks its signed index with the keys in the image. The Node recipe checks nodejs.org's own checksum list. Both are "recipes you have read". |
 | Unpacking the cloud image | A crafted archive | Only a checked file is read; one member, written to the disk file through a pipe, never unpacked into a folder; no more than the disk's size. |
 | The disk that installs the guest daemon at first boot | A secret left in the guest | It holds none: the daemon, its unit, and the daemon's SHA-256. |

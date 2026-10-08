@@ -4,7 +4,7 @@ You were asked to write a recipe for agent-vm. This guide is everything you need
 
 ## 1. What a recipe is
 
-agent-vm runs AI agents and their tools in virtual machines called boxes. A box is a copy of an image, and an image is a system (macOS, or Linux: Debian) plus whatever its recipes installed. A recipe is one JSON file that says what to install: steps that run in the image while it is built, and checks that prove the steps worked.
+agent-vm runs AI agents and their tools in virtual machines called boxes. A box is a copy of an image, and an image is a system (macOS, or Linux: Debian or Ubuntu) plus whatever its recipes installed. A recipe is one JSON file that says what to install: steps that run in the image while it is built, and checks that prove the steps worked.
 
 - **A recipe is written for one system.** Ask the person which one unless they said. This guide describes macOS images; what differs in a Linux image is in section 3, under "In a Linux image", and a recipe for one says `"guest": "linux"`.
 
@@ -109,7 +109,7 @@ A step has either `run`, or `copy` with `to`. The same keys are used in `steps` 
 
 ### In a Linux image
 
-A recipe with `"guest": "linux"` runs in Debian 13 on ARM (`arm64`, which `uname -m` calls `aarch64`). The rules above hold, with these differences:
+A recipe with `"guest": "linux"` runs in Debian 13 or Ubuntu 26.04 on ARM (`arm64`, which `uname -m` calls `aarch64`). The rules above hold, with these differences:
 
 - **The box user's home is `/home/$AGENT_VM_BOX_USER`**, and the account is no administrator: it is in no group but its own and has no password.
 - **There is no `sudo` for the box user at all,** in a step or in a box. Everything that needs root is a root step. Do not add a sudo rule in your recipe: tell the person that `Recipes/linux-sudo` exists, and let them decide.
@@ -117,7 +117,7 @@ A recipe with `"guest": "linux"` runs in Debian 13 on ARM (`arm64`, which `uname
 - **Packages come from apt, in a root step that asks nothing:** `"run": "apt-get -q -y update && apt-get -q -y install ripgrep"` with `"env": {"DEBIAN_FRONTEND": "noninteractive"}`. Run `apt-get update` in the same step: the image's package lists may be old. An update step upgrades the same packages with `apt-get -q -y install --only-upgrade ...`. Do not run `apt-get upgrade` or `dist-upgrade` in a recipe: the system's own updates are `agent-vm image update`'s.
 - **What the image has:** `bash`, `git`, `curl`, `jq`, `tar`, `xz`, `unzip`, `zip`, `python3`, and unless turned off `gcc`, `g++` and `make`. Not there: `pip`, Node. For Node say that your recipe needs `Recipes/linux-node` (Debian's own Node is too old to use a box's proxy).
 - **A file downloaded from a tool's site is checked before it is used,** against a checksum the site publishes (`sha256sum --check`), as `linux-node` does. apt checks its own packages.
-- **In a box the network is a proxy and nothing else** (by default): there is no network card. Tools that read `HTTPS_PROXY` work; one that does not cannot reach anything. `apt-get` in a box, as root from the Mac, needs `--allow pack:debian`.
+- **In a box the network is a proxy and nothing else** (by default): there is no network card. Tools that read `HTTPS_PROXY` work; one that does not cannot reach anything. `apt-get` in a box, as root from the Mac, needs `--allow pack:debian` (`pack:ubuntu` in an Ubuntu box).
 - **No services.** A box is not a server: do not enable systemd units, and install no ssh server (the image was built without one on purpose).
 
 ## 4. The loop: check, then build

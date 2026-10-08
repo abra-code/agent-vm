@@ -3,7 +3,7 @@
 # Tests/Shell/extended/linux-network.sh - the network of a real Linux box: in allowlist mode no
 # network card at all and no way out but the proxy, apt and ssh through it, rules changed while
 # it runs; in open mode a card and none of the proxy's files. Needs the internet (example.com,
-# www.iana.org, deb.debian.org, github.com). From the ready Linux image
+# www.iana.org, the distribution's package servers, github.com). From the ready Linux image
 # $AGENT_VM_TEST_LINUX_IMAGE; without it every test is skipped.
 
 file_setup() {
@@ -89,17 +89,25 @@ test_apt_through_the_proxy() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     # apt calls a list it could not fetch a warning and ends with 0: its words say what happened.
     run_avm exec --box "$BOX" --user root -- /usr/bin/apt-get -q update
-    assert_contains "$OUT$ERR" "403 Forbidden" "apt-get update without the pack" || return 1
+    # (Debian's sources are https and Ubuntu's plain http; apt words the refusal a little
+    # differently for each.)
+    assert_contains "$OUT$ERR" "Forbidden" "apt-get update without the pack" || return 1
+    local _distribution
+    _distribution="$(linux_test_distribution)"
+    local _host="deb.debian.org"
+    if [ "$_distribution" = "ubuntu" ]; then
+        _host="archive.ubuntu.com"
+    fi
     run_avm box netlog "$BOX" --denied --json
-    assert_contains "$OUT" "deb.debian.org" "the log of refusals" || return 1
-    run_avm box network "$BOX" --allow pack:debian
+    assert_contains "$OUT" "$_host" "the log of refusals" || return 1
+    run_avm box network "$BOX" --allow "pack:$_distribution"
     assert_status 0 || return 1
     run_avm exec --box "$BOX" --user root -- /usr/bin/apt-get -q update
     assert_status 0 || return 1
     assert_not_contains "$OUT$ERR" "Failed to fetch" "apt-get update with the pack" || return 1
     run_avm exec --box "$BOX" --user root --env DEBIAN_FRONTEND=noninteractive -- /usr/bin/apt-get -q -y install --reinstall hostname
     assert_status 0 || return 1
-    run_avm box network "$BOX" --disallow pack:debian
+    run_avm box network "$BOX" --disallow "pack:$_distribution"
     assert_status 0 || return 1
 }
 

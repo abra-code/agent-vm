@@ -307,6 +307,19 @@ enum TestPacks {
         #expect(try parse("GET http://example.com:8080 HTTP/1.0\r\n\r\n").upstreamHead.hasPrefix("GET / HTTP/1.0\r\n"))
     }
 
+    /// Ubuntu's package sources are plain HTTP: apt asks the proxy for the whole address.
+    @Test func anAptRequestOverPlainHTTPIsProxied() throws {
+        let request = try parse("GET http://archive.ubuntu.com/ubuntu/dists/resolute/InRelease HTTP/1.1\r\nHost: archive.ubuntu.com\r\n"
+            + "Cache-Control: max-age=0\r\nAccept: text/*\r\nUser-Agent: Debian APT-HTTP/1.3 (3.1.6) non-interactive\r\n\r\n")
+        #expect(request.host == "archive.ubuntu.com" && request.port == 80 && !request.tunnel)
+        #expect(request.upstreamHead.hasPrefix("GET /ubuntu/dists/resolute/InRelease HTTP/1.1\r\nHost: archive.ubuntu.com\r\n"))
+        // The pack's hosts are allowed on that port.
+        let policy = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["pack:ubuntu"]), packs: TestPacks.builtIn)
+        #expect(policy.allows(host: request.host, port: UInt16(request.port), tunnel: false) != nil)
+        #expect(policy.allows(host: "security.ubuntu.com", port: 80, tunnel: false) != nil)
+        #expect(policy.allows(host: "esm.ubuntu.com", port: 443, tunnel: true) == nil)
+    }
+
     @Test func theHostHeaderComesFromTheTarget() throws {
         // A client Host naming another site would reach it at the allowed address (a shared CDN).
         let request = try parse("GET http://Example.com./a HTTP/1.1\r\nhost: evil.example\r\nHOST: evil2.example\r\n\r\n")
@@ -1260,6 +1273,12 @@ final class HoldingServer: @unchecked Sendable {
         #expect(pack.hosts.contains("deb.debian.org") && pack.hosts.contains("security.debian.org"))
         // Usable in a box's rules.
         _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["pack:debian"]), packs: TestPacks.builtIn)
+    }
+
+    @Test func theUbuntuPackLoads() throws {
+        let pack = try #require(TestPacks.builtIn.packs["ubuntu"])
+        #expect(pack.hosts == ["archive.ubuntu.com", "security.ubuntu.com"])
+        _ = try CompiledPolicy(BoxNetwork(mode: .allowlist, allow: ["pack:ubuntu"]), packs: TestPacks.builtIn)
     }
 
     @Test func guestSetupCommands() {

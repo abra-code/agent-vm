@@ -130,7 +130,7 @@ test_linux_image_update_system() {
     # Looked at a moment ago: not looked at again, and nothing is booted.
     run_avm image update "$_image" --system --if-older-than 1
     assert_status 0 || return 1
-    assert_out_contains "Image $_image: Debian 13 checked less than 1 hour ago: not checked again" || return 1
+    assert_out_contains "Image $_image: $(linux_test_system short) checked less than 1 hour ago: not checked again" || return 1
     assert_not_contains "$OUT" "Booting" "a skipped update" || return 1
     # The name macOS has for it is refused, with the one to use.
     run_avm image update "$_image" --macos
@@ -160,7 +160,7 @@ test_linux_update_guest_is_a_no_op_for_the_same_daemon() {
     run_avm image update "$_image" --guest
     assert_status 0 || return 1
     assert_out_contains "agent-vm-guest is already this agent-vm's" || return 1
-    assert_out_contains "Image $_image is up to date: Debian GNU/Linux 13" || return 1
+    assert_out_contains "Image $_image is up to date: $(linux_test_system long)" || return 1
     assert_not_contains "$OUT" "Booting again" "a second boot" || return 1
     assert_eq "$(image_value "$_image" revision)" "" "the image's revision" || return 1
 
@@ -295,7 +295,7 @@ test_linux_rebuild_from_its_base() {
     assert_status 0 || return 1
     assert_out_contains "Rebuilding $_image as $_image.rebuild, from $LINUX_TEST_IMAGE" || return 1
     assert_out_contains "check cat ~/shtest-reb.txt: built two" || return 1
-    assert_out_contains "Image $_image is rebuilt: Debian GNU/Linux 13" || return 1
+    assert_out_contains "Image $_image is rebuilt: $(linux_test_system long)" || return 1
     assert_eq "$(image_state "$_image")" "ready" "the image's state" || return 1
     assert_eq "$(image_state "$_image.rebuild")" "" "the build's name afterwards" || return 1
     local _now
@@ -318,7 +318,7 @@ test_linux_rebuild_from_its_base() {
     assert_eq "$_output" "built two" "the rebuilt image" || return 1
 }
 
-# Built again from its release's cloud image: Debian's file is fetched (or reused) and checked,
+# Built again from its release's cloud image: the distribution's file is fetched (or reused) and checked,
 # the system is set up and sealed as in a first build, and the recipe the image kept runs again,
 # so an image made in two layers comes back as one. About a minute and a half.
 test_linux_rebuild_from_the_cloud_image() {
@@ -338,7 +338,9 @@ test_linux_rebuild_from_the_cloud_image() {
     run_avm image create "$_image" --from "$LINUX_TEST_IMAGE" --recipe "$SCRATCH/recipe/recipe.json"
     assert_status 0 || return 1
 
-    run_avm image rebuild "$_image" --linux debian-13 --json
+    local _release
+    _release="$(linux_test_release)"
+    run_avm image rebuild "$_image" --linux "$_release" --json
     assert_status 0 || return 1
     assert_err_events || return 1
     local _step
@@ -350,7 +352,7 @@ test_linux_rebuild_from_the_cloud_image() {
     printf '%s' "$OUT" > "$SCRATCH/record.json"
     assert_eq "$(/usr/bin/jq -r .name "$SCRATCH/record.json")" "$_image" "the record's name" || return 1
     assert_eq "$(/usr/bin/jq -r .state "$SCRATCH/record.json")" "ready" "the image's state" || return 1
-    assert_eq "$(/usr/bin/jq -r .base.release "$SCRATCH/record.json")" "debian-13" "the base's release" || return 1
+    assert_eq "$(/usr/bin/jq -r .base.release "$SCRATCH/record.json")" "$_release" "the base's release" || return 1
     assert_eq "$(/usr/bin/jq -r 'has("derivedFrom")' "$SCRATCH/record.json")" "false" "a base image" || return 1
     assert_eq "$(/usr/bin/jq -r '.recipes | map(.name + ":" + (.inheritedFrom // "own")) | join(" ")' "$SCRATCH/record.json")" "recipe:own" "the recipes" || return 1
     assert_eq "$(image_state "$_image.rebuild")" "" "the build's name afterwards" || return 1

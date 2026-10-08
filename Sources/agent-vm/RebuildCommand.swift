@@ -44,7 +44,7 @@ extension ImageCommand {
         @Option(name: .long, help: ArgumentHelp("For a Linux image: build from this release's cloud image again and run every recipe again (as `image create --linux`).", valueName: "release"))
         var linux: String?
 
-        @Option(name: .customLong("cloud-image"), help: ArgumentHelp("With --linux: a cloud image file of your own (.tar.xz or .raw) in place of the download.", valueName: "path"))
+        @Option(name: .customLong("cloud-image"), help: ArgumentHelp("With --linux: a cloud image file of your own (.tar.xz, .img, .qcow2 or .raw) in place of the download.", valueName: "path"))
         var cloudImage: String?
 
         @Option(name: .long, help: "A ready image to start from (default: the image this one was built from).")

@@ -45,10 +45,10 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .long, help: ArgumentHelp("The macOS restore image (.ipsw) to install: a path, the file name of one `image fetch-ipsw` downloaded (see `image fetch-ipsw --list`), or latest for the newest of those. A bare name is looked for in the current directory first.", valueName: "path|name|latest"))
         var ipsw: String?
 
-        @Option(name: .long, help: ArgumentHelp("The Linux system to build an image of: \(LinuxBase.known.map(\.id).joined(separator: ", ")) (\(LinuxBase.known.first?.distribution ?? "debian") alone means the newest).", valueName: "release"))
+        @Option(name: .long, help: ArgumentHelp("The Linux system to build an image of: \(LinuxBase.known.map(\.id).joined(separator: ", ")) (a distribution alone, as in debian or ubuntu, means its newest).", valueName: "release"))
         var linux: String?
 
-        @Option(name: .customLong("cloud-image"), help: ArgumentHelp("With --linux: a cloud image file of your own (.tar.xz or .raw) in place of the download. It is trusted because you give it, and its SHA-512 is recorded.", valueName: "path"))
+        @Option(name: .customLong("cloud-image"), help: ArgumentHelp("With --linux: a cloud image file of your own (.tar.xz, .img, .qcow2 or .raw) in place of the download. It is trusted because you give it, and its SHA-512 is recorded.", valueName: "path"))
         var cloudImage: String?
 
         @Option(name: .long, help: "A ready image to start from instead of a restore image or a cloud image; the new image runs the system its base runs.")
