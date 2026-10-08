@@ -52,7 +52,7 @@ Defaults for a new Linux image: 4 CPUs, 4 GB of memory, a 32 GB disk, the user `
 | `box start`, `box stop`, `box status`, `box network`, `box netlog`, `box execlog`, `box sync-clock` | As for macOS. |
 | `exec`, `box shell`, `avm` | As for macOS. `exec --prompts` is accepted and has no effect: there are no privacy prompts. |
 | `exec --project`, `box shell --project` | As for macOS, with the notes under [The shared folder](#the-shared-folder). |
-| `box send` | Not there yet in this version. Put the file in the shared folder, or pipe it: `agent-vm exec --box work -- sh -c 'cat > f' < f`. |
+| `box send` | As for macOS (since 0.7.10): each item lands in the box user's `~/Downloads` under a free name, complete or not at all. See [Sending files](#sending-files). |
 | `image list`, `box list`, `status`, `avm list` | Show the system where a macOS entry shows its macOS version: "Debian 13" in `box list` and `avm list`, "Debian GNU/Linux 13 (trixie)" in `image list` and `status`. With `--json`, every entry has `guest` (`macos` or `linux`) and `system`. |
 | `doctor`, `status` | Count macOS guests against the limit of two; your running Linux boxes are counted apart (`linuxBoxes`). |
 
@@ -87,6 +87,17 @@ The folder is mounted at the path it has on your Mac, read-write or read-only, a
 - **File watchers in the box do not see edits made on the Mac.** The content is current when it is read; the events are missing. A build tool that waits for changes needs polling (`CHOKIDAR_USEPOLLING=1`, `--poll`), or run it on the Mac.
 - **Many small files are slow:** 6 to 15 times slower than on the box's own disk. Keep build products and `node_modules` on the box's disk when a project allows it.
 
+## Sending files
+
+`agent-vm box send work ~/Downloads/data.tar.gz ~/Development/fixtures` copies files and folders from your Mac into the box user's `~/Downloads`. Use it for what is not in the shared folder: an installer, test data, a folder too large or too full of small files to work on through the share.
+
+- **Nothing is replaced, and nothing arrives by halves.** A name in use gets a number (`data.tar 2.gz`); an item shows in `~/Downloads` only once it is whole; a send that is stopped (Control-C) leaves nothing of the item under way.
+- **What arrives:** contents, permissions (an executable stays executable), symbolic links as links, empty folders, hidden files, and files with holes as files with holes.
+- **What does not:** extended attributes, access control lists and file flags, which mean nothing in Linux, and the `._` files that would carry them. The quarantine mark of a download is one of these.
+- **Everything belongs to the box user,** whoever owned it on the Mac.
+- **Names** are sent as they are, spaces and quotes included. An accented letter is spelled as one character, the way Linux tools write it: your Mac's disk takes either spelling as the same name, a Linux disk does not.
+- **Speed:** about 200 MB a second for large files; an unpacked SDK of 30,721 files and 6,714 links took 5 seconds.
+
 ## Keeping an image current
 
 ```sh
@@ -111,7 +122,6 @@ agent-vm box recreate work                           # each box, to get what the
 | | |
 |---|---|
 | A screen (`box view`) and a desktop | Several GB of packages and a second display path, for a box whose use is the terminal. |
-| `box send` | Comes in a later version. |
 | Other distributions | Each has its own package tool and its own list of what to seal. Debian 13 is the one that was measured. |
 | Docker in the box | Wants its own settings for the proxy and its own measurements. |
 | Port forwards from the Mac into a box | Not built for either system. |

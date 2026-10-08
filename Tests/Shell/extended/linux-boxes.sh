@@ -159,9 +159,8 @@ test_a_linux_box_stops_when_its_owner_exits() {
     assert_contains "$(/bin/cat "$(box_folder "$_box")/supervisor.log")" "The owner process $_owner exited; stopping" "the supervisor's log" || return 1
 }
 
-# What a Linux box has no meaning for is refused by the command, and what agent-vm does not do
-# for one yet says so; the box goes on running.
-test_view_and_send_are_refused() {
+# What a Linux box has no meaning for is refused by the command; the box goes on running.
+test_view_is_refused() {
     require_linux_image || return $(( $? == 1 ? 0 : 1 ))
     local _box="shtest-lrefuse-$$"
     cleanup_on_exit box "$_box"
@@ -172,12 +171,8 @@ test_view_and_send_are_refused() {
     run_avm box view "$_box"
     assert_status 1 || return 1
     assert_err_contains "box $_box runs Linux, which has no screen to show; open a shell with" || return 1
-    printf 'x' > "$SCRATCH/f"
-    run_avm box send "$_box" "$SCRATCH/f"
-    assert_status 1 || return 1
-    assert_err_contains "box send is not there for Linux boxes yet" || return 1
     run_avm exec --box "$_box" -- /usr/bin/id -un
-    assert_eq "$OUT" "agent" "the box after the refusals" || return 1
+    assert_eq "$OUT" "agent" "the box after the refusal" || return 1
     run_avm box stop "$_box"
     assert_status 0 || return 1
 }

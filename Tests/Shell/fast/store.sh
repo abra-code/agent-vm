@@ -866,11 +866,21 @@ test_commands_without_a_linux_meaning_refuse() {
     run_avm box view work
     assert_status 1 || return 1
     assert_err_contains "box work runs Linux, which has no screen to show; open a shell with" || return 1
+}
+
+# box send serves a Linux box: one that is stopped says so, as a macOS box does, and a path
+# that is not there is refused before anything is sent.
+test_box_send_to_a_stopped_linux_box_says_start_it() {
+    fake_linux_image deb
+    fake_linux_box work deb
     printf 'x' > "$SCRATCH/f"
     run_avm box send work "$SCRATCH/f"
     assert_status 1 || return 1
-    assert_err_contains "box send is not there for Linux boxes yet" || return 1
-    assert_err_contains "agent-vm exec --box work -- sh -c 'cat > f' < f" || return 1
+    assert_err_contains "box work is not running" || return 1
+    assert_not_contains "$ERR" "not there for Linux" "the message" || return 1
+    run_avm box send work "$SCRATCH/f" --json
+    assert_status 1 || return 1
+    assert_err_contains "is not running" || return 1
 }
 
 # A box made from a Linux image has a Linux machine's files and none of a Mac's, and says which

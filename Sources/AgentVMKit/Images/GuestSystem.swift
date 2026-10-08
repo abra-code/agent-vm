@@ -89,10 +89,6 @@ enum LinuxGuest {
     static func noScreen(_ owner: String) -> AgentVMError {
         return .notForThisGuest("\(owner) runs Linux, which has no screen to show; open a shell with `agent-vm box shell <box>`")
     }
-
-    static func noSendYet(box: String) -> AgentVMError {
-        return .notForThisGuest("box send is not there for Linux boxes yet; put the file in the shared project folder, or pipe it: `agent-vm exec --box \(box) -- sh -c 'cat > f' < f`")
-    }
 }
 
 extension BoxRecord {
@@ -103,10 +99,4 @@ extension BoxRecord {
         }
     }
 
-    /// Throws for a Linux box: `box send` packs for a Mac.
-    public func requireSend() throws {
-        if effectiveGuest == .linux {
-            throw LinuxGuest.noSendYet(box: name)
-        }
-    }
 }

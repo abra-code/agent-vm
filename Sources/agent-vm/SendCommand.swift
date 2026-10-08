@@ -15,7 +15,9 @@ extension BoxCommand {
             abstract: "Copy files or folders from this Mac into a running box's Downloads folder.",
             discussion: """
                 Each path goes into the box account's Downloads folder, whole (folders and \
-                bundles with everything in them, extended attributes included). Nothing there is \
+                bundles with everything in them, extended attributes included; into a Linux \
+                box without what only a Mac has: extended attributes, access control lists and \
+                file flags). Nothing there is \
                 replaced: a name in use gets a number ("Setup 2.pkg"), and the name each item \
                 got is printed. An item appears only once it is complete; SIGINT or SIGTERM \
                 stops the send and sends no further items, and leaves nothing of the item under \
@@ -42,7 +44,6 @@ extension BoxCommand {
 
         func run() throws {
             let box = try options.boxStore.box(named: name)
-            try box.record.requireSend()
             guard box.isRunning else {
                 throw AgentVMError.boxNotRunning(box.name)
             }
@@ -68,7 +69,7 @@ extension BoxCommand {
                 }
             }
             for (index, source) in sources.enumerated() {
-                let sender = GuestSend(source: source)
+                let sender = GuestSend(source: source, guest: box.record.effectiveGuest)
                 signals.current.set(sender)
                 let item = source.lastPathComponent
                 let what = sources.count > 1 ? "\(item) (\(index + 1) of \(sources.count))" : item

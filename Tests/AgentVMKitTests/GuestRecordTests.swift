@@ -268,15 +268,12 @@ import Virtualization
         #expect(throws: AgentVMError.notForThisGuest("box work runs Linux, which has no screen to show; open a shell with `agent-vm box shell <box>`")) {
             try box.requireScreen()
         }
-        #expect(throws: AgentVMError.notForThisGuest("box send is not there for Linux boxes yet; put the file in the shared project folder, or pipe it: `agent-vm exec --box work -- sh -c 'cat > f' < f`")) {
-            try box.requireSend()
-        }
+
         // A macOS box is asked nothing.
         var mac = box
         mac.guest = nil
         #expect(throws: Never.self) {
             try mac.requireScreen()
-            try mac.requireSend()
         }
         // The message is the whole text: no prefix that would be about something else.
         #expect("\(LinuxGuest.noFullDiskAccess(image: "deb"))" == "image deb runs Linux: there is no Full Disk Access to grant")

@@ -148,6 +148,130 @@ test_box_shell_is_a_login_shell() {
     assert_out_contains "I am root" || return 1
 }
 
+# box send: each item lands in the box user's ~/Downloads, under its own name, as the account's.
+test_send_a_file() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    local _name="shtest-send-$$"
+    printf 'data\n' > "$SCRATCH/$_name.txt"
+    /usr/bin/xattr -w com.example.note x "$SCRATCH/$_name.txt"
+    run_avm box send "$BOX" "$SCRATCH/$_name.txt" --json
+    assert_status 0 || return 1
+    assert_out_contains "\"name\" : \"$_name.txt\"" || return 1
+    assert_err_contains '"step":"send"' || return 1
+    assert_err_events || return 1
+    run_avm exec --box "$BOX" -- /bin/sh -c "cd ~/Downloads && cat '$_name.txt' && stat -c '%U %a' '$_name.txt' && ls -A | grep -c '^\._'; ls -A ~/.cache/agent-vm-receiving | wc -l"
+    # The content, the account as owner, no file of Mac metadata beside it, no staging left.
+    assert_eq "$OUT" $'data\nagent 644\n0\n0' "what arrived" || return 1
+    run_avm exec --box "$BOX" -- /bin/rm -f "Downloads/$_name.txt"
+    assert_status 0 || return 1
+}
+
+# A folder arrives whole: an executable file stays executable, a link stays a link, an empty
+# folder and a hidden file are there, and nothing of the Mac's metadata is.
+test_send_a_folder_keeps_modes_and_links() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    local _name="shtest-folder-$$"
+    /bin/mkdir -p "$SCRATCH/$_name/bin/empty"
+    printf '#!/bin/sh\necho ran in the box\n' > "$SCRATCH/$_name/bin/tool"
+    /bin/chmod 755 "$SCRATCH/$_name/bin/tool"
+    /usr/bin/xattr -w com.apple.quarantine '0081;00000000;Safari;' "$SCRATCH/$_name/bin/tool"
+    printf 'private\n' > "$SCRATCH/$_name/secret.txt"
+    /bin/chmod 600 "$SCRATCH/$_name/secret.txt"
+    printf 'hidden\n' > "$SCRATCH/$_name/.config"
+    /bin/ln -s bin/tool "$SCRATCH/$_name/link"
+    run_avm box send "$BOX" "$SCRATCH/$_name"
+    assert_status 0 || return 1
+    assert_out_contains "Sent $_name to Downloads" || return 1
+    run_avm exec --box "$BOX" -- /bin/sh -c "cd ~/Downloads/'$_name' && ./link && readlink link && stat -c '%a' bin/tool secret.txt && cat .config && find . | sort | tr '\n' ' '"
+    assert_status 0 || return 1
+    assert_eq "$OUT" $'ran in the box\nbin/tool\n755\n600\nhidden\n. ./.config ./bin ./bin/empty ./bin/tool ./link ./secret.txt ' "the folder in the box" || return 1
+    run_avm exec --box "$BOX" -- /bin/rm -rf "Downloads/$_name"
+    assert_status 0 || return 1
+}
+
+# Nothing in Downloads is replaced: the same name again gets a number.
+test_send_twice_gets_a_second_name() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    local _name="shtest-twice-$$"
+    printf 'one' > "$SCRATCH/$_name.tar.gz"
+    run_avm box send "$BOX" "$SCRATCH/$_name.tar.gz"
+    assert_status 0 || return 1
+    printf 'two' > "$SCRATCH/$_name.tar.gz"
+    run_avm box send "$BOX" "$SCRATCH/$_name.tar.gz"
+    assert_status 0 || return 1
+    assert_out_contains "Sent $_name.tar.gz to Downloads as $_name.tar 2.gz" || return 1
+    run_avm exec --box "$BOX" -- /bin/cat "Downloads/$_name.tar.gz" "Downloads/$_name.tar 2.gz"
+    assert_eq "$OUT" "onetwo" "the two files" || return 1
+    run_avm exec --box "$BOX" -- /bin/rm -f "Downloads/$_name.tar.gz" "Downloads/$_name.tar 2.gz"
+    assert_status 0 || return 1
+}
+
+# Names a shell or tar could misread, and one that is not ASCII, arrive as they are.
+test_send_a_name_with_spaces_and_non_ascii() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    local _dir="$SCRATCH/odd"
+    /bin/mkdir -p "$_dir"
+    # "zazolc" with its Polish letters, written by their bytes so this file stays ASCII.
+    local _polish
+    _polish="$(printf 'shtest-za\305\274\303\263\305\202\304\207-%s.txt' "$$")"
+    local _spaced="shtest a \$(x) 'b' $$.txt"
+    local _dash="-shtest-rf-$$"
+    local _at="@shtest-$$"
+    # A name spelled the Mac's other way, the letter and its accent as two characters, arrives
+    # spelled the way Linux tools write it, as one. Only a Linux disk tells the two apart.
+    local _decomposed
+    _decomposed="$(printf 'shtest-cafe\314\201-%s.txt' "$$")"
+    local _composed
+    _composed="$(printf 'shtest-caf\303\251-%s.txt' "$$")"
+    printf 'p' > "$_dir/$_polish"
+    printf 's' > "$_dir/$_spaced"
+    printf 'd' > "$_dir/$_dash"
+    printf 'a' > "$_dir/$_at"
+    printf 'c' > "$_dir/$_decomposed"
+    run_avm box send "$BOX" "$_dir/$_polish" "$_dir/$_spaced" "$_dir/$_dash" "$_dir/$_at" "$_dir/$_decomposed"
+    assert_status 0 || return 1
+    run_avm exec --box "$BOX" -- /bin/cat "Downloads/$_polish" "Downloads/$_spaced" "Downloads/$_dash" "Downloads/$_at" "Downloads/$_composed"
+    assert_status 0 || return 1
+    assert_eq "$OUT" "psdac" "the five files" || return 1
+    run_avm exec --box "$BOX" -- /bin/rm -f "Downloads/$_polish" "Downloads/$_spaced" "Downloads/$_dash" "Downloads/$_at" "Downloads/$_composed"
+    assert_status 0 || return 1
+}
+
+# A send stopped in the middle of a large file leaves nothing in Downloads and no staging
+# folder: the item shows there only once it is whole.
+test_send_canceled_leaves_no_staging_folder() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    local _name="shtest-big-$$.bin"
+    # Real bytes: a file of holes would be packed as almost nothing and arrive at once.
+    # 2 GB of them: a box takes about 200 MB a second.
+    /bin/dd if=/dev/urandom of="$SCRATCH/$_name" bs=1048576 count=2000 2> /dev/null
+    local _made=$?
+    [ "$_made" -eq 0 ] || { fail "cannot make the 2 GB test file (dd status $_made)"; return 1; }
+    "$AGENT_VM" box send "$BOX" "$SCRATCH/$_name" --json > "$SCRATCH/send.out" 2> "$SCRATCH/send.err" &
+    local _pid=$!
+    wait_for_text "$SCRATCH/send.err" ' MB of ' 30
+    local _reached=$?
+    kill -INT "$_pid"
+    wait "$_pid"
+    STATUS=$?
+    ERR="$(/bin/cat "$SCRATCH/send.err")"
+    printf '%s\n[status %s]\n' "$ERR" "$STATUS" | /usr/bin/tail -n 5
+    /bin/rm -f "$SCRATCH/$_name"
+    [ "$_reached" -eq 0 ] || { fail "the send did not begin within 30 s"; return 1; }
+    assert_status 130 || return 1
+    assert_err_contains "Stopped sending $_name" || return 1
+    assert_eq "$(/bin/cat "$SCRATCH/send.out" | /usr/bin/tr -d ' \n')" "[]" "the result of a stopped send" || return 1
+    # The script is hung up and removes its folder; give it the moment that takes.
+    /bin/sleep 4
+    run_avm exec --box "$BOX" -- /bin/sh -c "ls -A ~/Downloads | grep -c 'shtest-big'; ls -A ~/.cache/agent-vm-receiving | wc -l"
+    assert_eq "$OUT" $'0\n0' "Downloads and the staging folder after the stop" || return 1
+    # The box takes the next send.
+    printf 'after' > "$SCRATCH/after-$$.txt"
+    run_avm box send "$BOX" "$SCRATCH/after-$$.txt"
+    assert_status 0 || return 1
+    run_avm exec --box "$BOX" -- /bin/rm -f "Downloads/after-$$.txt"
+}
+
 test_the_clock_is_set() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     run_avm box sync-clock "$BOX" --json
