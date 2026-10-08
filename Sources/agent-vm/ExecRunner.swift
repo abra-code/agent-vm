@@ -105,13 +105,20 @@ struct ExecRunner {
 
         let log = ExecLog(url: box.execLogURL)
         let id = ExecLog.newID()
+        // A program started for a project while a session is active for it is of that session.
+        let sessions = SessionStore(root: store.root)
+        let projectSession = projectPath.flatMap { sessions.activeSession(project: $0) }
         let failure = log.append(ExecLog.Entry(id: id, event: .start, time: Date(), argv: argv, user: user ?? box.record.userName, cwd: directory,
                                                project: projectPath, readOnly: projectPath == nil ? nil : readOnly, terminal: terminal ? true : nil,
-                                               hostPid: getpid()))
+                                               hostPid: getpid(), session: projectSession?.id))
         if let failure {
             // The program still runs, but its audit trail is missing (for example under a
             // sandbox profile that does not let agent-vm write the box's folder): say so.
             Stderr.write("agent-vm: warning: cannot write the exec log \(log.url.path) (\(failure)); this run is not recorded in box execlog\n")
+        }
+        if let projectSession, failure == nil,
+           let problem = sessions.noteRun(SessionRun(box: box.name, exec: id, time: Date()), in: projectSession) {
+            Stderr.write("agent-vm: warning: cannot note this run for session \(projectSession.id) (\(problem)); agent-vm session report may not list it\n")
         }
         ExecExit.shared.record(log: log, id: id, box: box.name)
 

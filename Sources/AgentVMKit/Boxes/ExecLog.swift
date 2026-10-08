@@ -47,11 +47,16 @@ public final class ExecLog: @unchecked Sendable {
         /// True when the command line was too long to record whole: `argv` then holds the start
         /// of each of its first arguments.
         public var argvCut: Bool?
+        /// On a start: the session that was active for the project when the program started
+        /// (agent-vm 0.7.17 and later); absent without a project or a session.
+        public var session: String?
 
         public init(id: String, event: Event, time: Date, argv: [String]? = nil, user: String? = nil, cwd: String? = nil,
                     project: String? = nil, readOnly: Bool? = nil, terminal: Bool? = nil, hostPid: Int32? = nil,
                     guestPid: Int32? = nil, status: Int32? = nil, seconds: Double? = nil, prompts: [String]? = nil,
-                    prompt: String? = nil, service: String? = nil, program: String? = nil, stopped: Bool? = nil) {
+                    prompt: String? = nil, service: String? = nil, program: String? = nil, stopped: Bool? = nil,
+                    session: String? = nil) {
+            self.session = session
             self.prompt = prompt
             self.service = service
             self.program = program
@@ -92,6 +97,8 @@ public final class ExecLog: @unchecked Sendable {
         public var prompts: [String]?
         /// Whether agent-vm stopped a program that waited on one (`exec --prompts stop`).
         public var stoppedOnPrompt: Bool?
+        /// The session that was active for the project when the program started.
+        public var session: String?
     }
 
     public let url: URL
@@ -177,7 +184,7 @@ public final class ExecLog: @unchecked Sendable {
                 index[entry.id] = records.count
                 records.append(Record(id: entry.id, started: entry.time, argv: entry.argv ?? [], user: entry.user, cwd: entry.cwd,
                                       project: entry.project, readOnly: entry.readOnly, terminal: entry.terminal,
-                                      hostPid: entry.hostPid, guestPid: entry.guestPid))
+                                      hostPid: entry.hostPid, guestPid: entry.guestPid, session: entry.session))
             case .end:
                 guard let position = index[entry.id] else {
                     continue

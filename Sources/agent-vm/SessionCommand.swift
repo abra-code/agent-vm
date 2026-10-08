@@ -99,6 +99,13 @@ struct SessionCommand: ParsableCommand {
                 configuration such as .mcp.json or AGENTS.md, build scripts, package manifests, \
                 editor tasks, executables, symlinks leaving the project). They are a review aid, \
                 not a security boundary.
+
+                After the changes come the programs agent-vm started for the project while \
+                the session was active (`exec --project`, `box shell --project`, avm), and the \
+                network of the boxes they ran in over the session's time, by host, the host \
+                most was sent to first. The network is the box's: what else ran in the same \
+                box meanwhile is counted too. With --json: boxes, programs, network and \
+                activityNotes beside the report's keys.
                 """)
 
         @Argument(help: "The session id.")
@@ -109,12 +116,33 @@ struct SessionCommand: ParsableCommand {
 
         @OptionGroup var options: StoreOptions
 
+        /// The change report with the session's programs and network as more keys.
+        struct Full: Encodable {
+            var report: ChangeReport
+            var activity: SessionActivity
+
+            enum Keys: String, CodingKey {
+                case boxes, programs, network, activityNotes
+            }
+
+            func encode(to encoder: Encoder) throws {
+                try report.encode(to: encoder)
+                var more = encoder.container(keyedBy: Keys.self)
+                try more.encode(activity.boxes, forKey: .boxes)
+                try more.encode(activity.programs, forKey: .programs)
+                try more.encode(activity.network, forKey: .network)
+                try more.encode(activity.notes, forKey: .activityNotes)
+            }
+        }
+
         func run() throws {
             let report = try options.store.report(id: id)
+            let activity = SessionActivity.of(try options.store.session(id: id), root: options.store.root)
             if options.json {
-                try Output.json(report)
+                try Output.json(Full(report: report, activity: activity))
             } else {
                 Output.printReport(report)
+                Output.printActivity(activity)
             }
             if let failOn, report.changes.contains(where: { ($0.highestSeverity ?? .info) >= failOn }) {
                 throw ExitCode(2)

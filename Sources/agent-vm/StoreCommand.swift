@@ -188,6 +188,9 @@ struct StoreCommand: ParsableCommand {
                 print("\(entry.logs.id)  box \(Printable.line(entry.logs.box, limit: 63))\(from)  deleted \(Output.time(entry.logs.keptAt))  \(Self.size(entry.bytes))")
                 print("    \(entry.path)")
                 print("    \(entry.files.joined(separator: ", "))")
+                if let sessions = entry.logs.sessions, !sessions.isEmpty {
+                    print("    of session\(sessions.count == 1 ? "" : "s") \(sessions.map { Printable.line($0, limit: 40) }.joined(separator: ", ")): kept while one is not discarded")
+                }
             }
             let days = kept.holdDays
             print("\(totals.count) kept, \(Self.size(totals.bytes)) in all\(totals.count > entries.count ? " (\(totals.count - entries.count) without a readable record, not listed)" : ""). " + (days == 0

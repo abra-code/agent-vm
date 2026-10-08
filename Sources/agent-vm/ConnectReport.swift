@@ -63,8 +63,13 @@ enum ConnectReport {
             warn("could not report on session \(session.id): \(error); the snapshot is kept: agent-vm session report \(session.id), agent-vm session undo \(session.id)")
             return end(session, store: store, warn: warn)
         }
+        // What ran and what was contacted, in one line; the whole is `session report`.
+        let activity = SessionActivity.of(session, root: store.root).line(size: StoreCommand.Logs.size)
         if report.isEmpty && report.warnings.isEmpty {
             print("No changes in \(project).")
+            if let activity {
+                print("  \(activity)")
+            }
             // Discarding ends an active session too.
             let (outcome, signal) = SignalHold.around { try store.discard(id: session.id) }
             if case .failure(let error) = outcome {
@@ -83,6 +88,9 @@ enum ConnectReport {
         }
         for line in shortLines(report) {
             print(line)
+        }
+        if let activity {
+            print("  \(activity)")
         }
         let choice = Choice(prompt: nil, options: [Choice.Option(key: "k", label: "keep the changes"),
                                                    Choice.Option(key: "r", label: "show every change"),

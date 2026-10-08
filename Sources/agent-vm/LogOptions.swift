@@ -14,6 +14,9 @@ struct LogOptions: ParsableArguments {
     @Option(name: .long, help: ArgumentHelp("Only entries before this; the same forms as --since.", valueName: "time"))
     var until: String?
 
+    @Option(name: .long, help: ArgumentHelp("Only what is of this session (`agent-vm session list`): the programs it started, and the connections made from its start to its end.", valueName: "id"))
+    var session: String?
+
     @Flag(name: .long, help: "The name is that of a deleted box's kept logs, as `agent-vm store logs` lists them.")
     var kept = false
 
@@ -21,9 +24,16 @@ struct LogOptions: ParsableArguments {
         _ = try window(hosts: [])
     }
 
-    /// The window the options name, with `hosts` for the network log.
-    func window(hosts: [String], now: Date = Date()) throws -> LogFilter {
+    /// The window the options name, with `hosts` for the network log. With `root`, the store,
+    /// --session is looked up there and its time is the window, narrowed by --since and --until.
+    func window(hosts: [String], root: URL? = nil, now: Date = Date()) throws -> LogFilter {
         var filter = LogFilter(hosts: hosts)
+        if let session, let root {
+            let window = SessionActivity.window(of: try SessionStore(root: root).session(id: session).record, now: .distantFuture)
+            filter.since = window.since
+            filter.until = window.until == .distantFuture ? nil : window.until
+        }
+        let ofSession = filter
         for (option, text) in [("--since", since), ("--until", until)] {
             guard let text else {
                 continue
@@ -32,12 +42,17 @@ struct LogOptions: ParsableArguments {
                 throw ValidationError("\(option) takes \(LogTime.help)")
             }
             if option == "--since" {
-                filter.since = time
+                filter.since = max(time, ofSession.since ?? time)
             } else {
-                filter.until = time
+                filter.until = min(time, ofSession.until ?? time)
             }
         }
         if let since = filter.since, let until = filter.until, until <= since {
+            // The two options alone were checked without the session (`validate`): here it is
+            // the session's time they leave nothing of.
+            if let start = ofSession.since {
+                throw ValidationError("nothing of the session's time, \(Output.time(start)) to \(ofSession.until.map(Output.time) ?? "now"), is left with that --since or --until")
+            }
             throw ValidationError("--until is not after --since")
         }
         return filter

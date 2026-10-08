@@ -258,3 +258,105 @@ test_names_an_agent_chose_cannot_act_on_the_terminal() {
     assert_printable "$OUT" "the JSON report" || return 1
     assert_out_contains '\u001b[1A' || return 1
 }
+
+# session report shows, after the changes, the programs started for the project during the
+# session and the network of their box over that time; the two logs take --session; and a box
+# deleted since is read from its kept logs.
+test_report_shows_the_sessions_programs_and_network() {
+    local _project="$SCRATCH/project"
+    make_project "$_project"
+    fake_image dev
+    run_avm box create b1 --image dev
+    assert_status 0 || return 1
+    local _box="$AGENT_VM_HOME/Boxes/b1"
+    # What the box logged the day before is not of the session.
+    printf '%s\n' \
+        '{"time":"2026-10-01T10:00:00Z","timeMilliseconds":0,"method":"CONNECT","host":"earlier.example","port":443,"decision":"allowed","rule":"public","id":"old","bytesUp":9000,"bytesDown":1}' \
+        > "$_box/network-allowed.jsonl"
+    printf '%s\n' '{"id":"p0","event":"start","time":"2026-10-01T10:00:00Z","argv":["/bin/echo","before"],"user":"agent"}' > "$_box/exec.jsonl"
+    start_session "$_project" || return 1
+    run_avm session report "$SESSION"
+    assert_status 0 || return 1
+    assert_not_contains "$OUT" "programs in" "a session without programs" || return 1
+
+    # What `agent-vm exec --project` writes when it starts a program during the session.
+    local _now
+    _now="$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
+    local _path
+    _path="$(cd "$_project" && /bin/pwd -P)"
+    printf '%s\n' \
+        "{\"id\":\"p1\",\"event\":\"start\",\"time\":\"$_now\",\"argv\":[\"/usr/bin/agent\",\"--go\"],\"user\":\"agent\",\"project\":\"$_path\",\"session\":\"$SESSION\"}" \
+        "{\"id\":\"p1\",\"event\":\"end\",\"time\":\"$_now\",\"status\":0,\"seconds\":2.5}" \
+        "{\"id\":\"p2\",\"event\":\"start\",\"time\":\"$_now\",\"argv\":[\"/bin/ls\"],\"user\":\"agent\"}" \
+        >> "$_box/exec.jsonl"
+    printf '%s\n' "{\"box\":\"b1\",\"exec\":\"p1\",\"time\":\"$_now\"}" > "$AGENT_VM_HOME/Sessions/$SESSION/runs.jsonl"
+    printf '%s\n' \
+        "{\"time\":\"$_now\",\"timeMilliseconds\":0,\"method\":\"CONNECT\",\"host\":\"api.example\",\"port\":443,\"decision\":\"allowed\",\"rule\":\"public\",\"id\":\"a\",\"bytesUp\":2000000,\"bytesDown\":300}" \
+        >> "$_box/network-allowed.jsonl"
+    printf '%s\n' \
+        "{\"time\":\"$_now\",\"timeMilliseconds\":0,\"method\":\"CONNECT\",\"host\":\"no.example\",\"port\":443,\"decision\":\"denied\",\"reason\":\"not in the allowlist\"}" \
+        > "$_box/network.jsonl"
+    printf 'changed\n' > "$_project/README.md"
+    /bin/sleep 1
+
+    run_avm session report "$SESSION"
+    assert_status 0 || return 1
+    assert_out_contains "1 modified" || return 1
+    assert_out_contains "programs in box b1: 1" || return 1
+    assert_out_contains "status 0  2.5 s  /usr/bin/agent --go" || return 1
+    assert_not_contains "$OUT" "/bin/ls" "a program of no session" || return 1
+    assert_out_contains "network of box b1 meanwhile: 2 hosts, 1 connection, 2 MB sent, 300 bytes received, 1 refused, 0 failed" || return 1
+    assert_out_contains "api.example:443  1 made" || return 1
+    assert_out_contains "no.example:443  0 made, 1 refused" || return 1
+    assert_not_contains "$OUT" "earlier.example" "a connection from before the session" || return 1
+    run_avm session report "$SESSION" --json
+    assert_status 0 || return 1
+    assert_json session "$SESSION" || return 1
+    assert_json summary.modified 1 || return 1
+    assert_json boxes.0 b1 || return 1
+    assert_json programs.0.box b1 || return 1
+    assert_json programs.0.program.id p1 || return 1
+    assert_json programs.0.program.session "$SESSION" || return 1
+    assert_json programs 1 || return 1
+    assert_json network.hosts.0.host api.example || return 1
+    assert_json network.bytesUp 2000000 || return 1
+    assert_json network.refused 1 || return 1
+    assert_json activityNotes 0 || return 1
+
+    run_avm box execlog b1 --session "$SESSION" --json
+    assert_status 0 || return 1
+    assert_json 0.id p1 || return 1
+    assert_eq "$(printf '%s' "$OUT" | /usr/bin/jq -r 'length')" "1" "the session's programs" || return 1
+    run_avm box netlog b1 --session "$SESSION" --summary --json
+    assert_status 0 || return 1
+    assert_json bytesUp 2000000 || return 1
+    assert_json hosts 2 || return 1
+    run_avm box netlog b1 --session nosuch
+    assert_status 1 || return 1
+    # A --until before the session started leaves nothing, and the error says so instead of
+    # blaming a --since nobody gave.
+    run_avm box netlog b1 --session "$SESSION" --until 2026-10-02
+    assert_status 64 || return 1
+    assert_contains "$ERR" "nothing of the session's time" "the error" || return 1
+    assert_not_contains "$ERR" "is not after --since" "the error" || return 1
+
+    # The box is deleted: the report reads its kept logs, which name the session.
+    run_avm box delete b1 --json
+    assert_status 0 || return 1
+    local _kept
+    _kept="$(json_value keptLogs)"
+    assert_contains "$(/bin/cat "$_kept/kept.json")" "$SESSION" "the kept record" || return 1
+    run_avm session report "$SESSION" --json
+    assert_status 0 || return 1
+    assert_json programs.0.program.id p1 || return 1
+    assert_json network.bytesUp 2000000 || return 1
+    run_avm box execlog "$(/usr/bin/basename "$_kept")" --kept --session "$SESSION"
+    assert_status 0 || return 1
+    assert_out_contains "/usr/bin/agent --go" || return 1
+    # With the kept logs removed too, the report says that they are gone.
+    run_avm store logs --remove "$(/usr/bin/basename "$_kept")"
+    assert_status 0 || return 1
+    run_avm session report "$SESSION"
+    assert_status 0 || return 1
+    assert_out_contains "note: the logs of box b1 are gone: its programs and connections are not listed" || return 1
+}

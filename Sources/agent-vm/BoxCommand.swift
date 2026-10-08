@@ -725,6 +725,8 @@ struct BoxCommand: ParsableCommand {
 
                 --since and --until choose the programs by when they started. With --kept the \
                 name is that of a deleted box's kept logs.
+                --session lists the programs of one session: those started for its project \
+                while it was active.
                 """)
 
         @Argument(help: "The box name.")
@@ -746,17 +748,21 @@ struct BoxCommand: ParsableCommand {
         func run() throws {
             let source = try log.source(name, store: options.boxStore)
             defer { source.discard() }
+            // A session's programs are the ones that name it, whenever their start was logged.
+            if let session = log.session {
+                _ = try options.store.session(id: session)
+            }
             let window = try log.window(hosts: [])
-            let records = source.execLog.records(last: last, matching: window.accepts)
+            let records = source.execLog.records(last: last) { window.accepts($0) && (log.session == nil || $0.session == log.session) }
             if options.json {
                 try Output.json(records)
                 return
             }
             if records.isEmpty {
-                if let box = source.box, window.isEmpty {
+                if let box = source.box, window.isEmpty, log.session == nil {
                     print("Nothing run in box \(box.name) yet.")
                 } else {
-                    print("Nothing run is logged for \(source.label)\(window.isEmpty ? "" : " in that time").")
+                    print("Nothing run is logged for \(source.label)\(log.session != nil ? " for that session" : window.isEmpty ? "" : " in that time").")
                 }
                 return
             }
@@ -803,6 +809,8 @@ struct BoxCommand: ParsableCommand {
                 and received, the first and the last time, and the rules that allowed them, \
                 the host the box sent most to first. With --kept the name is that of a \
                 deleted box's kept logs.
+                --session takes a session's time, from its start to its end, as the window: \
+                the box's connections over that time, whichever program made them.
                 """)
 
         @Argument(help: "The box name.")
@@ -845,7 +853,7 @@ struct BoxCommand: ParsableCommand {
         func run() throws {
             let source = try log.source(name, store: options.boxStore)
             defer { source.discard() }
-            let window = try log.window(hosts: host)
+            let window = try log.window(hosts: host, root: options.boxStore.root)
             if follow, let box = source.box {
                 try runFollowing(box, window: window)
                 return
@@ -1104,7 +1112,7 @@ struct BoxCommand: ParsableCommand {
         func run() throws {
             var (deleted, problems) = options.boxStore.collectGarbage()
             let kept = KeptLogs(root: options.boxStore.root)
-            let logs = kept.removeOlder()
+            let logs = kept.removeOlder(keepingSessions: true)
             problems += logs.problems
             if options.json {
                 try Output.json(Result(deleted: deleted, problems: problems, removedLogs: logs.removed))
@@ -1129,7 +1137,7 @@ struct BoxCommand: ParsableCommand {
         static func collect(_ store: BoxStore, except name: String? = nil) {
             let (deleted, problems) = store.collectGarbage(except: name)
             // Kept logs past their time go quietly here: `box gc` and `store logs` say which.
-            _ = KeptLogs(root: store.root).removeOlder()
+            _ = KeptLogs(root: store.root).removeOlder(keepingSessions: true)
             for name in deleted {
                 Stderr.write("note: deleted disposable box \(name), which had stopped\n")
             }

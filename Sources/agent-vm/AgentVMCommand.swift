@@ -225,6 +225,48 @@ enum Output {
         return ["    \(folder.path)", "    \(size(usage.bytes)), of which \(size(unshared)) not shared with \(others) (what \(delete) frees)"]
     }
 
+    /// A session's programs and network, after its changes: `session report`.
+    static func printActivity(_ activity: SessionActivity) {
+        for note in activity.notes {
+            print("  note: \(Printable.line(note))")
+        }
+        guard !activity.boxes.isEmpty else {
+            return
+        }
+        let boxes = "box\(activity.boxes.count == 1 ? "" : "es") \(activity.boxes.joined(separator: ", "))"
+        print("  programs in \(boxes): \(activity.programs.count)")
+        for entry in activity.programs {
+            let run = entry.program
+            let outcome = run.status.map { "status \($0)" } ?? "no end recorded"
+            let duration = run.seconds.map { String(format: "%.1f s", $0) } ?? "-"
+            var line = "    \(time(run.started))  \(outcome)  \(duration)"
+            if activity.boxes.count > 1 {
+                line += "  \(entry.box)"
+            }
+            print(line + "  \(shellQuoted(run.argv))")
+        }
+        let network = activity.network
+        let size = StoreCommand.Logs.size
+        guard !network.hosts.isEmpty else {
+            print("  network of \(boxes) meanwhile: nothing logged")
+            return
+        }
+        var total = "  network of \(boxes) meanwhile: \(network.hosts.count) host\(network.hosts.count == 1 ? "" : "s"), \(network.connections) connection\(network.connections == 1 ? "" : "s"), "
+        total += "\(size(Int64(network.bytesUp))) sent, \(size(Int64(network.bytesDown))) received, \(network.refused) refused, \(network.failed) failed"
+        print(total)
+        for host in network.hosts {
+            var line = "    \(size(Int64(host.bytesUp))) sent, \(size(Int64(host.bytesDown))) received  \(Printable.line(host.host, limit: 260)):\(host.port)"
+            line += "  \(host.connections) made"
+            if host.refused > 0 {
+                line += ", \(host.refused) refused"
+            }
+            if host.failed > 0 {
+                line += ", \(host.failed) failed"
+            }
+            print(line)
+        }
+    }
+
     /// After a box was deleted: where its logs are now, on stdout; why some were not kept, as
     /// a warning.
     static func printKeptLogs(_ deleted: BoxStore.Deleted, indent: String = "  ") {

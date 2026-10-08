@@ -57,6 +57,10 @@ public struct KeptLogs: Sendable {
         /// What the logs took in the box's folder, before they were compressed. Absent in
         /// folders made before 0.7.16, which hold the files as they were.
         public var logBytes: Int64?
+        /// The sessions whose programs ran in the box, as its exec log names them (agent-vm
+        /// 0.7.17 and later). While one of them is not discarded, the logs are not removed for
+        /// their age: a session's record of what ran lasts as long as the session.
+        public var sessions: [String]?
     }
 
     /// One deleted box's logs, as `store logs` lists them.
@@ -174,6 +178,13 @@ public struct KeptLogs: Sendable {
             }
             id = "\(base)-\(attempt)"
         }
+        // Read before the log is compressed away from where its reader finds it.
+        var sessions: [String] = []
+        for record in ExecLog(url: folder.appendingPathComponent(BoxStore.execLogName)).records() {
+            if let session = record.session, !sessions.contains(session) {
+                sessions.append(session)
+            }
+        }
         let kept = directory.appendingPathComponent(id, isDirectory: true)
         var moved = 0
         var logBytes: Int64 = 0
@@ -199,7 +210,7 @@ public struct KeptLogs: Sendable {
             throw failure ?? AgentVMError.system(operation: "move the logs of box \(name)", code: EIO)
         }
         let entry = Record(id: id, box: name, image: record?.image, guest: record?.effectiveGuest, disposable: record?.disposable,
-                           boxCreatedAt: record?.createdAt, keptAt: now, logBytes: logBytes)
+                           boxCreatedAt: record?.createdAt, keptAt: now, logBytes: logBytes, sessions: sessions.isEmpty ? nil : sessions)
         // Without its record the folder is still there to open, and is removed by its age.
         try? SessionStore.encoder.encode(entry).write(to: kept.appendingPathComponent(Self.recordName), options: .atomic)
         if let failure {
@@ -416,16 +427,35 @@ public struct KeptLogs: Sendable {
         try FileSystem.removeTree(folder.path)
     }
 
+    /// Whether one of `sessions` is still there to report on: not discarded.
+    private func hasLiveSession(_ sessions: [String]?) -> Bool {
+        guard let sessions, !sessions.isEmpty else {
+            return false
+        }
+        let store = SessionStore(root: root)
+        return sessions.contains { id in
+            guard let session = try? store.session(id: id) else {
+                // A record that cannot be read (damaged, or a newer agent-vm's) is not known
+                // to be discarded: its logs stay. No folder at all is no session.
+                return SessionStore.isValidID(id) && FileSystem.exists(store.sessionsDirectory.appendingPathComponent(id).path)
+            }
+            return session.record.state != .discarded
+        }
+    }
+
     /// Removes the logs of boxes deleted `days` or more days ago (nil: this store's
     /// `holdDays`); returns their ids, and what could not be removed. A folder without a
-    /// readable record is as old as its last change.
-    public func removeOlder(thanDays days: Int? = nil, now: Date = Date()) -> (removed: [String], problems: [String]) {
-        let days = days ?? holdDays
+    /// readable record is as old as its last change. With `keepingSessions`, the logs of a
+    /// session that is not discarded stay, whatever their age, unless this store keeps none.
+    public func removeOlder(thanDays days: Int? = nil, keepingSessions: Bool = false, now: Date = Date()) -> (removed: [String], problems: [String]) {
+        let hold = holdDays
+        let days = days ?? hold
         var removed: [String] = []
         var problems: [String] = []
         for id in folders() {
             let folder = directory.appendingPathComponent(id, isDirectory: true)
-            var keptAt = record(of: id)?.keptAt
+            let record = record(of: id)
+            var keptAt = record?.keptAt
             if keptAt == nil {
                 var info = stat()
                 guard lstat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
@@ -434,6 +464,9 @@ public struct KeptLogs: Sendable {
                 keptAt = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))
             }
             guard let keptAt, now.timeIntervalSince(keptAt) >= TimeInterval(days) * 86400 else {
+                continue
+            }
+            if keepingSessions, hold > 0, hasLiveSession(record?.sessions) {
                 continue
             }
             do {
