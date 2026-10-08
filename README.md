@@ -418,9 +418,11 @@ Scripts/build.sh --identity <Developer ID Application identity or team ID>
 `Scripts/build.sh` also builds `linux/agent-vm-guest`, the guest daemon for Linux boxes, when this Mac can (since 0.7.1). It is the same source built for 64-bit ARM Linux as one static program, which Xcode cannot do. It needs two things from swift.org, of the same version as each other: a toolchain and the static Linux SDK.
 
 ```sh
-swiftly install 6.4.0                     # a swift.org toolchain, into ~/Library/Developer/Toolchains
-swift sdk install <address of the static Linux SDK for that version, from swift.org/install>
+Scripts/install-linux-toolchain.sh --check    # what is there and what is missing
+Scripts/install-linux-toolchain.sh            # install what is missing, after asking
 ```
+
+That script installs up to three things, each only when it is missing, all into your home folder and none with administrator rights: `swiftly`, swift.org's installer, which is not part of macOS or Xcode (its package must be signed by the Swift project and notarized by Apple); the toolchain, into `~/Library/Developer/Toolchains` (about 5 GB); and the SDK, with its checksum (about 1 GB). The release and the SDK's checksum are named in the script; `--version` installs another release, with the checksum swift.org lists for it. Neither replaces Xcode's Swift: no shell startup file is changed, `swift` in a shell stays Xcode's, and `build.sh` calls the other one by its path. By hand it is `swiftly install <version>` and `swift sdk install <address> --checksum <checksum>`, with both values from https://www.swift.org/install/macos/.
 
 The script uses `$AGENT_VM_LINUX_SWIFT` when it is set, else the newest release toolchain in `~/Library/Developer/Toolchains` that has a static Linux SDK of its own version, else `~/.swiftly/bin/swift`. Without one it says so and goes on: everything about macOS boxes works, and that build cannot create Linux images (`agent-vm doctor` has a line for it). `--require-linux-guest` makes a missing compiler an error, for a release; `--no-linux-guest` skips the step. The Linux daemon is not signed: it never runs on a Mac. `agent-vm version` shows its SHA-256.
 

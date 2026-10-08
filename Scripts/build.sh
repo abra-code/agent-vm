@@ -18,9 +18,10 @@
 #   --no-linux-guest       do not build it
 #
 # linux/agent-vm-guest is the same daemon built for 64-bit ARM Linux as one static program. Xcode
-# cannot build it: it needs a swift.org toolchain and the static Linux SDK of the same version
-# (README.md, "Building"). The compiler is $AGENT_VM_LINUX_SWIFT, else the newest release
-# toolchain in ~/Library/Developer/Toolchains that has such an SDK, else ~/.swiftly/bin/swift.
+# cannot build it: it needs a swift.org toolchain and the static Linux SDK of the same version,
+# which Scripts/install-linux-toolchain.sh installs (README.md, "Building"). The compiler is
+# $AGENT_VM_LINUX_SWIFT, else the newest release toolchain in ~/Library/Developer/Toolchains
+# that has such an SDK, else ~/.swiftly/bin/swift.
 # Without one the build goes on, and that agent-vm cannot create Linux images. The Linux daemon
 # is not signed: it never runs on a Mac.
 #
@@ -151,15 +152,26 @@ EOF_TOOLCHAINS
     return 0
 }
 
+# Said where the step is passed over and again as the last lines of the build, where a person
+# who builds for the first time looks.
+linux_guest_missing_note() {
+    printf '\nNote: linux/agent-vm-guest was not built, so this build cannot create Linux images or run Linux boxes.\n'
+    printf '  It needs a swift.org toolchain and the static Linux SDK of the same version (Xcode cannot build for Linux):\n'
+    printf '  Scripts/install-linux-toolchain.sh installs both into your home folder (about 6 GB; --check shows what is missing).\n'
+    printf '  Then run this script again. README.md, "Building", has the details; --no-linux-guest leaves the step out without this note.\n'
+}
+
 # The Linux guest daemon: built in a scratch folder of its own (another compiler, another
 # target), then stripped of its symbols, which are most of the file.
 LINUX_SDK="aarch64-swift-linux-musl"
 linux_binary=""
+linux_guest_missing=0
 if [ "$LINUX_GUEST" != "no" ]; then
     linux_swift="$(find_linux_swift)"
     if [ -z "$linux_swift" ]; then
         [ "$LINUX_GUEST" != "require" ] || die "no swift.org toolchain with the static Linux SDK was found, and --require-linux-guest was given (README.md, \"Building\")"
-        printf 'No swift.org toolchain with the static Linux SDK: linux/agent-vm-guest was not built, and this build cannot create Linux images\n'
+        linux_guest_missing=1
+        linux_guest_missing_note
     else
         [ -x "$linux_swift" ] || die "the Linux compiler $linux_swift is not an executable (\$AGENT_VM_LINUX_SWIFT?)"
         printf 'Building agent-vm-guest for Linux (%s) with %s...\n' "$CONFIGURATION" "$linux_swift"
@@ -319,6 +331,7 @@ if [ -n "$linux_binary" ]; then
 fi
 "$OUTPUT/agent-vm" doctor
 status=$?
+[ "$linux_guest_missing" -eq 0 ] || linux_guest_missing_note
 if [ "$status" -ne 0 ]; then
     printf '\nbuild.sh: agent-vm doctor reports a problem (status %s); the binaries are signed, but boxes will not run on this Mac.\n' "$status" >&2
     exit 2
