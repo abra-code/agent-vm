@@ -229,17 +229,22 @@ enum Output {
     /// a warning.
     static func printKeptLogs(_ deleted: BoxStore.Deleted, indent: String = "  ") {
         if let kept = deleted.keptLogs {
-            print("\(indent)its logs are kept for \(KeptLogs.holdDays) days: \(kept.path)")
+            print("\(indent)its logs are kept for \(holdDays(of: kept)) days: \(kept.path)")
         }
         if let problem = deleted.logsProblem {
             Stderr.write("warning: not all of the box's logs were kept: \(problem)\n")
         }
     }
 
+    /// For how many days the store of a kept folder (Logs/<id> in it) keeps logs.
+    static func holdDays(of kept: URL) -> Int {
+        return KeptLogs(root: kept.deletingLastPathComponent().deletingLastPathComponent()).holdDays
+    }
+
     /// The same on stderr, for a command whose stdout is JSON or that is about to fail.
     static func noteKeptLogs(_ deleted: BoxStore.Deleted) {
         if let kept = deleted.keptLogs {
-            Stderr.write("note: the deleted box's logs are kept for \(KeptLogs.holdDays) days: \(kept.path)\n")
+            Stderr.write("note: the deleted box's logs are kept for \(holdDays(of: kept)) days: \(kept.path)\n")
         }
         if let problem = deleted.logsProblem {
             Stderr.write("warning: not all of the box's logs were kept: \(problem)\n")

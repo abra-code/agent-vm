@@ -1044,8 +1044,8 @@ test_a_deleted_boxs_logs_are_kept() {
     _kept="$(json_value keptLogs)"
     assert_contains "$_kept" "$AGENT_VM_HOME/Logs/b1-" "where the logs went" || return 1
     assert_missing "$AGENT_VM_HOME/Boxes/b1" || return 1
-    assert_exists "$_kept/exec.jsonl" || return 1
-    assert_exists "$_kept/supervisor.log" || return 1
+    assert_eq "$(/usr/bin/gunzip -c "$_kept/exec.jsonl.gz")" '{"event":"start"}' "the kept log, expanded" || return 1
+    assert_exists "$_kept/supervisor.log.gz" || return 1
     assert_exists "$_kept/kept.json" || return 1
     local _id
     _id="$(/usr/bin/basename "$_kept")"
@@ -1066,14 +1066,14 @@ test_a_deleted_boxs_logs_are_kept() {
     assert_json logs.1.logs.box b1 || return 1
     assert_json logs.1.logs.image dev || return 1
     assert_json logs.1.path "$_kept" || return 1
-    assert_json logs.1.files.0 supervisor.log || return 1
-    assert_json logs.1.files.1 exec.jsonl || return 1
+    assert_json logs.1.files.0 supervisor.log.gz || return 1
+    assert_json logs.1.files.1 exec.jsonl.gz || return 1
     assert_json logs.0.logs.box b2 || return 1
     run_avm store logs
     assert_status 0 || return 1
     assert_out_contains "$_id  box b1, image dev  deleted " || return 1
     assert_out_contains "    $_kept" || return 1
-    assert_out_contains "    supervisor.log, exec.jsonl" || return 1
+    assert_out_contains "    supervisor.log.gz, exec.jsonl.gz" || return 1
     assert_out_contains "remove one with: agent-vm store logs --remove <name>" || return 1
 
     # Nothing is removed when one of the names is not there.
@@ -1238,4 +1238,77 @@ test_logs_are_asked_by_time_and_host() {
     run_avm box netlog ../Boxes --kept
     assert_status 1 || return 1
     assert_err_contains "no kept logs" || return 1
+}
+
+# What kept logs cost is said, and a store can keep them for other than 30 days, or not at all.
+test_kept_logs_are_counted_and_can_be_turned_off() {
+    fake_image dev
+    run_avm status --json
+    assert_status 0 || return 1
+    assert_json keptLogs.count 0 || return 1
+    assert_json keptLogs.bytes 0 || return 1
+    assert_json keptLogs.holdDays 30 || return 1
+    assert_json keptLogs.directory "$AGENT_VM_HOME/Logs" || return 1
+    run_avm box create b1 --image dev
+    # A log worth compressing: 2000 lines that differ by a number.
+    /usr/bin/awk 'BEGIN { for (i = 0; i < 2000; i++) printf "{\"decision\":\"denied\",\"host\":\"h%d.example\",\"method\":\"CONNECT\",\"port\":443,\"time\":\"2026-10-01T10:00:01Z\"}\n", i % 9 }' > "$AGENT_VM_HOME/Boxes/b1/network.jsonl"
+    local _raw
+    _raw="$(/usr/bin/stat -f %z "$AGENT_VM_HOME/Boxes/b1/network.jsonl")"
+    run_avm box delete b1 --json
+    assert_status 0 || return 1
+    local _kept
+    _kept="$(json_value keptLogs)"
+    run_avm status --json
+    assert_json keptLogs.count 1 || return 1
+    local _bytes
+    _bytes="$(json_value keptLogs.bytes)"
+    [ "$_bytes" -gt 0 ] && [ "$((_bytes * 10))" -lt "$_raw" ] || { fail "$_raw bytes of log are kept as $_bytes: not a tenth"; return 1; }
+    assert_eq "$_bytes" "$(/usr/bin/stat -f %z "$_kept/network.jsonl.gz")" "the bytes status counts" || return 1
+    run_avm status
+    assert_out_contains "Logs of deleted boxes: 1, " || return 1
+    run_avm store logs --json
+    assert_json bytes "$_bytes" || return 1
+    assert_json logs.0.logs.logBytes "$_raw" || return 1
+    # The compressed log is read as a box's is.
+    run_avm box netlog "$(/usr/bin/basename "$_kept")" --kept --summary --json
+    assert_status 0 || return 1
+    assert_json refused 2000 || return 1
+
+    run_avm store logs --hold-days 7
+    assert_status 0 || return 1
+    assert_out_contains "The logs of deleted boxes are kept for 7 days." || return 1
+    run_avm store logs --json
+    assert_json holdDays 7 || return 1
+    run_avm box create b2 --image dev
+    printf '{"event":"start"}\n' > "$AGENT_VM_HOME/Boxes/b2/exec.jsonl"
+    run_avm box delete b2
+    assert_out_contains "its logs are kept for 7 days: $AGENT_VM_HOME/Logs/b2-" || return 1
+
+    # With 0 a deleted box leaves nothing, and the next gc takes what was kept.
+    run_avm store logs --hold-days 0
+    assert_status 0 || return 1
+    assert_out_contains "are not kept from now on" || return 1
+    run_avm box create b3 --image dev
+    printf '{"event":"start"}\n' > "$AGENT_VM_HOME/Boxes/b3/exec.jsonl"
+    run_avm box delete b3
+    assert_status 0 || return 1
+    assert_eq "$OUT" "Deleted box b3" "the whole answer" || return 1
+    run_avm status --json
+    assert_json keptLogs.count 2 || return 1
+    assert_json keptLogs.holdDays 0 || return 1
+    run_avm box gc --json
+    assert_json removedLogs 2 || return 1
+    run_avm store logs
+    assert_out_contains "this store keeps none" || return 1
+    run_avm store logs --hold-days 4000
+    assert_status 64 || return 1
+    # A name that is not there fails the command before the setting changes.
+    run_avm store logs --hold-days 9 --remove nope
+    assert_status 1 || return 1
+    run_avm store logs --json
+    assert_json holdDays 0 || return 1
+    run_avm store logs --hold-days 30
+    assert_status 0 || return 1
+    run_avm status --json
+    assert_json keptLogs.holdDays 30 || return 1
 }

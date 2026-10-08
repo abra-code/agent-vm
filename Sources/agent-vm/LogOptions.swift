@@ -50,6 +50,15 @@ struct LogOptions: ParsableArguments {
         var folder: URL
         /// Nil for kept logs.
         var box: Box?
+        /// Kept logs are compressed: `folder` is then a folder made for this reading, with the
+        /// logs expanded, to be removed after it.
+        var temporary = false
+
+        func discard() {
+            if temporary {
+                try? FileManager.default.removeItem(at: folder)
+            }
+        }
 
         var execLog: ExecLog {
             return ExecLog(url: folder.appendingPathComponent(box?.execLogURL.lastPathComponent ?? "exec.jsonl"))
@@ -62,9 +71,33 @@ struct LogOptions: ParsableArguments {
 
     func source(_ name: String, store: BoxStore) throws -> Source {
         if kept {
-            return Source(label: "the kept logs \(name)", folder: try KeptLogs(root: store.root).folder(of: name), box: nil)
+            let readable = try KeptLogs(root: store.root).readable(name)
+            if readable.temporary {
+                Self.removeWhenStopped(readable.folder)
+            }
+            return Source(label: "the kept logs \(name)", folder: readable.folder, box: nil, temporary: readable.temporary)
         }
         let box = try store.box(named: name)
         return Source(label: "box \(box.name)", folder: box.directory, box: box)
+    }
+
+    /// The watchers `removeWhenStopped` made, kept for as long as the command runs.
+    nonisolated(unsafe) private static var stopWatchers: [DispatchSourceSignal] = []
+
+    /// A command that is stopped while it prints (Control-C, or `| head` closing its pipe) never
+    /// reaches its `discard()`, and the expanded logs would stay in the temporary folder: on
+    /// such a signal `folder` is removed first, and the command then ends as the signal ends it.
+    private static func removeWhenStopped(_ folder: URL) {
+        for number in [SIGINT, SIGTERM, SIGHUP, SIGPIPE] {
+            signal(number, SIG_IGN)
+            let watcher = DispatchSource.makeSignalSource(signal: number, queue: .global())
+            watcher.setEventHandler {
+                try? FileManager.default.removeItem(at: folder)
+                signal(number, SIG_DFL)
+                kill(getpid(), number)
+            }
+            watcher.resume()
+            stopWatchers.append(watcher)
+        }
     }
 }

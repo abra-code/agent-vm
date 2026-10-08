@@ -2,26 +2,38 @@
 //
 // The logs of boxes that were deleted. A box's folder goes with the box (`box delete`, `box
 // recreate`, `box gc`, a temporary box of `avm`), and its logs are the record of what ran in it
-// and what it contacted, so they are moved out first:
+// and what it contacted, so they are taken out first, compressed (gzip):
 //
-//   Logs/<box>-<time>/kept.json              which box they were of, and when it was deleted
-//   Logs/<box>-<time>/supervisor.log         the box's files, as they were, with their .1 files
-//   Logs/<box>-<time>/network.jsonl
-//   Logs/<box>-<time>/network-allowed.jsonl
-//   Logs/<box>-<time>/exec.jsonl
-//   Logs/<box>-<time>/console.log            a Linux box's
+//   Logs/<box>-<time>/kept.json                 which box they were of, and when it was deleted
+//   Logs/<box>-<time>/supervisor.log.gz         the box's files, with their .1 files
+//   Logs/<box>-<time>/network.jsonl.gz
+//   Logs/<box>-<time>/network-allowed.jsonl.gz
+//   Logs/<box>-<time>/exec.jsonl.gz
+//   Logs/<box>-<time>/console.log.gz            a Linux box's
+//   kept-logs.json                              in the store: for how many days they are kept
 //
 // <time> is when the box was deleted (UTC, yyyyMMdd-HHmmss). A box that logged nothing leaves
-// nothing. Kept logs are removed `holdDays` after the box was deleted, when `box gc` runs, or
-// by hand (`store logs --remove`).
+// nothing. A log that cannot be compressed is moved as it is, and the folders agent-vm 0.7.14
+// and 0.7.15 made hold the files as they were; both are read like the others.
+//
+// Kept logs are removed `holdDays` days after the box was deleted, when `box gc` runs, or by
+// hand (`store logs --remove`). `store logs --hold-days` changes the number; with 0 nothing is
+// kept, and what was kept before goes at the next `box gc`.
 
 import Darwin
 import Foundation
+import zlib
 
 public struct KeptLogs: Sendable {
-    /// How long a deleted box's logs are kept.
-    public static let holdDays = 30
+    /// How long a deleted box's logs are kept unless the store says otherwise.
+    public static let defaultHoldDays = 30
+    /// The most days `store logs --hold-days` takes.
+    public static let maximumHoldDays = 3650
     static let recordName = "kept.json"
+    static let settingsName = "kept-logs.json"
+    static let compressedSuffix = ".gz"
+    /// The largest log a compressed file is expanded to: a box's largest log is 64 MB.
+    static let expandLimit: Int64 = 1 << 30
 
     /// The files of a box folder that are logs; each may have a ".1" file beside it.
     static var logNames: [String] {
@@ -42,6 +54,9 @@ public struct KeptLogs: Sendable {
         public var boxCreatedAt: Date?
         /// When the box was deleted.
         public var keptAt: Date
+        /// What the logs took in the box's folder, before they were compressed. Absent in
+        /// folders made before 0.7.16, which hold the files as they were.
+        public var logBytes: Int64?
     }
 
     /// One deleted box's logs, as `store logs` lists them.
@@ -50,7 +65,20 @@ public struct KeptLogs: Sendable {
         public var path: String
         /// The log files there, by name.
         public var files: [String]
+        /// What they take on disk now.
         public var bytes: Int64
+    }
+
+    /// All of them at a glance, for `status`.
+    public struct Totals: Encodable, Equatable, Sendable {
+        public var directory: String
+        public var holdDays: Int
+        public var count: Int
+        public var bytes: Int64
+    }
+
+    struct Settings: Codable, Equatable {
+        var holdDays: Int
     }
 
     public let root: URL
@@ -61,6 +89,33 @@ public struct KeptLogs: Sendable {
 
     public var directory: URL {
         return root.appendingPathComponent("Logs", isDirectory: true)
+    }
+
+    private var settingsURL: URL {
+        return root.appendingPathComponent(Self.settingsName)
+    }
+
+    /// For how many days a deleted box's logs are kept in this store; 0: they are not kept.
+    /// A setting that cannot be read, or is out of range, is the default.
+    public var holdDays: Int {
+        guard let data = try? Data(contentsOf: settingsURL), let settings = try? JSONDecoder().decode(Settings.self, from: data),
+              (0...Self.maximumHoldDays).contains(settings.holdDays) else {
+            return Self.defaultHoldDays
+        }
+        return settings.holdDays
+    }
+
+    /// Changes `holdDays` for this store.
+    public func setHoldDays(_ days: Int) throws {
+        guard (0...Self.maximumHoldDays).contains(days) else {
+            throw AgentVMError.system(operation: "keep logs for \(days) days", code: EINVAL)
+        }
+        try FileSystem.makeDirectories(root.path)
+        do {
+            try JSONEncoder().encode(Settings(holdDays: days)).write(to: settingsURL, options: .atomic)
+        } catch {
+            throw AgentVMError.system(operation: "write \(settingsURL.path)", code: FileSystem.posixCode(error))
+        }
     }
 
     /// Whether `id` can be the name of a folder in Logs/: a box's name, "-" and a time.
@@ -77,24 +132,32 @@ public struct KeptLogs: Sendable {
     }
 
     /// The log files in `folder` that hold something: regular files only, so nothing a link
-    /// points at is ever moved or measured.
-    static func logFiles(in folder: URL) -> [(name: String, bytes: Int64)] {
+    /// points at is ever moved or measured. With `kept`, a kept folder's: each name as it is or
+    /// compressed.
+    static func logFiles(in folder: URL, kept: Bool = false) -> [(name: String, bytes: Int64)] {
         var found: [(String, Int64)] = []
+        // Plain paths: `status` measures every kept folder, and a URL costs more than the lstat.
+        let path = folder.path + "/"
         for base in logNames {
             for name in [base, base + ".1"] {
-                var info = stat()
-                if lstat(folder.appendingPathComponent(name).path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size > 0 {
-                    found.append((name, Int64(info.st_size)))
+                for stored in kept ? [name + compressedSuffix, name] : [name] {
+                    var info = stat()
+                    if lstat(path + stored, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size > 0 {
+                        found.append((stored, Int64(info.st_size)))
+                    }
                 }
             }
         }
         return found
     }
 
-    /// Moves the logs out of a box's folder, which is about to be removed; the caller holds the
-    /// box's lock. Returns where they are now, or nil when the box logged nothing. `record` is
-    /// the box's, when it could be read.
+    /// Takes the logs out of a box's folder, which is about to be removed; the caller holds the
+    /// box's lock. Returns where they are now, or nil when the box logged nothing or this store
+    /// keeps no logs. `record` is the box's, when it could be read.
     func keep(box name: String, folder: URL, record: BoxRecord?, now: Date = Date()) throws -> URL? {
+        guard holdDays > 0 else {
+            return nil
+        }
         let files = Self.logFiles(in: folder)
         guard !files.isEmpty else {
             return nil
@@ -113,11 +176,20 @@ public struct KeptLogs: Sendable {
         }
         let kept = directory.appendingPathComponent(id, isDirectory: true)
         var moved = 0
+        var logBytes: Int64 = 0
         var failure: AgentVMError?
         for file in files {
+            let source = folder.appendingPathComponent(file.name).path
+            let destination = kept.appendingPathComponent(file.name).path
             do {
-                try FileSystem.rename(folder.appendingPathComponent(file.name).path, to: kept.appendingPathComponent(file.name).path)
+                // Compressed when that works; as it is otherwise, so nothing is lost to it.
+                do {
+                    try Self.compress(source, to: destination + Self.compressedSuffix)
+                } catch {
+                    try FileSystem.rename(source, to: destination)
+                }
                 moved += 1
+                logBytes += file.bytes
             } catch let error as AgentVMError {
                 failure = failure ?? error
             }
@@ -127,7 +199,7 @@ public struct KeptLogs: Sendable {
             throw failure ?? AgentVMError.system(operation: "move the logs of box \(name)", code: EIO)
         }
         let entry = Record(id: id, box: name, image: record?.image, guest: record?.effectiveGuest, disposable: record?.disposable,
-                           boxCreatedAt: record?.createdAt, keptAt: now)
+                           boxCreatedAt: record?.createdAt, keptAt: now, logBytes: logBytes)
         // Without its record the folder is still there to open, and is removed by its age.
         try? SessionStore.encoder.encode(entry).write(to: kept.appendingPathComponent(Self.recordName), options: .atomic)
         if let failure {
@@ -140,6 +212,141 @@ public struct KeptLogs: Sendable {
     enum Partial: Error {
         case some(kept: URL, reason: String)
     }
+
+    // MARK: - Compression
+
+    static let chunkSize = 256 << 10
+
+    /// Writes `source` to a new file `destination` in gzip format (what `gunzip` and Finder
+    /// expand). Neither path is followed when it is a link, and a file that is there is never
+    /// replaced. On failure nothing is left at `destination`.
+    static func compress(_ source: String, to destination: String) throws {
+        let input = open(source, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard input >= 0 else {
+            throw AgentVMError.system(operation: "read \(source)", code: errno)
+        }
+        defer { close(input) }
+        let output = open(destination, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard output >= 0 else {
+            throw AgentVMError.system(operation: "create \(destination)", code: errno)
+        }
+        // gzdopen takes the descriptor over: gzclose closes it.
+        guard let file = gzdopen(output, "wb6") else {
+            close(output)
+            _ = unlink(destination)
+            throw AgentVMError.system(operation: "compress \(source)", code: ENOMEM)
+        }
+        var buffer = [UInt8](repeating: 0, count: chunkSize)
+        var code: Int32 = 0
+        while code == 0 {
+            let count = read(input, &buffer, buffer.count)
+            if count == 0 {
+                break
+            }
+            if count < 0 {
+                code = errno == EINTR ? 0 : errno
+                continue
+            }
+            if gzwrite(file, buffer, UInt32(count)) != Int32(count) {
+                code = EIO
+            }
+        }
+        // On the disk before the box's folder, the only other copy, is removed.
+        if code == 0, gzflush(file, Z_FINISH) != Z_OK || fsync(output) != 0 {
+            code = EIO
+        }
+        if gzclose(file) != Z_OK, code == 0 {
+            code = EIO
+        }
+        guard code == 0 else {
+            _ = unlink(destination)
+            throw AgentVMError.system(operation: "compress \(source)", code: code)
+        }
+    }
+
+    /// Writes what the gzip file `source` holds to a new file `destination`; more than `limit`
+    /// bytes is refused. On failure nothing is left at `destination`.
+    static func expand(_ source: String, to destination: String, limit: Int64 = KeptLogs.expandLimit) throws {
+        let input = open(source, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard input >= 0 else {
+            throw AgentVMError.system(operation: "read \(source)", code: errno)
+        }
+        guard let file = gzdopen(input, "rb") else {
+            close(input)
+            throw AgentVMError.system(operation: "expand \(source)", code: ENOMEM)
+        }
+        let output = open(destination, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard output >= 0 else {
+            let code = errno
+            _ = gzclose(file)
+            throw AgentVMError.system(operation: "create \(destination)", code: code)
+        }
+        defer { close(output) }
+        var buffer = [UInt8](repeating: 0, count: chunkSize)
+        var written: Int64 = 0
+        var code: Int32 = 0
+        while code == 0 {
+            let count = gzread(file, &buffer, UInt32(buffer.count))
+            if count == 0 {
+                break
+            }
+            written += Int64(max(count, 0))
+            if count < 0 || written > limit {
+                code = count < 0 ? EIO : EFBIG
+                continue
+            }
+            do {
+                try FrameChannel.writeAll(output, Array(buffer[0..<Int(count)]))
+            } catch {
+                code = EIO
+            }
+        }
+        // A file cut short reads as far as it goes without an error: closing it is what tells.
+        if gzclose(file) != Z_OK, code == 0 {
+            code = EIO
+        }
+        guard code == 0 else {
+            _ = unlink(destination)
+            throw AgentVMError.system(operation: "expand \(source)", code: code)
+        }
+    }
+
+    /// One deleted box's logs where they can be read as a box's are: its folder when the files
+    /// are as they were, else a new private folder in `temporary` with every log expanded, which
+    /// the caller removes when done (`temporary` is true then).
+    public func readable(_ id: String, temporary parent: URL = FileManager.default.temporaryDirectory) throws -> (folder: URL, temporary: Bool) {
+        let kept = try folder(of: id)
+        let files = Self.logFiles(in: kept, kept: true)
+        guard files.contains(where: { $0.name.hasSuffix(Self.compressedSuffix) }) else {
+            return (kept, false)
+        }
+        var template = Array(parent.appendingPathComponent("agent-vm-kept-XXXXXX").path.utf8CString)
+        guard mkdtemp(&template) != nil else {
+            throw AgentVMError.system(operation: "create a folder in \(parent.path)", code: errno)
+        }
+        let folder = URL(fileURLWithPath: String(decoding: template.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self), isDirectory: true)
+        do {
+            for file in files {
+                let source = kept.appendingPathComponent(file.name).path
+                if file.name.hasSuffix(Self.compressedSuffix) {
+                    try Self.expand(source, to: folder.appendingPathComponent(String(file.name.dropLast(Self.compressedSuffix.count))).path)
+                } else if !FileSystem.exists(folder.appendingPathComponent(file.name).path) {
+                    // A clone when the store is on this volume, a copy when it is not.
+                    do {
+                        try BoxStore.cloneFile(URL(fileURLWithPath: source), to: folder.appendingPathComponent(file.name))
+                    } catch {
+                        try FileManager.default.copyItem(atPath: source, toPath: folder.appendingPathComponent(file.name).path)
+                    }
+                }
+            }
+        } catch {
+            try? FileSystem.removeTree(folder.path)
+            throw error
+        }
+        return (folder, true)
+    }
+
+    // MARK: - Listing and removing
 
     /// The folders in Logs/, by name; nothing when there is no such folder.
     private func folders() -> [String] {
@@ -164,10 +371,26 @@ public struct KeptLogs: Sendable {
                 continue
             }
             let folder = directory.appendingPathComponent(id, isDirectory: true)
-            let files = Self.logFiles(in: folder)
+            let files = Self.logFiles(in: folder, kept: true)
             entries.append(Entry(logs: record, path: folder.path, files: files.map(\.name), bytes: files.reduce(0) { $0 + $1.bytes }))
         }
         return entries.sorted { ($0.logs.keptAt, $0.logs.id) > ($1.logs.keptAt, $1.logs.id) }
+    }
+
+    /// How many are kept and what they take, without reading a record: every folder counts.
+    public func totals() -> Totals {
+        var count = 0
+        var bytes: Int64 = 0
+        for id in folders() {
+            let folder = directory.appendingPathComponent(id, isDirectory: true)
+            var info = stat()
+            guard lstat(folder.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else {
+                continue
+            }
+            count += 1
+            bytes += Self.logFiles(in: folder, kept: true).reduce(0) { $0 + $1.bytes }
+        }
+        return Totals(directory: directory.path, holdDays: holdDays, count: count, bytes: bytes)
     }
 
     /// Whether Logs/ has a folder of that name: one `list` shows, or one without a readable
@@ -176,7 +399,7 @@ public struct KeptLogs: Sendable {
         return Self.isValidID(id) && FileSystem.exists(directory.appendingPathComponent(id, isDirectory: true).path)
     }
 
-    /// The folder of one deleted box's logs, for `box execlog --kept` and `box netlog --kept`.
+    /// The folder of one deleted box's logs.
     public func folder(of id: String) throws -> URL {
         guard exists(id) else {
             throw AgentVMError.keptLogsNotFound(id)
@@ -193,9 +416,11 @@ public struct KeptLogs: Sendable {
         try FileSystem.removeTree(folder.path)
     }
 
-    /// Removes the logs of boxes deleted `days` or more days ago; returns their ids, and what
-    /// could not be removed. A folder without a readable record is as old as its last change.
-    public func removeOlder(thanDays days: Int = KeptLogs.holdDays, now: Date = Date()) -> (removed: [String], problems: [String]) {
+    /// Removes the logs of boxes deleted `days` or more days ago (nil: this store's
+    /// `holdDays`); returns their ids, and what could not be removed. A folder without a
+    /// readable record is as old as its last change.
+    public func removeOlder(thanDays days: Int? = nil, now: Date = Date()) -> (removed: [String], problems: [String]) {
+        let days = days ?? holdDays
         var removed: [String] = []
         var problems: [String] = []
         for id in folders() {

@@ -50,6 +50,9 @@ struct StatusCommand: AsyncParsableCommand {
         /// Why the jobs could not be listed; absent when they were.
         var jobsError: String?
         var runningVMs: RunningVMs
+        /// The logs of deleted boxes (`store logs`): where they are, for how many days they are
+        /// kept (0: not kept), how many there are and what they take on disk.
+        var keptLogs: KeptLogs.Totals
         /// The newest macOS for this Mac's virtual machines, as Apple last said; absent when
         /// it was never asked.
         var newestMacOS: NewestMacOS?
@@ -108,6 +111,7 @@ struct StatusCommand: AsyncParsableCommand {
             jobs: jobs,
             jobsError: jobsError,
             runningVMs: .init(count: runningCount, limit: HostReport.macOSGuestLimit, linuxBoxes: linux.boxes, linuxImages: linux.images),
+            keptLogs: KeptLogs(root: root).totals(),
             newestMacOS: newest, newestMacOSError: newestError)
         if options.json {
             try Output.json(summary)
@@ -202,6 +206,10 @@ struct StatusCommand: AsyncParsableCommand {
             lines.append("Virtual machines running on this Mac (any application): \(count)\(linuxNote); at most \(limit) macOS guests at once")
         } else {
             lines.append("Virtual machines running on this Mac: could not be counted; at most \(limit) macOS guests at once")
+        }
+        if summary.keptLogs.count > 0 {
+            let kept = summary.keptLogs
+            lines.append("Logs of deleted boxes: \(kept.count), \(StoreCommand.Logs.size(kept.bytes)) (agent-vm store logs)")
         }
         return lines
     }

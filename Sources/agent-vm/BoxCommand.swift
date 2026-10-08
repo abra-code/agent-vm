@@ -89,7 +89,7 @@ struct BoxCommand: ParsableCommand {
                 The new box is a fresh clone of the image (its current state: after `image \
                 update-guest`, with the new agent-vm-guest), with the box's CPUs, memory, network \
                 rules and disposable flag, a new identity, and empty logs. Everything written in \
-                the old box is gone, except its logs, which are kept for \(KeptLogs.holdDays) days \
+                the old box is gone, except its logs, which are kept for \(KeptLogs.defaultHoldDays) days \
                 (`agent-vm store logs`). --image switches to another image.
                 """)
 
@@ -544,7 +544,7 @@ struct BoxCommand: ParsableCommand {
             discussion: """
                 The box's logs (what ran in it, what it contacted, its supervisor's log) are \
                 not deleted with it: they move to Logs/ in the store and stay there for \
-                \(KeptLogs.holdDays) days. `agent-vm store logs` lists and removes them.
+                \(KeptLogs.defaultHoldDays) days. `agent-vm store logs` lists and removes them.
                 """)
 
         struct Result: Encodable {
@@ -719,7 +719,7 @@ struct BoxCommand: ParsableCommand {
             discussion: """
                 One entry per program: when it started, how long it ran, its exit status, the \
                 account and the command. The log is kept on this Mac (Boxes/<name>/exec.jsonl), \
-                out of the box's reach; when the box is deleted it is kept for \(KeptLogs.holdDays) days \
+                out of the box's reach; when the box is deleted it is kept for \(KeptLogs.defaultHoldDays) days \
                 (`agent-vm store logs`). It never holds the \
                 programs' environment.
 
@@ -745,6 +745,7 @@ struct BoxCommand: ParsableCommand {
 
         func run() throws {
             let source = try log.source(name, store: options.boxStore)
+            defer { source.discard() }
             let window = try log.window(hosts: [])
             let records = source.execLog.records(last: last, matching: window.accepts)
             if options.json {
@@ -843,6 +844,7 @@ struct BoxCommand: ParsableCommand {
 
         func run() throws {
             let source = try log.source(name, store: options.boxStore)
+            defer { source.discard() }
             let window = try log.window(hosts: host)
             if follow, let box = source.box {
                 try runFollowing(box, window: window)
@@ -1086,7 +1088,7 @@ struct BoxCommand: ParsableCommand {
                 tombstone when it stopped, and every one created more than \(Int(BoxStore.unstartedDisposableAge / 60)) minutes \
                 ago that is not running (never started, or its supervisor died). A running box is \
                 never touched. `box list`, `box start` and `doctor` run it first. \
-                It also removes the logs of boxes deleted more than \(KeptLogs.holdDays) days ago \
+                It also removes the logs of boxes deleted more than \(KeptLogs.defaultHoldDays) days ago \
                 (`agent-vm store logs` lists the kept ones).
                 """)
 
@@ -1101,7 +1103,8 @@ struct BoxCommand: ParsableCommand {
 
         func run() throws {
             var (deleted, problems) = options.boxStore.collectGarbage()
-            let logs = KeptLogs(root: options.boxStore.root).removeOlder()
+            let kept = KeptLogs(root: options.boxStore.root)
+            let logs = kept.removeOlder()
             problems += logs.problems
             if options.json {
                 try Output.json(Result(deleted: deleted, problems: problems, removedLogs: logs.removed))
@@ -1111,7 +1114,7 @@ struct BoxCommand: ParsableCommand {
                 print("Deleted disposable box \(name)")
             }
             for id in logs.removed {
-                print("Removed the kept logs \(id) (older than \(KeptLogs.holdDays) days)")
+                print("Removed the kept logs \(id) (\(kept.holdDays == 0 ? "this store keeps none" : "older than \(kept.holdDays) days"))")
             }
             for problem in problems {
                 Stderr.write("warning: \(problem)\n")

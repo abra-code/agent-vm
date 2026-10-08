@@ -77,9 +77,14 @@ struct StoreCommand: ParsableCommand {
                 contacted, and what was refused), supervisor.log, and a Linux box's console.log. \
                 A box that logged nothing leaves nothing.
 
-                They stay for \(KeptLogs.holdDays) days: `box gc` removes older ones (and so do `box list`, \
-                `box start` and `doctor`, which run it). --remove takes the names this command \
-                lists; --remove-older-than 0 removes all of them.
+                They are compressed (gzip: Finder and gunzip expand them, and `box execlog \
+                <name> --kept` and `box netlog <name> --kept` read them as they are). They stay \
+                for \(KeptLogs.defaultHoldDays) days: `box gc` removes older ones (and so do `box list`, `box start` \
+                and `doctor`, which run it). --remove takes the names this command lists; \
+                --remove-older-than 0 removes all of them.
+
+                --hold-days changes for how long this store keeps them. With 0 a deleted box \
+                leaves no logs, and the ones kept so far go at the next `box gc`.
                 """)
 
         @Option(name: .long, help: ArgumentHelp("Remove one deleted box's logs (repeatable).", valueName: "id"))
@@ -88,12 +93,17 @@ struct StoreCommand: ParsableCommand {
         @Option(name: .customLong("remove-older-than"), help: ArgumentHelp("Remove the logs of boxes deleted this many days ago or earlier.", valueName: "days"))
         var removeOlderThan: Int?
 
+        @Option(name: .customLong("hold-days"), help: ArgumentHelp("Keep the logs of deleted boxes for this many days from now on (default \(KeptLogs.defaultHoldDays)); 0: do not keep them.", valueName: "days"))
+        var holdDaysOption: Int?
+
         @OptionGroup var options: StoreOptions
 
         struct Result: Encodable {
             /// Where kept logs are, whether or not there are any.
             var directory: String
             var holdDays: Int
+            /// What everything kept takes on disk now.
+            var bytes: Int64
             /// What is kept now, the newest first.
             var logs: [KeptLogs.Entry]
             /// What this run removed, by id; absent when it was not asked to remove.
@@ -105,18 +115,24 @@ struct StoreCommand: ParsableCommand {
             if let removeOlderThan, removeOlderThan < 0 {
                 throw ValidationError("--remove-older-than takes a number of days, 0 or more")
             }
+            if let holdDaysOption, !(0...KeptLogs.maximumHoldDays).contains(holdDaysOption) {
+                throw ValidationError("--hold-days takes a number of days from 0 (keep none) to \(KeptLogs.maximumHoldDays)")
+            }
         }
 
         func run() throws {
             let kept = KeptLogs(root: options.boxStore.root)
+            // Every name is checked before the first one goes, and before the setting changes.
+            for id in remove where !kept.exists(id) {
+                throw AgentVMError.keptLogsNotFound(id)
+            }
+            if let holdDaysOption {
+                try kept.setHoldDays(holdDaysOption)
+            }
             var removed: [String]?
             var problems: [String] = []
             if !remove.isEmpty || removeOlderThan != nil {
                 var ids: [String] = []
-                // Every name is checked before the first one goes.
-                for id in remove where !kept.exists(id) {
-                    throw AgentVMError.keptLogsNotFound(id)
-                }
                 for id in remove where !ids.contains(id) {
                     try kept.remove(id)
                     ids.append(id)
@@ -130,7 +146,7 @@ struct StoreCommand: ParsableCommand {
             }
             let entries = kept.list()
             if options.json {
-                try Output.json(Result(directory: kept.directory.path, holdDays: KeptLogs.holdDays, logs: entries, removed: removed,
+                try Output.json(Result(directory: kept.directory.path, holdDays: kept.holdDays, bytes: kept.totals().bytes, logs: entries, removed: removed,
                                        problems: problems.isEmpty ? nil : problems))
                 if !problems.isEmpty {
                     throw ExitCode(1)
@@ -139,6 +155,14 @@ struct StoreCommand: ParsableCommand {
             }
             for problem in problems {
                 Stderr.write("warning: \(problem)\n")
+            }
+            if let holdDaysOption {
+                print(holdDaysOption == 0
+                    ? "The logs of deleted boxes are not kept from now on; the ones kept so far go at the next `agent-vm box gc`."
+                    : "The logs of deleted boxes are kept for \(holdDaysOption) day\(holdDaysOption == 1 ? "" : "s").")
+                if removed == nil {
+                    return
+                }
             }
             if let removed {
                 for id in removed {
@@ -152,8 +176,11 @@ struct StoreCommand: ParsableCommand {
                 }
                 return
             }
-            guard !entries.isEmpty else {
-                print("No logs of deleted boxes are kept (they would be in \(kept.directory.path)).")
+            let totals = kept.totals()
+            guard totals.count > 0 else {
+                print(kept.holdDays == 0
+                    ? "No logs of deleted boxes are kept, and this store keeps none (agent-vm store logs --hold-days <days> changes that)."
+                    : "No logs of deleted boxes are kept (they would be in \(kept.directory.path)).")
                 return
             }
             for entry in entries {
@@ -162,7 +189,10 @@ struct StoreCommand: ParsableCommand {
                 print("    \(entry.path)")
                 print("    \(entry.files.joined(separator: ", "))")
             }
-            print("Kept for \(KeptLogs.holdDays) days after the box was deleted; remove one with: agent-vm store logs --remove <name>")
+            let days = kept.holdDays
+            print("\(totals.count) kept, \(Self.size(totals.bytes)) in all\(totals.count > entries.count ? " (\(totals.count - entries.count) without a readable record, not listed)" : ""). " + (days == 0
+                ? "This store keeps no more, and these go at the next `agent-vm box gc`."
+                : "Kept for \(days) day\(days == 1 ? "" : "s") after the box was deleted; remove one with: agent-vm store logs --remove <name>"))
         }
 
         /// A log's size: these are KB more often than MB.
