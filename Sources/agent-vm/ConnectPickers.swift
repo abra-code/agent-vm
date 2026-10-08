@@ -21,9 +21,6 @@ enum ConnectPickers {
         var reason: String?
     }
 
-    /// Why a Linux image or box is shown and cannot be chosen.
-    static let linuxNotYet = "runs Linux, which avm cannot use yet (agent-vm box start and box shell can)"
-
     /// A box the picker shows, and why it cannot be chosen when it cannot.
     struct Offer {
         var box: Box
@@ -52,9 +49,6 @@ enum ConnectPickers {
             case .stopped:
                 if offer.temporary {
                     continue
-                }
-                if box.record.effectiveGuest == .linux {
-                    offer.reason = linuxNotYet
                 }
                 stopped.append(offer)
                 continue

@@ -1,6 +1,6 @@
 # Threat model: what a box protects, and what it does not
 
-AgentVM runs an agent and its tools in a macOS virtual machine (a "box") so that a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac. This page says what that promise covers, what each part of it rests on, and where it ends. The README describes each feature; this page is the summary to read before you decide what to put in a box and what to allow it.
+AgentVM runs an agent and its tools in a virtual machine (a "box", running macOS or Linux) so that a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac. This page says what that promise covers, what each part of it rests on, and where it ends. The README describes each feature; this page is the summary to read before you decide what to put in a box and what to allow it.
 
 ## The short version
 
@@ -17,11 +17,12 @@ AgentVM runs an agent and its tools in a macOS virtual machine (a "box") so that
 | macOS on your Mac and Apple's Virtualization framework | The wall between the box and the Mac is theirs. |
 | The `agent-vm` you installed, with the `packs.json` and `agents.json` beside it | It runs as you. |
 | The restore image from Apple | macOS in the box is installed from it. |
+| Debian's cloud image, and Debian's package servers | A Linux box's system is built from them (see Linux boxes). |
 | The recipes you build images with, and the files and installers you send into a box | They run as root or as the box user while the image is built, with the open network. |
 
 | Not trusted | What it controls |
 |---|---|
-| The agent and every program in a box | The box user's account, an administrator without the password. |
+| The agent and every program in a box | The box user's account: in a macOS box an administrator without the password, in a Linux box an account with no password and no sudo. |
 | Root in a box | Everything in that box, including the guest daemon and every answer it gives. |
 | Servers on the internet | What allowed hosts answer; what names resolve to. |
 | The project folder after a session | Every file name, content, permission and link in it. |
@@ -32,16 +33,16 @@ AgentVM runs an agent and its tools in a macOS virtual machine (a "box") so that
 Each line names what the claim rests on.
 
 - **Read or change files on your Mac outside the shared folder.** The box has its own disk. One folder is shared, at its own path, and AgentVM refuses to share `/`, your home folder, `~/Library`, hidden folders of your home, and its own store, whatever name they are reached by. Your Keychain, SSH keys, browser data and other projects do not exist in the box.
-- **Reach your Mac or your local network** (on the `allowlist` and `off` networks). The box's network card leads nowhere: no route and no DNS. The only way out is a proxy on the Mac that the guest daemon relays to. The proxy checks the host name against your rules, looks the name up on the Mac, and connects only to public addresses. A name that resolves to the Mac, to a private or link-local address, to the Mac's own networks, or to an address that stands for one of those (NAT64, 6to4, Teredo) is refused.
+- **Reach your Mac or your local network** (on the `allowlist` and `off` networks). A macOS box's network card leads nowhere: no route and no DNS. A Linux box has no network card at all. The only way out is a proxy on the Mac that the guest daemon relays to. The proxy checks the host name against your rules, looks the name up on the Mac, and connects only to public addresses. A name that resolves to the Mac, to a private or link-local address, to the Mac's own networks, or to an address that stands for one of those (NAT64, 6to4, Teredo) is refused.
 - **Reach hosts you did not allow.** Each request is one host and one port, checked before anything is connected. A plain HTTP connection carries one request, so a second one for another host cannot ride on it.
 - **Hide what it connected to.** Every attempt is logged on the Mac, in files the box cannot reach. Refused attempts cannot push allowed ones out of the log.
 - **Start anything on your Mac.** The guest answers the Mac's requests and never the other way around: the guest daemon accepts connections only from the host, and the Mac never runs a command or opens a file because the guest said so.
 - **Hang, crash or fill the process that runs it.** Whatever the box's supervisor asks of the guest has a time limit and a size limit, so `box stop` always ends and a guest cannot use up the supervisor's memory or the proxy's connections for good.
 - **Act on your terminal through what it prints.** Text that came from a box (names, versions, errors, file names in a change report, recipe output) has control characters replaced before it is printed. In a terminal session (`exec --tty`, `box shell`, `avm`) the program's output goes through a filter that passes what draws in the window and drops what reaches past it: the clipboard, files, uploads, notifications, links to anything but web pages, and window control.
 - **Steer an undo out of the project, or block it.** Undo and the snapshot work through open folders and never follow a link, so a folder exchanged for a link while the undo runs is refused. Files the agent locked, folders it made read-only or unreadable, and access control lists it added are opened up first.
-- **Become root in the box by itself.** The box account is an administrator, but its password never enters the box as a file the box user can read or as a command argument, and there is no passwordless `sudo`.
+- **Become root in the box by itself.** In a macOS box the account is an administrator, but its password never enters the box as a file the box user can read or as a command argument, and there is no passwordless `sudo`. In a Linux box the account has no password, no sudo rule and no group but its own (unless you built the image with the sudo recipe; see Linux boxes).
 - **Outlive a disposable box.** A disposable box is never started again once it stops and is deleted by the next `box gc` (which `box list`, `box start` and `doctor` run); a temporary `avm` box is deleted when its session ends. A kept box keeps whatever was planted in it until you recreate it from its image.
-- **Take more of the Mac than it was given.** A box has a fixed number of CPUs, a fixed memory size and a disk with a ceiling. macOS itself runs at most two macOS guests at once.
+- **Take more of the Mac than it was given.** A box has a fixed number of CPUs, a fixed memory size and a disk with a ceiling. macOS itself runs at most two macOS guests at once; Linux boxes are limited by their memory sizes only, and AgentVM warns at a start when the running boxes together, by the sizes they were given, leave the Mac less than 6 GB.
 
 ## What a box can still do
 
@@ -72,7 +73,7 @@ Every program in the box can read the shared folder and every secret you passed 
 ### Show and print what it likes inside its own window
 
 - A full-screen program draws anything in your terminal window for as long as the session lasts, including text that looks like your Mac's shell prompt or a password question. What you type during a session goes to the box.
-- The box's screen (`box view`) is drawn by the box. A dialog there that asks for your Mac's password is the box asking.
+- The box's screen (`box view`, macOS boxes only) is drawn by the box. A dialog there that asks for your Mac's password is the box asking. A Linux box has no screen.
 - Window titles and links to `http` and `https` pages pass the terminal filter. A link's text and its address are the program's choice.
 
 ### Use the Mac's resources up to its limits
@@ -83,7 +84,7 @@ A box can keep its CPUs busy, fill its disk up to its ceiling (64 GB by default,
 
 AgentVM does not try to protect programs in a box from each other. Two things are worth knowing:
 
-- **Root.** The account password is what keeps the box user from root. It is the same in every image and box that descends from one macOS install, and macOS keeps it in each guest, lightly obscured, for automatic login (`/etc/kcpassword`, readable by root). So root in one box learns the password of its sibling boxes. A box that was shown in a window by an agent-vm older than 0.5.11 may have let its agent read it; rebuild such an image from a restore file if that matters.
+- **Root in a macOS box.** The account password is what keeps the box user from root. It is the same in every image and box that descends from one macOS install, and macOS keeps it in each guest, lightly obscured, for automatic login (`/etc/kcpassword`, readable by root). So root in one box learns the password of its sibling boxes. A box that was shown in a window by an agent-vm older than 0.5.11 may have let its agent read it; rebuild such an image from a restore file if that matters.
 - **A replaced guest daemon.** Root in a box can replace the guest daemon. The Mac side assumes this: every answer from the guest is checked for size, shape and time, and printed as text. What a replaced daemon gains is inside its own box only, plus the account password the next time the Mac sends it (a macOS update, turning the screen lock off).
 
 ## Secrets
@@ -91,7 +92,7 @@ AgentVM does not try to protect programs in a box from each other. Two things ar
 - **Agent secrets** (`agent-vm secret set`) are Keychain items tied to the agent-vm that stored them. They are sent to the guest inside the exec request, never logged, never written to disk by AgentVM. Once in the box they are the box's.
 - `--env NAME=VALUE` puts the value in agent-vm's argument list, which every local user can read with `ps` while the command runs. Use `--env NAME`, `--env-file` or `--secret`. The exec log never records a program's environment, but it records the program's command line as given, so keep secrets out of its arguments too.
 - Recipe parameters (`--set`) are recorded in the image and written to the build log in clear. Do not pass secrets that way.
-- **The account password** is in the Keychain (images made since 0.6.0 by a build signed with an identity, not ad hoc) or in a private `Password` file. Either way it can be recovered from any disk image of that lineage by whoever can read the store.
+- **The account password** of a macOS image (a Linux image has none) is in the Keychain (images made since 0.6.0 by a build signed with an identity, not ad hoc) or in a private `Password` file. Either way it can be recovered from any disk image of that lineage by whoever can read the store.
 - The supervisor of a box and the runner of a job outlive the command that started them, so they do not keep its environment (since 0.6.7): a key exported in your shell does not stay in a process that runs for days. The box never sees the Mac's environment either way.
 
 ## Other users of the Mac, and other programs running as you
@@ -104,9 +105,48 @@ AgentVM does not try to protect programs in a box from each other. Two things ar
 ## Building images
 
 - An image build runs with the open network (NAT), because macOS and the tools come from the internet, and recipe steps run as the box user or as root. Use recipes you have read.
-- Until the guest daemon is in place, the build reaches the new guest over SSH with the account password, on the Mac's virtual network. It never uses your SSH configuration, keys or `known_hosts`. Whether another virtual machine on that network at that moment could answer in the guest's place was not measured; do not build images while a box you do not trust runs on the `open` network.
+- Until the guest daemon is in place, the build of a macOS image reaches the new guest over SSH with the account password, on the Mac's virtual network. (A Linux image's build has no such phase: its daemon is installed from a second disk at the first boot.) It never uses your SSH configuration, keys or `known_hosts`. Whether another virtual machine on that network at that moment could answer in the guest's place was not measured; do not build images while a box you do not trust runs on the `open` network.
 - A restore image is trusted because it came from Apple over HTTPS, or is a file you supplied, and Virtualization can load it. AgentVM keeps no checksum of it.
 - An agent entry of your own (`Agents/<id>.json`) is shown and asked about once before it is first used, and again when the file changes.
+
+## Linux boxes
+
+Everything above holds for a Linux box, with the differences each line names. What is smaller, what is new, and what each new part rests on:
+
+**Smaller than for a macOS box**
+
+- **No account password exists.** There is nothing to store, to type, or to leak between sibling boxes.
+- **No SSH phase in the image build,** so no first contact that another machine on the virtual network could answer.
+- **No network card** on the `allowlist` and `off` networks. "No route and no DNS" becomes "no card": there is nothing to configure wrongly, and root in the box cannot bring up what is not there.
+- **No screen,** so no window in which a box can ask for your Mac's password.
+- **No ssh server and no background updates.** The server is removed from the image (not only disabled: systemd would make an installed one listen on a second kind of socket by itself), and the image's build checks that nothing listens for the network and nothing but the guest daemon on the socket the Mac uses.
+
+**New, and what it rests on**
+
+| What | The risk | What answers it |
+|---|---|---|
+| Debian's cloud image | A tampered download | Its SHA-512 must be the one in Debian's list, fetched over HTTPS from `cloud.debian.org` and from no other host, before anything reads the file; a cached file is checked again at every use. Debian publishes no signature beside the list, so HTTPS to that host is what the image is trusted by. |
+| Debian's packages; the Node archive of `Recipes/linux-node` | What the image is built from | apt checks its signed index with the keys in the image. The Node recipe checks nodejs.org's own checksum list. Both are "recipes you have read". |
+| Unpacking the cloud image | A crafted archive | Only a checked file is read; one member, written to the disk file through a pipe, never unpacked into a folder; no more than the disk's size. |
+| The disk that installs the guest daemon at first boot | A secret left in the guest | It holds none: the daemon, its unit, and the daemon's SHA-256. |
+| What the build believes of the guest | The build takes the system's name, version and kernel from the guest it just made, on the open network | Each is taken only as a short printable word; nothing the guest says is run or used as a path on the Mac. |
+| The console log | A guest that prints without end, or prints control characters | 2 MB at most on disk and 4 MB a minute; shown only with control characters replaced. |
+| The shared folder | Every user in the box can do in it what you can on the Mac | Stated: inside a box there is one trust zone. The folder is mounted so that a setuid file or a device file in it means nothing in the box. |
+| Starting a program in the shared folder | The folder's files appear to belong to whoever asks, so root in the box must not be the one that looks | The daemon's helper checks the folder and the program after it has become the box user, and tells the daemon through a pipe limited to 1 KB, 10 seconds and plain text. |
+| Root in the box loads kernel modules | The guest daemon accepts connections only from the Mac | A socket in the guest cannot take the Mac's address, with or without the kernel's loopback module (measured). |
+| System updates | An upgrade that brings back what was sealed | `image update --system` compares what the build sealed before and after; something that held and no longer does fails the update. |
+| The boot firmware's variables (`EFIVariableStore`) | A file the guest writes and Apple's firmware reads at the next boot | Outside the model, as every input to the Virtualization framework is; named because a macOS box has no such file. It is per box, and a box recreated from its image gets the image's. |
+
+**Root in a Linux box**
+
+- **By default the box user cannot become root:** a locked password, no sudo rule, no group but its own, and no `polkitd`. A flaw in the Linux kernel is outside this; `image update --system` is how its fixes arrive.
+- **Why there is no passwordless sudo by default.** Root in a box can load kernel modules and talk to the virtual machine's devices in ways a user cannot, so more of Apple's device code is within its reach. A macOS box's user cannot become root either.
+- **`Recipes/linux-sudo` is the choice to accept that** for an image. The recipe is then in the image's record, and in the record of every image built from it, and `agent-vm image list` shows it for the image built with it.
+- **A sudo rule for `apt-get` alone would be a limit in name only:** apt can be made to run a program of the caller's choosing as root.
+
+**Not measured**
+
+- The agents' own behavior in a Linux box beyond their start: which hosts each asks for was not compared with a macOS box.
 
 ## Outside the model
 
@@ -121,5 +161,6 @@ AgentVM does not try to protect programs in a box from each other. Two things ar
 - A review of the whole tool by four independent reviewers, one for each boundary: the guest-facing code and the guest daemon, the network proxy, file safety (snapshot, report, undo), and the local surface on the Mac. Its confirmed findings were fixed in versions 0.5.8 to 0.6.6.
 - Unit tests that play the hostile side: a fake guest that sends malformed, oversized, slow and out-of-turn frames; proxy requests with smuggled lines, odd hosts and addresses in every notation; projects with planted links, FIFOs, locked and unreadable files, deep trees and names holding control characters; terminal output fed a byte at a time.
 - Tests on real boxes for what only a real one shows: no way around the proxy, the Mac unreachable from the box, rules changed on a running box, read-only shares, signals, terminals and permission prompts.
+- The same tests on real Linux boxes, and for what is theirs alone: no network card and no way around the proxy for root either, no ssh server and no listener but the guest daemon, descriptors a program inherits, `git` in the shared folder right after root looked at it, and an update that leaves the image as it was when canceled.
 
 What was not measured is named above where it applies.

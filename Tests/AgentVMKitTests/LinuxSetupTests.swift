@@ -59,6 +59,11 @@ import Testing
         // by the first boot stops the build.
         #expect(account.contains("/usr/sbin/useradd --create-home --shell /bin/bash --uid 1000 --user-group dev"))
         #expect(account.contains("/usr/bin/passwd --lock dev"))
+        // Its own tool folder is there from the start, and its own: a login shell's profile
+        // puts it on the path only when it exists.
+        #expect(account.contains("/usr/bin/install -d -o dev -g dev -m 755 /home/dev/.local /home/dev/.local/bin; fi && /usr/bin/id dev"))
+        // The same step runs in an image built from an image, and leaves a folder that is there.
+        #expect(LinuxSetup.toolFolder(user: "dev").script.hasPrefix("if [ ! -d /home/dev/.local/bin ]; then /usr/bin/install -d "))
         #expect(account.contains("if /usr/bin/getent passwd debian > /dev/null || /usr/bin/getent passwd ubuntu > /dev/null; then"))
         // apt asks nothing and dpkg prints plain lines.
         #expect(LinuxSetup.environment["DEBIAN_FRONTEND"] == "noninteractive")

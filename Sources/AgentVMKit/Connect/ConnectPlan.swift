@@ -7,7 +7,8 @@
 // delete a temporary box, report what changed), so
 // `--dry-run` prints exactly what a run performs, and tests check the steps without a box. The
 // session itself is `agent-vm exec --tty` run as a child; the program goes through the
-// account's login shell, so ~/.zprofile applies as it does in `box shell`.
+// account's login shell, so ~/.zprofile (a Linux box: ~/.profile) applies as it does in
+// `box shell`.
 
 import Foundation
 

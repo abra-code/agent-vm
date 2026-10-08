@@ -55,14 +55,25 @@ avm would:
   report what changed in /Users/me/src/app, then keep or undo it
 ```
 
+## Linux boxes
+
+Since 0.7.9 avm takes Linux images and boxes like macOS ones; every form on this page works with them. What differs:
+
+- **The lists** show "Debian 13" where a macOS entry shows "macOS 27.0" (`guest` and `system` in `avm list --json`).
+- **A temporary box is a matter of seconds:** `avm new deb-tools` makes it, starts it in about 3 seconds, and deletes it in about 1 when you leave.
+- **The login shell is `bash`,** so it is `~/.profile` that applies (Debian's own adds `~/.local/bin` to the path when the folder exists, which it does in images made since 0.7.9). That folder is where `npm install --global` puts the agents in an image built with `Recipes/linux-node` and `Recipes/agent-clis`.
+- **The agents are the same programs,** with the same hosts and secrets. Logging in inside a kept box works as in a macOS box: open the address the agent prints in your Mac's browser.
+- **Starting needs no virtual machine slot,** so a Linux box starts beside two running macOS boxes.
+- **The folder** behaves as a Linux box's shared folder does ([linux-boxes.md](linux-boxes.md#the-shared-folder)): file watchers in the box do not see the Mac's edits, and many small files are slow.
+
 ## New boxes
 
-- **From the list:** its last section has `Temporary box from an image...` and `Kept box from an image...` (shown but not choosable when no image is ready). Either one shows the ready images (name, macOS version, what the recipe installed), preselecting the one remembered for the folder; an image whose `agent-vm-guest` cannot run terminal sessions is shown with `needs agent-vm image update <image> --guest`. A kept box then asks its name, suggesting the folder's name (`app`, or `app-2` when taken). Escape in the image list or at the name goes back to the box list.
+- **From the list:** its last section has `Temporary box from an image...` and `Kept box from an image...` (shown but not choosable when no image is ready). Either one shows the ready images (name, system, what the recipe installed), preselecting the one remembered for the folder; an image whose `agent-vm-guest` cannot run terminal sessions is shown with `needs agent-vm image update <image> --guest`. A kept box then asks its name, suggesting the folder's name (`app`, or `app-2` when taken). Escape in the image list or at the name goes back to the box list.
 - **From the command line:** `avm new <image>` (temporary, `--temp` says so) or `avm new <image> --name <box>` (kept). The image, the name and `--allow`'s rules are checked before anything is made.
 - **Temporary boxes** are named `avm-<image>-<6 hex digits>`. avm is their owner: the box stops when avm exits, however it exits (even `kill -9`), and `agent-vm box gc` (or the next `box list` or avm) deletes it. After the session avm stops and deletes it itself.
 - **Kept boxes** stay, with no owner, as `agent-vm box create` makes them.
 - **Rules:** a new box's network is an allowlist of the agent's hosts (none for a shell or a command) plus `--allow`'s; nothing is asked. `--cpus N` and `--memory-gb N` set its size (default: the image's).
-- **Two VMs at most:** macOS runs at most two macOS virtual machines at once, in any application, and starting a box needs one of them. When none is free, avm says which of your boxes run (and whether a program uses one, or it is another avm's temporary box) and how to stop one, deletes the temporary box it just made, and exits 75; when you chose in the list, it shows the list again instead, where a running box can be joined without a slot.
+- **Two VMs at most:** macOS runs at most two macOS virtual machines at once, in any application, and starting a macOS box needs one of them. A Linux box needs none: the limit is not about Linux guests, and the message below names macOS boxes only. When none is free, avm says which of your boxes run (and whether a program uses one, or it is another avm's temporary box) and how to stop one, deletes the temporary box it just made, and exits 75; when you chose in the list, it shows the list again instead, where a running box can be joined without a slot.
 - If the start fails otherwise, a temporary box that never ran is deleted; a kept one stays (`avm <box>` tries again).
 
 ## A box with the newest tools

@@ -56,7 +56,7 @@ The box user of a Linux image cannot become root: it has no password, no sudo ru
 `Recipes/linux-sudo` changes that for an image: `agent-vm image create deb-sudo --from deb --recipe Recipes/linux-sudo/recipe.json`. In every box of such an image, any program, an agent included, runs anything as root.
 
 - **What it widens.** Root in a box can load kernel modules and talk to the virtual machine's devices in ways a user cannot, so more of the code between the box and your Mac is within its reach; it can also change everything in the box, its proxy settings among them. The proxy itself, the allowlist and your Mac's files stay where they are, outside the box. A box is still a separate machine: this is a wider surface, not an open door.
-- **The image says so.** `agent-vm image list` shows the recipe in every image built with it (and in images built from those).
+- **The image says so.** `agent-vm image list` shows the recipe for the image built with it. An image built from that one shows its base's name there, and has the recipe in its record (`recipes` in `image info --json`, marked `inheritedFrom`).
 - **No other bundled recipe needs it,** and a recipe should not add a rule of its own.
 - **Seeing what an agent wanted root for,** in a box without the rule: each refused `sudo` is in the system's journal with its command. `agent-vm exec --box <box> --user root -- journalctl -t sudo` lists them (`user NOT in sudoers ; ... COMMAND=/usr/bin/apt-get install -y ripgrep`). The same packages asked for again and again belong in a recipe.
 

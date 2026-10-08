@@ -1,10 +1,10 @@
 # AgentVM CLI tools
 
-Run AI agents and their tools inside disposable macOS virtual machines, so a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac.
+Run AI agents and their tools inside disposable virtual machines on your Mac, running macOS or Linux, so a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac.
 
 ## What it does
 
-An AI coding agent (Claude Code, Codex, opencode, or any tool an agent drives) runs inside a macOS virtual machine - a "box" - instead of directly on your Mac:
+An AI coding agent (Claude Code, Codex, opencode, or any tool an agent drives) runs inside a virtual machine - a "box" - instead of directly on your Mac. A box runs macOS, or Linux (Debian) when the work does not need a Mac: a Linux box starts in about 3 seconds and its image takes 2 GB instead of 30 ([Docs/linux-boxes.md](Docs/linux-boxes.md)).
 
 - **Only your project is shared.** The project folder is mounted at the same path inside the box. Your home folder, Keychain, SSH keys, other projects and browser data do not exist there.
 - **Network is allowlisted.** The box has no route to your Mac or your local network. Outbound connections go through a proxy on the host that allows only the hosts you choose (package registries, the agent's API) and logs every connection.
@@ -20,7 +20,8 @@ What a box protects against, what it does not, and what each claim rests on: [Do
 
 - A Mac with Apple silicon
 - macOS 27 or later (host and guest)
-- Disk space for one golden image (tens of GB) plus per-box changes
+- Disk space for one golden image (tens of GB for macOS, about 2 GB for Linux) plus per-box changes
+- For Linux boxes nothing more: the package carries the guest daemon for them, and Debian's cloud image is downloaded when the first image is built
 
 ## Installing
 
@@ -155,7 +156,9 @@ agent-vm box start s1 --owner-pid $$               # stops when this shell exits
   - **Programs start with** `~/.local/bin` first in `PATH` (where npm, pip, uv and installers put a user's own tools), then `/usr/local/bin:/usr/bin:/bin` and the `sbin` folders, and `LANG=C.UTF-8`.
   - **Its console is kept:** what the system prints while it boots and runs goes to `console.log` in the box's folder (the last boot's is `console.log.1`), at most 2 MB in the two files however much the guest prints. When a Linux box does not come up, the error ends with the console's last lines.
   - **It does not count against the two macOS guests** (next point): several Linux boxes run at once, and beside two macOS boxes.
-  - **Not there yet in this version:** `box send`, and `avm`, which lists Linux images and boxes and does not start them. Each says so.
+  - **`avm` takes Linux images and boxes** like the others (since 0.7.9): `avm new deb-tools` is a temporary Linux box with your folder, made, used and deleted in seconds.
+  - **Not there yet in this version:** `box send`, which says so.
+  - **Everything in one place:** [Docs/linux-boxes.md](Docs/linux-boxes.md).
 - **macOS runs at most two macOS guests at once**, whichever applications started them (`agent-vm status` and `agent-vm doctor` count them; with `--json`, `status` has `runningVMs` and doctor's "running VMs" check has `count` and `limit`). Linux boxes take none of the two places: `runningVMs` and the check also have `linuxBoxes`, how many of `count` are your own running Linux boxes, and a program shows `count - linuxBoxes` of `limit`. Another application's Linux guest cannot be told from a macOS one, so it is counted as if it were one. A command that needs a VM when none is free (`box start`, `image create`, `image update-guest`, `image setup`, `image view`) fails with exit status 75 and a message that starts with "no free VM slot". A refusal before the first VM starts leaves nothing behind: a new image whose VM never ran is removed, so its name stays free, an image being updated stays as it was, and a disposable box can be started again. A build or update boots more than once, and if another application takes the slot between two boots, the image is marked failed, as after any other failure; delete it (or update it again) and retry.
 - **Socket paths:** the control socket's full path must stay under 104 bytes, which a very long `AGENT_VM_HOME` can exceed.
 
@@ -222,7 +225,8 @@ Box dev1 keeps running; stop it with: agent-vm box stop dev1
 - **Agents:** Claude Code (`claude`), Codex (`codex`) and opencode (`opencode`), as an image built with [Recipes/agent-clis](Recipes/README.md) installs them. The list of what to run marks an agent the box lacks; each runs through the account's login shell, as the shell does. When none of an agent's secrets is set (for Claude Code, `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` on this Mac, or `ANTHROPIC_API_KEY`), avm offers to set one in the Keychain: typed without echo, it goes to the Keychain only, and the session reads it from there (`exec --secret`). Or go on without and log in inside the box. When the box does not allow the agent's hosts (`pack:anthropic` for Claude Code), avm asks to add them. The agents come from `agents.json` next to `agent-vm`; your own go in `Agents/<id>.json` in the store (see [Docs/avm.md](Docs/avm.md#agents)).
 - **Snapshot, report, keep or undo:** a folder shared read-write is snapshotted before the session (a session, as in [Sessions](#sessions-snapshot-report-and-undo)). Afterwards avm lists what changed, flagging files that run code later on this Mac, and asks: `k` keeps the changes (the snapshot stays, so `agent-vm session undo <id>` still works later), `r` shows every change, `u` undoes them all. Escape keeps them. With no changes, the snapshot is discarded. The box keeps running, so stop what the agent left running in the background before you undo; avm asks first when other programs (another terminal or application) use the box. Kept snapshots take space as the folder changes: `agent-vm session discard --older-than 7` frees those older than a week.
 - **New boxes:** the list ends with `Temporary box from an image...` and `Kept box from an image...`, then a list of your ready images; `avm new <image>` names the image. A temporary box (`avm-<image>-<6 hex digits>`) belongs to that avm: it is stopped and deleted after the session, before the report, and if avm is killed it stops on its own and `box gc` deletes it. A kept box (named in a question, or with `--name`) stays. A new box allows the agent's hosts, plus `--allow`; `--cpus` and `--memory-gb` set its size.
-- **Two VMs at most:** macOS runs at most two macOS virtual machines at once, and a new or stopped box needs one of them. When none is free avm names the running boxes and exits 75 (or, when you chose in the list, shows it again: joining a running box needs no slot).
+- **Linux boxes** (since 0.7.9) are offered and run like macOS ones: the lists say "Debian 13" where a macOS entry says "macOS 27.0", the agents are the same programs (an image built with `Recipes/linux-node` and `Recipes/agent-clis` has them), and a login shell is `bash`, which reads `~/.profile`.
+- **Two VMs at most:** macOS runs at most two macOS virtual machines at once, and a new or stopped macOS box needs one of them (a Linux box needs none). When none is free avm names the running boxes and exits 75 (or, when you chose in the list, shows it again: joining a running box needs no slot).
 - **One folder per box:** a box shares one folder at a time, and a box whose programs use another folder refuses to switch. avm says so and shows the list again.
 - **Your home folder cannot be shared** (nor `~/Library`, a hidden folder in it, or the agent-vm store). Started there, avm offers to connect without a folder; `--project <folder>` shares another one.
 - **A box avm started keeps running** afterwards; stop it with `agent-vm box stop <box>`. avm stops and deletes only the temporary box it made in that run.

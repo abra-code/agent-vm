@@ -283,7 +283,7 @@ extension ImageBuilder {
     /// missing, then the recipes in order. Returns the updated image.
     func configureLinux(_ image: GoldenImage, machine: GuestMachine, commandLineTools: Bool, recipes: [ImageRecipe]) async throws -> GoldenImage {
         var current = image
-        var steps = [LinuxSetup.waitForNetwork]
+        var steps = [LinuxSetup.waitForNetwork, LinuxSetup.toolFolder(user: current.record.userName)]
         var installsTools = false
         if commandLineTools {
             if let installed = current.record.commandLineTools {

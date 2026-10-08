@@ -451,8 +451,7 @@ test_build_made_the_avm_link() {
     assert_eq "$_target" "agent-vm" "the avm link" || return 1
 }
 
-# Linux images and boxes are listed with their system; while agent-vm cannot run a Linux guest
-# they are shown and cannot be chosen.
+# Linux images and boxes are listed with their system, and offered like the others.
 test_connect_list_names_the_system() {
     make_boxes || return 1
     fake_linux_image deb
@@ -464,17 +463,40 @@ test_connect_list_names_the_system() {
     assert_json boxes.2.name work || return 1
     assert_json boxes.2.guest linux || return 1
     assert_json boxes.2.system "Debian GNU/Linux 13 (trixie)" || return 1
-    assert_json boxes.2.offered false || return 1
+    assert_json boxes.2.offered true || return 1
     assert_json images.0.name deb || return 1
     assert_json images.0.guest linux || return 1
     assert_json images.0.system "Debian GNU/Linux 13 (trixie)" || return 1
-    assert_json images.0.offered false || return 1
-    assert_json images.0.reason "runs Linux, which avm cannot use yet (agent-vm box start and box shell can)" || return 1
+    assert_json images.0.offered true || return 1
     assert_json images.1.name dev || return 1
     assert_json images.1.guest macos || return 1
     assert_json images.1.macOSVersion 27.0 || return 1
     run_avm_link list --project "$SCRATCH/project"
     assert_status 0 || return 1
-    assert_out_contains "deb  Debian 13  (runs Linux, which avm cannot use yet (agent-vm box start and box shell can))" || return 1
+    assert_out_contains "deb  Debian 13" || return 1
+    assert_not_contains "$OUT" "cannot use" "avm list" || return 1
     assert_out_contains "dev  macOS 27.0" || return 1
+}
+
+# What avm would do with a Linux image and a Linux box is what it does with a macOS one: the
+# same steps, the same exec through the login shell.
+test_avm_new_dry_run_on_a_linux_image() {
+    fake_linux_image deb
+    fake_linux_box work deb
+    make_project "$SCRATCH/project"
+    run_avm_link new deb --dry-run --project "$SCRATCH/project" --agent claude
+    assert_status 0 || return 1
+    assert_out_contains "create box avm-deb-" || return 1
+    assert_out_contains "from image deb (temporary), allowing pack:anthropic" || return 1
+    assert_out_contains "check that claude is installed in the box" || return 1
+    assert_out_contains "share $(cd "$SCRATCH/project" && /bin/pwd -P) (read-write)" || return 1
+    assert_out_contains "stop and delete box avm-deb-" || return 1
+    run_avm_link new deb --name mine --dry-run --no-project --shell
+    assert_status 0 || return 1
+    assert_out_contains "create box mine from image deb" || return 1
+    run_avm_link work --dry-run --no-project -- make test
+    assert_status 0 || return 1
+    assert_out_contains "start box work" || return 1
+    assert_out_contains "run: agent-vm exec --tty --box work" || return 1
+    assert_missing "$AGENT_VM_HOME/Boxes/mine" || return 1
 }

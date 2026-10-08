@@ -35,6 +35,8 @@ The package has two parts, both ticked by default and both shown under Customize
 
    Or open the document in PackageBuilder and press Build Package. The signed package lands in `.build/package`.
 
+   Check that it carries the Linux guest daemon (the listing under "Checking a package without installing it" must show `linux/agent-vm-guest` and the `Recipes/linux-*` folders), and after installing, that `agent-vm doctor` has the line `linux guest daemon: next to agent-vm`.
+
 3. Notarize it with Notarize.app, and staple the ticket.
 
 4. Attach the stapled package to the GitHub release.

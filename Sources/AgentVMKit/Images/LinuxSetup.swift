@@ -61,7 +61,8 @@ enum LinuxSetup {
             Step("account \(user)",
                  // One name to a getent: asked for two, it fails when either is missing.
                  "if /usr/bin/getent passwd debian > /dev/null || /usr/bin/getent passwd ubuntu > /dev/null; then /usr/bin/echo 'the first boot made a default account'; exit 1; fi; "
-                 + "/usr/sbin/useradd --create-home --shell /bin/bash --uid 1000 --user-group \(user) && /usr/bin/passwd --lock \(user) > /dev/null && /usr/bin/id \(user)"),
+                 + "/usr/sbin/useradd --create-home --shell /bin/bash --uid 1000 --user-group \(user) && /usr/bin/passwd --lock \(user) > /dev/null && "
+                 + "\(toolFolder(user: user).script) && /usr/bin/id \(user)"),
             packageLists,
             systemUpdates,
             Step(packages.joined(separator: ", "), "\(apt) install \(packages.joined(separator: " "))", timeout: 900),
@@ -80,6 +81,15 @@ enum LinuxSetup {
     /// A list that cannot be fetched fails the step: left to itself, apt-get update warns and
     /// exits 0, and an upgrade after it would find nothing new and call that up to date. A fetch
     /// that fails is tried three more times first: one slow mirror must not fail a build.
+    /// The account's own tool folder, there from the start: the system's profile puts it on a
+    /// login shell's path only when it exists at login, and exec has it first on the path
+    /// either way. Run with the account, and again in an image built from an image (the base
+    /// may be older than this step); a folder that is there is left as it is.
+    static func toolFolder(user: String) -> Step {
+        return Step("the account's tool folder",
+                    "if [ ! -d /home/\(user)/.local/bin ]; then /usr/bin/install -d -o \(user) -g \(user) -m 755 /home/\(user)/.local /home/\(user)/.local/bin; fi")
+    }
+
     static let packageLists = Step("package lists", "\(apt) -o APT::Update::Error-Mode=any -o Acquire::Retries=3 update", timeout: 600)
     /// A changed configuration file keeps what the image has (what sealing wrote among it).
     static let systemUpdates = Step("system updates", "\(apt) -o Dpkg::Options::=--force-confold dist-upgrade", timeout: 1800)
