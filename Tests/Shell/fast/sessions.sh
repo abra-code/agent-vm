@@ -360,3 +360,41 @@ test_report_shows_the_sessions_programs_and_network() {
     assert_status 0 || return 1
     assert_out_contains "note: the logs of box b1 are gone: its programs and connections are not listed" || return 1
 }
+
+# A discarded session still has a report: the one saved before its snapshot went.
+test_a_discarded_session_keeps_its_report() {
+    local _project="$SCRATCH/project"
+    make_project "$_project"
+    start_session "$_project" || return 1
+    printf 'changed\n' > "$_project/README.md"
+    printf '{"mcpServers": {}}\n' > "$_project/.mcp.json"
+    run_avm session discard "$SESSION"
+    assert_status 0 || return 1
+    assert_exists "$AGENT_VM_HOME/Sessions/$SESSION/report.json" || return 1
+    run_avm session report "$SESSION"
+    assert_status 0 || return 1
+    assert_out_contains "what had changed by then; the snapshot is gone, so nothing can be compared or undone" || return 1
+    assert_out_contains "1 added, 0 deleted, 1 modified" || return 1
+    assert_out_contains "README.md" || return 1
+    assert_out_contains ".mcp.json" || return 1
+    run_avm session report "$SESSION" --json
+    assert_status 0 || return 1
+    assert_json saved true || return 1
+    assert_json summary.modified 1 || return 1
+    assert_json boxes 0 || return 1
+    local _snapshot
+    _snapshot="$(json_value snapshotPath)"
+    [ -z "$_snapshot" ] || { fail "a discarded session's report names a snapshot: $_snapshot"; return 1; }
+    # The flags still count.
+    run_avm session report "$SESSION" --fail-on high
+    assert_status 2 || return 1
+    # Nothing can be undone from it.
+    run_avm session undo "$SESSION"
+    assert_status 1 || return 1
+    assert_err_contains "discarded" || return 1
+    # A session discarded by an agent-vm that saved no report has none, as before.
+    /bin/rm "$AGENT_VM_HOME/Sessions/$SESSION/report.json"
+    run_avm session report "$SESSION"
+    assert_status 1 || return 1
+    assert_err_contains "discarded" || return 1
+}

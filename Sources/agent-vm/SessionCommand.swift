@@ -100,6 +100,10 @@ struct SessionCommand: ParsableCommand {
                 editor tasks, executables, symlinks leaving the project). They are a review aid, \
                 not a security boundary.
 
+                A discarded session, whose snapshot is gone, prints the report saved when it \
+                ended (or when it was undone or discarded without having ended), marked as \
+                saved: what the run had changed, not what differs now.
+
                 After the changes come the programs agent-vm started for the project while \
                 the session was active (`exec --project`, `box shell --project`, avm), and the \
                 network of the boxes they ran in over the session's time, by host, the host \

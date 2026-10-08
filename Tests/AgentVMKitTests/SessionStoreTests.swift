@@ -259,6 +259,78 @@ import Testing
         #expect(gone["state"] as? String == "discarded")
     }
 
+    /// The change report outlives the snapshot: saved when the session ends and before a
+    /// discard, and read back for a discarded session.
+    @Test func aDiscardedSessionKeepsItsReport() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let session = try scratch.store.start(project: scratch.project.path)
+        #expect(scratch.store.savedReport(of: session) == nil)
+        try scratch.write("README.md", "agent\n")
+        let ended = try scratch.store.end(id: session.id)
+        let atEnd = try #require(scratch.store.savedReport(of: ended))
+        #expect(atEnd.saved == true && atEnd.changes.map(\.path) == ["README.md"])
+        #expect(atEnd.snapshotPath == session.snapshotPath)
+        // A report of a live session is made from the snapshot, not read back.
+        try scratch.write("notes.txt", "more\n")
+        let live = try scratch.store.report(id: session.id)
+        #expect(live.saved == nil && live.changes.map(\.path) == ["README.md", "notes.txt"])
+        // Discarded, the snapshot goes and the report of the run's end stays: what the project
+        // became after the run is not the run's.
+        try scratch.store.discard(id: session.id)
+        let kept = try scratch.store.report(id: session.id)
+        #expect(kept.saved == true && kept.snapshotPath == nil)
+        #expect(kept.changes.map(\.path) == ["README.md"] && kept.summary.modified == 1 && kept.summary.added == 0)
+
+        // A session discarded while still active has no report yet: the discard takes one.
+        let direct = try scratch.store.start(project: scratch.project.path)
+        try scratch.write("direct.txt", "x\n")
+        try scratch.store.discard(id: direct.id)
+        #expect(try scratch.store.report(id: direct.id).changes.map(\.path) == ["direct.txt"])
+        // A saved report of another project is not this session's.
+        var moved = try JSONSerialization.jsonObject(with: Data(contentsOf: direct.directory.appendingPathComponent("report.json"))) as? [String: Any] ?? [:]
+        moved["project"] = "/somewhere/else"
+        moved["snapshotPath"] = "/"
+        try JSONSerialization.data(withJSONObject: moved).write(to: direct.directory.appendingPathComponent("report.json"))
+        #expect(throws: AgentVMError.self) { _ = try scratch.store.report(id: direct.id) }
+        #expect(!FileManager.default.fileExists(atPath: session.snapshotPath))
+        // The saved file is the report, with nothing that says "saved": that is the reader's.
+        let data = try Data(contentsOf: session.directory.appendingPathComponent("report.json"))
+        #expect(try SessionStore.decoder.decode(ChangeReport.self, from: data).saved == nil)
+
+        // A session that changed nothing has a report that says so.
+        let quiet = try scratch.store.start(project: scratch.project.path)
+        try scratch.store.discard(id: quiet.id)
+        #expect(try scratch.store.report(id: quiet.id).isEmpty)
+
+        // Undone, the project is the snapshot again: the report saved at the end stays.
+        let undone = try scratch.store.start(project: scratch.project.path)
+        try scratch.write("README.md", "again\n")
+        try scratch.store.end(id: undone.id)
+        try scratch.store.undo(id: undone.id)
+        try scratch.store.discard(id: undone.id)
+        #expect(try scratch.store.report(id: undone.id).changes.map(\.path) == ["README.md"])
+
+        // Undone while still active (as avm does), there was no end: the undo saves it first.
+        for mode in [SessionStore.UndoMode.changedFiles, .wholeTree] {
+            let active = try scratch.store.start(project: scratch.project.path)
+            try scratch.write("README.md", "once more\n")
+            try scratch.store.undo(id: active.id, mode: mode)
+            try scratch.store.discard(id: active.id)
+            #expect(try scratch.store.report(id: active.id).changes.map(\.path) == ["README.md"])
+        }
+
+        // Another session's report, or none, is no report: the refusal is as before.
+        let bare = try scratch.store.start(project: scratch.project.path)
+        try scratch.store.discard(id: bare.id)
+        try data.write(to: bare.directory.appendingPathComponent("report.json"))
+        #expect(throws: AgentVMError.wrongSessionState(id: bare.id, state: "discarded", operation: "report on")) {
+            _ = try scratch.store.report(id: bare.id)
+        }
+        try FileManager.default.removeItem(at: bare.directory.appendingPathComponent("report.json"))
+        #expect(throws: AgentVMError.self) { _ = try scratch.store.report(id: bare.id) }
+    }
+
     @Test func discardByAgeLeavesActiveAndRecentSessions() throws {
         let scratch = try Scratch()
         try scratch.populate()

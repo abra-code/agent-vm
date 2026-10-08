@@ -66,7 +66,7 @@ public struct ChangeReport: Codable, Sendable {
     public let session: String
     public let project: String
     /// The snapshot folder: the project as it was when the session started, to compare with.
-    public let snapshotPath: String?
+    public var snapshotPath: String?
     public let startedAt: Date
     public let generatedAt: Date
     public let summary: Summary
@@ -74,6 +74,10 @@ public struct ChangeReport: Codable, Sendable {
     public let changes: [Change]
     /// Things the walk could not fully examine.
     public let warnings: [String]
+    /// True on a report read back from the session's folder (`report.json`), where it was saved
+    /// when the session ended or just before it was discarded: what had changed by then
+    /// (`generatedAt`), not what differs now. Absent on a report made from the snapshot.
+    public var saved: Bool?
 
     public var isEmpty: Bool { changes.isEmpty }
 }

@@ -6,6 +6,7 @@
 //   Sessions/.lock                 flock serializing every state change
 //   Sessions/<id>/session.json     the SessionRecord
 //   Sessions/<id>/snapshot/        APFS clone of the project taken at start
+//   Sessions/<id>/report.json      the change report, saved for when the snapshot is gone
 //   Sessions/<id>/replaced-<ts>/   the tree `undo` swapped out (kept for recovery)
 //
 // The snapshot is a copy-on-write clone, so it costs almost no space until the agent changes
@@ -148,7 +149,7 @@ public struct SessionStore: Sendable {
     /// Marks an active session as ended. The snapshot is kept.
     @discardableResult
     public func end(id: String) throws -> Session {
-        return try withLock {
+        let ended = try withLock { () throws -> Session in
             let current = try session(id: id)
             guard current.record.state == .active else {
                 throw AgentVMError.wrongSessionState(id: id, state: current.record.state.rawValue, operation: "end")
@@ -160,12 +161,65 @@ public struct SessionStore: Sendable {
             try save(updated)
             return updated
         }
+        // What the run changed, kept for when the snapshot is gone. The project is read
+        // outside the lock (seconds for a large one, and starting a session on any project
+        // waits on it), and the report is written only if the session is still as it was: an
+        // undo or a discard meanwhile saved its own, of a project and a snapshot it had whole.
+        if (try? requireProject(of: ended)) != nil, let report = try? ChangeScanner.report(session: ended) {
+            try? withLock {
+                if let now = try? session(id: id), now.record.state == .ended, savedReport(of: now) == nil {
+                    writeReport(report, of: ended)
+                }
+            }
+        }
+        return ended
     }
 
-    /// What changed in the project since the session's snapshot.
+    static let reportName = "report.json"
+    /// A report larger than this is not saved: a session with it has none once discarded.
+    static let savedReportLimit = 32 << 20
+
+    /// Saves the session's change report in its folder, replacing an earlier one; the caller
+    /// holds the lock. Nothing is saved, and an earlier one stays, when the report cannot be
+    /// made (the project is gone) or written.
+    func saveReport(of session: Session) {
+        guard (try? requireProject(of: session)) != nil, let report = try? ChangeScanner.report(session: session) else {
+            return
+        }
+        writeReport(report, of: session)
+    }
+
+    private func writeReport(_ report: ChangeReport, of session: Session) {
+        guard let data = try? Self.encoder.encode(report), data.count <= Self.savedReportLimit else {
+            return
+        }
+        try? data.write(to: session.directory.appendingPathComponent(Self.reportName), options: .atomic)
+    }
+
+    /// The report saved for the session, marked as saved; nil when there is none to read. Its
+    /// snapshot path is nil when the snapshot is gone.
+    public func savedReport(of session: Session) -> ChangeReport? {
+        let url = session.directory.appendingPathComponent(Self.reportName)
+        var info = stat()
+        guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_size <= Int64(Self.savedReportLimit),
+              let data = try? Data(contentsOf: url), var report = try? Self.decoder.decode(ChangeReport.self, from: data),
+              report.session == session.id, report.project == session.record.project else {
+            return nil
+        }
+        report.saved = true
+        // Where the snapshot is, is the session's to say, not the file's.
+        report.snapshotPath = FileSystem.exists(session.snapshotPath) ? session.snapshotPath : nil
+        return report
+    }
+
+    /// What changed in the project since the session's snapshot. For a discarded session,
+    /// whose snapshot is gone: the report saved before that (`saved` is true), when there is one.
     public func report(id: String) throws -> ChangeReport {
         let current = try session(id: id)
         guard current.record.state != .discarded else {
+            if let saved = savedReport(of: current) {
+                return saved
+            }
             throw AgentVMError.wrongSessionState(id: id, state: current.record.state.rawValue, operation: "report on")
         }
         try requireProject(of: current)
@@ -226,6 +280,15 @@ public struct SessionStore: Sendable {
             let report = mode == .changedFiles ? try ChangeScanner.report(session: current) : nil
             // Paths are checked before anything moves.
             let selected = try paths.map { try Self.undoSelection($0.map { try relativeUndoPath($0, project: current.record.project) }, in: report?.changes ?? []) }
+            // A session undone while active (as avm undoes one) never ended, so no report was
+            // saved: this is the last look at what the run changed, before it is put back.
+            if savedReport(of: current) == nil {
+                if let report {
+                    writeReport(report, of: current)
+                } else {
+                    saveReport(of: current)
+                }
+            }
             let replacedName = try unusedReplacedName(in: current.directory)
             let replacedPath = current.directory.appendingPathComponent(replacedName).path
             switch mode {
@@ -405,6 +468,12 @@ public struct SessionStore: Sendable {
             let current = try session(id: id)
             guard current.record.state != .discarded else {
                 throw AgentVMError.wrongSessionState(id: id, state: current.record.state.rawValue, operation: "discard")
+            }
+            // A session discarded while active has no report yet: this is the last look. One
+            // that ended or was undone keeps the report saved then, which is of the run; the
+            // project may have gone on changing since, or been undone back to the snapshot.
+            if savedReport(of: current) == nil {
+                saveReport(of: current)
             }
             try FileSystem.removeTree(current.snapshotPath)
             // Every replaced tree, including those of undo attempts that did not complete: only
