@@ -722,6 +722,9 @@ struct BoxCommand: ParsableCommand {
                 out of the box's reach; when the box is deleted it is kept for \(KeptLogs.holdDays) days \
                 (`agent-vm store logs`). It never holds the \
                 programs' environment.
+
+                --since and --until choose the programs by when they started. With --kept the \
+                name is that of a deleted box's kept logs.
                 """)
 
         @Argument(help: "The box name.")
@@ -729,6 +732,8 @@ struct BoxCommand: ParsableCommand {
 
         @Option(name: .long, help: "Only the last N programs.")
         var last: Int?
+
+        @OptionGroup var log: LogOptions
 
         @OptionGroup var options: StoreOptions
 
@@ -739,14 +744,19 @@ struct BoxCommand: ParsableCommand {
         }
 
         func run() throws {
-            let box = try options.boxStore.box(named: name)
-            let records = ExecLog(url: box.execLogURL).records(last: last)
+            let source = try log.source(name, store: options.boxStore)
+            let window = try log.window(hosts: [])
+            let records = source.execLog.records(last: last, matching: window.accepts)
             if options.json {
                 try Output.json(records)
                 return
             }
             if records.isEmpty {
-                print("Nothing run in box \(box.name) yet.")
+                if let box = source.box, window.isEmpty {
+                    print("Nothing run in box \(box.name) yet.")
+                } else {
+                    print("Nothing run is logged for \(source.label)\(window.isEmpty ? "" : " in that time").")
+                }
                 return
             }
             for record in records {
@@ -785,6 +795,13 @@ struct BoxCommand: ParsableCommand {
                 proxy last noted them (once a minute). Allowed connections are kept in a file of \
                 their own (Boxes/<name>/network-allowed.jsonl, refusals in network.jsonl), so a \
                 box that floods the log with refused requests cannot push them out.
+
+                --since and --until choose connections by when they were made, --host by \
+                their host (a name, or *.example.com for the names under one; repeatable). \
+                --summary adds them up by host and port: connections, refusals, bytes sent \
+                and received, the first and the last time, and the rules that allowed them, \
+                the host the box sent most to first. With --kept the name is that of a \
+                deleted box's kept logs.
                 """)
 
         @Argument(help: "The box name.")
@@ -799,6 +816,14 @@ struct BoxCommand: ParsableCommand {
         @Flag(name: .shortAndLong, help: "Keep printing connections as they are logged (after the last 10, or --last N), until the box stops. With --json, one JSON object per line.")
         var follow = false
 
+        @Option(name: .long, help: ArgumentHelp("Only connections to this host: a name, or *.example.com for the names under one (repeatable).", valueName: "host"))
+        var host: [String] = []
+
+        @Flag(name: .long, help: "Add the connections up by host and port, the host the box sent most to first.")
+        var summary = false
+
+        @OptionGroup var log: LogOptions
+
         @OptionGroup var options: StoreOptions
 
         /// How often --follow looks for new lines and checks that the box still runs.
@@ -808,21 +833,43 @@ struct BoxCommand: ParsableCommand {
             if let last, last < 0 {
                 throw ValidationError("--last takes a count of 0 or more")
             }
+            for pattern in host where !LogFilter.isHostPattern(pattern) {
+                throw ValidationError("--host takes a host name, or *.example.com for the names under one")
+            }
+            if follow && (summary || log.kept || log.until != nil) {
+                throw ValidationError("--follow does not go with --summary, --until or --kept")
+            }
         }
 
         func run() throws {
-            let box = try options.boxStore.box(named: name)
-            if follow {
-                try runFollowing(box)
+            let source = try log.source(name, store: options.boxStore)
+            let window = try log.window(hosts: host)
+            if follow, let box = source.box {
+                try runFollowing(box, window: window)
                 return
             }
-            let entries = NetworkLog(url: box.networkLogURL).entries(last: last, liveSince: Self.liveSince(box), includeAllowed: !denied, matching: matching)
+            // Nothing is open in a deleted box's log.
+            let liveSince = source.box.map(Self.liveSince) ?? .distantFuture
+            let entries = source.networkLog.entries(last: last, liveSince: liveSince, includeAllowed: !denied) { matching($0) && window.accepts($0) }
+            if summary {
+                let sums = NetworkSummary(entries)
+                if options.json {
+                    try Output.json(sums)
+                } else {
+                    Self.printSummary(sums, of: source.label)
+                }
+                return
+            }
             if options.json {
                 try Output.json(entries)
                 return
             }
             if entries.isEmpty {
-                print("No connections logged for box \(box.name).")
+                if let box = source.box, window.isEmpty {
+                    print("No connections logged for box \(box.name).")
+                } else {
+                    print("No connections are logged for \(source.label)\(window.isEmpty ? "" : " in that time or to those hosts").")
+                }
                 return
             }
             for entry in entries {
@@ -833,7 +880,7 @@ struct BoxCommand: ParsableCommand {
         /// --follow: what is logged (its end), then each new entry as it comes, until the box
         /// stops. The box is checked before each read, so the lines a stopping box logged last
         /// are printed before the command ends.
-        private func runFollowing(_ box: Box) throws {
+        private func runFollowing(_ box: Box, window: LogFilter) throws {
             let follower = NetworkLogFollower(url: box.networkLogURL, includeAllowed: !denied)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.sortedKeys]
@@ -843,10 +890,10 @@ struct BoxCommand: ParsableCommand {
                 let running = box.isRunning
                 let entries: [NetworkLog.Entry]
                 if first {
-                    entries = follower.start(last: last ?? 10, liveSince: Self.liveSince(box), matching: matching)
+                    entries = follower.start(last: last ?? 10, liveSince: Self.liveSince(box)) { matching($0) && window.accepts($0) }
                     first = false
                 } else {
-                    entries = follower.read().filter(matching)
+                    entries = follower.read().filter { matching($0) && window.accepts($0) }
                 }
                 for entry in entries {
                     if options.json {
@@ -879,6 +926,35 @@ struct BoxCommand: ParsableCommand {
                 return status.startedAt ?? .distantPast
             case .unresponsive:
                 return .distantPast
+            }
+        }
+
+        /// The summary for a person: a line of totals, then a line per host and port.
+        static func printSummary(_ sums: NetworkSummary, of label: String) {
+            guard !sums.hosts.isEmpty else {
+                print("No connections to add up for \(label).")
+                return
+            }
+            let size = StoreCommand.Logs.size
+            var total = "\(label): \(sums.hosts.count) host\(sums.hosts.count == 1 ? "" : "s"), \(sums.connections) connection\(sums.connections == 1 ? "" : "s"), "
+            total += "\(size(Int64(sums.bytesUp))) sent, \(size(Int64(sums.bytesDown))) received, \(sums.refused) refused, \(sums.failed) failed"
+            print(total.prefix(1).uppercased() + total.dropFirst())
+            func cell(_ text: String, _ width: Int) -> String {
+                // Wider than its column (a count of 100000 or more): still apart from the next.
+                return text.padding(toLength: max(width, text.count + 2), withPad: " ", startingAt: 0)
+            }
+            print("  \(cell("sent", 11))\(cell("received", 11))\(cell("made", 6))\(cell("refused", 9))\(cell("failed", 8))host")
+            for host in sums.hosts {
+                var line = "  \(cell(size(Int64(host.bytesUp)), 11))\(cell(size(Int64(host.bytesDown)), 11))\(cell(String(host.connections), 6))"
+                line += "\(cell(String(host.refused), 9))\(cell(String(host.failed), 8))\(Printable.line(host.host, limit: 260)):\(host.port)"
+                if !host.rules.isEmpty {
+                    line += "  [\(host.rules.map { Printable.line($0, limit: 80) }.joined(separator: ", "))]"
+                }
+                line += "  \(Output.time(host.first))"
+                if host.last != host.first {
+                    line += " to \(Output.time(host.last))"
+                }
+                print(line)
             }
         }
 

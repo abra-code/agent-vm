@@ -1140,3 +1140,102 @@ test_kept_logs_without_a_record_are_removed_by_name() {
     assert_status 0 || return 1
     assert_missing "$_kept" || return 1
 }
+
+# box netlog and box execlog by time and host, the summary by host, and the same from a deleted
+# box's kept logs.
+test_logs_are_asked_by_time_and_host() {
+    fake_image dev
+    run_avm box create b1 --image dev
+    assert_status 0 || return 1
+    local _box="$AGENT_VM_HOME/Boxes/b1"
+    printf '%s\n' \
+        '{"time":"2026-10-01T10:00:01Z","timeMilliseconds":500,"method":"CONNECT","host":"refused.example","port":443,"decision":"denied","reason":"not in the allowlist"}' \
+        '{"time":"2026-10-01T12:00:00Z","timeMilliseconds":0,"method":"CONNECT","host":"refused.example","port":443,"decision":"denied","reason":"not in the allowlist"}' \
+        > "$_box/network.jsonl"
+    printf '%s\n' \
+        '{"time":"2026-10-01T10:00:02Z","timeMilliseconds":0,"method":"CONNECT","host":"api.big.example","port":443,"decision":"allowed","rule":"*.big.example","id":"a","bytesUp":5000000,"bytesDown":600}' \
+        '{"time":"2026-10-01T11:00:00Z","timeMilliseconds":0,"method":"CONNECT","host":"api.big.example","port":443,"decision":"allowed","rule":"*.big.example","id":"b","bytesUp":1000,"bytesDown":400}' \
+        '{"time":"2026-10-01T11:30:00Z","timeMilliseconds":0,"method":"CONNECT","host":"small.example","port":8443,"decision":"allowed","rule":"public","id":"c","bytesUp":20,"bytesDown":30}' \
+        > "$_box/network-allowed.jsonl"
+    printf '%s\n' \
+        '{"id":"p1","event":"start","time":"2026-10-01T10:00:00Z","argv":["/bin/echo","one"],"user":"agent"}' \
+        '{"id":"p1","event":"end","time":"2026-10-01T10:00:01Z","status":0,"seconds":1}' \
+        '{"id":"p2","event":"start","time":"2026-10-01T11:00:00Z","argv":["/bin/echo","two"],"user":"agent"}' \
+        > "$_box/exec.jsonl"
+
+    run_avm box netlog b1 --since 2026-10-01T11:00:00Z --until 2026-10-01T12:00:00Z --json
+    assert_status 0 || return 1
+    assert_eq "$(printf '%s' "$OUT" | /usr/bin/jq -r '[.[].host] | join(" ")')" "api.big.example small.example" "the window" || return 1
+    run_avm box netlog b1 --host '*.big.example' --json
+    assert_eq "$(printf '%s' "$OUT" | /usr/bin/jq -r 'length')" "2" "the host" || return 1
+    run_avm box netlog b1 --host small.example --host refused.example --denied --json
+    assert_eq "$(printf '%s' "$OUT" | /usr/bin/jq -r '[.[].host] | unique | join(" ")')" "refused.example" "hosts with --denied" || return 1
+    # Everything logged is long ago.
+    run_avm box netlog b1 --since 1h
+    assert_status 0 || return 1
+    assert_out_contains "No connections are logged for box b1 in that time or to those hosts." || return 1
+
+    run_avm box netlog b1 --summary --json
+    assert_status 0 || return 1
+    assert_json hosts.0.host api.big.example || return 1
+    assert_json hosts.0.connections 2 || return 1
+    assert_json hosts.0.bytesUp 5001000 || return 1
+    assert_json hosts.0.bytesDown 1000 || return 1
+    assert_json hosts.0.rules.0 '*.big.example' || return 1
+    assert_json hosts.1.host small.example || return 1
+    assert_json hosts.1.port 8443 || return 1
+    assert_json hosts.2.host refused.example || return 1
+    assert_json hosts.2.refused 2 || return 1
+    assert_json connections 3 || return 1
+    assert_json refused 2 || return 1
+    assert_json bytesUp 5001020 || return 1
+    run_avm box netlog b1 --summary
+    assert_status 0 || return 1
+    assert_out_contains "Box b1: 3 hosts, 3 connections, 5 MB sent, 1 KB received, 2 refused, 0 failed" || return 1
+    assert_out_contains "api.big.example:443  [*.big.example]" || return 1
+    run_avm box netlog b1 --summary --since 2026-10-01T11:15:00Z --json
+    assert_json hosts.0.host small.example || return 1
+    assert_json refused 1 || return 1
+
+    run_avm box execlog b1 --since 2026-10-01T10:30:00Z --json
+    assert_status 0 || return 1
+    assert_json 0.id p2 || return 1
+    assert_eq "$(printf '%s' "$OUT" | /usr/bin/jq -r 'length')" "1" "programs in the window" || return 1
+    run_avm box execlog b1 --until 2026-10-01T09:00:00Z
+    assert_out_contains "Nothing run is logged for box b1 in that time." || return 1
+
+    run_avm box netlog b1 --since yesterday
+    assert_status 64 || return 1
+    assert_err_contains "--since takes a time" || return 1
+    run_avm box execlog b1 --since 2026-10-02 --until 2026-10-01
+    assert_status 64 || return 1
+    assert_err_contains "--until is not after --since" || return 1
+    run_avm box netlog b1 --host '*github.com'
+    assert_status 64 || return 1
+    assert_err_contains "--host takes a host name, or *.example.com for the names under one" || return 1
+    run_avm box netlog b1 --follow --summary
+    assert_status 64 || return 1
+    assert_err_contains "--follow does not go with --summary, --until or --kept" || return 1
+
+    # The same questions of the box's kept logs, once it is deleted.
+    run_avm box netlog b1 --kept
+    assert_status 1 || return 1
+    assert_err_contains "no kept logs b1" || return 1
+    run_avm box delete b1 --json
+    local _id
+    _id="$(/usr/bin/basename "$(json_value keptLogs)")"
+    run_avm box netlog "$_id" --kept --summary --json
+    assert_status 0 || return 1
+    assert_json hosts.0.host api.big.example || return 1
+    assert_json bytesUp 5001020 || return 1
+    run_avm box execlog "$_id" --kept
+    assert_status 0 || return 1
+    assert_out_contains "/bin/echo one" || return 1
+    assert_out_contains "/bin/echo two" || return 1
+    run_avm box execlog "$_id"
+    assert_status 1 || return 1
+    assert_err_contains "no box $_id" || return 1
+    run_avm box netlog ../Boxes --kept
+    assert_status 1 || return 1
+    assert_err_contains "no kept logs" || return 1
+}

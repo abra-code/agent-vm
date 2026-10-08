@@ -176,6 +176,14 @@ public struct KeptLogs: Sendable {
         return Self.isValidID(id) && FileSystem.exists(directory.appendingPathComponent(id, isDirectory: true).path)
     }
 
+    /// The folder of one deleted box's logs, for `box execlog --kept` and `box netlog --kept`.
+    public func folder(of id: String) throws -> URL {
+        guard exists(id) else {
+            throw AgentVMError.keptLogsNotFound(id)
+        }
+        return directory.appendingPathComponent(id, isDirectory: true)
+    }
+
     /// Removes one deleted box's logs.
     public func remove(_ id: String) throws {
         let folder = directory.appendingPathComponent(id, isDirectory: true)

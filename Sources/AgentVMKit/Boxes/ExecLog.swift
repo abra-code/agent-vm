@@ -154,9 +154,14 @@ public final class ExecLog: @unchecked Sendable {
         return nil
     }
 
-    /// The last `count` programs (all when nil), oldest first; unreadable lines are skipped.
-    public func records(last count: Int? = nil) -> [Record] {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+    /// The last `count` programs (all when nil) that `matching` accepts, oldest first;
+    /// unreadable lines are skipped. The file before this one (`.1`) is read first, so a
+    /// program whose lines are in both is one record.
+    public func records(last count: Int? = nil, matching: (Record) -> Bool = { _ in true }) -> [Record] {
+        let previous = (try? String(contentsOf: URL(fileURLWithPath: url.path + ".1"), encoding: .utf8)) ?? ""
+        let current = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let text = previous.isEmpty || previous.hasSuffix("\n") ? previous + current : previous + "\n" + current
+        guard !text.isEmpty else {
             return []
         }
         let decoder = JSONDecoder()
@@ -191,6 +196,7 @@ public final class ExecLog: @unchecked Sendable {
                 }
             }
         }
+        records = records.filter(matching)
         if let count, records.count > count {
             return Array(records.suffix(max(count, 0)))
         }
