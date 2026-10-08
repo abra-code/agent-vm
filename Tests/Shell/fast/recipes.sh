@@ -17,10 +17,24 @@ test_ipsw_and_from_are_alternatives() {
     assert_status 64 || return 1
 }
 
-test_from_needs_a_recipe_and_keeps_the_base_account() {
-    run_avm image create x --from dev
+# --from with no recipe is a copy of the image: the options are accepted, with or without a size,
+# and what stops the command is the image, not a missing recipe.
+test_from_takes_no_recipe_and_keeps_the_base_account() {
+    run_avm image create x --from nosuch
+    assert_status 1 || return 1
+    assert_err_contains "no image nosuch" || return 1
+    assert_not_contains "$ERR" "recipe" "a copy with nothing added" || return 1
+    run_avm image create x --from nosuch --disk-gb 72 --cpus 2 --memory-gb 4
+    assert_status 1 || return 1
+    assert_err_contains "no image nosuch" || return 1
+    assert_missing "$AGENT_VM_HOME/Images/x" || return 1
+    # The same through a job, which checks the command before it starts.
+    run_avm job start --json -- image create x --from nosuch
+    assert_status 0 || return 1
+    # What a recipe's values need is still a recipe.
+    run_avm image create x --from dev --set a=b
     assert_status 64 || return 1
-    assert_err_contains "give --recipe" || return 1
+    assert_err_contains "add --recipe" || return 1
     write_recipe '{"version": 1}'
     run_avm image create x --from dev --recipe "$SCRATCH/recipe/recipe.json" --user bob
     assert_status 64 || return 1

@@ -31,7 +31,11 @@ struct ImageCommand: ParsableCommand {
                 store's Cache/linux and checked against the distribution's checksum list every \
                 time) and set up (about a minute). With \
                 --from, a ready image (macOS or Linux) is cloned and the recipes applied to the \
-                clone (minutes, or seconds for Linux). A recipe says which system it is for, and \
+                clone (minutes, or seconds for Linux). With no recipe the clone is a copy of the \
+                image with nothing added: an image of its own to set up by hand (image setup, \
+                image view), to give other processors, memory or a larger disk, or to try \
+                something on, with the original left as it is. A copy is started once all the \
+                same, to check that it runs and to give it its name. A recipe says which system it is for, and \
                 one for the other system is refused before anything is built. \
                 Several --recipe options put several tool sets into one image, in the order \
                 given; --input and --set go to every recipe that declares the name. SIGINT or SIGTERM stops the build at \
@@ -51,7 +55,7 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .customLong("cloud-image"), help: ArgumentHelp("With --linux: a cloud image file of your own (.tar.xz, .img, .qcow2 or .raw) in place of the download. It is trusted because you give it, and its SHA-512 is recorded.", valueName: "path"))
         var cloudImage: String?
 
-        @Option(name: .long, help: "A ready image to start from instead of a restore image or a cloud image; the new image runs the system its base runs.")
+        @Option(name: .long, help: "A ready image to start from instead of a restore image or a cloud image; the new image runs the system its base runs. Without --recipe: a copy of it with nothing added.")
         var from: String?
 
         @Option(name: .long, help: "Virtual CPUs (default \(ImageBuildOptions.defaultCPUCount), or the base image's).")
@@ -101,9 +105,6 @@ struct ImageCommand: ParsableCommand {
                 guard user == nil, guestDaemon == nil else {
                     throw ValidationError("--user and --guest-daemon come from the base image with --from")
                 }
-                guard !recipe.isEmpty || commandLineTools == true else {
-                    throw ValidationError("with --from, give --recipe (or --command-line-tools): otherwise the new image would be a plain copy")
-                }
             }
             for (value, limit, option) in [(cpus, 256, "--cpus"), (memoryGB, 4096, "--memory-gb"), (diskGB, 65536, "--disk-gb")] {
                 if let value, !(1...limit).contains(value) {
@@ -137,6 +138,10 @@ struct ImageCommand: ParsableCommand {
                 return
             }
             print("Image \(image.name) is ready: \(image.directory.path)")
+            // A --recipe left off by mistake no longer stops the command: say what was made.
+            if let from, recipes.isEmpty, commandLineTools != true {
+                print("  a copy of image \(from) with nothing added")
+            }
         }
 
         @MainActor

@@ -282,7 +282,7 @@ extension ImageBuilder {
         let held = Set((base?.record.recipes ?? base?.record.recipe.map { [$0] } ?? []).map(\.digest))
         let replayed = kept.filter { !held.contains($0.info.digest) && (base == nil || $0.info.inheritedFrom != base?.name) }
         if let base, replayed.isEmpty {
-            throw refuse("\(image.name) keeps no recipe that \(base.name) lacks: the rebuilt image would be a plain copy of \(base.name)")
+            throw refuse("\(image.name) keeps no recipe that \(base.name) lacks: a rebuild would make a fresh copy of \(base.name), without anything set up in \(image.name) by hand. For that, delete it and run `agent-vm image create \(image.name) --from \(base.name)`")
         }
 
         for name in options.inputs.keys.sorted() where !replayed.contains(where: { $0.recipe.inputs.contains { $0.name == name } }) {
