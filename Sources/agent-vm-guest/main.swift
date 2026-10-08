@@ -23,6 +23,9 @@ import Glibc
 #endif
 import Foundation
 
+// Before anything is opened: a closed standard stream must not lend its number to a file.
+StandardStream.openMissing()
+
 let arguments = Array(CommandLine.arguments.dropFirst())
 
 func usage() -> Never {
@@ -31,7 +34,7 @@ func usage() -> Never {
     #else
     let wallpaper = ""
     #endif
-    FileHandle.standardError.write(Data("usage: agent-vm-guest serve [--port N] [--user NAME] | exec-as [--checked] [--terminal] USER DIR EXECUTABLE -- ARGV...\(wallpaper) | --version [--json]\n".utf8))
+    StandardStream.write("usage: agent-vm-guest serve [--port N] [--user NAME] | exec-as [--checked] [--terminal] USER DIR EXECUTABLE -- ARGV...\(wallpaper) | --version [--json]\n", to: STDERR_FILENO)
     exit(64) // EX_USAGE
 }
 
@@ -63,7 +66,7 @@ case "wallpaper":
         print("\(result.outcome.rawValue) \(result.path)")
         exit(0)
     } catch {
-        FileHandle.standardError.write(Data("agent-vm-guest wallpaper: \(error)\n".utf8))
+        StandardStream.write("agent-vm-guest wallpaper: \(error)\n", to: STDERR_FILENO)
         exit(1)
     }
 #endif
@@ -90,7 +93,7 @@ case "serve":
         index += 2
     }
     guard let helper = Bundle.main.executableURL?.resolvingSymlinksInPath().path else {
-        FileHandle.standardError.write(Data("agent-vm-guest: cannot find its own executable\n".utf8))
+        StandardStream.write("agent-vm-guest: cannot find its own executable\n", to: STDERR_FILENO)
         exit(1)
     }
     let listener: Int32
@@ -99,7 +102,7 @@ case "serve":
         // The box's proxy address; harmless when the host runs no proxy (open network).
         try GuestRelay.start()
     } catch {
-        FileHandle.standardError.write(Data("agent-vm-guest: \(error)\n".utf8))
+        StandardStream.write("agent-vm-guest: \(error)\n", to: STDERR_FILENO)
         exit(1)
     }
     GuestServer.logStopSignals()

@@ -32,7 +32,7 @@ extension RecipeCommand {
             }
             // As it is: the guide is agent-vm's own file, and its tables and code blocks must
             // arrive unchanged.
-            FileHandle.standardOutput.write(Data(text.utf8))
+            StandardStream.write(text, to: STDOUT_FILENO)
         }
     }
 }

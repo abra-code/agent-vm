@@ -30,18 +30,18 @@ public enum JobRunner {
     /// the runner's own exit status: 0 once the job's end is recorded.
     public static func run(store: JobStore, id: String, lockDescriptor: Int32) -> Int32 {
         guard JobStore.isValidID(id) else {
-            FileHandle.standardError.write(Data("Error: \(AgentVMError.invalidJobID(id))\n".utf8))
+            StandardStream.write("Error: \(AgentVMError.invalidJobID(id))\n", to: STDERR_FILENO)
             return 2
         }
         // Started by hand, without the lock `job start` hands down: this is not the job's
         // runner, and must not write its end.
         guard holdsLock(store: store, id: id, descriptor: lockDescriptor) else {
-            FileHandle.standardError.write(Data("Error: job \(id) is run by `agent-vm job start`, which hands its runner the job's lock\n".utf8))
+            StandardStream.write("Error: job \(id) is run by `agent-vm job start`, which hands its runner the job's lock\n", to: STDERR_FILENO)
             return 2
         }
         // A job that has ended is never run again, whoever holds its lock file.
         guard !FileSystem.exists(store.path(id, JobStore.endName)) else {
-            FileHandle.standardError.write(Data("Error: job \(id) has already ended\n".utf8))
+            StandardStream.write("Error: job \(id) has already ended\n", to: STDERR_FILENO)
             return 2
         }
         let logPath = store.path(id, JobStore.logName)

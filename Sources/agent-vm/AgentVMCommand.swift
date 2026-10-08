@@ -14,6 +14,8 @@ import Foundation
 enum Main {
     @MainActor
     static func main() async {
+        // Before anything is opened: a closed standard stream must not lend its number to a file.
+        StandardStream.openMissing()
         AskpassEntry.handleIfAskpass()
         // Progress lines (an image build's) appear as they happen also when stdout is a file
         // or a pipe, which stdio would otherwise fill in blocks until the program exits.
@@ -140,7 +142,7 @@ enum Events {
 
     static func emit(_ event: ProgressEvent, json: Bool) {
         if json {
-            FileHandle.standardError.write(Data((event.jsonLine + "\n").utf8))
+            StandardStream.write(event.jsonLine + "\n", to: STDERR_FILENO)
         } else {
             print(event.text)
         }
@@ -153,8 +155,8 @@ enum Output {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(value)
-        FileHandle.standardOutput.write(data)
-        FileHandle.standardOutput.write(Data("\n".utf8))
+        StandardStream.write(data, to: STDOUT_FILENO)
+        StandardStream.write("\n", to: STDOUT_FILENO)
     }
 
     /// A change report for a person: a summary, then one line per change, flagged ones marked.

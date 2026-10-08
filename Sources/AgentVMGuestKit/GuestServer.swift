@@ -963,7 +963,7 @@ public final class GuestServer: @unchecked Sendable {
     }
 
     private static func fail(_ message: String) -> Never {
-        FileHandle.standardError.write(Data("agent-vm-guest: \(message)\n".utf8))
+        StandardStream.write("agent-vm-guest: \(message)\n", to: STDERR_FILENO)
         exit(126)
     }
 
@@ -1019,7 +1019,7 @@ public final class GuestServer: @unchecked Sendable {
     /// One line in the daemon's log (its stderr, a file launchd opens), written through to disk
     /// at once: a guest that loses power (a forced stop) keeps what came before.
     public static func logLine(_ line: String) {
-        FileHandle.standardError.write(Data((line + "\n").utf8))
+        StandardStream.write(line + "\n", to: STDERR_FILENO)
         fsync(STDERR_FILENO)
     }
 }

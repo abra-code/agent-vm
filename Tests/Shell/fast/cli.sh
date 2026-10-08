@@ -343,3 +343,45 @@ test_fetch_ipsw_lists_and_create_finds_by_name() {
     assert_status 1 || return 1
     assert_err_contains "is neither a file in the current directory nor a restore image downloaded" || return 1
 }
+
+# A closed standard error, or standard output, does not crash agent-vm: what cannot be said is
+# left unsaid. (Foundation's FileHandle raised an exception there, which ended the program with
+# status 134 and a crash report.)
+test_closed_standard_streams_do_not_crash() {
+    fake_image dev
+    run_avm box create d1 --image dev --disposable
+    assert_status 0 || return 1
+    printf 'stopped\n' > "$AGENT_VM_HOME/Boxes/d1/tombstone"
+    # box list collects the stopped box and says so on standard error, which is closed.
+    OUT="$("$AGENT_VM" box list --json 2>&-)"
+    local _status=$?
+    assert_eq "$_status" "0" "box list with standard error closed" || return 1
+    assert_eq "$OUT" "[
+
+]" "its answer on standard output" || return 1
+    assert_missing "$AGENT_VM_HOME/Boxes/d1" || return 1
+    # JSON on a closed standard output: nothing to write to, and no crash.
+    "$AGENT_VM" version --json >&- 2>/dev/null
+    _status=$?
+    assert_eq "$_status" "0" "version --json with standard output closed" || return 1
+    # An error of agent-vm's own with both closed still ends with its status.
+    "$AGENT_VM" box status nosuch >&- 2>&-
+    _status=$?
+    assert_eq "$_status" "1" "an error with both closed" || return 1
+}
+
+# A closed standard error does not lend its number to a file agent-vm opens: a message meant
+# for it must not land in the store. box list takes locks and reads records with it closed, and
+# says on it that it deleted a stopped disposable box.
+test_a_closed_standard_error_does_not_reach_the_store() {
+    fake_image dev
+    run_avm box create keep --image dev
+    run_avm box create d1 --image dev --disposable
+    printf 'stopped\n' > "$AGENT_VM_HOME/Boxes/d1/tombstone"
+    "$AGENT_VM" box list 2>&- > /dev/null
+    local _status=$?
+    assert_eq "$_status" "0" "box list with standard error closed" || return 1
+    local _found
+    _found="$(/usr/bin/grep -rl "deleted disposable box" "$AGENT_VM_HOME" 2>/dev/null)"
+    [ -z "$_found" ] || { fail "the note for standard error is in the store: $_found"; return 1; }
+}

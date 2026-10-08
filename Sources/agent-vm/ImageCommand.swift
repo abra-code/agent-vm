@@ -838,7 +838,7 @@ enum AskpassEntry {
         case .refuse:
             exit(1)
         case let .password(password):
-            FileHandle.standardOutput.write(Data((password + "\n").utf8))
+            StandardStream.write(password + "\n", to: STDOUT_FILENO)
             exit(0)
         }
     }

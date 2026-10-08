@@ -22,6 +22,6 @@ func print(_ items: Any..., separator: String = " ", terminator: String = "\n") 
 enum Stderr {
     /// Writes `text` (which brings its own line ends) to standard error, made printable.
     static func write(_ text: String) {
-        FileHandle.standardError.write(Data(Printable.lines(text).utf8))
+        StandardStream.write(Printable.lines(text), to: STDERR_FILENO)
     }
 }

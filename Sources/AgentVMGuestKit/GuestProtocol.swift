@@ -551,3 +551,58 @@ public struct GuestNotice: Codable, Equatable, Sendable {
         return names[service] ?? service
     }
 }
+
+/// Writing to standard output and standard error. Foundation's `FileHandle.write` raises an
+/// exception, which ends the program with a crash report, when the stream cannot be written: a
+/// closed standard error is enough (a parent that went away, `2>&-`). A message that cannot be
+/// delivered is not worth the program: these write with write(2) and let a failure pass.
+public enum StandardStream {
+    public static func write(_ data: Data, to descriptor: Int32) {
+        writeAll(descriptor, Array(data))
+    }
+
+    public static func write(_ text: String, to descriptor: Int32) {
+        writeAll(descriptor, Array(text.utf8))
+    }
+
+    /// Puts /dev/null where standard input, output or error is closed; to be called first
+    /// thing in main. A program started with one of them closed (`2>&-`) is otherwise given
+    /// that number for the next file or socket it opens, and what it then writes "to standard
+    /// error" lands in a lock file or in a connection.
+    public static func openMissing() {
+        for descriptor in [STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO] where fcntl(descriptor, F_GETFD) == -1 && errno == EBADF {
+            let opened = open("/dev/null", descriptor == STDIN_FILENO ? O_RDONLY : O_WRONLY)
+            // The lowest free number is the one that was closed; anything else is not kept.
+            if opened >= 0 && opened != descriptor {
+                close(opened)
+            }
+        }
+    }
+
+    /// Everything, or as much as the stream takes before it fails. A stream that is full for
+    /// now is waited for (EAGAIN: a terminal or a pipe shared with a program that made it
+    /// non-blocking), so that a long answer is not cut short in the middle.
+    private static func writeAll(_ descriptor: Int32, _ bytes: [UInt8]) {
+        var done = 0
+        bytes.withUnsafeBytes { buffer in
+            while done < buffer.count {
+                let written = Platform.write(descriptor, buffer.baseAddress! + done, buffer.count - done)
+                if written >= 0 {
+                    done += written
+                    continue
+                }
+                let code = errno
+                if code == EINTR {
+                    continue
+                }
+                guard code == EAGAIN || code == EWOULDBLOCK else {
+                    return
+                }
+                var watched = pollfd(fd: descriptor, events: Int16(POLLOUT), revents: 0)
+                if poll(&watched, 1, -1) < 0 && errno != EINTR {
+                    return
+                }
+            }
+        }
+    }
+}
