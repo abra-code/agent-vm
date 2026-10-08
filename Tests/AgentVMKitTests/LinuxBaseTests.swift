@@ -74,6 +74,41 @@ import Testing
         }
     }
 
+    /// What a client offers as the choice of a new image's system, and puts on a command line.
+    @Test func theReleasesAreSaidForAProgram() throws {
+        let releases = LinuxRelease.all
+        #expect(releases.map(\.id) == LinuxBase.known.map(\.id))
+        #expect(releases.first == LinuxRelease(try LinuxBase.named("debian-13")))
+        #expect(Set(releases.map(\.id)).count == releases.count)
+        for release in releases {
+            // The id is the whole word `--linux` takes, and can be nothing an option could be.
+            #expect(LinuxRelease.isValidID(release.id), "\(release.id)")
+            #expect(try LinuxBase.named(release.id).id == release.id)
+            #expect(!release.name.isEmpty && !release.distribution.isEmpty && !release.version.isEmpty, "\(release.id)")
+            // A distribution's name alone means the first entry of it.
+            #expect(try LinuxBase.named(release.distribution).id == releases.first { $0.distribution == release.distribution }?.id)
+        }
+        for id in ["", "-debian", "Debian-13", "debian 13", "debian_13", "debian-13\n", "d\u{E9}bian"] {
+            #expect(!LinuxRelease.isValidID(id), "\(id)")
+        }
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(releases)) as? [[String: String]]
+        #expect(object?.first == ["id": "debian-13", "name": "Debian 13", "distribution": "debian", "version": "13"])
+    }
+
+    /// The sizes a client shows are the ones the builders use and refuse by, in whole GB.
+    @Test func theSizesOfANewImageAreSaidForAProgram() {
+        let sizes = ImageSizes.all
+        #expect(Set(sizes.keys) == ["macos", "linux"])
+        #expect(sizes["macos"] == ImageSizes(cpuCount: 4, memoryBytes: 8 << 30, diskBytes: 64 << 30, minimumDiskBytes: 40 << 30, minimumDiskGrowthBytes: 8 << 30))
+        #expect(sizes["linux"] == ImageSizes(cpuCount: 4, memoryBytes: 4 << 30, diskBytes: 32 << 30, minimumDiskBytes: 8 << 30, minimumDiskGrowthBytes: 1 << 30))
+        for (guest, size) in sizes {
+            for bytes in [size.memoryBytes, size.diskBytes, size.minimumDiskBytes, size.minimumDiskGrowthBytes] {
+                #expect(bytes > 0 && bytes % (1 << 30) == 0, "\(guest)")
+            }
+            #expect(size.diskBytes >= size.minimumDiskBytes, "\(guest)")
+        }
+    }
+
     @Test func theManifestsBuildIsTakenAsAToken() {
         func manifest(_ version: String) -> Data {
             return Data(#"{"apiVersion":"v1","kind":"List","items":[{"kind":"Build","metadata":{"labels":{"cloud.debian.org/version":"\#(version)","debian.org/arch":"arm64"}}}]}"#.utf8)

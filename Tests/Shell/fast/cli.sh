@@ -187,6 +187,39 @@ test_version_names_the_linux_guest_daemon() {
     assert_contains "$(json_value checks.8.detail)" "$(printf '%s' "$_digest" | /usr/bin/cut -c1-12)" "the doctor line" || return 1
 }
 
+# What a new image can be, for a program that offers the choice: the Linux systems --linux takes,
+# in agent-vm's order, and each guest's default and smallest sizes. No store and no network.
+test_version_lists_the_linux_releases_and_sizes() {
+    export AGENT_VM_HOME="$SCRATCH/no-store"
+    run_avm version --json
+    assert_status 0 || return 1
+    assert_json linuxReleases.0.id debian-13 || return 1
+    assert_json linuxReleases.0.name "Debian 13" || return 1
+    assert_json linuxReleases.0.distribution debian || return 1
+    assert_json linuxReleases.0.version 13 || return 1
+    assert_json linuxReleases.1.id ubuntu-26.04 || return 1
+    assert_json linuxReleases.1.name "Ubuntu 26.04" || return 1
+    assert_json linuxReleases.1.distribution ubuntu || return 1
+    assert_json linuxReleases.1.version 26.04 || return 1
+    local _third
+    _third="$(json_value linuxReleases.2.id)"
+    [ -z "$_third" ] || { fail "a third release, $_third: add it to this test and to Docs/linux-boxes.md"; return 1; }
+    assert_json imageSizes.linux.cpuCount 4 || return 1
+    assert_json imageSizes.linux.memoryBytes 4294967296 || return 1
+    assert_json imageSizes.linux.diskBytes 34359738368 || return 1
+    assert_json imageSizes.linux.minimumDiskBytes 8589934592 || return 1
+    assert_json imageSizes.linux.minimumDiskGrowthBytes 1073741824 || return 1
+    assert_json imageSizes.macos.cpuCount 4 || return 1
+    assert_json imageSizes.macos.memoryBytes 8589934592 || return 1
+    assert_json imageSizes.macos.diskBytes 68719476736 || return 1
+    assert_json imageSizes.macos.minimumDiskBytes 42949672960 || return 1
+    assert_json imageSizes.macos.minimumDiskGrowthBytes 8589934592 || return 1
+    run_avm version
+    assert_status 0 || return 1
+    assert_out_contains "Linux systems for image create --linux: debian-13 (Debian 13), ubuntu-26.04 (Ubuntu 26.04)" || return 1
+    assert_missing "$AGENT_VM_HOME" || return 1
+}
+
 # Secrets in the Keychain, through the signed binary only: every item is stored, read and
 # deleted by the same agent-vm, so macOS never asks. A service of this run's own keeps real
 # secrets out of reach; the trap deletes what the test stored, however it ends.

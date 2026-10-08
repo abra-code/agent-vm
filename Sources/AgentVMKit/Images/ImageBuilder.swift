@@ -793,9 +793,9 @@ public final class ImageBuilder {
     }
 
     /// Growing a disk moves its recovery container (about 5 GB) past the new space.
-    static let minimumDiskGrowth: UInt64 = 8 << 30
+    nonisolated static let minimumDiskGrowth: UInt64 = 8 << 30
     /// A Linux disk grows by any whole number of GB.
-    static let minimumLinuxDiskGrowth: UInt64 = 1 << 30
+    nonisolated static let minimumLinuxDiskGrowth: UInt64 = 1 << 30
 
     /// What every image gets once its guest daemon answers: Spotlight indexing off, a desktop
     /// that never locks, names the image and hides its widgets, the Command Line Tools when

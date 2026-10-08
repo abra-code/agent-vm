@@ -20,7 +20,11 @@ struct VersionCommand: ParsableCommand {
             as a Developer ID signature does). \
             Supervisors of running boxes may be other builds: `box status` names theirs. \
             The daemon for Linux guests, linux/agent-vm-guest, is listed with its digest when it \
-            was built; without it, Linux images cannot be created.
+            was built; without it, Linux images cannot be created. \
+            Last come the Linux systems `image create --linux` takes; with --json, linuxReleases \
+            lists them (id, name, distribution, version; the newest of a distribution first) and \
+            imageSizes gives, for macos and for linux, a new image's default processors, memory \
+            and disk, the smallest disk, and the least a copy's disk may grow by.
             """)
 
     @Flag(name: .long, help: "Print machine-readable JSON instead of text.")
@@ -35,12 +39,17 @@ struct VersionCommand: ParsableCommand {
         /// The daemon for Linux guests: its path and digest, or why there is none. It cannot be
         /// run on a Mac, so its version and features are not here.
         var linuxGuestDaemon: LocalGuestDaemon
+        /// The systems `image create --linux` takes, in the order agent-vm prefers them.
+        var linuxReleases: [LinuxRelease]
+        /// A new image's default and smallest sizes, under each guest's word ("macos", "linux").
+        var imageSizes: [String: ImageSizes]
     }
 
     func run() throws {
         let report = Report(version: AgentVM.version, controlProtocol: ControlChannel.version, guestProtocol: AgentVM.guestProtocolVersion,
                             path: try AskpassEntry.executablePath(), guestDaemon: LocalGuestDaemon.inspect(try ImageCommand.localGuestDaemon()),
-                            linuxGuestDaemon: LocalGuestDaemon.inspectLinux(try ImageCommand.localGuestDaemon(for: .linux)))
+                            linuxGuestDaemon: LocalGuestDaemon.inspectLinux(try ImageCommand.localGuestDaemon(for: .linux)),
+                            linuxReleases: LinuxRelease.all, imageSizes: ImageSizes.all)
         if json {
             try Output.json(report)
             return
@@ -57,6 +66,7 @@ struct VersionCommand: ParsableCommand {
             } else {
                 print("linux/agent-vm-guest: \(linux.error ?? "not found")")
             }
+            print("Linux systems for image create --linux: \(report.linuxReleases.map { "\($0.id) (\($0.name))" }.joined(separator: ", "))")
         }
         if let error = daemon.error {
             print("agent-vm-guest: \(error)")
