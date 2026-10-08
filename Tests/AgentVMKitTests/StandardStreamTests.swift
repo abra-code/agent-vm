@@ -85,3 +85,110 @@ private final class ReadCount: @unchecked Sendable {
         return count
     }
 }
+
+/// A socket whose other end closed before anyone could turn SIGPIPE off for it: macOS refuses
+/// the setting then (EINVAL), and a write would end the process. These tests run with SIGPIPE
+/// at its default, so a write that slips through ends the whole test run.
+@Suite struct DisconnectedSocketTests {
+    /// A socket pair with one end closed already; the other end is returned.
+    static func orphan() throws -> Int32 {
+        var pair: [Int32] = [-1, -1]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+        close(pair[0])
+        return pair[1]
+    }
+
+    @Test func theSettingIsRefusedForADisconnectedSocket() throws {
+        let socket = try Self.orphan()
+        defer { close(socket) }
+        // What the fix rests on. If macOS comes to accept the setting, the rest still holds.
+        #expect(!Platform.noSIGPIPE(descriptor: socket))
+        #expect(!Platform.noSIGPIPE(socket: socket))
+        var live: [Int32] = [-1, -1]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &live) == 0)
+        defer { live.forEach { close($0) } }
+        #expect(Platform.noSIGPIPE(descriptor: live[0]) && Platform.noSIGPIPE(socket: live[0]))
+    }
+
+    @Test func aChannelOnADisconnectedSocketDoesNotWrite() throws {
+        let channel = FrameChannel(descriptor: try Self.orphan())
+        defer { channel.close() }
+        #expect(throws: GuestProtocolError.io(operation: "write", code: EPIPE)) {
+            try channel.send(Frame(.stdout, [1, 2, 3]))
+        }
+        // A request that cannot be written is one the guest did not get.
+        #expect(throws: GuestProtocolError.notDelivered(code: EPIPE)) {
+            try channel.sendRequest(GuestRequest(op: .hello))
+        }
+        #expect(try channel.receive() == nil)
+    }
+
+    /// The guest daemon answers a connection that brought no request; the host may be gone by
+    /// then. This is what ended test runs, about two in three, with signal 13.
+    @Test(arguments: 0..<3) func theServerSurvivesAHostThatLeftAtOnce(_ attempt: Int) throws {
+        var pair: [Int32] = [-1, -1]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+        close(pair[0])
+        GuestServer(defaultUser: nil, helperPath: nil).serve(descriptor: pair[1])
+    }
+
+    /// A socket that got the setting while it was connected keeps it, though macOS refuses to
+    /// set it again once the peer is gone: such a socket is protected, and what its peer sent
+    /// before leaving still crosses a splice.
+    @Test func aSocketProtectedWhileConnectedStaysProtected() throws {
+        var pair: [Int32] = [-1, -1]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+        #expect(Platform.noSIGPIPE(socket: pair[1]))
+        #expect(write(pair[0], "last", 4) == 4)
+        close(pair[0])
+        #expect(fcntl(pair[1], F_SETNOSIGPIPE, 1) == -1)
+        #expect(Platform.noSIGPIPE(descriptor: pair[1]) && Platform.noSIGPIPE(socket: pair[1]))
+        var live: [Int32] = [-1, -1]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &live) == 0)
+        defer {
+            close(pair[1])
+            live.forEach { close($0) }
+        }
+        // Something for the gone side too: the write fails with EPIPE, and no signal.
+        #expect(write(live[1], "data", 4) == 4)
+        let counts = Splice.run(pair[1], live[0])
+        #expect(counts.aToB == 4 && counts.bToA == 0)
+        var buffer = [UInt8](repeating: 0, count: 8)
+        #expect(read(live[1], &buffer, 8) == 4)
+        #expect(Array(buffer.prefix(4)) == Array("last".utf8))
+    }
+
+    /// The live side's peer has finished sending already (a request, then a half-close): macOS
+    /// refuses SHUT_RDWR on such a socket, so each way is shut by itself.
+    @Test func aSpliceWithADisconnectedSocketTellsAHalfClosedPeer() throws {
+        let dead = try Self.orphan()
+        var live: [Int32] = [-1, -1]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &live) == 0)
+        defer {
+            close(dead)
+            live.forEach { close($0) }
+        }
+        #expect(shutdown(live[1], SHUT_WR) == 0)
+        Splice.run(live[0], dead)
+        var watched = pollfd(fd: live[1], events: Int16(POLLIN), revents: 0)
+        try #require(poll(&watched, 1, 2000) == 1)
+        var byte: UInt8 = 0
+        #expect(read(live[1], &byte, 1) == 0)
+    }
+
+    @Test func aSpliceWithADisconnectedSocketCopiesNothing() throws {
+        let dead = try Self.orphan()
+        var live: [Int32] = [-1, -1]
+        try #require(socketpair(AF_UNIX, SOCK_STREAM, 0, &live) == 0)
+        defer {
+            close(dead)
+            live.forEach { close($0) }
+        }
+        #expect(write(live[1], "data", 4) == 4)
+        let counts = Splice.run(live[0], dead)
+        #expect(counts.aToB == 0 && counts.bToA == 0)
+        // The live side was told: its peer reads the end.
+        var byte: UInt8 = 0
+        #expect(read(live[1], &byte, 1) == 0)
+    }
+}

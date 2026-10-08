@@ -138,18 +138,34 @@ enum Platform {
 
     /// A socket whose peer went away gives EPIPE, not SIGPIPE. Linux has no such socket option:
     /// there the daemon ignores SIGPIPE as a whole.
-    static func noSIGPIPE(socket descriptor: Int32) {
+    ///
+    /// Both this and the descriptor's flag below are refused (EINVAL) for a socket that is
+    /// already disconnected: one whose peer closed or reset before this was called (measured
+    /// for a socket pair, an accepted Unix socket and TCP; a peer that only finished sending
+    /// leaves the socket settable). Such a socket stays unprotected, and a write to it ends
+    /// the process. So both say whether the socket is protected, and whoever writes must not
+    /// write when it is not. A socket that got the setting while it was connected keeps it,
+    /// and is refused all the same once disconnected: the flag is read back, the refusal alone
+    /// is not the answer.
+    @discardableResult
+    static func noSIGPIPE(socket descriptor: Int32) -> Bool {
         #if canImport(Darwin)
         var one: Int32 = 1
-        _ = setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+        return setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size)) == 0
+            || fcntl(descriptor, F_GETNOSIGPIPE) == 1
+        #else
+        return true
         #endif
     }
 
-    /// The same for any descriptor (a pipe, or a socket pair whose other end is closed, where
-    /// the socket option is not enough - measured). macOS only, as above.
-    static func noSIGPIPE(descriptor: Int32) {
+    /// The same for any descriptor (a pipe as well; for a socket it is the socket option under
+    /// another name, refused in the same cases - measured). macOS only, as above.
+    @discardableResult
+    static func noSIGPIPE(descriptor: Int32) -> Bool {
         #if canImport(Darwin)
-        _ = fcntl(descriptor, F_SETNOSIGPIPE, 1)
+        return fcntl(descriptor, F_SETNOSIGPIPE, 1) == 0 || fcntl(descriptor, F_GETNOSIGPIPE) == 1
+        #else
+        return true
         #endif
     }
 

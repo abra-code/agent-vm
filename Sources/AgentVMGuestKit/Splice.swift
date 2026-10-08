@@ -61,7 +61,7 @@ public enum Splice {
         /// Each way by itself: on macOS SHUT_RDWR is refused, and does nothing, on a socket
         /// whose peer has finished sending (measured on AF_UNIX and TCP: ENOTCONN, a writer
         /// stays asleep and the peer sees no end of file).
-        private static func shutBothWays(_ descriptor: Int32) {
+        fileprivate static func shutBothWays(_ descriptor: Int32) {
             _ = shutdown(descriptor, SHUT_RD)
             _ = shutdown(descriptor, SHUT_WR)
         }
@@ -104,6 +104,13 @@ public enum Splice {
     public static func run(_ a: Int32, _ b: Int32, progress: Progress? = nil, silenceLimit: Duration? = nil, forwardLimit: Int? = nil) -> (aToB: Int, bToA: Int) {
         Platform.noSIGPIPE(socket: a)
         Platform.noSIGPIPE(socket: b)
+        // A socket that is disconnected already (reset before this began) cannot be kept from
+        // raising SIGPIPE, and carries nothing either way: both ends are told, nothing is copied.
+        guard Platform.noSIGPIPE(descriptor: a), Platform.noSIGPIPE(descriptor: b) else {
+            Progress.shutBothWays(a)
+            Progress.shutBothWays(b)
+            return (progress ?? Progress()).counts
+        }
         let progress = progress ?? Progress()
         progress.attach(a, b)
         // Before the caller can close either descriptor.

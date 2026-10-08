@@ -322,14 +322,17 @@ public final class FrameChannel: @unchecked Sendable {
     public let descriptor: Int32
     private let writeLock = NSLock()
     private var isClosed = false
+    /// False when the socket could not be kept from raising SIGPIPE: it was disconnected
+    /// before this channel was made (the peer closed at once). Nothing is written to it then;
+    /// a send fails as the write would have, with EPIPE.
+    private let canWrite: Bool
 
     public init(descriptor: Int32) {
         self.descriptor = descriptor
-        // A peer that goes away must produce EPIPE, never a process-killing SIGPIPE. The socket
-        // option is not enough on a socket pair whose other end is closed (measured); the
-        // descriptor flag is.
+        // A peer that goes away must produce EPIPE, never a process-killing SIGPIPE. Neither
+        // setting takes on a socket whose other end is closed already (measured): `canWrite`.
         Platform.noSIGPIPE(socket: descriptor)
-        Platform.noSIGPIPE(descriptor: descriptor)
+        canWrite = Platform.noSIGPIPE(descriptor: descriptor)
     }
 
     public func send(_ frame: Frame) throws {
@@ -343,6 +346,9 @@ public final class FrameChannel: @unchecked Sendable {
         defer { writeLock.unlock() }
         guard !isClosed else {
             throw GuestProtocolError.disconnected
+        }
+        guard canWrite else {
+            throw GuestProtocolError.io(operation: "write", code: EPIPE)
         }
         try Self.writeAll(descriptor, bytes)
     }
