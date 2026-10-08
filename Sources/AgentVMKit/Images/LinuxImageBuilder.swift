@@ -214,7 +214,7 @@ extension ImageBuilder {
 
         try checkCanceled()
         progress("first-boot", "First boot: the system installs the guest daemon")
-        try await machine.start()
+        try await start(machine, of: current)
         do {
             let hello: GuestResponse
             do {

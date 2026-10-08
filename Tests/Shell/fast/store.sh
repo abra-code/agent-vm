@@ -1007,6 +1007,7 @@ test_a_broken_linux_box_does_not_start() {
     run_avm status --json
     assert_status 0 || return 1
     assert_json runningVMs.linuxBoxes 0 || return 1
+    assert_json runningVMs.linuxImages 0 || return 1
     assert_json runningVMs.limit 2 || return 1
 }
 

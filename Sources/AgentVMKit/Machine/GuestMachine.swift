@@ -95,8 +95,22 @@ public enum ShareLayout: Sendable {
 public final class GuestMachine: NSObject, VZVirtualMachineDelegate {
     /// For the macOS-only half (MacMachineSpec.swift), which installs and starts with options.
     let machine: VZVirtualMachine
-    private var stopped = false
+    private var stopped = false {
+        didSet {
+            if stopped {
+                releaseRunningMark()
+            }
+        }
+    }
     private var stopError: String?
+    /// A lock held for as long as this guest runs, and released when it stops (or with the
+    /// machine): how others see that an image's Linux guest is running.
+    var runningMark: FolderLock?
+
+    private func releaseRunningMark() {
+        runningMark?.release()
+        runningMark = nil
+    }
     // Listeners and their delegates (the delegate reference is weak) live as long as the machine.
     private var listeners: [VZVirtioSocketListener] = []
     private var acceptors: [SocketAcceptor] = []
@@ -166,6 +180,9 @@ public final class GuestMachine: NSObject, VZVirtualMachineDelegate {
             }
             try? await Task.sleep(for: .milliseconds(250))
         }
+        // The machine's state can say so before the delegate is told; the next boot of the
+        // same image takes the mark again.
+        releaseRunningMark()
         return true
     }
 

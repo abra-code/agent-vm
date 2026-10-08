@@ -475,7 +475,7 @@ public final class ImageBuilder {
             var replacedDaemon: (digest: String, requirement: String?, replaced: Bool)?
             try checkCanceled()
             progress("boot", "Booting")
-            try await start(machine, guest: guest)
+            try await start(machine, of: image)
             booted = true
             do {
                 // A clone boots like any box: the daemon answers once the system is up.
@@ -905,13 +905,22 @@ public final class ImageBuilder {
         }
     }
 
-    /// Starts an image's machine: a macOS guest with no provisioning, a Linux guest as it is.
-    func start(_ machine: GuestMachine, guest: GuestKind) async throws {
-        switch guest {
+    /// Starts the machine of `image`: a macOS guest with no provisioning, a Linux guest as it
+    /// is, and marked as one while it runs (it takes none of the places macOS guests have).
+    func start(_ machine: GuestMachine, of image: GoldenImage) async throws {
+        switch image.record.effectiveGuest {
         case .macOS:
             try await machine.start(provisioning: nil)
         case .linux:
-            try await machine.start()
+            // The machine releases the mark when the guest stops.
+            machine.runningMark = store.markLinuxMachine(of: image)
+            do {
+                try await machine.start()
+            } catch {
+                machine.runningMark?.release()
+                machine.runningMark = nil
+                throw error
+            }
         }
     }
 
@@ -951,7 +960,7 @@ public final class ImageBuilder {
         let machine = try makeMachine(for: image, extras: LinuxMachineExtras(console: console?.writeHandle))
         try checkCanceled()
         progress("check-guest-daemon", "Booting again to check the new agent-vm-guest")
-        try await start(machine, guest: guest)
+        try await start(machine, of: image)
         do {
             let hello = try await waitForDaemon(machine, attempts: 180, guest: guest)
             let missing = GuestFeature.all(for: guest).filter { !(hello.features ?? []).contains($0) }

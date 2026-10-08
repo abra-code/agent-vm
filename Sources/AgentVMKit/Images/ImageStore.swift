@@ -8,6 +8,8 @@
 //                                     files or clones them
 //   Images/<name>/.update.lock        flock held for as long as a command changes a ready
 //                                     image (update, update-guest, setup), one at a time
+//   Images/<name>/.linux-vm.lock      flock held while a command runs a Linux guest of the
+//                                     image (a build, an update), so that it is counted as one
 //   Images/<name>/Disk.img            sparse raw disk
 //   Images/<name>/AuxiliaryStorage    NVRAM and boot state (Apple format)
 //   Images/<name>/HardwareModel       VZMacHardwareModel.dataRepresentation
@@ -40,6 +42,7 @@ public struct ImageStore: Sendable {
     static let recordName = "image.json"
     static let lockName = ".lock"
     static let updateLockName = ".update.lock"
+    static let linuxMachineLockName = ".linux-vm.lock"
     static let diskName = "Disk.img"
     static let auxiliaryStorageName = "AuxiliaryStorage"
     static let hardwareModelName = "HardwareModel"
@@ -113,6 +116,25 @@ public struct ImageStore: Sendable {
     /// Whether a command is changing the image now (it holds the update lock).
     public func isBeingChanged(_ image: GoldenImage) -> Bool {
         return FolderLock.isHeld(image.directory.appendingPathComponent(Self.updateLockName).path)
+    }
+
+    /// Marks that a Linux guest of `image` runs (a build, an update, a rebuild), for as long as
+    /// the returned lock is held: `status` and `doctor` then know that this virtual machine is
+    /// no macOS guest. Nil when the mark cannot be taken, which costs only that.
+    func markLinuxMachine(of image: GoldenImage) -> Lock? {
+        // With patience: `runsLinuxMachine` (a status poll) holds it for a moment to test it.
+        return try? FolderLock.tryAcquire(image.directory.appendingPathComponent(Self.linuxMachineLockName).path, patience: FolderLock.testPatience)
+    }
+
+    /// Whether a command runs a Linux guest of the image now.
+    public func runsLinuxMachine(_ image: GoldenImage) -> Bool {
+        return FolderLock.isHeld(image.directory.appendingPathComponent(Self.linuxMachineLockName).path)
+    }
+
+    /// How many images of this store have a Linux guest running now.
+    public func runningLinuxMachines() -> Int {
+        let images = (try? list().images) ?? []
+        return images.filter { runsLinuxMachine($0) }.count
     }
 
     public func image(named name: String) throws -> GoldenImage {

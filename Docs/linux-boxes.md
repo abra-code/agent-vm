@@ -75,7 +75,7 @@ Both are built, sealed, run and updated by the same commands, and every test of 
 | `exec --project`, `box shell --project` | As for macOS, with the notes under [The shared folder](#the-shared-folder). |
 | `box send` | As for macOS (since 0.7.10): each item lands in the box user's `~/Downloads` under a free name, complete or not at all. See [Sending files](#sending-files). |
 | `image list`, `box list`, `status`, `avm list` | Show the system where a macOS entry shows its macOS version: "Debian 13" or "Ubuntu 26.04" in `box list` and `avm list`, "Debian GNU/Linux 13 (trixie)" or "Ubuntu 26.04.1 LTS" in `image list` and `status`. With `--json`, every entry has `guest` (`macos` or `linux`) and `system`. |
-| `doctor`, `status` | Count macOS guests against the limit of two; your running Linux boxes are counted apart (`linuxBoxes`). |
+| `doctor`, `status` | Count macOS guests against the limit of two; your running Linux boxes are counted apart (`linuxBoxes`), and so is a Linux image while a command builds or updates it (`linuxImages`). |
 
 ## The account, and root
 
@@ -156,6 +156,6 @@ agent-vm box recreate work                           # each box, to get what the
 
 - **Read `guest` and `system`** from `image list --json`, `box list --json`, `status --json` and `avm list --json`. `macOSVersion`, `macOSBuild` and `passwordStorage` are absent for Linux entries (in `avm list --json` an image's `macOSVersion` is there and null).
 - **A Linux record has format 3**, which an agent-vm older than 0.7.2 refuses to read.
-- **"N of 2 virtual machines"** is `runningVMs.count - runningVMs.linuxBoxes` of `runningVMs.limit`.
+- **"N of 2 virtual machines"** is `runningVMs.count - runningVMs.linuxBoxes - runningVMs.linuxImages` of `runningVMs.limit`.
 - **Recipes** say which system they are for: `guest` in `recipe check --json`.
 - **Do not copy Mac programs into a Linux box.** A tool the box runs must be built for 64-bit ARM Linux.

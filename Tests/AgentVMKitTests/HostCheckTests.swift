@@ -249,6 +249,37 @@ import Virtualization
         #expect(found.count == nil && found.linuxBoxes == nil)
     }
 
+    /// A Linux image being built or updated runs a Linux guest too, and takes no place either.
+    @Test func linuxImagesAtWorkDoNotCountAgainstTheLimit() throws {
+        func check(_ running: Int?, boxes: Int, images: Int) throws -> HostCheck {
+            var facts = Self.goodFacts()
+            facts.runningVirtualMachines = running
+            facts.runningLinuxBoxes = boxes
+            facts.runningLinuxImages = images
+            return try #require(HostReport.evaluate(facts).checks.first { $0.name == "running VMs" })
+        }
+        // One macOS guest and one Linux image being built: a macOS box still has a place.
+        var found = try check(2, boxes: 0, images: 1)
+        #expect(found.status == .ok && found.linuxBoxes == 0 && found.linuxImages == 1)
+        #expect(found.detail == "2 virtual machines running on this Mac (any application), 1 of them a Linux image being built or updated")
+        // With a Linux box as well.
+        found = try check(4, boxes: 1, images: 2)
+        #expect(found.status == .ok && found.linuxBoxes == 1 && found.linuxImages == 2)
+        #expect(found.detail == "4 virtual machines running on this Mac (any application), 1 of them a Linux box of yours, 2 Linux images being built or updated")
+        // Two that may be macOS guests still warn.
+        found = try check(3, boxes: 0, images: 1)
+        #expect(found.status == .warning)
+        #expect(found.detail.hasSuffix("so a macOS box will not start while the other 2 are macOS guests"))
+        // Never more Linux guests than machines, boxes first.
+        found = try check(2, boxes: 1, images: 3)
+        #expect(found.linuxBoxes == 1 && found.linuxImages == 1)
+        found = try check(1, boxes: 2, images: 1)
+        #expect(found.linuxBoxes == 1 && found.linuxImages == 0)
+        #expect(String(decoding: try JSONEncoder().encode(found), as: UTF8.self).contains("\"linuxImages\":0"))
+        found = try check(nil, boxes: 0, images: 1)
+        #expect(found.linuxImages == nil)
+    }
+
     /// Virtualization's refusal to run another VM becomes its own error, with a stable phrase
     /// and exit status; its other errors stay as they were.
     @Test func theVMLimitIsItsOwnRefusal() {

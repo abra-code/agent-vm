@@ -31,6 +31,9 @@ public struct HostFacts: Sendable {
     /// places macOS guests have. Another application's Linux guest cannot be told from a macOS
     /// one, so it is not in this number.
     public var runningLinuxBoxes: Int = 0
+    /// How many are Linux guests of agent-vm's own image commands (a build, an update, a
+    /// rebuild), which take none of the two places either.
+    public var runningLinuxImages: Int = 0
     /// The store's own folder; nil when it does not exist yet.
     public var store: StoreRoot.State?
     /// Images and boxes that keep their account password in a plain-text file; nil when the
@@ -59,9 +62,10 @@ public struct HostFacts: Sendable {
                 memoryBytes: UInt64, storeRoot: String, storeFreeBytes: Int64?,
                 runningVirtualMachines: Int?, store: StoreRoot.State? = nil,
                 passwordFiles: Int? = 0, keepsPasswordsInKeychain: Bool = true, linuxGuestDaemon: LocalGuestDaemon? = nil,
-                runningLinuxBoxes: Int = 0) {
+                runningLinuxBoxes: Int = 0, runningLinuxImages: Int = 0) {
         self.linuxGuestDaemon = linuxGuestDaemon
         self.runningLinuxBoxes = runningLinuxBoxes
+        self.runningLinuxImages = runningLinuxImages
         self.osVersion = osVersion
         self.isAppleSilicon = isAppleSilicon
         self.virtualizationSupported = virtualizationSupported
@@ -97,7 +101,8 @@ public struct HostFacts: Sendable {
             passwordFiles: AccountPasswordMove.fileCount(store: FileSystem.canonicalRoot(storeRoot)),
             keepsPasswordsInKeychain: AccountPasswordStore.keepsNewPasswords,
             linuxGuestDaemon: linuxGuestDaemon,
-            runningLinuxBoxes: countRunningLinuxBoxes(storeRoot: storeRoot)
+            runningLinuxBoxes: countRunningLinuxBoxes(storeRoot: storeRoot),
+            runningLinuxImages: ImageStore(root: storeRoot).runningLinuxMachines()
         )
     }
 
@@ -228,8 +233,12 @@ public struct HostCheck: Sendable, Equatable, Codable {
     public var count: Int? = nil
     public var limit: Int? = nil
     /// With `count`: how many of them are agent-vm's own Linux boxes, which the limit does not
-    /// concern. A program shows `count - linuxBoxes` of `limit`.
+    /// concern.
     public var linuxBoxes: Int? = nil
+    /// With `count`: how many of them are Linux guests of agent-vm's own image commands, which
+    /// the limit does not concern either. A program shows `count - linuxBoxes - linuxImages`
+    /// of `limit`.
+    public var linuxImages: Int? = nil
 }
 
 public struct HostReport: Sendable, Equatable, Codable {
@@ -329,20 +338,19 @@ public struct HostReport: Sendable, Equatable, Codable {
         }
 
         if let running = facts.runningVirtualMachines {
-            // The limit is on macOS guests. agent-vm's own Linux boxes are known not to be
-            // any; what else runs, in this or another application, may be.
-            let linux = min(max(0, facts.runningLinuxBoxes), running)
+            // The limit is on macOS guests. agent-vm's own Linux boxes, and the Linux guests
+            // of its image commands, are known not to be any; what else runs, in this or
+            // another application, may be.
+            let (boxes, images) = linuxGuests(boxes: facts.runningLinuxBoxes, images: facts.runningLinuxImages, of: running)
+            let linux = boxes + images
             let others = running - linux
-            var text = "\(running) virtual machine\(running == 1 ? "" : "s") running on this Mac (any application)"
-            if linux > 0 {
-                text += ", \(linux) of them \(linux == 1 ? "a Linux box" : "Linux boxes") of yours"
-            }
+            let text = "\(running) virtual machine\(running == 1 ? "" : "s") running on this Mac (any application)" + linuxNote(boxes: boxes, images: images)
             if others >= macOSGuestLimit {
                 let those = linux > 0 ? "the other \(others)" : "those"
                 checks.append(HostCheck(name: "running VMs", status: .warning, detail: "\(text); macOS runs at most \(macOSGuestLimit) macOS guests at once, so a \(linux > 0 ? "macOS " : "")box will not start while \(those) are macOS guests",
-                                        count: running, limit: macOSGuestLimit, linuxBoxes: linux))
+                                        count: running, limit: macOSGuestLimit, linuxBoxes: boxes, linuxImages: images))
             } else {
-                checks.append(HostCheck(name: "running VMs", status: .ok, detail: text, count: running, limit: macOSGuestLimit, linuxBoxes: linux))
+                checks.append(HostCheck(name: "running VMs", status: .ok, detail: text, count: running, limit: macOSGuestLimit, linuxBoxes: boxes, linuxImages: images))
             }
         } else {
             checks.append(HostCheck(name: "running VMs", status: .info, detail: "could not list processes (sandboxed?); at most \(macOSGuestLimit) macOS guests can run at once", limit: macOSGuestLimit))
@@ -350,6 +358,26 @@ public struct HostReport: Sendable, Equatable, Codable {
 
         checks.append(linuxGuestDaemonCheck(facts.linuxGuestDaemon))
         return HostReport(checks: checks)
+    }
+
+    /// The store's running Linux guests as counted among `running` machines: never more of
+    /// them than machines. A lock is held a moment before its machine is there and after it is
+    /// gone.
+    public static func linuxGuests(boxes: Int, images: Int, of running: Int) -> (boxes: Int, images: Int) {
+        let counted = min(max(0, boxes), max(0, running))
+        return (counted, min(max(0, images), max(0, running) - counted))
+    }
+
+    /// What follows the number of running machines when some are the store's Linux guests.
+    public static func linuxNote(boxes: Int, images: Int) -> String {
+        var note = ""
+        if boxes > 0 {
+            note += ", \(boxes) of them \(boxes == 1 ? "a Linux box" : "Linux boxes") of yours"
+        }
+        if images > 0 {
+            note += ", \(images) \(boxes > 0 ? "" : "of them ")\(images == 1 ? "a Linux image" : "Linux images") being built or updated"
+        }
+        return note
     }
 
     /// Never a failure: a Mac without the Linux daemon runs macOS boxes as ever.

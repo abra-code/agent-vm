@@ -169,6 +169,23 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: image.updateCommitURL.path))
     }
 
+    /// An image command marks its Linux guest for as long as it holds the mark, and a second
+    /// taker gets none.
+    @Test func aLinuxGuestOfAnImageIsMarkedWhileItRuns() throws {
+        let fixture = try BoxScratch()
+        let image = fixture.image
+        #expect(!fixture.images.runsLinuxMachine(image) && fixture.images.runningLinuxMachines() == 0)
+        let mark = try #require(fixture.images.markLinuxMachine(of: image))
+        #expect(fixture.images.runsLinuxMachine(image) && fixture.images.runningLinuxMachines() == 1)
+        #expect(fixture.images.markLinuxMachine(of: image) == nil)
+        // The mark is no part of a box made from the image.
+        let box = try fixture.boxes.create(name: "b1", from: image, imageStore: fixture.images)
+        #expect(!FileManager.default.fileExists(atPath: box.directory.appendingPathComponent(ImageStore.linuxMachineLockName).path))
+        mark.release()
+        #expect(!fixture.images.runsLinuxMachine(image) && fixture.images.runningLinuxMachines() == 0)
+        try fixture.images.delete(named: image.name)
+    }
+
     /// While an update runs (it holds the update lock), its folder is nobody's leftover: a box
     /// can be made from the image as it is, and the image cannot be deleted or changed by
     /// another command.

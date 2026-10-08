@@ -279,7 +279,7 @@ extension ImageBuilder {
             try checkCanceled()
             progress("boot", "Booting a copy of \(image.name)\(image.record.updateSeconds.map { " (the last update took \(Int($0.rounded())) s)" } ?? "")",
                      expectedSeconds: image.record.updateSeconds)
-            try await start(machine, guest: guest)
+            try await start(machine, of: image)
             do {
                 let hello = try await waitForDaemon(machine, attempts: 180, guest: guest)
                 log("  agent-vm-guest \(hello.version ?? "?") answers over vsock")
@@ -538,7 +538,7 @@ extension ImageBuilder {
             // A new machine for every try: one that was refused is not started again.
             machine = try makeMachine(for: image, files: files, extras: extras)
             do {
-                try await start(machine, guest: guest)
+                try await start(machine, of: image)
                 break
             } catch AgentVMError.noFreeVMSlot where ContinuousClock.now < deadline {
                 if !waiting {
@@ -781,7 +781,9 @@ extension ImageBuilder {
                 do {
                     _ = try await waitForDaemon(machine, attempts: 180, guest: guest)
                 } catch AgentVMError.guestUnreachable where !machine.isRunning && machine.failure == nil && cancellation?.isCanceled != true {
-                    // It powered off after all, only later than `shutDown` waits.
+                    // It powered off after all, only later than `shutDown` waits. The wait
+                    // that ends at once lets go of what the machine held while it ran.
+                    _ = await machine.waitUntilStopped(timeout: .zero)
                     return
                 }
             }

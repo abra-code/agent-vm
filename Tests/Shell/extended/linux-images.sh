@@ -194,6 +194,13 @@ test_linux_create_cancel() {
     local _pid=$!
     wait_for_text "$SCRATCH/create.err" '"step":"linux-setup"' 300
     local _reached=$?
+    # The build's guest is known to be a Linux one while it runs.
+    local _counted=0
+    if [ "$_reached" -eq 0 ]; then
+        run_avm status --json
+        assert_json runningVMs.linuxImages 1
+        _counted=$?
+    fi
     kill -INT "$_pid"
     local _began
     _began="$(/bin/date +%s)"
@@ -203,6 +210,7 @@ test_linux_create_cancel() {
     ERR="$(/bin/cat "$SCRATCH/create.err")"
     printf '%s\n[status %s after %s s]\n' "$ERR" "$STATUS" "$_took"
     [ "$_reached" -eq 0 ] || { fail "the setup did not start within 300 s"; return 1; }
+    [ "$_counted" -eq 0 ] || return 1
     assert_status 130 || return 1
     assert_err_events || return 1
     assert_err_contains '"message":"Canceled; shutting down","step":"shutdown"' || return 1

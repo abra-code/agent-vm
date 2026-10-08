@@ -193,6 +193,9 @@ test_boxes_can_be_made_while_a_linux_image_updates() {
     wait_for_text "$SCRATCH/slow.out" "note again" 120 || { fail "the slow update did not reach its step"; kill "$_update"; return 1; }
     run_avm image list
     assert_out_contains "(being updated" || { kill "$_update"; return 1; }
+    # The copy's guest is known to be a Linux one: it takes none of the macOS places.
+    run_avm status --json
+    assert_json runningVMs.linuxImages 1 || { kill "$_update"; return 1; }
     run_avm box create "$_box" --image "$_image"
     assert_status 0 || { kill "$_update"; return 1; }
     run_avm image update "$_image" --tools
@@ -202,6 +205,8 @@ test_boxes_can_be_made_while_a_linux_image_updates() {
     assert_status 1 || { kill "$_update"; return 1; }
     wait "$_update"
     assert_eq "$?" "0" "the slow update's status" || return 1
+    run_avm status --json
+    assert_json runningVMs.linuxImages 0 || return 1
     run_avm image info "$_image" --json
     assert_json revision "1" || return 1
     # The box was made from the image as it was, and says that the image moved on.
