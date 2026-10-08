@@ -140,9 +140,7 @@ final class RefreshProgress {
         progress.begin()
         // The lines are read on a thread of their own, so the seconds keep moving while the
         // update says nothing.
-        let lock = NSLock()
-        var pending: [String] = []
-        var finished = false
+        let lines = ReadLines()
         let reader = Thread {
             var buffer = Data()
             let handle = events.fileHandleForReading
@@ -155,17 +153,10 @@ final class RefreshProgress {
                 while let newline = buffer.firstIndex(of: 10) {
                     let line = String(decoding: buffer[buffer.startIndex..<newline], as: UTF8.self)
                     buffer.removeSubrange(buffer.startIndex...newline)
-                    lock.lock()
-                    pending.append(line)
-                    lock.unlock()
+                    lines.add(line)
                 }
             }
-            lock.lock()
-            if !buffer.isEmpty {
-                pending.append(String(decoding: buffer, as: UTF8.self))
-            }
-            finished = true
-            lock.unlock()
+            lines.finish(rest: buffer.isEmpty ? nil : String(decoding: buffer, as: UTF8.self))
         }
         do {
             try process.run()
@@ -200,11 +191,7 @@ final class RefreshProgress {
                     progress.note("  canceling the update (its virtual machine is shut down first)")
                 }
             }
-            lock.lock()
-            let lines = pending
-            pending = []
-            let done = finished
-            lock.unlock()
+            let (lines, done) = lines.take()
             for line in lines where !line.isEmpty {
                 if let text = progress.take(line) {
                     errorLines.append(text)
@@ -222,5 +209,37 @@ final class RefreshProgress {
         progress.end(status == 0 ? "Updated the tools of \(image) (\(seconds) s)"
                         : status > 128 ? "Updating the tools of \(image) was canceled" : "Updating the tools of \(image) failed")
         return (status, errorLines.joined(separator: "\n"), seconds)
+    }
+}
+
+/// The lines a reading thread has gathered and the loop that shows them has not taken yet.
+private final class ReadLines: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending: [String] = []
+    private var finished = false
+
+    func add(_ line: String) {
+        lock.lock()
+        pending.append(line)
+        lock.unlock()
+    }
+
+    /// The reader is at the end of its input; `rest` is a last line without a line end.
+    func finish(rest: String?) {
+        lock.lock()
+        if let rest {
+            pending.append(rest)
+        }
+        finished = true
+        lock.unlock()
+    }
+
+    /// What came since the last call, and whether the reader has finished.
+    func take() -> (lines: [String], done: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        let lines = pending
+        pending = []
+        return (lines, finished)
     }
 }

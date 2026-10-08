@@ -563,7 +563,7 @@ extension ImageBuilder {
                 }
             }
             log("  agent-vm-guest \(hello.version ?? "?") answers (\((hello.features ?? []).joined(separator: ", ")))")
-            if let newDaemon {
+            if newDaemon != nil {
                 record.guestVersion = hello.version
                 record.guestProtocol = hello.v
                 record.guestFeatures = hello.features
