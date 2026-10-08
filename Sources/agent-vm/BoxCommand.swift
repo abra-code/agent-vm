@@ -89,7 +89,8 @@ struct BoxCommand: ParsableCommand {
                 The new box is a fresh clone of the image (its current state: after `image \
                 update-guest`, with the new agent-vm-guest), with the box's CPUs, memory, network \
                 rules and disposable flag, a new identity, and empty logs. Everything written in \
-                the old box is gone. --image switches to another image.
+                the old box is gone, except its logs, which are kept for \(KeptLogs.holdDays) days \
+                (`agent-vm store logs`). --image switches to another image.
                 """)
 
         @Argument(help: "The box name.")
@@ -103,13 +104,24 @@ struct BoxCommand: ParsableCommand {
         func run() throws {
             let old = try options.boxStore.box(named: name)
             let image = try options.imageStore.image(named: image ?? old.record.image)
-            let box = try options.boxStore.recreate(name: name, from: image, imageStore: options.imageStore)
+            var deleted = BoxStore.Deleted()
+            let box: Box
+            do {
+                box = try options.boxStore.recreate(name: name, from: image, imageStore: options.imageStore) { deleted = $0 }
+            } catch {
+                // The old box may be gone already: where its logs went is said all the same.
+                Output.noteKeptLogs(deleted)
+                throw error
+            }
             if options.json {
+                // The record alone, as before; the logs' folder is in `store logs --json`.
+                Output.noteKeptLogs(BoxStore.Deleted(logsProblem: deleted.logsProblem))
                 try Output.json(box.record)
                 return
             }
             print("Recreated \(box.record.disposable == true ? "disposable " : "")box \(box.name) from image \(image.name): \(box.directory.path)")
             print("  network: \(Network.describe(box.record.effectiveNetwork))")
+            Output.printKeptLogs(deleted)
             print("  start it with: agent-vm box start \(box.name)")
         }
     }
@@ -527,7 +539,20 @@ struct BoxCommand: ParsableCommand {
     }
 
     struct Delete: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Delete a stopped box and its disk.")
+        static let configuration = CommandConfiguration(
+            abstract: "Delete a stopped box and its disk.",
+            discussion: """
+                The box's logs (what ran in it, what it contacted, its supervisor's log) are \
+                not deleted with it: they move to Logs/ in the store and stay there for \
+                \(KeptLogs.holdDays) days. `agent-vm store logs` lists and removes them.
+                """)
+
+        struct Result: Encodable {
+            var deleted: String
+            /// The folder the box's logs are in now; absent when it logged nothing.
+            var keptLogs: String?
+            var logsProblem: String?
+        }
 
         @Argument(help: "The box name.")
         var name: String
@@ -535,10 +560,13 @@ struct BoxCommand: ParsableCommand {
         @OptionGroup var options: StoreOptions
 
         func run() throws {
-            try options.boxStore.delete(named: name)
-            if !options.json {
-                print("Deleted box \(name)")
+            let deleted = try options.boxStore.delete(named: name)
+            if options.json {
+                try Output.json(Result(deleted: name, keptLogs: deleted.keptLogs?.path, logsProblem: deleted.logsProblem))
+                return
             }
+            print("Deleted box \(name)")
+            Output.printKeptLogs(deleted)
         }
     }
 
@@ -691,7 +719,8 @@ struct BoxCommand: ParsableCommand {
             discussion: """
                 One entry per program: when it started, how long it ran, its exit status, the \
                 account and the command. The log is kept on this Mac (Boxes/<name>/exec.jsonl), \
-                out of the box's reach, until the box is deleted. It never holds the \
+                out of the box's reach; when the box is deleted it is kept for \(KeptLogs.holdDays) days \
+                (`agent-vm store logs`). It never holds the \
                 programs' environment.
                 """)
 
@@ -980,7 +1009,9 @@ struct BoxCommand: ParsableCommand {
                 Deletes every disposable box (`box create --disposable`) whose supervisor left a \
                 tombstone when it stopped, and every one created more than \(Int(BoxStore.unstartedDisposableAge / 60)) minutes \
                 ago that is not running (never started, or its supervisor died). A running box is \
-                never touched. `box list`, `box start` and `doctor` run it first.
+                never touched. `box list`, `box start` and `doctor` run it first. \
+                It also removes the logs of boxes deleted more than \(KeptLogs.holdDays) days ago \
+                (`agent-vm store logs` lists the kept ones).
                 """)
 
         @OptionGroup var options: StoreOptions
@@ -988,21 +1019,28 @@ struct BoxCommand: ParsableCommand {
         struct Result: Encodable {
             var deleted: [String]
             var problems: [String]
+            /// The kept logs removed for their age (KeptLogs), by id.
+            var removedLogs: [String]
         }
 
         func run() throws {
-            let (deleted, problems) = options.boxStore.collectGarbage()
+            var (deleted, problems) = options.boxStore.collectGarbage()
+            let logs = KeptLogs(root: options.boxStore.root).removeOlder()
+            problems += logs.problems
             if options.json {
-                try Output.json(Result(deleted: deleted, problems: problems))
+                try Output.json(Result(deleted: deleted, problems: problems, removedLogs: logs.removed))
                 return
             }
             for name in deleted {
                 print("Deleted disposable box \(name)")
             }
+            for id in logs.removed {
+                print("Removed the kept logs \(id) (older than \(KeptLogs.holdDays) days)")
+            }
             for problem in problems {
                 Stderr.write("warning: \(problem)\n")
             }
-            if deleted.isEmpty && problems.isEmpty {
+            if deleted.isEmpty && problems.isEmpty && logs.removed.isEmpty {
                 print("No disposable boxes to delete.")
             }
         }
@@ -1011,6 +1049,8 @@ struct BoxCommand: ParsableCommand {
         /// keeps its own output (JSON included).
         static func collect(_ store: BoxStore, except name: String? = nil) {
             let (deleted, problems) = store.collectGarbage(except: name)
+            // Kept logs past their time go quietly here: `box gc` and `store logs` say which.
+            _ = KeptLogs(root: store.root).removeOlder()
             for name in deleted {
                 Stderr.write("note: deleted disposable box \(name), which had stopped\n")
             }

@@ -695,7 +695,7 @@ struct ConnectRunner {
                 if started {
                     _ = stopAndDelete(current)
                 } else if !current.isRunning {
-                    try? boxStore.delete(named: current.name)
+                    _ = try? boxStore.delete(named: current.name)
                 }
             }
             throw error
@@ -713,20 +713,22 @@ struct ConnectRunner {
         print("Stopping box \(box.name) (temporary)")
         let clock = ContinuousClock()
         let began = clock.now
-        let (result, signal) = SignalHold.around { () -> Void in
+        let (result, signal) = SignalHold.around { () -> BoxStore.Deleted in
             do {
                 try BoxLauncher.stop(box)
             } catch AgentVMError.boxNotRunning {
             }
             do {
-                try boxStore.delete(named: box.name)
+                return try boxStore.delete(named: box.name)
             } catch AgentVMError.boxNotFound {
                 // Stopped, it had a tombstone: another client's box gc deleted it meanwhile.
+                return BoxStore.Deleted()
             }
         }
         switch result {
-        case .success:
+        case .success(let deleted):
             print("  stopped and deleted (\((clock.now - began).components.seconds) s)")
+            Output.printKeptLogs(deleted)
         case .failure(let error):
             warn("could not stop and delete box \(box.name): \(error); it stops when this \(invokedAs) exits, and agent-vm box gc deletes it")
         }

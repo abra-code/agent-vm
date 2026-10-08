@@ -1019,3 +1019,124 @@ test_a_record_of_a_newer_format_is_refused() {
     assert_status 1 || return 1
     assert_err_contains "written by a newer agent-vm (format 4)" || return 1
 }
+
+# A deleted box's logs are kept: moved to Logs/ in the store, listed and removed by store logs.
+test_a_deleted_boxs_logs_are_kept() {
+    fake_image dev
+    run_avm store logs
+    assert_status 0 || return 1
+    assert_out_contains "No logs of deleted boxes are kept (they would be in $AGENT_VM_HOME/Logs)." || return 1
+    assert_missing "$AGENT_VM_HOME/Logs" || return 1
+    # A box that logged nothing leaves nothing.
+    run_avm box create quiet --image dev
+    run_avm box delete quiet
+    assert_status 0 || return 1
+    assert_eq "$OUT" "Deleted box quiet" "the whole answer" || return 1
+    assert_missing "$AGENT_VM_HOME/Logs" || return 1
+
+    run_avm box create b1 --image dev
+    printf '{"event":"start"}\n' > "$AGENT_VM_HOME/Boxes/b1/exec.jsonl"
+    printf 'supervisor started\n' > "$AGENT_VM_HOME/Boxes/b1/supervisor.log"
+    run_avm box delete b1 --json
+    assert_status 0 || return 1
+    assert_json deleted b1 || return 1
+    local _kept
+    _kept="$(json_value keptLogs)"
+    assert_contains "$_kept" "$AGENT_VM_HOME/Logs/b1-" "where the logs went" || return 1
+    assert_missing "$AGENT_VM_HOME/Boxes/b1" || return 1
+    assert_exists "$_kept/exec.jsonl" || return 1
+    assert_exists "$_kept/supervisor.log" || return 1
+    assert_exists "$_kept/kept.json" || return 1
+    local _id
+    _id="$(/usr/bin/basename "$_kept")"
+
+    # Recreate keeps the old box's logs and says where; the new box starts with none.
+    run_avm box create b2 --image dev
+    printf '{"event":"start"}\n' > "$AGENT_VM_HOME/Boxes/b2/exec.jsonl"
+    run_avm box recreate b2
+    assert_status 0 || return 1
+    assert_out_contains "its logs are kept for 30 days: $AGENT_VM_HOME/Logs/b2-" || return 1
+    assert_missing "$AGENT_VM_HOME/Boxes/b2/exec.jsonl" || return 1
+
+    run_avm store logs --json
+    assert_status 0 || return 1
+    assert_json directory "$AGENT_VM_HOME/Logs" || return 1
+    assert_json holdDays 30 || return 1
+    assert_json logs.1.logs.id "$_id" || return 1
+    assert_json logs.1.logs.box b1 || return 1
+    assert_json logs.1.logs.image dev || return 1
+    assert_json logs.1.path "$_kept" || return 1
+    assert_json logs.1.files.0 supervisor.log || return 1
+    assert_json logs.1.files.1 exec.jsonl || return 1
+    assert_json logs.0.logs.box b2 || return 1
+    run_avm store logs
+    assert_status 0 || return 1
+    assert_out_contains "$_id  box b1, image dev  deleted " || return 1
+    assert_out_contains "    $_kept" || return 1
+    assert_out_contains "    supervisor.log, exec.jsonl" || return 1
+    assert_out_contains "remove one with: agent-vm store logs --remove <name>" || return 1
+
+    # Nothing is removed when one of the names is not there.
+    run_avm store logs --remove "$_id" --remove ../Boxes
+    assert_status 1 || return 1
+    assert_err_contains "no kept logs ../Boxes" || return 1
+    assert_exists "$_kept" || return 1
+    # Kept logs are young: gc leaves them, by age too.
+    run_avm box gc --json
+    assert_status 0 || return 1
+    assert_json removedLogs 0 || return 1
+    assert_exists "$_kept" || return 1
+    run_avm store logs --remove-older-than 1
+    assert_status 0 || return 1
+    assert_out_contains "No kept logs that old." || return 1
+    run_avm store logs --remove "$_id"
+    assert_status 0 || return 1
+    assert_out_contains "Removed the kept logs $_id" || return 1
+    assert_missing "$_kept" || return 1
+    run_avm store logs --remove-older-than 0 --json
+    assert_status 0 || return 1
+    assert_contains "$(json_value removed.0)" "b2-" "the rest goes with 0 days" || return 1
+    run_avm store logs --remove-older-than -1
+    assert_status 64 || return 1
+    run_avm store logs
+    assert_out_contains "No logs of deleted boxes are kept" || return 1
+
+    # Old ones go with box gc, which says so, and with the quiet one box list runs. A folder
+    # without its record is as old as its last change.
+    local _box
+    for _box in b3 b4; do
+        run_avm box create "$_box" --image dev
+        printf '{"event":"start"}\n' > "$AGENT_VM_HOME/Boxes/$_box/exec.jsonl"
+        run_avm box delete "$_box" --json
+        _kept="$(json_value keptLogs)"
+        assert_exists "$_kept/kept.json" || return 1
+        /bin/rm "$_kept/kept.json"
+        /usr/bin/touch -t 202601010000 "$_kept"
+        if [ "$_box" = b3 ]; then
+            run_avm box gc --json
+            assert_status 0 || return 1
+            assert_json removedLogs.0 "$(/usr/bin/basename "$_kept")" || return 1
+        else
+            run_avm box list
+            assert_status 0 || return 1
+        fi
+        assert_missing "$_kept" || return 1
+    done
+}
+
+# A kept folder whose record is gone is not listed, and --remove takes it by its name all the same.
+test_kept_logs_without_a_record_are_removed_by_name() {
+    fake_image dev
+    run_avm box create b1 --image dev
+    printf '{"event":"start"}\n' > "$AGENT_VM_HOME/Boxes/b1/exec.jsonl"
+    run_avm box delete b1 --json
+    local _kept
+    _kept="$(json_value keptLogs)"
+    assert_exists "$_kept/kept.json" || return 1
+    /bin/rm "$_kept/kept.json"
+    run_avm store logs --json
+    assert_json logs 0 || return 1
+    run_avm store logs --remove "$(/usr/bin/basename "$_kept")"
+    assert_status 0 || return 1
+    assert_missing "$_kept" || return 1
+}

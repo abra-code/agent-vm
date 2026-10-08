@@ -22,6 +22,8 @@
 //   Boxes/<name>/tombstone           a disposable box that stopped; `box gc` deletes the folder
 //   Boxes/.gc.lock                   held while `box gc` runs, so only one collects at a time
 //
+// A deleted box's logs are not deleted with it: they move to Logs/ in the store (KeptLogs).
+//
 // A clone takes no space until the box writes, so creating a box is instant; the image must
 // be on the same volume. Each box gets its own MAC address and machine identifier, so two
 // boxes of one image can run side by side.
@@ -448,10 +450,11 @@ public struct BoxStore: Sendable {
 
     /// Deletes box `name` and creates it again from `image` with the same CPUs, memory,
     /// network rules and disposable flag: a fresh clone of the image, with a new identity and
-    /// empty logs. It checks first what it can (the box stopped, the image ready and free, the
+    /// empty logs (the old box's are kept, and `deleted` is told where). It checks first what it can (the box stopped, the image ready and free, the
     /// rules and packs usable), so a refusal leaves the box as it was; a create that still fails
     /// after the delete says how to create the box by hand.
-    public func recreate(name: String, from image: GoldenImage, imageStore: ImageStore, collectionPatience: Duration = .seconds(30)) throws -> Box {
+    public func recreate(name: String, from image: GoldenImage, imageStore: ImageStore, collectionPatience: Duration = .seconds(30),
+                         deleted: ((Deleted) -> Void)? = nil) throws -> Box {
         let old = try box(named: name)
         guard !old.isRunning else {
             throw AgentVMError.boxRunning(name)
@@ -477,7 +480,8 @@ public struct BoxStore: Sendable {
             }
         }
         defer { collecting?.release() }
-        try delete(named: name)
+        let gone = try delete(named: name)
+        deleted?(gone)
         do {
             return try create(name: name, from: image, imageStore: imageStore, cpuCount: old.record.cpuCount,
                               memoryBytes: old.record.memoryBytes, network: network, disposable: disposable)
@@ -508,8 +512,25 @@ public struct BoxStore: Sendable {
         return plain ? word : "'" + word.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// Deletes a box and its disk; refused while its supervisor runs.
-    public func delete(named name: String) throws {
+    /// What `delete` did with the box's logs.
+    public struct Deleted: Sendable, Equatable {
+        /// Where the logs are now (a folder in Logs/); nil when the box logged nothing, or
+        /// when none could be kept.
+        public var keptLogs: URL?
+        /// Why some or all of the logs were not kept.
+        public var logsProblem: String?
+
+        public init(keptLogs: URL? = nil, logsProblem: String? = nil) {
+            self.keptLogs = keptLogs
+            self.logsProblem = logsProblem
+        }
+    }
+
+    /// Deletes a box and its disk; refused while its supervisor runs. Its logs are moved out
+    /// first (KeptLogs); a box whose logs cannot be moved is deleted all the same, and the
+    /// result says so.
+    @discardableResult
+    public func delete(named name: String, now: Date = Date()) throws -> Deleted {
         guard ImageStore.isValidName(name) else {
             throw AgentVMError.invalidBoxName(name)
         }
@@ -528,6 +549,15 @@ public struct BoxStore: Sendable {
             throw AgentVMError.boxRunning(name)
         }
         defer { lock.release() }
+        var deleted = Deleted()
+        do {
+            deleted.keptLogs = try KeptLogs(root: root).keep(box: name, folder: directory, record: try? Self.read(name: name, directory: directory).record, now: now)
+        } catch let KeptLogs.Partial.some(kept, reason) {
+            deleted.keptLogs = kept
+            deleted.logsProblem = reason
+        } catch {
+            deleted.logsProblem = "\(error)"
+        }
         // The record goes first. A supervisor starting meanwhile can only hold a lock once this
         // one's file is unlinked (it recreates one while the folder is removed) or released,
         // and it then finds no record and gives up (BoxSupervisor.run), instead of passing
@@ -536,6 +566,7 @@ public struct BoxStore: Sendable {
         try FileSystem.removeTree(directory.path)
         // The account password goes with the last image or box that names it.
         passwords.removeUnused(store: root)
+        return deleted
     }
 
     /// Deletes stopped disposable boxes: those with a tombstone, and those without one created
@@ -564,8 +595,11 @@ public struct BoxStore: Sendable {
                 continue
             }
             do {
-                try delete(named: box.name)
+                let gone = try delete(named: box.name)
                 deleted.append(box.name)
+                if let problem = gone.logsProblem {
+                    problems.append("not all of the logs of disposable box \(box.name) were kept: \(problem)")
+                }
             } catch AgentVMError.boxRunning {
                 // Started meanwhile: no longer garbage.
             } catch {

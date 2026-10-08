@@ -54,7 +54,7 @@ A box made before one of these keeps what it had. That is by design: a box is a 
 
 ## What a box keeps between starts
 
-`box stop` shuts the box down; `box start` boots the same disk again (about 20 seconds). Everything written in the box stays: files in the account's home, tools installed by hand, settings changed in System Settings. Its logs (`box execlog`, `box netlog`, `supervisor.log`) are kept on your Mac and last until the box is deleted.
+`box stop` shuts the box down; `box start` boots the same disk again (about 20 seconds). Everything written in the box stays: files in the account's home, tools installed by hand, settings changed in System Settings. Its logs (`box execlog`, `box netlog`, `supervisor.log`) are kept on your Mac. When the box is deleted or recreated they move to `Logs/<box>-<time>/` in the store and stay there for 30 days (since 0.7.14); `agent-vm store logs` lists them.
 
 Because the box keeps everything, it also keeps whatever an agent left behind. Treat a box as something to throw away: keep your work in the project folder, and put tools you want every time into an image recipe rather than installing them by hand in a box.
 

@@ -225,6 +225,27 @@ enum Output {
         return ["    \(folder.path)", "    \(size(usage.bytes)), of which \(size(unshared)) not shared with \(others) (what \(delete) frees)"]
     }
 
+    /// After a box was deleted: where its logs are now, on stdout; why some were not kept, as
+    /// a warning.
+    static func printKeptLogs(_ deleted: BoxStore.Deleted, indent: String = "  ") {
+        if let kept = deleted.keptLogs {
+            print("\(indent)its logs are kept for \(KeptLogs.holdDays) days: \(kept.path)")
+        }
+        if let problem = deleted.logsProblem {
+            Stderr.write("warning: not all of the box's logs were kept: \(problem)\n")
+        }
+    }
+
+    /// The same on stderr, for a command whose stdout is JSON or that is about to fail.
+    static func noteKeptLogs(_ deleted: BoxStore.Deleted) {
+        if let kept = deleted.keptLogs {
+            Stderr.write("note: the deleted box's logs are kept for \(KeptLogs.holdDays) days: \(kept.path)\n")
+        }
+        if let problem = deleted.logsProblem {
+            Stderr.write("warning: not all of the box's logs were kept: \(problem)\n")
+        }
+    }
+
     static func time(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

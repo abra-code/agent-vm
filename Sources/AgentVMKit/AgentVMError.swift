@@ -68,6 +68,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case invalidBoxName(String)
     case boxExists(String)
     case boxNotFound(String)
+    /// No folder of that name in Logs/ (KeptLogs).
+    case keptLogsNotFound(String)
     /// The box's supervisor runs; stop the box first.
     case boxRunning(String)
     case boxNotRunning(String)
@@ -212,6 +214,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "box \(name) already exists; delete it first with `agent-vm box delete \(name)`"
         case let .boxNotFound(name):
             return "no box \(name); `agent-vm box list` shows the existing ones"
+        case let .keptLogsNotFound(id):
+            return "no kept logs \(Printable.line(id, limit: 100)); `agent-vm store logs` lists them"
         case let .boxRunning(name):
             return "box \(name) is running; stop it first with `agent-vm box stop \(name)`"
         case let .boxNotRunning(name):
