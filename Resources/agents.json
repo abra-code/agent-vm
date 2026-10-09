@@ -33,7 +33,7 @@
       "command": ["opencode"],
       "allow": ["opencode.ai", "models.opencode.ai"],
       "secrets": [],
-      "env": {"OPENCODE_DISABLE_AUTOUPDATE": "1"},
+      "env": {"OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT": "1"},
       "install": "npm install --global opencode-ai",
       "note": "OpenCode Zen's free models need no account. Other providers need their key (--secret) and their hosts (box network --allow)."
     }

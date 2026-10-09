@@ -3,7 +3,7 @@
   "guest": "linux",
   "description": "Node and npm from nodejs.org, for Linux images",
   "parameters": {
-    "major": {
+    "node": {
       "description": "Node's major version; its newest release is installed (24 or later: an older Node cannot use a box's proxy for fetch)",
       "default": "24"
     }
@@ -19,7 +19,7 @@
     {
       "name": "Node from nodejs.org, checked against its checksum list",
       "user": "root",
-      "run": "/usr/local/libexec/agent-vm-install-node \"$AGENT_VM_PARAM_MAJOR\"",
+      "run": "/usr/local/libexec/agent-vm-install-node \"$AGENT_VM_PARAM_NODE\"",
       "timeoutSeconds": 900
     },
     {
@@ -31,7 +31,7 @@
     {
       "name": "Node, the newest of its major version",
       "user": "root",
-      "run": "/usr/local/libexec/agent-vm-install-node \"$AGENT_VM_PARAM_MAJOR\"",
+      "run": "/usr/local/libexec/agent-vm-install-node \"$AGENT_VM_PARAM_NODE\"",
       "timeoutSeconds": 900
     }
   ],
