@@ -721,6 +721,46 @@ import Testing
         #expect(try FileManager.default.contentsOfDirectory(atPath: taken).isEmpty)
     }
 
+    @Test func aCloneSaysHowFarItIsAndStopsWhenAsked() throws {
+        struct Stop: Error {}
+        let scratch = try Scratch()
+        try scratch.populate()
+        let many = scratch.project.appendingPathComponent("many", isDirectory: true)
+        try FileSystem.makeDirectory(many.path)
+        for index in 0..<600 {
+            try Data().write(to: many.appendingPathComponent("file-\(index)"))
+        }
+        var counts: [Int] = []
+        let copy = scratch.root.appendingPathComponent("copy").path
+        try FileSystem.cloneTree(scratch.project.path, to: copy) { counts.append($0) }
+        #expect(counts.prefix(2) == [256, 512])
+        #expect(FileSystem.exists(copy + "/many/file-599"))
+        // What the callback throws stops the clone, comes out as it is, and nothing is left.
+        let stopped = scratch.root.appendingPathComponent("stopped").path
+        #expect(throws: Stop.self) {
+            try FileSystem.cloneTree(scratch.project.path, to: stopped) { _ in throw Stop() }
+        }
+        #expect(!FileSystem.exists(stopped))
+        // The same through a session: no session is made, and the next start is not refused.
+        #expect(throws: Stop.self) {
+            try scratch.store.start(project: scratch.project.path) { _ in throw Stop() }
+        }
+        #expect(try scratch.store.list().isEmpty)
+        let session = try scratch.store.start(project: scratch.project.path)
+        #expect(FileSystem.exists(session.snapshotPath + "/many/file-599"))
+    }
+
+    @Test func aPacerIsQuietFirstAndThenKeepsItsInterval() {
+        var quick = ProgressPacer(first: .seconds(3600), interval: .seconds(3600))
+        let early = quick.isDue()
+        #expect(!early)
+        var slow = ProgressPacer(first: .zero, interval: .seconds(3600))
+        let first = slow.isDue()
+        let second = slow.isDue()
+        #expect(first)
+        #expect(!second)
+    }
+
     // MARK: - what an agent leaves to stop the next snapshot, or the cleanup
 
     /// A tree nested deeper than a path may be long (PATH_MAX): copyfile, fts with full paths

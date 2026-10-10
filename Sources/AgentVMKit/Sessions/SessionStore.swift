@@ -43,9 +43,11 @@ public struct SessionStore: Sendable {
 
     // MARK: - Operations
 
-    /// Takes a snapshot of `projectPath` and records a new active session.
+    /// Takes a snapshot of `projectPath` and records a new active session. `progress` is
+    /// called now and then while the project is copied, with the number of files and folders
+    /// met so far; what it throws stops the copy, and no session is made.
     @discardableResult
-    public func start(project projectPath: String) throws -> Session {
+    public func start(project projectPath: String, progress: ((Int) throws -> Void)? = nil) throws -> Session {
         try StoreRoot.prepare(root)
         try FileSystem.makeDirectories(sessionsDirectory.path)
         let project = try validatedProject(projectPath)
@@ -66,7 +68,7 @@ public struct SessionStore: Sendable {
             // Taken BEFORE the clone: anything that changes from here on has a later ctime.
             let start = FileSystem.now()
             do {
-                try FileSystem.cloneTree(project, to: directory.appendingPathComponent(Self.snapshotName).path)
+                try FileSystem.cloneTree(project, to: directory.appendingPathComponent(Self.snapshotName).path, progress: progress)
             } catch {
                 try? FileSystem.removeTree(directory.path)
                 throw error

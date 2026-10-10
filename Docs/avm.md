@@ -146,7 +146,7 @@ A secret's state is `set`, `missing`, or `asks`: stored by another build of agen
 
 ## Snapshot and report
 
-Before the session, avm snapshots a folder it shares read-write: an instant copy-on-write copy in the agent-vm store, recorded as a session (see the README's Sessions section; `agent-vm session list` shows them). The folder must be on the same volume as the store.
+Before the session, avm snapshots a folder it shares read-write: an instant copy-on-write copy in the agent-vm store, recorded as a session (see the README's Sessions section; `agent-vm session list` shows them). The folder must be on the same volume as the store. The copy takes no space, but every file and folder is visited, so a very large folder takes minutes: after 3 seconds, and then every 10, a line says how far it is (`still copying ~/src: 412160 files and folders so far (Control-C stops; --no-snapshot runs without a snapshot)`), since 0.7.29.
 
 After the session, avm reports what changed since the snapshot:
 
@@ -168,7 +168,7 @@ k) keep the changes  r) show every change  u) undo them all [K/r/u]
 - **When no snapshot can be taken**, avm says why and asks:
   - another session is already active for the folder (another avm, or an application): its snapshot covers this run too, so going on is the default;
   - the folder is on another volume than the store, or the snapshot failed: going on means nothing can be undone, so stopping is the default.
-- **A session that ends with a signal** (the terminal closed, `kill`): nothing is asked; the session is ended, kept for undo, and avm exits with 128 + the signal. A Control-C while the snapshot is taken, the report is made or the undo runs takes effect after that step, never halfway.
+- **A session that ends with a signal** (the terminal closed, `kill`): nothing is asked; the session is ended, kept for undo, and avm exits with 128 + the signal. A Control-C while the report is made or the undo runs takes effect after that step, never halfway. A Control-C while the snapshot is taken stops the copy (since 0.7.29; before, it waited for the copy to end): what was copied is removed, no session is made, nothing is run, and avm exits with 130.
 - **Kept snapshots take space** as the folder changes: `agent-vm session discard --older-than 7` frees those that ended more than a week ago.
 
 ## The list

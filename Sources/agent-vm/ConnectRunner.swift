@@ -737,9 +737,23 @@ struct ConnectRunner {
 
     /// Takes the snapshot, with signals held. When it cannot be taken, says why and asks
     /// whether to go on without one (the session is nil then); no is `noSnapshot`. A signal
-    /// during the step comes back with it, the session already ended.
+    /// during the step comes back with it, the session already ended. A large project takes
+    /// minutes to copy: after a few seconds a line says how far the copy is, and a signal
+    /// stops it, leaving no snapshot.
     private func snapshot(_ project: String, store: SessionStore, terminal: Terminal) throws -> (Session?, Int32?) {
-        let (result, signal) = SignalHold.around { try store.start(project: project) }
+        var pacer = ProgressPacer()
+        let (result, signal) = SignalHold.watched { hold in
+            try store.start(project: project) { met in
+                if let arrived = hold.arrived() {
+                    // Removing what was copied takes a while too (10 s for 240000 entries).
+                    print("  stopping; removing what was copied")
+                    throw ConnectError.interrupted(arrived)
+                }
+                if pacer.isDue() {
+                    print("  still copying \(Self.tilde(project)): \(met) files and folders so far (Control-C stops; --no-snapshot runs without a snapshot)")
+                }
+            }
+        }
         switch result {
         case .success(let session):
             print("Snapshot of \(Self.tilde(project)) taken (session \(session.id))")
@@ -750,6 +764,9 @@ struct ConnectRunner {
             return (session, nil)
         case .failure(let error):
             if let signal {
+                if case ConnectError.interrupted = error {
+                    print("  stopped; no snapshot was taken")
+                }
                 return (nil, signal)
             }
             let question: Confirm

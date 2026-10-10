@@ -34,7 +34,14 @@ struct SessionCommand: ParsableCommand {
         func run() throws {
             let clock = ContinuousClock()
             let began = clock.now
-            let session = try options.store.start(project: project)
+            // With --json nothing but the answer is written; a program has its own way to wait.
+            var pacer = ProgressPacer()
+            let json = options.json
+            let session = try options.store.start(project: project) { met in
+                if !json && pacer.isDue() {
+                    Stderr.write("still copying: \(met) files and folders so far\n")
+                }
+            }
             let elapsed = clock.now - began
             if options.json {
                 try Output.json(SessionOutput(session))

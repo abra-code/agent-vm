@@ -15,6 +15,8 @@ final class SignalHold {
     private let queue: Int32
     private var previous: [(Int32, sigaction)] = []
     private var released = false
+    /// The signals read from the queue so far: reading takes them out of it.
+    private var seen: Set<Int32> = []
 
     /// Holds the signals off until `release`. Without a kqueue nothing is held, and the signals
     /// keep their actions.
@@ -57,17 +59,34 @@ final class SignalHold {
             var old = action
             _ = sigaction(signalNumber, &old, nil)
         }
+        collect()
+        close(queue)
+        return firstSeen()
+    }
+
+    /// The first signal that arrived so far, with the hold still on: for a long step that can
+    /// stop cleanly when asked. `release` returns it again.
+    func arrived() -> Int32? {
+        guard !released, queue >= 0 else {
+            return nil
+        }
+        collect()
+        return firstSeen()
+    }
+
+    private func collect() {
         let empty = kevent(ident: 0, filter: 0, flags: 0, fflags: 0, data: 0, udata: nil)
         var events = Array(repeating: empty, count: Self.held.count)
         var zero = timespec(tv_sec: 0, tv_nsec: 0)
         let count = kevent(queue, nil, 0, &events, Int32(events.count), &zero)
-        close(queue)
-        guard count > 0 else {
-            return nil
+        if count > 0 {
+            seen.formUnion(events[0..<Int(count)].map { Int32($0.ident) })
         }
+    }
+
+    private func firstSeen() -> Int32? {
         // SIGTERM and SIGHUP first: they say the person is gone, which decides what follows.
-        let arrived = Set(events[0..<Int(count)].map { Int32($0.ident) })
-        for signalNumber in [SIGTERM, SIGHUP, SIGINT, SIGQUIT] where arrived.contains(signalNumber) {
+        for signalNumber in [SIGTERM, SIGHUP, SIGINT, SIGQUIT] where seen.contains(signalNumber) {
             if let action = previous.first(where: { $0.0 == signalNumber })?.1, !Self.ignores(action) {
                 return signalNumber
             }
@@ -80,6 +99,13 @@ final class SignalHold {
     static func around<T>(_ body: () throws -> T) -> (result: Result<T, Error>, signal: Int32?) {
         let hold = SignalHold()
         let result = Result { try body() }
+        return (result, hold.release())
+    }
+
+    /// As `around`, for a body that asks the hold whether a signal arrived (`arrived`).
+    static func watched<T>(_ body: (SignalHold) throws -> T) -> (result: Result<T, Error>, signal: Int32?) {
+        let hold = SignalHold()
+        let result = Result { try body(hold) }
         return (result, hold.release())
     }
 

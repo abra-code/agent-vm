@@ -114,12 +114,16 @@ extension FileSystem {
     ///   attributes.
     ///
     /// A failed clone leaves no destination behind.
-    static func cloneTree(_ source: String, to destination: String) throws {
+    ///
+    /// `progress` is called after every 256 entries of a tree with the number met so far.
+    /// What it throws stops the clone, which then leaves no destination either, and is thrown
+    /// on as it is.
+    static func cloneTree(_ source: String, to destination: String, progress: ((Int) throws -> Void)? = nil) throws {
         guard !exists(destination) else {
             throw AgentVMError.system(operation: "clone \(source) to \(destination)", code: EEXIST)
         }
         do {
-            try cloneNew(source, to: destination)
+            try cloneNew(source, to: destination, progress: progress)
         } catch {
             try? removeTree(destination)
             guard case let AgentVMError.system(detail, code) = error else {
@@ -142,7 +146,7 @@ extension FileSystem {
         var index = 0
     }
 
-    private static func cloneNew(_ source: String, to destination: String) throws {
+    private static func cloneNew(_ source: String, to destination: String, progress: ((Int) throws -> Void)?) throws {
         var info = stat()
         var saved: SavedEntry?
         if lstat(source, &info) != 0 {
@@ -163,6 +167,7 @@ extension FileSystem {
             return
         }
         var frames: [CloneFrame] = []
+        var met = 0
         do {
             try enter(at: AT_FDCWD, source, to: AT_FDCWD, destination, info: info, saved: saved, list: true, frames: &frames)
             while let top = frames.indices.last {
@@ -170,6 +175,10 @@ extension FileSystem {
                     let entry = frames[top].entries[frames[top].index]
                     frames[top].index += 1
                     try cloneChild(entry, device: info.st_dev, frames: &frames)
+                    met += 1
+                    if let progress, met % 256 == 0 {
+                        try progress(met)
+                    }
                     continue
                 }
                 // This folder is done. Its parent is opened first: once the folder has its own
