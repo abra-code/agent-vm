@@ -39,6 +39,18 @@ import Virtualization
                                              "linux guest daemon"])
     }
 
+    @Test func imagesWithAFourKilobyteKernelAreAWarningAndStopNothing() {
+        var facts = Self.goodFacts()
+        facts.smallPageImages = [LinuxPageNote.Image(name: "deb", system: "Debian 13", canSwitch: true)]
+        let report = HostReport.evaluate(facts)
+        #expect(report.canRunBoxes)
+        #expect(report.checks.last?.name == "linux kernels")
+        #expect(report.checks.last?.status == .warning)
+        #expect(report.checks.last?.detail.contains("`agent-vm image update deb --system --page-size 16k`") == true)
+        // No such image: no line.
+        #expect(!HostReport.evaluate(Self.goodFacts()).checks.contains { $0.name == "linux kernels" })
+    }
+
     @Test func theLinuxDaemonLineIsNeverAFailure() throws {
         func check(_ daemon: LocalGuestDaemon?) -> HostCheck? {
             var facts = Self.goodFacts()

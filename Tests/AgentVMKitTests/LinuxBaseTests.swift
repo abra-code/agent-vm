@@ -628,3 +628,56 @@ final class FolderServer: @unchecked Sendable {
         }
     }
 }
+
+@Suite struct LinuxPageNoteTests {
+    static func system(_ distribution: String, _ version: String, pages: Int?) -> LinuxSystem {
+        return LinuxSystem(distribution: distribution, version: version, name: "\(distribution) \(version)", pageSize: pages)
+    }
+
+    @Test func aRecordWithoutASizeIsOneWithSmallPages() {
+        // Written before sizes were kept, when every image booted its cloud image's kernel.
+        #expect(LinuxPageNote.hasSmallPages(Self.system("debian", "13", pages: nil)))
+        #expect(LinuxPageNote.hasSmallPages(Self.system("debian", "13", pages: 4096)))
+        #expect(!LinuxPageNote.hasSmallPages(Self.system("debian", "13", pages: 16384)))
+        #expect(!LinuxPageNote.hasSmallPages(Self.system("ubuntu", "26.04", pages: 65536)))
+        // A macOS box has no Linux system.
+        #expect(!LinuxPageNote.hasSmallPages(nil))
+        #expect(LinuxPageNote.hasLargerKernel(Self.system("debian", "13", pages: 4096)))
+        #expect(!LinuxPageNote.hasLargerKernel(Self.system("ubuntu", "26.04", pages: 4096)))
+        #expect(!LinuxPageNote.hasLargerKernel(Self.system("debian", "12", pages: 4096)))
+    }
+
+    @Test func aBoxIsToldWhatMovesItToLargerPages() {
+        #expect(LinuxPageNote.forBox("work", system: Self.system("debian", "13", pages: 16384), image: "deb") == nil)
+        #expect(LinuxPageNote.forBox("work", system: nil, image: "dev") == nil)
+        #expect(LinuxPageNote.forBox("work", system: Self.system("debian", "13", pages: nil), image: "deb")
+            == "box work's kernel has 4 KiB memory pages and can lose kernel memory and stop when the Mac runs short of memory (macOS 27); `agent-vm image update deb --system --page-size 16k`, then `agent-vm box recreate work`, gives it the kernel with 16 KiB pages")
+        // A choice of 4 KiB that the record names is moved only by the option, so the command has it; a
+        // box that is deleted after its session is not told to recreate itself.
+        #expect(LinuxPageNote.forBox("tmp-1", system: Self.system("debian", "13", pages: 4096), image: "deb", kept: false)?
+            .hasSuffix("; `agent-vm image update deb --system --page-size 16k` gives the next box of deb the kernel with 16 KiB pages") == true)
+        // A system with no such kernel is told so, not sent to an update that changes nothing.
+        let ubuntu = LinuxPageNote.forBox("u", system: Self.system("ubuntu", "26.04", pages: 4096), image: "ubuntu-tools")
+        #expect(ubuntu?.hasSuffix("; Ubuntu 26.04 packages no kernel with 16 KiB pages; a Debian box has one") == true)
+        #expect(ubuntu?.contains("image update") == false)
+    }
+
+    @Test func aBuildWithSmallPagesSaysSoFirst() throws {
+        let debian = try LinuxBase.named("debian")
+        #expect(LinuxPageNote.forBuild(debian, pageBytes: 16384) == nil)
+        #expect(LinuxPageNote.forBuild(debian, pageBytes: 4096)?.hasSuffix("; leave out --page-size for the kernel with 16 KiB pages") == true)
+        #expect(LinuxPageNote.forBuild(try LinuxBase.named("ubuntu"), pageBytes: 4096)?.hasSuffix("; Ubuntu 26.04 packages no kernel with 16 KiB pages; Debian does") == true)
+    }
+
+    @Test func doctorNamesTheImagesAndWhatHelpsEach() {
+        #expect(LinuxPageNote.forDoctor([]) == nil)
+        let one = LinuxPageNote.forDoctor([LinuxPageNote.Image(name: "deb", system: "Debian 13", canSwitch: true)])
+        #expect(one == "image deb (Debian 13): a kernel with 4 KiB memory pages, and a box of it can lose kernel memory and stop when the Mac runs short of memory (macOS 27); `agent-vm image update deb --system --page-size 16k` gives it the kernel with 16 KiB pages (then `box recreate` for each box)")
+        let mixed = LinuxPageNote.forDoctor([LinuxPageNote.Image(name: "deb", system: "Debian 13", canSwitch: true),
+                                             LinuxPageNote.Image(name: "deb-tools", system: "Debian 13", canSwitch: true),
+                                             LinuxPageNote.Image(name: "u", system: "Ubuntu 26.04", canSwitch: false)])
+        #expect(mixed?.hasPrefix("images deb (Debian 13), deb-tools (Debian 13), u (Ubuntu 26.04): a kernel with 4 KiB memory pages, and a box of them can lose") == true)
+        #expect(mixed?.contains("`agent-vm image update deb deb-tools --system --page-size 16k` gives them the kernel") == true)
+        #expect(mixed?.hasSuffix("; Ubuntu 26.04 packages no such kernel") == true)
+    }
+}

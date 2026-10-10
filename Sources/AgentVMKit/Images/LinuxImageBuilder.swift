@@ -106,6 +106,9 @@ extension ImageBuilder {
         let source = try await cloudImage(options)
         try checkCanceled()
         log("\(options.base.name), kernel with \(LinuxPageSize.name(kernel.pageBytes)) pages; \(options.cpuCount) CPUs, \(options.memoryBytes >> 30) GB memory, \(options.diskBytes >> 30) GB disk")
+        if let note = LinuxPageNote.forBuild(options.base, pageBytes: kernel.pageBytes) {
+            notice("  note: \(note)")
+        }
 
         var record = ImageRecord(
             formatVersion: ImageRecord.formatVersion(passwordID: nil, guest: .linux), name: options.name, state: .installing, failure: nil,

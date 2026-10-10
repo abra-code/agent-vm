@@ -428,6 +428,14 @@ struct BoxCommand: ParsableCommand {
                     Stderr.write("note: \(warning)\n")
                 }
             }
+            if let note = LinuxPageNote.forBox(box.name, system: box.record.effectiveGuest == .linux ? box.record.linux : nil, image: box.record.image,
+                                               kept: box.record.disposable != true) {
+                if options.json {
+                    Events.emit(ProgressEvent(.notice, note, box: box.name), json: true)
+                } else {
+                    Stderr.write("note: \(note)\n")
+                }
+            }
             let clock = ContinuousClock()
             let began = clock.now
             let response: ControlResponse
