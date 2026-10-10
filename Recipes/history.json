@@ -1,0 +1,44 @@
+{
+  "recipes": {
+    "acp-agents": [
+      "b9bf629549f20304c81fbcf720f0bbc798def996926550a68a58a8defbec6374",
+      "8ded416e13b801a816d9d3ace13bc54ac3c03ba6c8a230fb2e36276a65c89868",
+      "6d2be22c381c0682386fed334df9a6e19640a5d48a768304b0e76ae283b138ec",
+      "d6e30d1307c4600d2eb7eefb915f4def004bdc5b7903abca54544a60bbad94d0"
+    ],
+    "agent-clis": [
+      "2c9e3816d9d704a6fb0b2d2eaaa72e105feee6ed508920f9c6359c0693d09123",
+      "7a9799472c603f8529c3bbdc6e6972b2bc591f4ccc6969f814d62238d768e8bd",
+      "a0161cd073072d3b45cea0935fd08f7e8079d3f82c0b18e8a0469143bdcdedb7",
+      "49313917a20f79053d20e8fcf45f1f472e5d0cf5f3327116465083beb524647c"
+    ],
+    "homebrew": [
+      "24100ce201d33a16ee6b66149a97a26b312914c77ce0cd68230f98dd753068f4"
+    ],
+    "linux-node": [
+      "1c8543887f910c45bc74c85b0153df1faaf106ed4d5f179c6ce51181e4d855c3",
+      "663c9f15c5a084b1af6bbf7502a8aeb50ca41634768192e37f93390d794bf0ed"
+    ],
+    "linux-python": [
+      "30ed41b766446469c057dd820cb91326e83ae8a1d2724d5868fc64788c427405",
+      "8b6691c9077c8ca6ea71760053ea1c0a835dcbefe4861915fd236df5f9197b07"
+    ],
+    "linux-sudo": [
+      "8ab7731a34c426649e860a52fa2c86fe297a34757bb82faf2fadaf737e24570c"
+    ],
+    "node": [
+      "d7918a9137b65eb076478401350a374add409b9fb552b8b936b0821b3045e591"
+    ],
+    "python": [
+      "0f4eab423889e4dab2978829e21dfbb4c84b9b600c61a8119f03bc36640ed171",
+      "1971e7a4697fad5819ba091b341ef7e93ec9d457f5af3dcdf32c5b035cb6690a"
+    ],
+    "xcode": [
+      "5d18075708a489bebbae2a815ed68ae3e824bf9c03d40c3235d438ed5ad68539"
+    ],
+    "xcode-platforms": [
+      "bc2eed812d5aa1aec42c86cb324f640452e9ad0fcd3c58f424f0c094a618c32e"
+    ]
+  },
+  "version": 1
+}

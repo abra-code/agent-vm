@@ -119,6 +119,10 @@ public final class ImageBuilder {
         self.report = events
     }
 
+    /// The recipes that came with this agent-vm, for `image update` (BuiltInRecipes); replaced
+    /// in tests.
+    var builtInRecipes: BuiltInRecipes? = BuiltInRecipes.installed()
+
     /// A line of the build log.
     func log(_ text: String) {
         report(ProgressEvent(.log, text, image: subject))

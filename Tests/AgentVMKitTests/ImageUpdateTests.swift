@@ -90,6 +90,128 @@ import Testing
         return (store, image)
     }
 
+    /// A recipe file in a folder of the name the image keeps it under.
+    private func recipeFile(_ name: String, _ json: String, in scratch: Scratch, sub: String = "new") throws -> URL {
+        let folder = scratch.root.appendingPathComponent(sub, isDirectory: true).appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent("recipe.json")
+        try Data(json.utf8).write(to: url)
+        return url
+    }
+
+    @MainActor
+    @Test func aNewerRecipeTakesTheKeptOnesPlace() throws {
+        let scratch = try Scratch()
+        let (store, image) = try image(in: scratch)
+        let builder = ImageBuilder(store: store) { (_: ProgressEvent) in }
+        // xcode had no update steps; the newer one has, and keeps the recorded and default values.
+        let xcode = try recipeFile("xcode", #"{"version": 1, "parameters": {"edition": {"default": "release"}}, "steps": [{"run": "xip"}], "update": [{"run": "xcodebuild -runFirstLaunch"}], "checks": ["xcodebuild -version"]}"#, in: scratch)
+        let plans = try builder.toolsPlans(image, set: [:], replacing: [xcode])
+        #expect(plans.map(\.recipe.name) == ["node", "xcode", "agents"])
+        #expect(plans.map(\.checksOnly) == [false, false, false])
+        #expect(plans.map(\.replaces) == [false, true, false])
+        #expect(plans[1].recipe.updateSteps.count == 1)
+        #expect(plans[1].recipe.parameterValues == ["edition": "release"])
+        #expect(plans[1].recipe.digest == (try ImageRecipe.load(from: xcode)).digest)
+        // A replaced recipe is run for its checks even when no recipe has update steps.
+        let alone = try store.update(image) { $0.recipes = [$0.recipes![1]] }
+        let checks = try recipeFile("xcode", #"{"version": 1, "steps": [{"run": "xip"}], "checks": ["xcodebuild -version", "swift --version"]}"#, in: scratch, sub: "checks")
+        let only = try builder.toolsPlans(alone, set: [:], replacing: [checks])
+        #expect(only.map(\.checksOnly) == [true] && only.map(\.replaces) == [true])
+        // The recipe the image keeps already replaces nothing.
+        let copy = try recipeFile("agents", try String(contentsOf: image.recipesURL.appendingPathComponent("3-agents/recipe.json"), encoding: .utf8), in: scratch)
+        let digest = try ImageRecipe.load(from: copy).digest
+        let recorded = try store.update(image) { $0.recipes![2].digest = digest }
+        let same = try builder.toolsPlans(recorded, set: [:], replacing: [copy])
+        #expect(same.map(\.replaces) == [false, false, false])
+
+        func reason(_ urls: [URL]) -> String? {
+            do {
+                _ = try builder.toolsPlans(image, set: [:], replacing: urls)
+                return nil
+            } catch {
+                return "\(error)"
+            }
+        }
+        let python = try recipeFile("python", #"{"version": 1, "update": [{"run": "brew install python3"}]}"#, in: scratch)
+        #expect(reason([python])?.contains("tools keeps no recipe named python to replace (it keeps: node, xcode, agents)") == true)
+        let twice = try recipeFile("xcode", #"{"version": 1, "checks": ["true"]}"#, in: scratch, sub: "twice")
+        #expect(reason([xcode, twice])?.contains("--recipe gives two recipes named xcode") == true)
+        let linux = try recipeFile("node", #"{"version": 1, "guest": "linux", "update": [{"run": "apt-get update"}]}"#, in: scratch)
+        #expect(reason([linux]) != nil)
+    }
+
+    @MainActor
+    @Test func aNewerBuiltInRecipeIsUsedByItself() throws {
+        let scratch = try Scratch()
+        let (store, kept) = try image(in: scratch)
+        let builder = ImageBuilder(store: store) { (_: ProgressEvent) in }
+        let old = BuiltInRecipesTests.digest(BuiltInRecipesTests.old)
+        let new = BuiltInRecipesTests.digest(BuiltInRecipesTests.new)
+        let recipes = try #require(BuiltInRecipes(folder: try BuiltInRecipesTests.folder(in: scratch, recipe: BuiltInRecipesTests.new, history: [old, new])))
+        // The image keeps the old python recipe, which has no update steps.
+        let folder = kept.recipesURL.appendingPathComponent("4-python", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data(BuiltInRecipesTests.old.utf8).write(to: folder.appendingPathComponent("recipe.json"))
+        let image = try store.update(kept) { $0.recipes!.append(ImageRecord.RecipeInfo(description: nil, digest: old, name: "python", folder: "4-python")) }
+        let plans = try builder.toolsPlans(image, set: [:], builtIn: recipes)
+        #expect(plans.map(\.recipe.name) == ["node", "xcode", "agents", "python"])
+        #expect(plans.map(\.replaces) == [false, false, false, true])
+        #expect(plans.map(\.builtIn) == [false, false, false, true])
+        #expect(plans[3].recipe.digest == new && !plans[3].checksOnly)
+        // Without the built-in recipes (--kept-recipes) the kept one runs, for its checks.
+        let asKept = try builder.toolsPlans(image, set: [:])
+        #expect(asKept.map(\.replaces) == [false, false, false, false] && asKept[3].checksOnly)
+        // An update killed after the record was written and before the folder was replaced:
+        // the record has the new digest and the folder the old recipe, which is replaced again.
+        let halfway = try store.update(image) { $0.recipes![3].digest = new }
+        let again = try builder.toolsPlans(halfway, set: [:], builtIn: recipes)
+        #expect(again[3].replaces && again[3].builtIn && again[3].recipe.digest == new)
+        // The same for one given with --recipe.
+        let installed = recipes.folder.appendingPathComponent("python/recipe.json")
+        let repeated = try builder.toolsPlans(halfway, set: [:], replacing: [installed])
+        #expect(repeated[3].replaces && !repeated[3].builtIn)
+        // A newer one that needs a parameter the image never recorded is refused here, before
+        // anything boots, in words that say what to give.
+        let needy = #"{"version": 1, "parameters": {"series": {}}, "update": [{"run": "brew install python@$AGENT_VM_PARAM_SERIES"}]}"#
+        let other = try Scratch()
+        let needs = try #require(BuiltInRecipes(folder: try BuiltInRecipesTests.folder(in: other, recipe: needy, history: [old, BuiltInRecipesTests.digest(needy)])))
+        #expect { try builder.toolsPlans(image, set: [:], builtIn: needs) } throws: { "\($0)".contains("it needs --set series=VALUE") }
+        #expect(try builder.toolsPlans(image, set: ["series": "3.14"], builtIn: needs)[3].recipe.parameterValues == ["series": "3.14"])
+        // A recipe of the person's own that is only named python is left alone.
+        try Data(#"{"version": 1, "checks": ["python3 -c 'import mine'"]}"#.utf8).write(to: folder.appendingPathComponent("recipe.json"))
+        let own = try store.update(image) { $0.recipes![3].digest = "ee" }
+        #expect(try builder.toolsPlans(own, set: [:], builtIn: recipes).map(\.replaces) == [false, false, false, false])
+        try Data(BuiltInRecipesTests.old.utf8).write(to: folder.appendingPathComponent("recipe.json"))
+        // One given with --recipe wins over the built-in one.
+        let given = try recipeFile("python", #"{"version": 1, "update": [{"run": "uv python install"}]}"#, in: scratch)
+        let explicit = try builder.toolsPlans(image, set: [:], replacing: [given], builtIn: recipes)
+        let givenDigest = try ImageRecipe.load(from: given).digest
+        #expect(explicit[3].replaces && !explicit[3].builtIn && explicit[3].recipe.digest == givenDigest)
+    }
+
+    @MainActor
+    @Test func aKeptRecipeIsReplacedWithItsFiles() throws {
+        let scratch = try Scratch()
+        let recipes = scratch.root.appendingPathComponent("Recipes", isDirectory: true)
+        let kept = recipes.appendingPathComponent("1-tool", isDirectory: true)
+        try FileManager.default.createDirectory(at: kept.appendingPathComponent("files"), withIntermediateDirectories: true)
+        try Data(#"{"version": 1, "steps": [{"copy": "files/old", "to": "~/old"}]}"#.utf8).write(to: kept.appendingPathComponent("recipe.json"))
+        try Data("old".utf8).write(to: kept.appendingPathComponent("files/old"))
+        let url = try recipeFile("tool", #"{"version": 1, "steps": [{"copy": "files/new", "to": "~/new"}], "update": [{"run": "true"}]}"#, in: scratch)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent().appendingPathComponent("files"), withIntermediateDirectories: true)
+        try Data("new".utf8).write(to: url.deletingLastPathComponent().appendingPathComponent("files/new"))
+        let recipe = try ImageRecipe.load(from: url)
+        try ImageBuilder.replaceKeptRecipe(recipe, in: recipes, folder: "1-tool")
+        // What the image keeps now loads as the new recipe, and nothing of the old one is left.
+        #expect(try ImageRecipe.load(from: kept.appendingPathComponent("recipe.json")).digest == recipe.digest)
+        #expect(try String(contentsOf: kept.appendingPathComponent("files/new"), encoding: .utf8) == "new")
+        #expect(!FileManager.default.fileExists(atPath: kept.appendingPathComponent("files/old").path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: recipes.path) == ["1-tool"])
+        // A folder name that leads elsewhere is refused.
+        #expect(throws: (any Error).self) { try ImageBuilder.replaceKeptRecipe(recipe, in: recipes, folder: "../1-tool") }
+    }
+
     @MainActor
     @Test func onlyRecipesWithUpdateStepsArePlanned() throws {
         let scratch = try Scratch()

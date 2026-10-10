@@ -42,13 +42,23 @@ public struct ImageUpdateOptions: Sendable {
     public var parameters: [String: String]
     /// The agent-vm-guest to put in the image when it has another one (nil: leave the image's).
     public var guestDaemon: URL?
+    /// Newer versions of recipes the image keeps (`--recipe`), each taking the place of the
+    /// kept one of its name: its update steps and checks run, and the image keeps it from then
+    /// on.
+    public var recipes: [URL]
+    /// Run the recipes as the image keeps them: no newer version of a built-in recipe takes a
+    /// kept one's place by itself (`--kept-recipes`). What `recipes` names still does.
+    public var keptRecipes: Bool
 
-    public init(name: String, system: Bool, tools: Bool, parameters: [String: String] = [:], guestDaemon: URL? = nil) {
+    public init(name: String, system: Bool, tools: Bool, parameters: [String: String] = [:], guestDaemon: URL? = nil, recipes: [URL] = [],
+                keptRecipes: Bool = false) {
         self.name = name
         self.system = system
         self.tools = tools
         self.parameters = parameters
         self.guestDaemon = guestDaemon
+        self.recipes = recipes
+        self.keptRecipes = keptRecipes
     }
 }
 
@@ -68,6 +78,8 @@ public struct ImageUpdateResult: Sendable {
     public var systemPackages: Int? = nil
     /// A Linux image: the kernel before the update, when the update installed another one.
     public var previousKernel: String? = nil
+    /// The names of the kept recipes a newer version took the place of.
+    public var replacedRecipes: [String] = []
 }
 
 /// A macOS update as `softwareupdate --list` offers it.
@@ -179,6 +191,12 @@ extension ImageBuilder {
         /// It has no update steps: its checks run after the others' updates, since those
         /// can change what it installed (Homebrew's upgrade reaches Node and Python).
         var checksOnly = false
+        /// It was given with `--recipe` and is not the one the image keeps: kept in its place
+        /// once the update is in place.
+        var replaces = false
+        /// It replaces the kept one by itself: the newer version of a recipe that came with
+        /// agent-vm.
+        var builtIn = false
     }
 
     /// What `update` would refuse without booting anything: no such image, one that is not
@@ -188,7 +206,9 @@ extension ImageBuilder {
     public func checkUpdate(_ options: ImageUpdateOptions) throws {
         let image = try updatableImage(named: options.name, operation: "update", inPlace: false)
         if options.tools {
-            _ = try toolsPlans(image, set: options.parameters)
+            _ = try toolsPlans(image, set: options.parameters, replacing: options.recipes, builtIn: options.keptRecipes ? nil : builtInRecipes)
+        } else if let recipe = options.recipes.first {
+            throw AgentVMError.invalidRecipe(path: recipe.path, reason: "--recipe replaces a recipe the image keeps, for the tools update (add --tools, or leave out --system and --guest)")
         }
         // A Linux image's daemon is built only where the Linux toolchain is installed.
         if let guestDaemon = options.guestDaemon {
@@ -234,7 +254,15 @@ extension ImageBuilder {
         }
         // Read before anything boots: a recipe that no longer loads, or a --set no recipe
         // takes, fails in a second.
-        let plans = try options.tools ? toolsPlans(image, set: options.parameters) : []
+        let plans = try options.tools ? toolsPlans(image, set: options.parameters, replacing: options.recipes, builtIn: options.keptRecipes ? nil : builtInRecipes) : []
+        for plan in plans where plan.replaces {
+            log(plan.builtIn
+                ? "Recipe \(plan.recipe.name): this agent-vm has a newer one than \(image.name) keeps; it is used, and kept when the update succeeds (--kept-recipes runs the old one)"
+                : "Recipe \(plan.recipe.name): the one given with --recipe is used, and kept when the update succeeds")
+        }
+        if !options.tools, let recipe = options.recipes.first {
+            throw AgentVMError.invalidRecipe(path: recipe.path, reason: "--recipe replaces a recipe the image keeps, for the tools update (add --tools, or leave out --system and --guest)")
+        }
         if let guestDaemon = options.guestDaemon {
             try Self.requireLocalDaemon(guestDaemon, guest: guest)
         }
@@ -327,6 +355,12 @@ extension ImageBuilder {
                     updatedRecipes.append(plan.recipe.name)
                     changed = true
                 }
+                for plan in plans where plan.replaces {
+                    record.recipes?[plan.index].digest = plan.recipe.digest
+                    record.recipes?[plan.index].description = plan.recipe.description
+                    record.recipes?[plan.index].parameters = plan.recipe.parameterValues.isEmpty ? nil : plan.recipe.parameterValues
+                    changed = true
+                }
                 // Every other recipe's checks, once all updates ran: an update that breaks
                 // what another recipe installed fails here, and is not kept.
                 let checked = plans.filter(\.checksOnly)
@@ -417,6 +451,20 @@ extension ImageBuilder {
             let lock = try await lockToCommit(image)
             defer { lock.release() }
             try store.commitUpdate(image, record: record)
+            // After the disk and the record: a run killed here leaves the old recipe in the
+            // folder under the new digest. The next tools update sees what the folder holds
+            // and replaces it again (toolsPlans).
+            for plan in plans where plan.replaces {
+                guard let folder = record.recipes?[plan.index].folder else {
+                    continue
+                }
+                do {
+                    try Self.replaceKeptRecipe(plan.recipe, in: image.recipesURL, folder: folder)
+                    log("  \(image.name) keeps the new \(plan.recipe.name) recipe")
+                } catch {
+                    notice("  note: \(image.name) was updated with the new \(plan.recipe.name) recipe but still keeps the old one (\(error)); \(plan.builtIn ? "the next tools update replaces it again" : "give --recipe again at the next tools update")")
+                }
+            }
         } catch {
             // Nothing of the image itself was touched: it stays ready, as it was.
             try? FileSystem.removeTree(work.path)
@@ -430,7 +478,8 @@ extension ImageBuilder {
         }
         image = try store.image(named: image.name)
         return ImageUpdateResult(image: image, changed: true, previousMacOSBuild: previousBuild, recipes: updatedRecipes, previousGuestVersion: previousGuest,
-                                 systemPackages: systemPackages, previousKernel: previousKernel)
+                                 systemPackages: systemPackages, previousKernel: previousKernel,
+                                 replacedRecipes: plans.filter(\.replaces).map(\.recipe.name))
     }
 
     /// Installs the distribution's package updates in a Linux image (LinuxSetup.systemUpdate).
@@ -606,22 +655,61 @@ extension ImageBuilder {
     /// `Recipes/` folder with the parameters it recorded and `set` over them (a name in `set`
     /// must be a parameter of one of them), and, when there is at least one, every other
     /// recipe that has checks, for its checks alone. Empty when no recipe has update steps.
-    func toolsPlans(_ image: GoldenImage, set: [String: String]) throws -> [ToolsPlan] {
+    ///
+    /// `replacing`: recipe files that take the place of the kept recipe of the same name (the
+    /// name of the file's folder, as when the image was built). One the image keeps none of, one
+    /// for another system, and two of one name are refused; one that is what the image keeps
+    /// already replaces nothing.
+    ///
+    /// `builtIn`: the recipes that came with agent-vm. A kept recipe that is an older version
+    /// of one of them, and that `replacing` does not name, is replaced by the installed one.
+    func toolsPlans(_ image: GoldenImage, set: [String: String], replacing: [URL] = [], builtIn: BuiltInRecipes? = nil) throws -> [ToolsPlan] {
+        var newer: [String: ImageRecipe] = [:]
+        let kept = (image.record.recipes ?? []).filter { $0.folder != nil }.compactMap(\.name)
+        for url in replacing {
+            let recipe = try ImageRecipe.load(from: url)
+            try recipe.check(serves: image.record.effectiveGuest, image: image.name)
+            guard kept.contains(recipe.name) else {
+                let have = kept.isEmpty ? "it keeps none" : "it keeps: \(kept.joined(separator: ", "))"
+                throw AgentVMError.invalidRecipe(path: url.path, reason: "\(image.name) keeps no recipe named \(recipe.name) to replace (\(have)); a recipe is named after its folder")
+            }
+            guard newer.updateValue(recipe, forKey: recipe.name) == nil else {
+                throw AgentVMError.invalidRecipe(path: url.path, reason: "--recipe gives two recipes named \(recipe.name)")
+            }
+        }
         var plans: [ToolsPlan] = []
         for (index, info) in (image.record.recipes ?? []).enumerated() {
             guard let folder = info.folder else {
                 continue
             }
             let url = image.recipesURL.appendingPathComponent(folder, isDirectory: true).appendingPathComponent(ImageStore.recipeName)
-            var recipe = try ImageRecipe.load(from: url)
+            var recipe: ImageRecipe
+            var replaces = false
+            var ours = false
+            // What the folder holds decides, not the digest in the record: an update that was
+            // killed after the record was written and before the recipe was put in its folder
+            // left the old recipe there under the new digest, and it must be replaced again.
+            let inFolder = Result { try ImageRecipe.load(from: url) }
+            let keptDigest = (try? inFolder.get())?.digest
+            // The first kept recipe of the name, should a name be there twice.
+            if let name = info.name, let given = newer.removeValue(forKey: name) {
+                recipe = given
+                replaces = given.digest != info.digest || given.digest != keptDigest
+            } else if let name = info.name, let installed = builtIn?.newer(name: name, digest: keptDigest ?? info.digest), installed.guest.serves(image.record.effectiveGuest) {
+                recipe = installed
+                replaces = true
+                ours = true
+            } else {
+                recipe = try inFolder.get()
+            }
             recipe.name = info.name ?? recipe.name
             guard !recipe.updateSteps.isEmpty else {
-                if !recipe.checks.isEmpty {
-                    plans.append(ToolsPlan(index: index, recipe: try recipe.bindingForUpdate(recorded: info.parameters ?? [:], set: [:]), checksOnly: true))
+                if !recipe.checks.isEmpty || replaces {
+                    plans.append(ToolsPlan(index: index, recipe: try recipe.bindingForUpdate(recorded: info.parameters ?? [:], set: [:]), checksOnly: true, replaces: replaces, builtIn: ours))
                 }
                 continue
             }
-            plans.append(ToolsPlan(index: index, recipe: try recipe.bindingForUpdate(recorded: info.parameters ?? [:], set: set)))
+            plans.append(ToolsPlan(index: index, recipe: try recipe.bindingForUpdate(recorded: info.parameters ?? [:], set: set), replaces: replaces, builtIn: ours))
         }
         let known = Set(plans.filter { !$0.checksOnly }.flatMap { $0.recipe.parameters.map(\.name) })
         if let name = set.keys.sorted().first(where: { !known.contains($0) }) {
@@ -630,7 +718,45 @@ extension ImageBuilder {
                 : "--set \(name): no recipe with update steps in \(image.name) has that parameter (they have: \(known.sorted().joined(separator: ", ")))"
             throw AgentVMError.invalidRecipe(path: image.recipesURL.path, reason: reason)
         }
-        return plans.contains { !$0.checksOnly } ? plans : []
+        return plans.contains { !$0.checksOnly || $0.replaces } ? plans : []
+    }
+
+    /// Puts `recipe` and the files it copies where the image keeps the recipe of that name,
+    /// in the place of what is there: written beside it first, so a failure leaves the old one.
+    static func replaceKeptRecipe(_ recipe: ImageRecipe, in recipes: URL, folder: String) throws {
+        // The name comes from the image's record: never one that leads out of `recipes`.
+        guard !folder.isEmpty, !folder.contains("/"), folder != ".", folder != ".." else {
+            throw AgentVMError.invalidRecipe(path: recipes.path, reason: "\(folder) is not the name of a folder in it")
+        }
+        let target = recipes.appendingPathComponent(folder, isDirectory: true)
+        let staged = recipes.appendingPathComponent(".new-" + folder, isDirectory: true)
+        let old = recipes.appendingPathComponent(".old-" + folder, isDirectory: true)
+        for left in [staged, old] where FileSystem.exists(left.path) {
+            try FileSystem.removeTree(left.path)
+        }
+        do {
+            try recipe.write(to: staged)
+            // The two change places in one step where the volume can do that, so a run killed
+            // here never leaves the image without the recipe's folder.
+            if FileSystem.exists(target.path), renamex_np(staged.path, target.path, UInt32(RENAME_SWAP)) == 0 {
+                try? FileSystem.removeTree(staged.path)
+                return
+            }
+            if FileSystem.exists(target.path) {
+                guard rename(target.path, old.path) == 0 else {
+                    throw AgentVMError.system(operation: "move \(target.path) away", code: errno)
+                }
+            }
+            guard rename(staged.path, target.path) == 0 else {
+                let code = errno
+                _ = rename(old.path, target.path)
+                throw AgentVMError.system(operation: "move \(staged.path) into place", code: code)
+            }
+        } catch {
+            try? FileSystem.removeTree(staged.path)
+            throw error
+        }
+        try? FileSystem.removeTree(old.path)
     }
 
     /// Installs the macOS update Apple offers within the image's major version, and waits for

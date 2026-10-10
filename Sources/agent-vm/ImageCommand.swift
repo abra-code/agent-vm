@@ -327,10 +327,18 @@ struct ImageCommand: ParsableCommand {
                 `update` steps of the recipes the image keeps, in the order they were applied, \
                 and each recipe's checks again, with the parameters the image recorded, then \
                 the checks of the recipes that have no update steps; --set \
-                changes one (a pinned version, say) and records it. Guest daemon: puts this \
+                changes one (a pinned version, say) and records it. A kept recipe that is an \
+                older version of one that came with this agent-vm (the Recipes folder next to \
+                it) is replaced by that one first: its update steps and checks run, and the \
+                image keeps it when the update succeeds; a recipe of your own is never replaced \
+                this way. --kept-recipes runs the recipes as the image keeps them, and \
+                --recipe gives a newer version of any kept recipe, by the same folder name. \
+                Guest daemon: puts this \
                 agent-vm's agent-vm-guest into the image when it has another one, and boots once \
-                more to check it (what `image update-guest` does). With none of --system, --tools \
-                and --guest, all three. The update works on a copy of the image's disk and puts it in \
+                more to check it (what `image update-guest` does); with the system or the tools \
+                asked for too, the daemon is updated first and put in place, so a later failure \
+                leaves the image with the new daemon. With none of --system, --tools \
+                and --guest, all three. Each update works on a copy of the image's disk and puts it in \
                 place only when every step and check passed: a failure or a cancel leaves the \
                 image as it was, still ready. Boxes made from the image earlier keep what they \
                 have; `box list` says "needs recreate" for them. Several images are updated one \
@@ -358,6 +366,12 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .customLong("set"), help: ArgumentHelp("A new value for a parameter of the image's recipes, for the tools update (repeatable).", valueName: "name=value"))
         var settings: [String] = []
 
+        @Option(name: .customLong("recipe"), help: ArgumentHelp("A newer version of a recipe the image keeps, by the same name (its folder's): the image runs its update steps and checks, and keeps it in the old one's place (repeatable).", valueName: "path"))
+        var recipes: [String] = []
+
+        @Flag(name: .customLong("kept-recipes"), help: "Run the recipes as the image keeps them: no newer version that came with this agent-vm takes a kept one's place by itself.")
+        var keptRecipes = false
+
         @Option(name: .customLong("if-older-than"), help: ArgumentHelp("Skip an image when the parts asked for (the system, tools) were updated, or checked and found current, less than this many hours ago, and its guest daemon need not be replaced; nothing is booted for it.", valueName: "hours"))
         var ifOlderThan: Double?
 
@@ -372,6 +386,12 @@ struct ImageCommand: ParsableCommand {
             }
             if (macOS || system || guest) && !tools && !settings.isEmpty {
                 throw ValidationError("--set changes a recipe's parameter for the tools update; add --tools, or leave out --system and --guest")
+            }
+            if (macOS || system || guest) && !tools && !recipes.isEmpty {
+                throw ValidationError("--recipe replaces a recipe the image keeps, for the tools update; add --tools, or leave out --system and --guest")
+            }
+            if ifOlderThan != nil && !recipes.isEmpty {
+                throw ValidationError("--recipe replaces a recipe whatever the image's age; leave out --if-older-than")
             }
         }
 
@@ -400,6 +420,7 @@ struct ImageCommand: ParsableCommand {
                 }
             }
             let parameters = try Create.pairs(settings, option: "--set")
+            let replacements = recipes.map { URL(fileURLWithPath: $0).standardizedFileURL }
             // No flag: everything.
             let both = !macOS && !system && !tools && !guest
             let system = system || macOS || both
@@ -408,7 +429,7 @@ struct ImageCommand: ParsableCommand {
             func update(_ name: String) throws -> (options: ImageUpdateOptions, localDigest: String?) {
                 let kind = (try? options.imageStore.image(named: name))?.record.effectiveGuest ?? .macOS
                 let daemon = guest || both ? try daemons.daemon(for: kind) : nil
-                return (ImageUpdateOptions(name: name, system: system, tools: tools || both, parameters: parameters, guestDaemon: daemon?.url), daemon?.digest)
+                return (ImageUpdateOptions(name: name, system: system, tools: tools || both, parameters: parameters, guestDaemon: daemon?.url, recipes: replacements, keptRecipes: keptRecipes), daemon?.digest)
             }
             // A mistyped last name should not surface after the first images took minutes each.
             for name in names {
@@ -441,7 +462,19 @@ struct ImageCommand: ParsableCommand {
                 }
                 let result: ImageUpdateResult
                 do {
-                    result = try await builder.update(asked.options)
+                    var rest = asked.options
+                    // The guest daemon first, as an update of its own, when more was asked for:
+                    // a system or tools update that then fails leaves the image with the new
+                    // daemon, and the recipes run under it.
+                    if rest.guestDaemon != nil, rest.system || rest.tools, let image = try? options.imageStore.image(named: name),
+                       asked.localDigest == nil || image.record.guestDigest != asked.localDigest {
+                        let daemon = try await builder.update(ImageUpdateOptions(name: name, system: false, tools: false, guestDaemon: rest.guestDaemon))
+                        if !json, daemon.changed {
+                            print(Self.summary(daemon))
+                        }
+                        rest.guestDaemon = nil
+                    }
+                    result = try await builder.update(rest)
                 } catch {
                     var canceledBy: Int32?
                     if case let AgentVMError.canceled(signal) = error {
@@ -504,6 +537,11 @@ struct ImageCommand: ParsableCommand {
             }
             if !result.recipes.isEmpty {
                 parts.append("tools of \(result.recipes.joined(separator: ", "))")
+            }
+            // Those without update steps are not among the tools above.
+            let replaced = result.replacedRecipes.filter { !result.recipes.contains($0) }
+            if !replaced.isEmpty {
+                parts.append("a newer recipe for \(replaced.joined(separator: ", "))")
             }
             if let previous = result.previousGuestVersion {
                 parts.append("agent-vm-guest \(record.guestVersion ?? "?") (was \(previous))")
