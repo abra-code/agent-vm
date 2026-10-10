@@ -3,8 +3,10 @@
 // What a program in the box prints in a terminal session (`exec --tty`, `box shell`) goes to the
 // Mac's terminal, which acts on escape sequences as well as showing text. Most sequences only
 // draw: cursor moves, colors, erasing, the alternate screen. Others reach past the window: they
-// write or read the Mac's clipboard (OSC 52), save or upload files (iTerm2's OSC 1337, kitty's
-// graphics with a file path), tell the terminal which folder new tabs open in (OSC 7), show
+// write or read the Mac's clipboard (OSC 52; a write is handed to whoever the session gave the
+// decision to, see ClipboardGate, and never to the terminal), save or upload files (iTerm2's
+// OSC 1337, kitty's graphics with a file path), tell the terminal which folder new tabs open
+// in (OSC 7), show
 // notifications, make links to any URL scheme (OSC 8), pass anything on to an outer terminal
 // (tmux's passthrough), or move and resize the window. This filter passes what draws, and
 // queries whose answers the terminal types back into the session, and drops the rest whole.
@@ -70,6 +72,7 @@ public final class TerminalOutputFilter: @unchecked Sendable {
     /// The longest CSI sequence, and the longest OSC or DCS string, that is passed.
     static let maxControl = 256
     static let maxString = 4096
+    static let clipboardPrefix = Array("52;".utf8)
 
     /// DEC private modes that `resetSequence` turns off when a program left them on: cursor
     /// keys, reverse video, origin mode, the mouse reports, focus events, bracketed paste,
@@ -82,7 +85,13 @@ public final class TerminalOutputFilter: @unchecked Sendable {
         return Self.alternateScreens.contains { modes.contains($0) }
     }
 
-    public init() {}
+    /// Takes a request to put text on the Mac's clipboard (OSC 52; what follows "52;"). The
+    /// request never reaches the terminal either way. Nil: such requests are dropped.
+    private let clipboard: (([UInt8]) -> Void)?
+
+    public init(clipboard: (([UInt8]) -> Void)? = nil) {
+        self.clipboard = clipboard
+    }
 
     /// The bytes of `output` that may reach the Mac's terminal. A sequence cut by the end of
     /// `output` is kept for the next call.
@@ -224,8 +233,13 @@ public final class TerminalOutputFilter: @unchecked Sendable {
     }
 
     /// A C0 control other than ESC, CAN and SUB: it acts at once, in a sequence too, as in the
-    /// terminal. Shift Out and Shift In choose the character set the text is drawn in.
+    /// terminal. Shift Out and Shift In choose the character set the text is drawn in. ENQ is
+    /// dropped: it draws nothing, and a terminal set up to answer it types the answer as plain
+    /// text, which nothing can tell from the person's typing (ClipboardGate).
     private func control(_ byte: UInt8, into passed: inout [UInt8]) {
+        if byte == 0x05 {
+            return
+        }
         if byte == 0x0E {
             shiftedOut = true
         } else if byte == 0x0F {
@@ -366,12 +380,21 @@ public final class TerminalOutputFilter: @unchecked Sendable {
             if discarding {
                 return
             }
-            if sequence.count < Self.maxString {
+            if sequence.count < stringLimit(kind) {
                 sequence.append(byte)
             } else {
                 discarding = true
             }
         }
+    }
+
+    /// A clipboard request holds the text itself, so it may be longer than any other string
+    /// when something takes it.
+    private func stringLimit(_ kind: StringKind) -> Int {
+        if kind == .osc, clipboard != nil, sequence.starts(with: Self.clipboardPrefix.prefix(sequence.count)) {
+            return Self.clipboardPrefix.count + ClipboardGate.maxRequest
+        }
+        return Self.maxString
     }
 
     private func begin(_ next: State) {
@@ -521,8 +544,12 @@ public final class TerminalOutputFilter: @unchecked Sendable {
         case "133":
             // Prompt marks (shell integration): jumping between prompts in the terminal.
             return rest.utf8.count <= Self.maxControl && rest.utf8.allSatisfy({ (0x20...0x7E).contains($0) }) ? body : nil
+        case "52":
+            // The clipboard: handed to whoever decides (ClipboardGate), never to the terminal.
+            clipboard?(Array(body.dropFirst(Self.clipboardPrefix.count)))
+            return nil
         default:
-            // The clipboard (52), the working folder (7), notifications (9, 777), iTerm2's
+            // The working folder (7), notifications (9, 777), iTerm2's
             // files and commands (1337), kitty's file transfer (5113), fonts and pointers, and
             // whatever else a terminal may add.
             return nil

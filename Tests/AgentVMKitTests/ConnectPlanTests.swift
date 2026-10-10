@@ -21,7 +21,7 @@ import Testing
             Issue.record("the last step is not the run: \(steps)")
             return
         }
-        #expect(arguments.starts(with: ["exec", "--tty", "--box", "b1", "--project", "/p", "--"]))
+        #expect(arguments.starts(with: ["exec", "--tty", "--box", "b1", "--project", "/p", "--clipboard", "--"]))
     }
 
     @Test func aRunningBoxIsNotStarted() {
@@ -64,7 +64,7 @@ import Testing
             Issue.record("not a run: \(steps)")
             return
         }
-        #expect(arguments.starts(with: ["exec", "--tty", "--box", "b1", "--project", "/p", "--read-only", "--"]))
+        #expect(arguments.starts(with: ["exec", "--tty", "--box", "b1", "--project", "/p", "--read-only", "--clipboard", "--"]))
     }
 
     @Test func noSnapshotMeansNoReport() {
@@ -93,7 +93,7 @@ import Testing
         #expect(steps[0] == .share(box: "b1", project: "/p", readOnly: false))
         #expect(steps[1] == .run(arguments: ["exec", "--tty", "--box", "b1", "--project", "/p",
                                              "--secret", "ANTHROPIC_API_KEY", "--secret", "MINE",
-                                             "--env", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "--env", "X=1", "--"]
+                                             "--env", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "--env", "X=1", "--clipboard", "--"]
                                     + ConnectPlanner.loginWrapper + ["claude"]))
     }
 
@@ -291,14 +291,18 @@ import Testing
     @Test func childArgumentsInOrder() {
         let arguments = ConnectPlanner.childArguments(box: "b", project: "/p", readOnly: false, secrets: ["A"], env: ["X=1"],
                                                       argv: ["/bin/echo", "hi"])
-        #expect(arguments == ["exec", "--tty", "--box", "b", "--project", "/p", "--secret", "A", "--env", "X=1", "--", "/bin/echo", "hi"])
+        #expect(arguments == ["exec", "--tty", "--box", "b", "--project", "/p", "--secret", "A", "--env", "X=1", "--clipboard", "--", "/bin/echo", "hi"])
         let readOnly = ConnectPlanner.childArguments(box: "b", project: "/p", readOnly: true, secrets: [], env: [], argv: ["x"])
-        #expect(readOnly == ["exec", "--tty", "--box", "b", "--project", "/p", "--read-only", "--", "x"])
+        #expect(readOnly == ["exec", "--tty", "--box", "b", "--project", "/p", "--read-only", "--clipboard", "--", "x"])
+        // --no-clipboard: the session child is not told to take clipboard requests.
+        let closed = ConnectPlanner.steps(for: ConnectRequest(target: .box("b"), launch: .command(["make"]), project: nil, clipboard: false),
+                                          facts: ConnectFacts(boxRunning: true, ownPid: pid))
+        #expect(closed == [.run(arguments: ["exec", "--tty", "--box", "b", "--"] + ConnectPlanner.loginWrapper + ["make"])])
         // The request's specs reach the child as given.
         let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b"), launch: .command(["make"]), project: nil,
                                                              secrets: ["TOKEN=NAME", "B"], env: ["Y"]),
                                          facts: ConnectFacts(boxRunning: true, ownPid: pid))
-        #expect(steps == [.run(arguments: ["exec", "--tty", "--box", "b", "--secret", "TOKEN=NAME", "--secret", "B", "--env", "Y", "--"]
+        #expect(steps == [.run(arguments: ["exec", "--tty", "--box", "b", "--secret", "TOKEN=NAME", "--secret", "B", "--env", "Y", "--clipboard", "--"]
                                   + ConnectPlanner.loginWrapper + ["make"])])
     }
 
@@ -335,6 +339,6 @@ import Testing
         #expect(ConnectStep.report(project: "/p").text == "report what changed in /p, then keep or undo it")
         let run = ConnectStep.run(arguments: ConnectPlanner.childArguments(box: "b1", project: "/my app", readOnly: false, secrets: [],
                                                                           env: [], argv: ConnectPlanner.launchArgv(.command(["claude"]))))
-        #expect(run.text == #"run: agent-vm exec --tty --box b1 --project '/my app' -- /bin/sh -c 'exec "$SHELL" -l -c '\''exec "$0" "$@"'\'' "$@"' sh claude"#)
+        #expect(run.text == #"run: agent-vm exec --tty --box b1 --project '/my app' --clipboard -- /bin/sh -c 'exec "$SHELL" -l -c '\''exec "$0" "$@"'\'' "$@"' sh claude"#)
     }
 }

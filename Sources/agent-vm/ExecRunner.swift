@@ -7,6 +7,7 @@
 // once (stderr, and a notice line in the exec log) and, with `--prompts stop`, stopped.
 
 import AgentVMKit
+import AppKit
 import Darwin
 import Foundation
 
@@ -38,6 +39,9 @@ struct ExecRunner {
     var argv: [String]
     var terminal: Bool
     var prompts: PromptPolicy = .wait
+    /// On a terminal: text the program asks to put on the Mac's clipboard is put there while
+    /// the person is using the session (ClipboardGate).
+    var clipboard = false
 
     /// agent-vm's own failures (box not running, connection lost), as docker exec uses it:
     /// distinct from any status the program itself returns.
@@ -179,11 +183,29 @@ struct ExecRunner {
             // and edits lines. Restored on every exit.
             ExecExit.shared.enterRawMode()
         }
-        session.forwardStdin(from: STDIN_FILENO)
+        let gate = terminal && clipboard ? ClipboardGate() : nil
+        if let gate {
+            ExecExit.shared.clipboard(gate)
+        }
+        var observe: (@Sendable ([UInt8], Bool) -> Void)?
+        if let gate {
+            observe = { bytes, late in gate.sawInput(bytes, late: late) }
+        }
+        session.forwardStdin(from: STDIN_FILENO, observe: observe)
 
         // On a terminal, the program's output goes through a filter: only what draws in the
-        // window reaches the Mac's terminal (TerminalOutputFilter).
-        let filter = terminal ? TerminalOutputFilter() : nil
+        // window reaches the Mac's terminal (TerminalOutputFilter). A clipboard request never
+        // does: with --clipboard the gate takes it or not, and the text is put there from here,
+        // whatever the terminal itself would do with such a request.
+        var taker: (([UInt8]) -> Void)?
+        if let gate {
+            taker = { request in
+                if let text = gate.take(request) {
+                    Self.copy(text)
+                }
+            }
+        }
+        let filter = terminal ? TerminalOutputFilter(clipboard: taker) : nil
         if let filter {
             ExecExit.shared.filter(filter)
         }
@@ -204,6 +226,31 @@ struct ExecRunner {
         // control connection (with the process) returns the guest connection.
         _ = control
         ExecExit.shared.exit(report.shellStatus)
+    }
+
+    /// Clipboard writes, one after another, and off the thread that relays the output: the
+    /// pasteboard is another process, and the request arrives while the filter is locked.
+    static let pasteboardQueue = DispatchQueue(label: "com.abracode.agent-vm.clipboard")
+
+    /// Puts `text` on the Mac's clipboard as plain text, marked with where it came from
+    /// (org.nspasteboard.source, which clipboard managers read).
+    static func copy(_ text: String) {
+        pasteboardQueue.async {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            pasteboard.setString("com.abracode.agent-vm", forType: NSPasteboard.PasteboardType("org.nspasteboard.source"))
+        }
+    }
+
+    /// Waits, but not for long, until the writes asked for so far are done: text copied just
+    /// before the session ends is still wanted.
+    static func finishCopying() {
+        let done = DispatchSemaphore(value: 0)
+        pasteboardQueue.async {
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + .seconds(1))
     }
 
     /// Says on stderr what the program waits on, and records it in the exec log at once. With
@@ -350,6 +397,7 @@ final class ExecExit: @unchecked Sendable {
     private var prompts: [String] = []
     private var box: String?
     private var outputFilter: TerminalOutputFilter?
+    private var clipboardGate: ClipboardGate?
     private let began = ContinuousClock.now
 
     func record(log: ExecLog, id: String, box: String) {
@@ -365,6 +413,13 @@ final class ExecExit: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         outputFilter = filter
+    }
+
+    /// The session's clipboard gate: the end line says how many requests it took and refused.
+    func clipboard(_ gate: ClipboardGate) {
+        lock.lock()
+        defer { lock.unlock() }
+        clipboardGate = gate
     }
 
     func started(guestPid: Int32) {
@@ -439,12 +494,22 @@ final class ExecExit: @unchecked Sendable {
                 let text = "agent-vm: while it ran, a program waited on \(prompts.joined(separator: ", ")) (see `agent-vm box execlog \(box ?? "<box>")`)\n"
                 _ = Array(text.utf8).withUnsafeBytes { write(STDERR_FILENO, $0.baseAddress!, $0.count) }
             }
+            if let refusals = clipboardGate?.refusals, refusals > 0 {
+                let text = "agent-vm: \(refusals == 1 ? "1 request" : "\(refusals) requests") from the box to put text on the clipboard "
+                    + "\(refusals == 1 ? "was" : "were") refused: nothing had been typed or clicked in the session just before, or too many came at once\n"
+                _ = Array(text.utf8).withUnsafeBytes { write(STDERR_FILENO, $0.baseAddress!, $0.count) }
+            }
+        }
+        if clipboardGate != nil {
+            ExecRunner.finishCopying()
         }
         if let log, let id {
             let elapsed = (ContinuousClock.now - began).components
             let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
             log.append(ExecLog.Entry(id: id, event: .end, time: Date(), guestPid: guestPid, status: status,
-                                     seconds: (seconds * 1000).rounded() / 1000, prompts: prompts.isEmpty ? nil : prompts))
+                                     seconds: (seconds * 1000).rounded() / 1000, prompts: prompts.isEmpty ? nil : prompts,
+                                     clipboardWrites: clipboardGate.flatMap { $0.count > 0 ? $0.count : nil },
+                                     clipboardRefusals: clipboardGate.flatMap { $0.refusals > 0 ? $0.refusals : nil }))
         }
         Darwin.exit(status)
     }

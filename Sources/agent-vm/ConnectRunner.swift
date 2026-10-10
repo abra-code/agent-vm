@@ -315,7 +315,7 @@ struct ConnectRunner {
                 let request = ConnectRequest(target: target, launch: launch, project: project, readOnly: options.readOnly,
                                              snapshot: !options.noSnapshot, secrets: options.secrets, env: options.env,
                                              extraAllow: newBox?.allow ?? [], cpus: newBox?.cpus, memoryBytes: newBox?.memoryBytes,
-                                             refresh: newBox?.refresh ?? false)
+                                             refresh: newBox?.refresh ?? false, clipboard: !options.noClipboard)
                 var (facts, secretEntries) = try self.facts(for: launch, box: existing, running: runningBox != nil, probed: probed)
                 facts.temporaryName = temporaryName
                 let steps = ConnectPlanner.steps(for: request, facts: facts)

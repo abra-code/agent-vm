@@ -55,12 +55,21 @@ public final class ExecLog: @unchecked Sendable {
         /// names them. Names only, never a value: what the run could have sent out.
         public var envNames: [String]?
         public var secretNames: [String]?
+        /// On an end line: how many times the run put text on the Mac's clipboard
+        /// (`exec --clipboard`, agent-vm 0.7.24 and later); absent when it never did.
+        public var clipboardWrites: Int?
+        /// On an end line: how many such requests were refused (nobody was using the session,
+        /// or too many came at once); absent when none was.
+        public var clipboardRefusals: Int?
 
         public init(id: String, event: Event, time: Date, argv: [String]? = nil, user: String? = nil, cwd: String? = nil,
                     project: String? = nil, readOnly: Bool? = nil, terminal: Bool? = nil, hostPid: Int32? = nil,
                     guestPid: Int32? = nil, status: Int32? = nil, seconds: Double? = nil, prompts: [String]? = nil,
                     prompt: String? = nil, service: String? = nil, program: String? = nil, stopped: Bool? = nil,
-                    session: String? = nil, envNames: [String]? = nil, secretNames: [String]? = nil) {
+                    session: String? = nil, envNames: [String]? = nil, secretNames: [String]? = nil, clipboardWrites: Int? = nil,
+                    clipboardRefusals: Int? = nil) {
+            self.clipboardWrites = clipboardWrites
+            self.clipboardRefusals = clipboardRefusals
             self.session = session
             self.envNames = envNames
             self.secretNames = secretNames
@@ -110,6 +119,10 @@ public final class ExecLog: @unchecked Sendable {
         /// secrets among them; never a value.
         public var envNames: [String]?
         public var secretNames: [String]?
+        /// How many times the run put text on the Mac's clipboard; nil when it never did.
+        public var clipboardWrites: Int?
+        /// How many requests to do so were refused; nil when none was.
+        public var clipboardRefusals: Int?
     }
 
     public let url: URL
@@ -213,6 +226,8 @@ public final class ExecLog: @unchecked Sendable {
                 }
                 records[position].status = entry.status
                 records[position].seconds = entry.seconds
+                records[position].clipboardWrites = entry.clipboardWrites
+                records[position].clipboardRefusals = entry.clipboardRefusals
                 records[position].prompts = Self.merged(records[position].prompts, entry.prompts ?? [])
                 records[position].guestPid = records[position].guestPid ?? entry.guestPid
             case .notice:

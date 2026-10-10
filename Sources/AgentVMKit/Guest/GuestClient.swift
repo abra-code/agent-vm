@@ -218,12 +218,33 @@ public final class ExecSession: @unchecked Sendable {
     public static let maxNotices = 32
     public static let maxNoticeBytes = 4096
 
+    /// A send that takes longer than this was held up by the other end.
+    static let stallLimit: Duration = .milliseconds(250)
+    /// A read of this size or more may have emptied a full terminal queue (macOS holds 1022
+    /// bytes, measured), behind which the terminal program keeps more.
+    static let fullRead = 512
+    /// With no input for this long, nothing read earlier is still on its way.
+    static let quietMilliseconds: Int32 = 100
+
     /// Copies `descriptor` (the local stdin) to the program until end of file, on a thread
-    /// of its own; ends with stdin end-of-file.
-    public func forwardStdin(from descriptor: Int32) {
+    /// of its own; ends with stdin end-of-file. `observe` sees each read before it is sent, and
+    /// whether it is `late`: possibly read long after it was typed. Whatever runs in the box
+    /// can hold up the sending, and so the next read, for as long as it likes, and a key typed
+    /// meanwhile waits in the terminal's queue, or in the terminal program once that is full.
+    /// So input is late after a send that was held up, after a read that may have emptied a
+    /// full queue, and at the start (typed before the session began), until none comes for a
+    /// moment.
+    public func forwardStdin(from descriptor: Int32, observe: (@Sendable (_ bytes: [UInt8], _ late: Bool) -> Void)? = nil) {
         Thread.detachNewThread { [self] in
             var buffer = [UInt8](repeating: 0, count: 65536)
+            var late = true
             while true {
+                if observe != nil && late {
+                    var waiting = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+                    if poll(&waiting, 1, Self.quietMilliseconds) == 0 {
+                        late = false
+                    }
+                }
                 let count = read(descriptor, &buffer, buffer.count)
                 if count < 0 && errno == EINTR {
                     continue
@@ -231,10 +252,16 @@ public final class ExecSession: @unchecked Sendable {
                 if count <= 0 {
                     break
                 }
+                let bytes = Array(buffer[0..<count])
+                observe?(bytes, late)
+                let began = ContinuousClock.now
                 do {
-                    try sendStdin(Array(buffer[0..<count]))
+                    try sendStdin(bytes)
                 } catch {
                     return
+                }
+                if count >= Self.fullRead || ContinuousClock.now - began > Self.stallLimit {
+                    late = true
                 }
             }
             try? sendStdinEnd()

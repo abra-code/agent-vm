@@ -29,7 +29,9 @@ struct ExecCommand: ParsableCommand {
             Keychain (`agent-vm secret set`), so API keys stay off the command line; anything \
             running in the box can read them. With --tty the program gets a \
             terminal in the box (its output all arrives on stdout), keys such as Control-C \
-            go to it as typed, and SIGHUP or SIGTERM to agent-vm end the session. Each \
+            go to it as typed, and SIGHUP or SIGTERM to agent-vm end the session. With \
+            --clipboard as well, text the program asks to copy is put on this Mac's clipboard \
+            while you are using the session (a key or the mouse within the last 2 seconds). Each \
             run is recorded in the box's exec log (`box execlog`): the command, account, \
             folders, times and status, never the environment. A program that waits on a \
             permission prompt or a Keychain dialog on the box's screen, where nobody sees it, is reported on stderr \
@@ -65,6 +67,9 @@ struct ExecCommand: ParsableCommand {
     @Option(name: .customLong("secret"), parsing: .singleValue, help: SecretOptions.help)
     var secrets: [String] = []
 
+    @Flag(name: .long, help: "With --tty: let the program put text on this Mac's clipboard while you are using the session (a key or the mouse within the last 2 seconds). Text only; the clipboard is never read.")
+    var clipboard = false
+
     @Option(name: .long, help: "When a program waits on a permission prompt nobody sees: wait (for an answer in `box view --interactive`) or stop that program. Default: stop when stdin is not a terminal, else wait.")
     var prompts: PromptPolicy?
 
@@ -79,6 +84,9 @@ struct ExecCommand: ParsableCommand {
         }
         if readOnly && project == nil {
             throw ValidationError("--read-only applies to --project")
+        }
+        if clipboard && !tty {
+            throw ValidationError("--clipboard applies to --tty")
         }
         if tty && isatty(STDIN_FILENO) != 1 {
             throw ValidationError("--tty needs a terminal on stdin")
@@ -102,7 +110,7 @@ struct ExecCommand: ParsableCommand {
             throw ValidationError("give the program to run after --")
         }
         ExecRunner(store: options.boxStore, box: box, user: user, cwd: cwd, project: project, readOnly: readOnly,
-                   added: added, secretNames: SecretOptions.names(secrets), argv: argv, terminal: tty, prompts: prompts ?? .default).run()
+                   added: added, secretNames: SecretOptions.names(secrets), argv: argv, terminal: tty, prompts: prompts ?? .default, clipboard: clipboard).run()
     }
 }
 

@@ -123,12 +123,17 @@ test_connect_dry_run_names_every_step() {
     assert_out_contains "avm would:" || return 1
     assert_out_contains "  start box b1" || return 1
     assert_out_contains "  share $_project (read-write)" || return 1
-    assert_out_contains "  run: agent-vm exec --tty --box b1 --project $_project -- /bin/sh -c 'exec \"\$SHELL\" -l'" || return 1
+    assert_out_contains "  run: agent-vm exec --tty --box b1 --project $_project --clipboard -- /bin/sh -c 'exec \"\$SHELL\" -l'" || return 1
     run_avm_link b1 --dry-run --no-project --env X=1 -- make "a b"
     assert_status 0 || return 1
     assert_not_contains "$OUT" "share" "the steps" || return 1
-    assert_out_contains "--env X=1 -- /bin/sh -c" || return 1
+    assert_out_contains "--env X=1 --clipboard -- /bin/sh -c" || return 1
     assert_out_contains "sh make 'a b'" || return 1
+    # --no-clipboard: the session is not told to take what the program copies.
+    run_avm_link b1 --dry-run --no-project --no-clipboard --env X=1 -- make
+    assert_status 0 || return 1
+    assert_out_contains "--env X=1 -- /bin/sh -c" || return 1
+    assert_not_contains "$OUT" "--clipboard" "the steps" || return 1
     # A box named like one of avm's words, with --box.
     run_avm box create list --image dev
     assert_status 0 || return 1
@@ -292,7 +297,7 @@ test_connect_dry_run_for_an_agent() {
     assert_not_contains "$OUT" "ask to allow" "the steps" || return 1
     assert_out_contains "  start box c1" || return 1
     assert_out_contains "  check that claude is installed in the box" || return 1
-    assert_out_contains "--env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 -- /bin/sh -c" || return 1
+    assert_out_contains "--env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 --env 'SSH_CONNECTION=127.0.0.1 0 127.0.0.1 0' --clipboard -- /bin/sh -c" || return 1
     # The setup that marks Claude Code's onboarding done runs first, then claude itself.
     assert_out_contains "hasCompletedOnboarding" || return 1
     assert_out_contains "exec \"\$0\" \"\$@\"' claude" || return 1

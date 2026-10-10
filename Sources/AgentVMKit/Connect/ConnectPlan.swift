@@ -53,11 +53,14 @@ public struct ConnectRequest: Equatable, Sendable {
     public var memoryBytes: UInt64?
     /// Update the image's tools before a new box is made from it (--refresh).
     public var refresh: Bool
+    /// Let the program put text on the Mac's clipboard (off with --no-clipboard).
+    public var clipboard: Bool
 
     public init(target: ConnectTarget, launch: ConnectLaunch, project: String?, readOnly: Bool = false, snapshot: Bool = false,
                 secrets: [String] = [], env: [String] = [], extraAllow: [String] = [], cpus: Int? = nil, memoryBytes: UInt64? = nil,
-                refresh: Bool = false) {
+                refresh: Bool = false, clipboard: Bool = true) {
         self.refresh = refresh
+        self.clipboard = clipboard
         self.target = target
         self.launch = launch
         self.project = project
@@ -269,7 +272,8 @@ public enum ConnectPlanner {
             steps.append(.snapshot(project: snapshot))
         }
         steps.append(.run(arguments: childArguments(box: name, project: request.project, readOnly: request.readOnly,
-                                                    secrets: secrets, env: env, argv: launchArgv(request.launch))))
+                                                    secrets: secrets, env: env, argv: launchArgv(request.launch),
+                                                    clipboard: request.clipboard)))
         // Stopped before the report: nothing in the box can change the folder during an undo,
         // and the report is final.
         if temporary {
@@ -322,7 +326,7 @@ public enum ConnectPlanner {
 
     /// agent-vm's arguments for the session child.
     public static func childArguments(box: String, project: String?, readOnly: Bool, secrets: [String], env: [String],
-                                      argv: [String]) -> [String] {
+                                      argv: [String], clipboard: Bool = true) -> [String] {
         var arguments = ["exec", "--tty", "--box", box]
         if let project {
             arguments += ["--project", project]
@@ -335,6 +339,11 @@ public enum ConnectPlanner {
         }
         for entry in env {
             arguments += ["--env", entry]
+        }
+        // A session is a person at a terminal: what they select in an agent's interface can be
+        // copied (see ClipboardGate).
+        if clipboard {
+            arguments.append("--clipboard")
         }
         return arguments + ["--"] + argv
     }

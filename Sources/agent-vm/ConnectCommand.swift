@@ -73,6 +73,10 @@ enum ConnectHelp {
             only (nothing can change, so no snapshot); --no-snapshot shares it read-write \
             without one (nothing to undo then).
 
+            Text the program copies (what you select in an agent's interface) is put on this \
+            Mac's clipboard while you are using the session; --no-clipboard turns that off. \
+            The program never reads the clipboard.
+
             Forms:
             \(lines)
 
@@ -104,6 +108,9 @@ struct ConnectOptions: ParsableArguments {
 
     @Flag(name: .customLong("no-snapshot"), help: "Do not snapshot a folder shared read-write, so there is nothing to undo afterwards.")
     var noSnapshot = false
+
+    @Flag(name: .customLong("no-clipboard"), help: "Do not let the program put text on this Mac's clipboard.")
+    var noClipboard = false
 
     @Option(name: .customLong("secret"), parsing: .singleValue, help: SecretOptions.help)
     var secrets: [String] = []

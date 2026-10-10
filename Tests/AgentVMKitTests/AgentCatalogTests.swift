@@ -55,8 +55,9 @@ import Testing
         #expect(claude.secrets.map(\.env) == ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"])
         // Claude Code's first-run screens ignore a token until onboarding is marked done.
         #expect(claude.setup?.contains("hasCompletedOnboarding") == true)
-        // opencode copies a selection by itself, and in a box that copy goes nowhere.
-        #expect(catalog.entry(id: "opencode")?.env["OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT"] == "1")
+        // Claude Code and Codex copy by asking the terminal only when they take the session
+        // for a remote one; else they write the box's own clipboard.
+        #expect(claude.env["SSH_CONNECTION"] != nil && catalog.entry(id: "codex")?.env["SSH_CONNECTION"] != nil)
         // Every rule is one a box takes.
         let packs = try NetworkPacks.load(store: scratch.root, builtIn: TestPacks.repository)
         for entry in catalog.entries {

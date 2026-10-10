@@ -6,7 +6,7 @@
 
 ```
 avm [to] [<box>] [--box <box>] [--agent <id> | --shell | -- <command> ...] [--project <folder> | --no-project]
-    [--read-only] [--no-snapshot] [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
+    [--read-only] [--no-snapshot] [--no-clipboard] [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
 avm new <image> [--temp | --name <box>] [--refresh] [--allow RULE ...] [--cpus N] [--memory-gb N]
     [the same --agent, --shell, -- <command>, sharing and --dry-run options]
 avm list [--json] [--project <folder>]
@@ -19,6 +19,7 @@ avm agents [--json]
 - **`--project <folder>`** shares that folder instead of the current one; **`--no-project`** shares none, and the program starts in the box user's home folder.
 - **`--read-only`** shares the folder read only: programs in the box cannot change it, so no snapshot is taken. **`--no-snapshot`** shares it read-write without a snapshot, so there is nothing to report or undo afterwards.
 - **`--secret`** and **`--env`** are passed on to `agent-vm exec` (see the README's Boxes and exec section): `--secret NAME` takes a value from your Keychain, `--env NAME=VALUE` or `--env NAME` sets a variable.
+- **`--no-clipboard`**: text the program copies is not put on your Mac's clipboard (see [Terminals](#terminals)).
 - **`--dry-run`** prints the steps instead of taking them, and exits 0. It creates, starts, shares, stores and remembers nothing, asks nothing, and needs a terminal only to show a list.
 - **`avm --version`** and **`avm help <subcommand>`** work as for agent-vm. `avm --help` lists the subcommands; the options are under `avm to --help`.
 
@@ -112,9 +113,9 @@ A secret's state is `set`, `missing`, or `asks`: stored by another build of agen
 
 | Agent | Needs in the box | Signs in with |
 |---|---|---|
-| Claude Code | `claude` (Recipes/agent-clis), hosts `pack:anthropic` | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on this Mac, for a Claude subscription) or `ANTHROPIC_API_KEY`; or `/login` inside a kept box. avm sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, and with the token it marks Claude Code's first-run screens done (`"hasCompletedOnboarding": true` in the box user's `~/.claude.json`), since they ask for a login method even when the token is set. Your Claude login on this Mac is not visible in the box. |
-| Codex | `codex`, hosts `pack:openai` | `OPENAI_API_KEY` (optional), or `codex login --device-auth` inside a kept box (a ChatGPT account works) |
-| opencode | `opencode`, hosts `opencode.ai` and `models.opencode.ai` | nothing for OpenCode Zen's free models; other providers need their key (`--secret`) and their hosts (`agent-vm box network --allow`). avm sets `OPENCODE_DISABLE_AUTOUPDATE=1`, and `OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT=1`: opencode copies what is selected by itself, and in a box that copy does not reach the Mac's clipboard. |
+| Claude Code | `claude` (Recipes/agent-clis), hosts `pack:anthropic` | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token` on this Mac, for a Claude subscription) or `ANTHROPIC_API_KEY`; or `/login` inside a kept box. avm sets `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` and `SSH_CONNECTION` (so that Claude Code takes the session for a remote one and copies by asking the terminal, which is how the text reaches your Mac; left alone, in a macOS box it writes the box's own clipboard. It also prints a login address where it would open a browser), and with the token it marks Claude Code's first-run screens done (`"hasCompletedOnboarding": true` in the box user's `~/.claude.json`), since they ask for a login method even when the token is set. Your Claude login on this Mac is not visible in the box. |
+| Codex | `codex`, hosts `pack:openai` | `OPENAI_API_KEY` (optional), or `codex login --device-auth` inside a kept box (a ChatGPT account works). avm sets `SSH_CONNECTION`, as for Claude Code. |
+| opencode | `opencode`, hosts `opencode.ai` and `models.opencode.ai` | nothing for OpenCode Zen's free models; other providers need their key (`--secret`) and their hosts (`agent-vm box network --allow`). avm sets `OPENCODE_DISABLE_AUTOUPDATE=1`. |
 
 - **Secrets:** when an agent needs one of its secrets, none is set, and your own `--env` or `--secret` does not give one of its variables, avm shows a list: set one of them now, or go on without (and log in inside the box). The value is pasted or typed at `Paste or type CLAUDE_CODE_OAUTH_TOKEN (not shown), then Enter:`, is never shown, and goes to your Keychain only, as `agent-vm secret set` stores it; it is never in an argument, a file or the output. The session reads it from the Keychain itself (`exec --secret`). The first of the agent's secrets that is set is the one passed, unless your own `--secret` or `--env` sets its variable; then yours is. When that secret was stored by another build of agent-vm (every ad hoc build counts as another), macOS asks on this Mac's screen before the session reads it (choose Always Allow; over SSH nobody sees the question), so avm shows a list first: use the value in the Keychain (Enter), go on without it, or set a new value.
 - **Hosts:** a box in allowlist mode that lacks the agent's rules (compared as written: a box allowing `api.anthropic.com` is still asked about `pack:anthropic`) is asked about them; yes adds them, as `agent-vm box network <box> --allow` does, and a running box takes them at once. No leaves the box as it is, and the agent's connections are refused (`agent-vm box netlog <box> --denied` lists them). A box whose network is `off` gets a warning; an `open` box needs nothing.
@@ -243,6 +244,7 @@ Errors go to stderr, prefixed with the name avm was started as (`avm:` or `agent
 
 ## Terminals
 
+- **Copying from an agent** (since 0.7.24): select in the agent's interface with the mouse and copy as the agent has it (Claude Code and opencode copy when the button is released; Control-C with a selection and `/copy` work too). The text is on your Mac's clipboard, in any terminal. avm takes text only, only while you are using the session (a key or the mouse within the last 2 seconds), and never lets the box read your clipboard; `--no-clipboard` turns it off (see the README's Boxes and exec section). Command-C belongs to your terminal and copies what the terminal has selected, which is nothing while the agent has the mouse. To select in the terminal itself, hold Fn while dragging in Terminal (or turn off View > Allow Mouse Reporting), Option in iTerm2, Shift in Ghostty, kitty, WezTerm and VS Code; then Command-C works as everywhere.
 - `NO_COLOR` set to anything (see no-color.org) turns off bold, dim and reverse video; the selected row is still marked with `>`.
 - With `TERM=dumb`, or no `TERM` (an Emacs shell buffer, some CI terminals), nothing moves the cursor. The list becomes a numbered menu read as a line:
   - a number chooses that row;

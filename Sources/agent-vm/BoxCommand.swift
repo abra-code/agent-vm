@@ -793,6 +793,12 @@ struct BoxCommand: ParsableCommand {
                     let what = record.stoppedOnPrompt == true ? "stopped while waiting" : "waited"
                     line += "  (\(what) on a permission prompt for \(prompts.joined(separator: ", ")))"
                 }
+                if let writes = record.clipboardWrites {
+                    line += "  (put text on the clipboard \(writes == 1 ? "once" : "\(writes) times"))"
+                }
+                if let refusals = record.clipboardRefusals {
+                    line += "  (\(refusals == 1 ? "1 clipboard request" : "\(refusals) clipboard requests") refused)"
+                }
                 print(line)
             }
         }
