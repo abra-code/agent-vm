@@ -60,6 +60,7 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 | `first-boot` | The first boot: the system installs `agent-vm-guest` from the seed disk. |
 | `guest-daemon` | The daemon answers. |
 | `linux-setup` | Each setup step, with `index` and `count` over all of them (waiting for the first boot to finish, the account, the packages, git's settings; then, after `seal`, the sealing steps), and `fraction`. A step's output lines follow as `log` events with `output`. |
+| `shutdown`, `check-boot` | Only when the image gets another kernel than the cloud image has (a Debian image, by default): after the setup steps that install it (the package lists, the kernel), shutting down and booting again on that kernel. The other `linux-setup` steps follow. |
 | `recipe`, `recipe-step`, `recipe-check` | With `--recipe`, as above. |
 | `seal` | Sealing begins; its steps follow as `linux-setup`. |
 | `shutdown` | Shutting the guest down. |
@@ -94,7 +95,7 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 | `replace-guest-daemon` | Putting this agent-vm's `agent-vm-guest` into the image, when it differs (unless `--system` or `--tools` alone). |
 | `shutdown` | Shutting the guest down. |
 | `check-guest-daemon` | Booting again to check the new `agent-vm-guest` (only when it was replaced), then `shutdown` again. |
-| `check-boot` | A Linux image whose update installed a new kernel, when the daemon was not replaced too: booting again to check that the system comes up on it, then `shutdown` again. |
+| `check-boot` | A Linux image whose update installed a new kernel, when the daemon was not replaced too: booting again to check that the system comes up on it, then `shutdown` again. Also, before `system-update`, when the update installs a kernel with another page size: `shutdown`, then booting again on that kernel. |
 | `commit` | The updated disk takes the image's place. Left out when there was nothing to update. |
 
 `image rebuild`: the steps of `image create` (with `--ipsw`, `--linux`, or `--from`), their `image` being the image's own name and not the name it is built under, then `replace`: the rebuilt image takes the old one's place.

@@ -72,9 +72,28 @@ enum LinuxSetup {
         + #"if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then /usr/bin/echo "$said"; exit 1; fi; /usr/sbin/resize2fs "$root" 2>&1"#,
         timeout: 300)
 
+    /// What a build runs first when the image is to boot another kernel than the cloud image
+    /// has: the package lists and the kernel, and nothing else. The build then boots the image
+    /// again, so that as little as can be runs on the cloud image's kernel (one with 4 KiB
+    /// pages can lose memory when the Mac runs short of it, and a build that meets that fails).
+    static func kernelSwitch(_ kernel: LinuxKernel, distribution: String = "debian") -> [Step] {
+        var steps = [packageLists, self.kernel(kernel)]
+        if distribution == "ubuntu" {
+            steps.insert(removeNeedrestart, at: 0)
+        }
+        return steps
+    }
+
+    /// After the boot on a kernel `kernelSwitch` installed: cloud-init is waited for, and the
+    /// network card's address as in every later boot. What cloud-init says of this boot is not
+    /// judged: its work was done and judged at the first boot, and on a kernel with larger
+    /// pages its try to grow the root file system again ends in an error that means nothing
+    /// (resize2fs rounds the size down to whole pages and calls that shrinking).
+    static let waitForKernelBoot = Step("wait for the boot on the new kernel", "/usr/bin/cloud-init status --wait > /dev/null 2>&1; \(waitForNetwork.script)", timeout: 300)
+
     /// Setting the system up, after the first boot: the box user, the packages, git's include.
-    /// `kernel`: the kernel the image is to boot when it is not the one the cloud image has.
-    static func steps(user: String, tools: Bool, distribution: String = "debian", kernel: LinuxKernel? = nil) -> [Step] {
+    /// `afterKernelSwitch`: `kernelSwitch` ran in this build, and what it did is not done again.
+    static func steps(user: String, tools: Bool, distribution: String = "debian", afterKernelSwitch: Bool = false) -> [Step] {
         var steps = [
             // cloud-init was told to create no account; its default one would have sudo
             // without a password. The box user's password is locked: there is none to know.
@@ -90,11 +109,9 @@ enum LinuxSetup {
         if tools {
             steps.append(self.tools)
         }
-        if let kernel, let updates = steps.firstIndex(of: systemUpdates) {
-            // Before the system's updates: they then fetch no new build of a kernel that goes.
-            steps.insert(self.kernel(kernel), at: updates)
-        }
-        if distribution == "ubuntu" {
+        if afterKernelSwitch {
+            steps.removeAll { $0 == packageLists }
+        } else if distribution == "ubuntu" {
             steps.insert(removeNeedrestart, at: 1)
         }
         // A file of agent-vm's own that git reads: a box's supervisor names the shared project

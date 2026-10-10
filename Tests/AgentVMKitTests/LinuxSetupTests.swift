@@ -17,7 +17,7 @@ import Testing
             + LinuxSetup.seal(distribution: "ubuntu") + LinuxSetup.sealChecks(distribution: "ubuntu") + LinuxSetup.systemUpdate + [LinuxSetup.removeNeedrestart]
             + [LinuxSetup.Step("packages", LinuxSetup.packageList), LinuxSetup.Step("newest kernel", LinuxSetup.newestKernel)]
             + [LinuxSetup.accountCheck(user: "agent"), LinuxSetup.waitForNetwork, LinuxSetup.packageLists, LinuxSetup.tools]
-            + [LinuxSetup.kernel(Self.sixteen), LinuxSetup.Step("page size", LinuxSetup.pageSize)]
+            + [LinuxSetup.kernel(Self.sixteen), LinuxSetup.waitForKernelBoot, LinuxSetup.Step("page size", LinuxSetup.pageSize)]
     }
 
     /// The first word of every command in `script`: after the start, `;`, `&&`, `||`, `|`,
@@ -74,13 +74,20 @@ import Testing
         #expect(LinuxSetup.apt == "/usr/bin/apt-get -q -y -o Dpkg::Use-Pty=0")
     }
 
-    @Test func anotherKernelTakesThePlaceOfTheImagesBeforeTheUpdates() {
-        // No kernel named: the cloud image's own stays, and no step speaks of one.
+    @Test func anotherKernelIsInstalledBeforeAnythingElse() {
+        // No kernel to install: the cloud image's own stays, and no step speaks of one.
         #expect(!LinuxSetup.steps(user: "agent", tools: true).contains { $0.name.contains("kernel") })
-        let names = LinuxSetup.steps(user: "agent", tools: false, kernel: Self.sixteen).map(\.name)
-        // After the lists (apt must know the package) and before the updates (which would
-        // fetch a new build of the kernel that goes).
-        #expect(names == ["account agent", "package lists", "kernel with 16 KiB pages (linux-image-arm64-16k)", "system updates", "git, jq, unzip, zip", "git settings"])
+        // What runs on the cloud image's kernel is the lists (apt must know the package) and
+        // the kernel; the image is then booted again.
+        #expect(LinuxSetup.kernelSwitch(Self.sixteen).map(\.name) == ["package lists", "kernel with 16 KiB pages (linux-image-arm64-16k)"])
+        #expect(LinuxSetup.kernelSwitch(Self.sixteen, distribution: "ubuntu").map(\.name)
+                == ["no restarts of services by apt (needrestart)", "package lists", "kernel with 16 KiB pages (linux-image-arm64-16k)"])
+        // The rest runs after that boot, and does not do again what was done before it.
+        #expect(LinuxSetup.steps(user: "agent", tools: false, afterKernelSwitch: true).map(\.name) == ["account agent", "system updates", "git, jq, unzip, zip", "git settings"])
+        #expect(LinuxSetup.steps(user: "agent", tools: false, distribution: "ubuntu", afterKernelSwitch: true).map(\.name) == ["account agent", "system updates", "git, jq, unzip, zip", "git settings"])
+        #expect(LinuxSetup.steps(user: "agent", tools: false).map(\.name) == ["account agent", "package lists", "system updates", "git, jq, unzip, zip", "git settings"])
+        #expect(LinuxSetup.waitForKernelBoot.script.hasPrefix("/usr/bin/cloud-init status --wait"))
+        #expect(LinuxSetup.waitForKernelBoot.script.contains("/usr/lib/systemd/systemd-networkd-wait-online --timeout=30"))
         let script = LinuxSetup.kernel(Self.sixteen).script
         // The question about removing the running kernel is answered before anything is removed.
         #expect(script.hasPrefix("/usr/bin/echo 'linux-base linux-base/removing-running-kernel boolean false' | /usr/bin/debconf-set-selections || exit 1; /usr/bin/apt-get -q -y -o Dpkg::Use-Pty=0 install linux-image-arm64-16k || exit 1; "))

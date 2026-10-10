@@ -863,13 +863,14 @@ public final class ImageBuilder {
     }
 
     /// `requestStop()` leaves a logged-in guest running; the daemon shuts it down. A Linux
-    /// image is first cleared of what must differ between the boots of one disk.
-    func shutDown(_ machine: GuestMachine, guest: GuestKind = .macOS) async throws {
+    /// image is first cleared of what must differ between the boots of one disk, unless
+    /// `clearing` is false (a shutdown in the middle of a build, before the same disk boots on).
+    func shutDown(_ machine: GuestMachine, guest: GuestKind = .macOS, clearing: Bool = true) async throws {
         progress("shutdown", "Shutting down")
         // Checked once: the request itself is not cut short, or a guest already shutting down
         // would lose power.
         try checkCanceled()
-        if guest == .linux {
+        if guest == .linux, clearing {
             try await prepareForCloning(machine)
         }
         try await withGuest(machine, "shutdown", cancellable: false) { descriptor in

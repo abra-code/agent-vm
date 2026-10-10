@@ -218,11 +218,12 @@ extension ImageBuilder {
         try SeedDisk.make(at: seed, daemon: options.guestDaemon, unit: GuestDaemon.systemdUnit(user: user), instance: "agent-vm-\(UUID().uuidString.lowercased())")
         let console = try ConsoleLog(url: current.consoleLogURL)
         defer { console.close() }
-        let machine = try makeMachine(for: current, extras: LinuxMachineExtras(seedDisk: seed, console: console.writeHandle))
+        let extras = LinuxMachineExtras(seedDisk: seed, console: console.writeHandle)
+        var machine = try makeMachine(for: current, extras: extras)
 
         try checkCanceled()
         // The cloud image boots the first of the system's kernels; another is installed in its
-        // place by a setup step, and the image booted once more on it.
+        // place before anything else, and the image booted again on it for the rest.
         let switchesKernel = kernel != options.base.kernels.first
         progress("first-boot", "First boot: the system installs the guest daemon")
         try await start(machine, of: current)
@@ -247,10 +248,11 @@ extension ImageBuilder {
                 record.guestDigest = daemonDigest
             }
 
-            var steps = [LinuxSetup.waitForFirstBoot]
-            steps += LinuxSetup.steps(user: user, tools: options.commandLineTools, distribution: options.base.distribution, kernel: switchesKernel ? kernel : nil)
-            let seal = LinuxSetup.seal(distribution: options.base.distribution)
-            let count = steps.count + seal.count
+            let distribution = options.base.distribution
+            let early = switchesKernel ? LinuxSetup.kernelSwitch(kernel, distribution: distribution) + [LinuxSetup.waitForKernelBoot] : []
+            let steps = LinuxSetup.steps(user: user, tools: options.commandLineTools, distribution: distribution, afterKernelSwitch: switchesKernel)
+            let seal = LinuxSetup.seal(distribution: distribution)
+            let count = 1 + early.count + steps.count + seal.count
             try await runLinuxSteps([LinuxSetup.waitForFirstBoot], machine: machine, offset: 0, count: count)
             let system = try await readLinuxSystem(machine, base: options.base, diskBytes: current.record.diskBytes)
             log("  \(system.name), kernel \(system.kernel ?? "?") (\(system.pageSize.map(LinuxPageSize.name) ?? "?") pages), \(system.architecture)")
@@ -260,7 +262,20 @@ extension ImageBuilder {
                 throw AgentVMError.guestCommandFailed(command: "check the kernel", status: 0,
                                                       output: "the cloud image's kernel has \(system.pageSize.map(LinuxPageSize.name) ?? "?") pages, not \(LinuxPageSize.name(kernel.pageBytes))")
             }
-            try await runLinuxSteps(Array(steps.dropFirst()), machine: machine, offset: 1, count: count)
+            if switchesKernel {
+                try await runLinuxSteps(Array(early.dropLast()), machine: machine, offset: 1, count: count)
+                // Not cleared for cloning: the same disk boots again, with its seed disk, and
+                // the first boot's setup must find the machine it set up.
+                try await shutDown(machine, guest: .linux, clearing: false)
+                // A cancel that came in during the shutdown: nothing is booted for it.
+                try checkCanceled()
+                progress("check-boot", "Booting again on the kernel with \(LinuxPageSize.name(kernel.pageBytes)) pages")
+                machine = try makeMachine(for: current, extras: extras)
+                try await start(machine, of: current)
+                current = try await checkKernel(current, machine: machine, kernel: kernel)
+                try await runLinuxSteps([LinuxSetup.waitForKernelBoot], machine: machine, offset: early.count, count: count)
+            }
+            try await runLinuxSteps(steps, machine: machine, offset: 1 + early.count, count: count)
 
             let identity = try await guestCapture(machine, GuestRequest(op: .exec, argv: ["/usr/bin/id", "-un"]))
             guard identity.report == ExitReport(status: 0), identity.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == user else {
@@ -279,16 +294,13 @@ extension ImageBuilder {
             current = try await applyRecipes(options.recipes, to: current, machine: machine)
 
             progress("seal", "Sealing the image: no ssh server, no background updates, no first-boot setup")
-            try await runLinuxSteps(seal, machine: machine, offset: steps.count, count: count)
+            try await runLinuxSteps(seal, machine: machine, offset: 1 + early.count + steps.count, count: count)
             try await sealCheck(machine, checks: LinuxSetup.sealChecks(distribution: options.base.distribution))
             try await shutDown(machine, guest: .linux)
         } catch {
             let error = canceledError(error)
             await stopAfterFailure(machine)
             throw error
-        }
-        if switchesKernel {
-            current = try await checkKernelBoot(current, kernel: kernel, console: console)
         }
         let seconds = Self.seconds(clock.now - began)
         log("Set up in \(Int(seconds)) s")
@@ -400,43 +412,32 @@ extension ImageBuilder {
         return LinuxSystem(distribution: release.distribution, version: release.version, name: release.name, kernel: kernel, architecture: architecture, pageSize: pageSize)
     }
 
-    /// Boots a built image once more, as a box of it will boot, to see that it comes up on the
-    /// kernel that was installed in place of the cloud image's: the kernel must have pages of
-    /// the size asked for, or the build fails. The record then names that kernel.
-    private func checkKernelBoot(_ image: GoldenImage, kernel: LinuxKernel, console: ConsoleLog) async throws -> GoldenImage {
-        try checkCanceled()
-        progress("check-boot", "Booting again to check the kernel with \(LinuxPageSize.name(kernel.pageBytes)) pages")
-        let machine = try makeMachine(for: image, extras: LinuxMachineExtras(console: console.writeHandle))
-        try await start(machine, of: image)
+    /// After the boot that follows `LinuxSetup.kernelSwitch`: the daemon must answer, and the
+    /// kernel that runs must have pages of the size asked for, or the build fails. The record
+    /// then names that kernel. The caller stops the machine when this throws.
+    private func checkKernel(_ image: GoldenImage, machine: GuestMachine, kernel: LinuxKernel) async throws -> GoldenImage {
         do {
-            do {
-                _ = try await waitForDaemon(machine, attempts: Self.linuxFirstBootAttempts, guest: .linux)
-            } catch AgentVMError.guestUnreachable(let reason) {
-                // What the new kernel printed says why it did not come up.
-                let tail = ConsoleLog.tail(of: image.consoleLogURL, lines: 20)
-                throw AgentVMError.guestUnreachable("\(reason)\(tail.isEmpty ? "" : "; the console's last lines (\(image.consoleLogURL.path)):\n\(tail)")")
-            }
-            let version = try await guestCapture(machine, Self.rootRequest(LinuxSetup.kernel))
-            let pages = try await guestCapture(machine, Self.rootRequest(LinuxSetup.pageSize))
-            guard version.report == ExitReport(status: 0), pages.report == ExitReport(status: 0) else {
-                throw AgentVMError.guestCommandFailed(command: "read the kernel's version and page size", status: max(version.report.shellStatus, pages.report.shellStatus),
-                                                      output: Printable.line(version.stderr + pages.stderr, limit: 300))
-            }
-            let running = try LinuxSetup.token(version.stdout, what: "kernel version")
-            guard LinuxPageSize.parsed(pages.stdout) == kernel.pageBytes else {
-                throw AgentVMError.guestCommandFailed(command: "check the kernel", status: 0,
-                                                      output: "the image boots kernel \(running) with pages of \(Printable.line(pages.stdout.trimmingCharacters(in: .whitespacesAndNewlines), limit: 16)) bytes, not \(kernel.pageBytes)")
-            }
-            log("  kernel \(running), \(LinuxPageSize.name(kernel.pageBytes)) pages")
-            try await shutDown(machine, guest: .linux)
-            return try store.update(image) { record in
-                record.linux?.kernel = running
-                record.linux?.pageSize = kernel.pageBytes
-            }
-        } catch {
-            let error = canceledError(error)
-            await stopAfterFailure(machine)
-            throw error
+            _ = try await waitForDaemon(machine, attempts: Self.linuxFirstBootAttempts, guest: .linux)
+        } catch AgentVMError.guestUnreachable(let reason) {
+            // What the new kernel printed says why it did not come up.
+            let tail = ConsoleLog.tail(of: image.consoleLogURL, lines: 20)
+            throw AgentVMError.guestUnreachable("\(reason)\(tail.isEmpty ? "" : "; the console's last lines (\(image.consoleLogURL.path)):\n\(tail)")")
+        }
+        let version = try await guestCapture(machine, Self.rootRequest(LinuxSetup.kernel))
+        let pages = try await guestCapture(machine, Self.rootRequest(LinuxSetup.pageSize))
+        guard version.report == ExitReport(status: 0), pages.report == ExitReport(status: 0) else {
+            throw AgentVMError.guestCommandFailed(command: "read the kernel's version and page size", status: max(version.report.shellStatus, pages.report.shellStatus),
+                                                  output: Printable.line(version.stderr + pages.stderr, limit: 300))
+        }
+        let running = try LinuxSetup.token(version.stdout, what: "kernel version")
+        guard LinuxPageSize.parsed(pages.stdout) == kernel.pageBytes else {
+            throw AgentVMError.guestCommandFailed(command: "check the kernel", status: 0,
+                                                  output: "the image boots kernel \(running) with pages of \(Printable.line(pages.stdout.trimmingCharacters(in: .whitespacesAndNewlines), limit: 16)) bytes, not \(kernel.pageBytes)")
+        }
+        log("  kernel \(running), \(LinuxPageSize.name(kernel.pageBytes)) pages")
+        return try store.update(image) { record in
+            record.linux?.kernel = running
+            record.linux?.pageSize = kernel.pageBytes
         }
     }
 
