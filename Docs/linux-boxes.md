@@ -50,12 +50,22 @@ Both are built, sealed, run and updated by the same commands, and every test of 
 | Node, Python and three agents on top (the recipes) | about 1 minute | about 50 seconds |
 | A box starts | about 3 seconds | about 5 seconds |
 | An idle box's memory | about 0.5 GB of the Mac's | about 0.7 GB |
-| Kernel | 6.12 | 7.0 |
+| Kernel | 6.12, with 16 KiB memory pages (since 0.7.30) | 7.0, with 4 KiB memory pages |
 | Python (`Recipes/linux-python`) | 3.13 | 3.14 |
 | `sudo`, and `ls`, `cp` and the like | sudo, GNU's tools | sudo-rs and uutils, written in Rust; scripts that parse their messages may see other words |
 | apt's servers, and the pack for them | HTTPS; `pack:debian` | plain HTTP through the proxy; `pack:ubuntu` |
 | Removed when the image is sealed | the ssh server, unattended-upgrades, polkitd | those, and snapd, the Ubuntu Pro client, the update and news notices, the firmware updater, the crash reporter, the release upgrader, needrestart, VMware's tools, multipath, iSCSI and udisks2 |
 | A file changed on the Mac | read right at once | can be read with its old length for a second (see [The shared folder](#the-shared-folder)) |
+
+## The kernel's page size
+
+A kernel manages memory in pages of one size, fixed when the kernel is built: 4 KiB on most Linux systems for 64-bit ARM, 16 KiB on a Mac. Since 0.7.30 a Debian image boots Debian's own kernel with 16 KiB pages.
+
+- **Why:** on macOS 27.0 a Linux guest whose kernel has 4 KiB pages can lose memory of the kernel's own when the Mac runs short of memory and pushes the guest's memory out: the lost memory reads as zeros, the kernel meets a fault, and the box stops (the README's "A kernel fault stops the box"). It is not agent-vm's defect, and other tools that use the Virtualization framework see it too. In our tests two Debian boxes of 8 GB that used their memory faulted in 2 of 8 runs with 4 KiB pages and in none of 16 with 16 KiB pages, while the Mac was made to push about 3 GB out; Ubuntu boxes faulted in 8 of 8.
+- **Debian:** the image is built with `linux-image-arm64-16k` in place of the cloud image's kernel, the same kernel version with another page size, and is booted once more before it is ready, to see that it comes up with 16 KiB pages. The package is Debian's full kernel; the cloud image's own, a smaller build for virtual machines, is removed.
+- **An image built before 0.7.30** gets that kernel at its next `agent-vm image update <image> --system`, which says so; then `agent-vm box recreate <box>` gives each box the new disk.
+- **Ubuntu** packages no kernel with 16 KiB pages, and its images keep the 4 KiB kernel. Until Apple fixes macOS, prefer Debian for a box that runs beside memory-hungry work on the Mac.
+- **`--page-size 4k`** on `image create --linux debian`, or on `image update --system`, is the way back, for a program that does not run with 16 KiB pages. The programs the recipes install do (Node, Python, Claude Code, Codex, OpenCode). A program can fail when it carries its own memory allocator built for 4 KiB pages; it then says so at its start ("unsupported system page size"). `getconf PAGESIZE` in a box prints the size, and an image's record has it as `linux.pageSize`.
 
 ## What differs, command by command
 
@@ -130,7 +140,7 @@ agent-vm box recreate work                           # each box, to get what the
 ```
 
 - **Nothing updates by itself.** The timers that update packages in the background are off in an image, so a box changes only by what runs in it.
-- **The image is never half updated:** an update works on a copy and takes the image's place only when everything passed. A new kernel is booted once before it is kept.
+- **The image is never half updated:** an update works on a copy and takes the image's place only when everything passed. A new kernel is booted once before it is kept. An image whose kernel has 4 KiB pages where its system has one with 16 KiB gets that one ([The kernel's page size](#the-kernels-page-size)).
 
 ## What a Linux image is made of
 

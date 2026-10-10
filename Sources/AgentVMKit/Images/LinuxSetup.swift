@@ -51,6 +51,8 @@ enum LinuxSetup {
     static let osRelease = "/usr/bin/cat /etc/os-release"
     static let kernel = "/usr/bin/uname -r"
     static let architecture = "/usr/bin/dpkg --print-architecture"
+    /// The size of the running kernel's memory pages in bytes.
+    static let pageSize = "/usr/bin/getconf PAGESIZE"
     /// The size of the root file system in bytes.
     static let rootSize = "/usr/bin/df -B1 --output=size / | /usr/bin/tail -n 1"
 
@@ -71,7 +73,8 @@ enum LinuxSetup {
         timeout: 300)
 
     /// Setting the system up, after the first boot: the box user, the packages, git's include.
-    static func steps(user: String, tools: Bool, distribution: String = "debian") -> [Step] {
+    /// `kernel`: the kernel the image is to boot when it is not the one the cloud image has.
+    static func steps(user: String, tools: Bool, distribution: String = "debian", kernel: LinuxKernel? = nil) -> [Step] {
         var steps = [
             // cloud-init was told to create no account; its default one would have sudo
             // without a password. The box user's password is locked: there is none to know.
@@ -86,6 +89,10 @@ enum LinuxSetup {
         ]
         if tools {
             steps.append(self.tools)
+        }
+        if let kernel, let updates = steps.firstIndex(of: systemUpdates) {
+            // Before the system's updates: they then fetch no new build of a kernel that goes.
+            steps.insert(self.kernel(kernel), at: updates)
         }
         if distribution == "ubuntu" {
             steps.insert(removeNeedrestart, at: 1)
@@ -157,6 +164,22 @@ enum LinuxSetup {
         }
         return String(path.dropFirst(prefix.count)) != running.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+    /// Makes `kernel` the only kernel installed, and so the one the system boots: its package
+    /// is installed and every kernel package of another flavor purged. The boot menu's first
+    /// entry is then this kernel with no setting of ours, and the newest file in /boot is the
+    /// kernel that boots (`newestKernel`). Removing the kernel that is running asks a question
+    /// (linux-base's linux-check-removal, whose answer by default is to stop); it is answered
+    /// first. The running kernel stays in memory until the next boot.
+    static func kernel(_ kernel: LinuxKernel) -> Step {
+        return Step("kernel with \(LinuxPageSize.name(kernel.pageBytes)) pages (\(kernel.package))",
+                    #"/usr/bin/echo 'linux-base linux-base/removing-running-kernel boolean false' | /usr/bin/debconf-set-selections || exit 1; "#
+                    + "\(apt) install \(kernel.package) || exit 1; "
+                    + #"others="$(/usr/bin/dpkg-query -W -f '${db:Status-Status} ${Package}\n' 'linux-image-*' | /usr/bin/sed -n 's/^installed //p' | /usr/bin/grep -v -e '-\#(kernel.flavor)$')"; "#
+                    + #"if [ -n "$others" ]; then \#(apt) purge $others || exit 1; fi; "#
+                    + #"left="$(/usr/bin/ls /boot/vmlinuz-* | /usr/bin/grep -c -v -e '-\#(kernel.flavor)$')"; if [ "$left" != "0" ]; then /usr/bin/ls /boot; exit 1; fi; /usr/bin/ls /boot/vmlinuz-*"#,
+                    timeout: 1800)
+    }
+
     static let tools = Step("the compiler and make (\(toolsPackage))", "\(apt) install \(toolsPackage)", timeout: 1800)
 
     /// Run first in every later boot that builds on an image (a derived image, an update):

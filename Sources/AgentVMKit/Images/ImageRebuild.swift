@@ -356,10 +356,13 @@ extension ImageBuilder {
                 log("  recipes: \(plan.recipes.map(\.name).joined(separator: ", "))")
             }
             if let linux = options.linux {
+                // The page size the image's kernel has, when the new system has a kernel with it;
+                // an image whose record names none gets the system's default.
+                let pages = old.record.linux?.pageSize.flatMap { size in linux.base.kernels.contains { $0.pageBytes == size } ? size : nil }
                 built = try await buildLinux(LinuxImageBuildOptions(
                     name: plan.buildName, base: linux.base, cloudImage: linux.cloudImage, cpuCount: old.record.cpuCount, memoryBytes: old.record.memoryBytes,
                     diskBytes: old.record.diskBytes, userName: old.record.userName, guestDaemon: options.guestDaemon,
-                    commandLineTools: plan.commandLineTools, recipes: plan.recipes))
+                    commandLineTools: plan.commandLineTools, recipes: plan.recipes, pageBytes: pages))
             } else if let restoreImage = options.restoreImage {
                 built = try await build(ImageBuildOptions(
                     name: plan.buildName, restoreImage: restoreImage, cpuCount: old.record.cpuCount, memoryBytes: old.record.memoryBytes,

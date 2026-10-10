@@ -55,6 +55,9 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .customLong("cloud-image"), help: ArgumentHelp("With --linux: a cloud image file of your own (.tar.xz, .img, .qcow2 or .raw) in place of the download. It is trusted because you give it, and its SHA-512 is recorded.", valueName: "path"))
         var cloudImage: String?
 
+        @Option(name: .customLong("page-size"), help: ArgumentHelp("With --linux: the size of the kernel's memory pages, 4k, 16k or 64k, of those the system packages a kernel for (Debian: 4k, 16k; Ubuntu: 4k). Default: 16k where there is one. On macOS 27.0 a Linux guest with 4k pages can lose kernel memory when the Mac runs short of memory; 16k is the Mac's own page size.", valueName: "size"))
+        var pageSize: String?
+
         @Option(name: .long, help: "A ready image to start from instead of a restore image or a cloud image; the new image runs the system its base runs. Without --recipe: a copy of it with nothing added.")
         var from: String?
 
@@ -94,6 +97,12 @@ struct ImageCommand: ParsableCommand {
             }
             guard cloudImage == nil || linux != nil else {
                 throw ValidationError("--cloud-image is a Linux cloud image: give --linux <release> with it")
+            }
+            guard pageSize == nil || linux != nil else {
+                throw ValidationError("--page-size chooses the kernel of a new Linux image: give --linux <release> with it (an image made with --from has its base's kernel; `image update --system --page-size` changes it)")
+            }
+            if let pageSize, LinuxPageSize.bytes(pageSize) == nil {
+                throw ValidationError("--page-size takes 4k, 16k or 64k")
             }
             if recipe.isEmpty && !(inputs.isEmpty && settings.isEmpty) {
                 throw ValidationError("--input and --set give values to a recipe's inputs and parameters; add --recipe")
@@ -162,7 +171,8 @@ struct ImageCommand: ParsableCommand {
                     userName: user ?? "agent",
                     guestDaemon: try guestDaemonURL(for: .linux),
                     commandLineTools: commandLineTools ?? recipesWantTools ?? true,
-                    recipes: recipes))
+                    recipes: recipes,
+                    pageBytes: pageSize.flatMap(LinuxPageSize.bytes)))
             } else if let from {
                 // The new image runs what its base runs, and gets that guest's daemon. (A base
                 // that is not there is refused by the build, in its own words.)
@@ -354,6 +364,9 @@ struct ImageCommand: ParsableCommand {
         @Flag(name: .long, help: "Update the image's system: macOS (and the Command Line Tools), or a Linux image's packages.")
         var system = false
 
+        @Option(name: .customLong("page-size"), help: ArgumentHelp("With --system, for Linux images: the size of the kernel's memory pages from now on (4k, 16k or 64k, of those the system packages a kernel for). Without it an image keeps the size it has; one built before agent-vm 0.7.30 gets its system's default (16k for Debian).", valueName: "size"))
+        var pageSize: String?
+
         @Flag(name: .customLong("macos"), help: "The same as --system, for macOS images only.")
         var macOS = false
 
@@ -393,6 +406,14 @@ struct ImageCommand: ParsableCommand {
             if ifOlderThan != nil && !recipes.isEmpty {
                 throw ValidationError("--recipe replaces a recipe whatever the image's age; leave out --if-older-than")
             }
+            if let pageSize {
+                guard LinuxPageSize.bytes(pageSize) != nil else {
+                    throw ValidationError("--page-size takes 4k, 16k or 64k")
+                }
+                guard system, !macOS else {
+                    throw ValidationError("--page-size changes a Linux image's kernel, with the system's update: add --system")
+                }
+            }
         }
 
         /// The guest daemon built with this agent-vm for each system, looked up once.
@@ -429,7 +450,8 @@ struct ImageCommand: ParsableCommand {
             func update(_ name: String) throws -> (options: ImageUpdateOptions, localDigest: String?) {
                 let kind = (try? options.imageStore.image(named: name))?.record.effectiveGuest ?? .macOS
                 let daemon = guest || both ? try daemons.daemon(for: kind) : nil
-                return (ImageUpdateOptions(name: name, system: system, tools: tools || both, parameters: parameters, guestDaemon: daemon?.url, recipes: replacements, keptRecipes: keptRecipes), daemon?.digest)
+                return (ImageUpdateOptions(name: name, system: system, tools: tools || both, parameters: parameters, guestDaemon: daemon?.url, recipes: replacements, keptRecipes: keptRecipes,
+                                           pageBytes: kind == .linux ? pageSize.flatMap(LinuxPageSize.bytes) : nil), daemon?.digest)
             }
             // A mistyped last name should not surface after the first images took minutes each.
             for name in names {
@@ -438,6 +460,9 @@ struct ImageCommand: ParsableCommand {
                 if macOS, try options.imageStore.image(named: name).record.effectiveGuest == .linux {
                     throw ImageBuilder.macOSOptionRefusal(image: name)
                 }
+                if pageSize != nil, try options.imageStore.image(named: name).record.effectiveGuest == .macOS {
+                    throw ValidationError("--page-size changes a Linux image's kernel, and \(name) is a macOS image")
+                }
             }
             let signals = BuildCancellation.watchingSignals()
             defer { signals.stop() }
@@ -445,9 +470,11 @@ struct ImageCommand: ParsableCommand {
             var records: [ImageRecord] = []
             for (index, name) in names.enumerated() {
                 let asked = try update(name)
-                // Skipped only when no part asked for is due; a guest daemon that differs is due.
+                // Skipped only when no part asked for is due; a guest daemon that differs is due,
+                // and so is a page size asked for that the image's record does not name.
                 if let ifOlderThan, let image = try? options.imageStore.image(named: name),
                    !image.record.isUpdateDue(system: system, tools: tools || both, olderThanHours: ifOlderThan),
+                   asked.options.pageBytes == nil || image.record.linux?.pageSize == asked.options.pageBytes,
                    asked.options.guestDaemon == nil || (asked.localDigest != nil && image.record.guestDigest == asked.localDigest) {
                     records.append(image.record)
                     let systemName = image.record.effectiveGuest == .linux ? image.record.systemShort : "macOS"

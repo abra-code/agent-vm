@@ -75,6 +75,43 @@ import Testing
     }
 
     /// What a client offers as the choice of a new image's system, and puts on a command line.
+    @Test func aSystemNamesItsKernelsByPageSize() throws {
+        let debian = try LinuxBase.named("debian")
+        // The cloud image's own kernel is first; the default is the one with the Mac's page size.
+        #expect(debian.kernels.map(\.pageBytes) == [4096, 16384])
+        #expect(debian.defaultPageBytes == 16384)
+        #expect(try debian.kernel(pageBytes: 16384) == LinuxKernel(pageBytes: 16384, package: "linux-image-arm64-16k", flavor: "arm64-16k"))
+        #expect(try debian.kernel(pageBytes: 4096).flavor == "cloud-arm64")
+        #expect(throws: AgentVMError.linuxBase("--page-size 64k: Debian 13 has kernels with 4k or 16k pages")) { _ = try debian.kernel(pageBytes: 65536) }
+        let ubuntu = try LinuxBase.named("ubuntu")
+        #expect(ubuntu.defaultPageBytes == 4096)
+        #expect(throws: AgentVMError.linuxBase("--page-size 16k: Ubuntu 26.04 has only a kernel with 4k pages")) { _ = try ubuntu.kernel(pageBytes: 16384) }
+        // Every default is a kernel the system has.
+        for base in LinuxBase.known {
+            #expect(base.kernels.contains { $0.pageBytes == base.defaultPageBytes }, "\(base.id)")
+        }
+        // An image's record finds its system, whatever the image was built from.
+        #expect(LinuxBase.known(for: LinuxSystem(distribution: "debian", version: "13", name: "Debian GNU/Linux 13 (trixie)"))?.id == "debian-13")
+        #expect(LinuxBase.known(for: LinuxSystem(distribution: "debian", version: "12", name: "Debian 12")) == nil)
+        #expect(LinuxBase.known(for: nil) == nil)
+    }
+
+    @Test func aPageSizeIsReadAsOneAKernelHas() {
+        #expect(LinuxPageSize.bytes("4k") == 4096)
+        #expect(LinuxPageSize.bytes("16K") == 16384)
+        #expect(LinuxPageSize.bytes("64k") == 65536)
+        for bad in ["", "16", "16kb", "8k", "16384"] {
+            #expect(LinuxPageSize.bytes(bad) == nil, "\(bad)")
+        }
+        #expect(LinuxPageSize.name(16384) == "16 KiB")
+        // What a guest prints: the number alone, and only a size a kernel has.
+        #expect(LinuxPageSize.parsed("16384\n") == 16384)
+        #expect(LinuxPageSize.parsed("4096") == 4096)
+        for bad in ["", "8192\n", "16384 x", "-4096", "sixteen"] {
+            #expect(LinuxPageSize.parsed(bad) == nil, "\(bad)")
+        }
+    }
+
     @Test func theReleasesAreSaidForAProgram() throws {
         let releases = LinuxRelease.all
         #expect(releases.map(\.id) == LinuxBase.known.map(\.id))
@@ -278,7 +315,8 @@ final class FolderServer: @unchecked Sendable {
             scratch = try Scratch()
             server = try FolderServer()
             base = LinuxBase(id: "test-1", name: "Test 1", distribution: "test", version: "1", folder: server.folder,
-                             file: "test-1-arm64.tar.xz", checksumList: "SHA512SUMS", digest: .sha512, member: "disk.raw", manifest: "test-1-arm64.json")
+                             file: "test-1-arm64.tar.xz", checksumList: "SHA512SUMS", digest: .sha512, member: "disk.raw", manifest: "test-1-arm64.json",
+                             kernels: [LinuxKernel(pageBytes: 4096, package: "linux-image-test", flavor: "test")], defaultPageBytes: 4096)
             image = Data((0..<300_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ $0 / 251) })
             cache = try LinuxBaseCache(root: scratch.root.appendingPathComponent("store", isDirectory: true), environment: [:])
             cache.minimumFree = 0

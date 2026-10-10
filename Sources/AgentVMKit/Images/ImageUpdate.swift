@@ -49,9 +49,13 @@ public struct ImageUpdateOptions: Sendable {
     /// Run the recipes as the image keeps them: no newer version of a built-in recipe takes a
     /// kept one's place by itself (`--kept-recipes`). What `recipes` names still does.
     public var keptRecipes: Bool
+    /// With `system`, for a Linux image: the page size its kernel is to have from now on
+    /// (`--page-size`). nil leaves an image the size its record names, and gives one whose
+    /// record names none (built before the size was kept) its system's default.
+    public var pageBytes: Int?
 
     public init(name: String, system: Bool, tools: Bool, parameters: [String: String] = [:], guestDaemon: URL? = nil, recipes: [URL] = [],
-                keptRecipes: Bool = false) {
+                keptRecipes: Bool = false, pageBytes: Int? = nil) {
         self.name = name
         self.system = system
         self.tools = tools
@@ -59,6 +63,7 @@ public struct ImageUpdateOptions: Sendable {
         self.guestDaemon = guestDaemon
         self.recipes = recipes
         self.keptRecipes = keptRecipes
+        self.pageBytes = pageBytes
     }
 }
 
@@ -214,6 +219,13 @@ extension ImageBuilder {
         if let guestDaemon = options.guestDaemon {
             try Self.requireLocalDaemon(guestDaemon, guest: image.record.effectiveGuest)
         }
+        // A page size the image's system has no kernel for, before a copy is booted to find out.
+        if let pageBytes = options.pageBytes, image.record.effectiveGuest == .linux, pageBytes != image.record.linux?.pageSize {
+            guard let base = LinuxBase.known(for: image.record.linux) else {
+                throw AgentVMError.linuxBase("--page-size \(pageBytes >> 10)k: this agent-vm knows no other kernel for \(image.record.systemShort)")
+            }
+            _ = try base.kernel(pageBytes: pageBytes)
+        }
     }
 
     /// Updates a ready image in place (see the top of this file). Returns the image as it is
@@ -315,6 +327,8 @@ extension ImageBuilder {
                 // more, to see that it comes up, before it takes the image's place.
                 var bootsNewKernel = false
                 var ranKernel: String?
+                // The page size of the kernel this update installs in place of the image's.
+                var wantedPages: Int?
                 switch (guest, options.system) {
                 case (.macOS, true):
                     if let installed = try await updateMacOS(machine, image: image) {
@@ -328,18 +342,21 @@ extension ImageBuilder {
                         changed = true
                     }
                 case (.linux, true):
-                    let outcome = try await updateLinuxSystem(machine, record: record)
+                    let outcome = try await updateLinuxSystem(machine, record: record, pageBytes: options.pageBytes)
+                    wantedPages = outcome.switchesTo
                     if outcome.packages > 0 {
                         systemPackages = outcome.packages
                         record.commandLineTools = outcome.tools ?? record.commandLineTools
                         changed = true
                     }
-                    bootsNewKernel = outcome.kernelNeedsBoot
+                    // Another kernel in the image's place is always booted once, whatever /boot says.
+                    bootsNewKernel = outcome.kernelNeedsBoot || outcome.switchesTo != nil
                     ranKernel = outcome.kernel
                     // What a box of the image boots, when no newer kernel is waiting (a second
                     // boot records its own). Kept only with an update that changed something.
                     if !bootsNewKernel {
                         record.linux?.kernel = outcome.kernel
+                        record.linux?.pageSize = outcome.pageSize
                     }
                 case (_, false):
                     // A tools update in a Linux image downloads too, and the daemon answers
@@ -386,6 +403,10 @@ extension ImageBuilder {
                     }
                     bootedAgain = true
                     record = try await checkSecondBoot(files, image: image, record: record, newDaemon: newDaemon, extras: extras)
+                    if let wantedPages, record.linux?.pageSize != wantedPages {
+                        throw AgentVMError.guestCommandFailed(command: "check the kernel", status: 0,
+                                                              output: "the updated image boots kernel \(record.linux?.kernel ?? "?") with \(record.linux?.pageSize.map(LinuxPageSize.name) ?? "?") pages, not \(LinuxPageSize.name(wantedPages))")
+                    }
                     if let ranKernel, record.linux?.kernel != ranKernel {
                         previousKernel = ranKernel
                     }
@@ -434,9 +455,18 @@ extension ImageBuilder {
                 // Only the record, when this run looked at the system or the tools: the
                 // image's files are as they were.
                 if options.system || options.tools {
+                    // The page size the image's kernel was seen to have is kept even so: a
+                    // record that names none would get the system's default kernel at the next
+                    // update, also after `--page-size` asked for the one the image has.
+                    let pages = options.system && guest == .linux ? record.linux?.pageSize : nil
                     let lock = try await lockToCommit(image)
                     defer { lock.release() }
-                    image = try store.update(try store.image(named: image.name)) { stamp(&$0) }
+                    image = try store.update(try store.image(named: image.name)) { record in
+                        stamp(&record)
+                        if let pages {
+                            record.linux?.pageSize = pages
+                        }
+                    }
                 }
                 return ImageUpdateResult(image: image, changed: false, previousMacOSBuild: nil, recipes: [], previousGuestVersion: nil)
             }
@@ -488,7 +518,13 @@ extension ImageBuilder {
     /// has it. What the first build sealed and the update undid (an ssh server back as a
     /// dependency, a timer on again) fails the update; what a recipe changed on purpose
     /// before it does not: a check counts only when it passed before the update.
-    private func updateLinuxSystem(_ machine: GuestMachine, record: ImageRecord) async throws -> (packages: Int, kernelNeedsBoot: Bool, kernel: String, tools: String?) {
+    ///
+    /// `pageBytes`: the page size asked for. When the kernel that runs has another, or the
+    /// record names none and the system's default is another, the kernel with that size takes
+    /// the place of the installed one before the updates (LinuxSetup.kernel); `switchesTo` is
+    /// then that size, and `pageSize` the running kernel's.
+    private func updateLinuxSystem(_ machine: GuestMachine, record: ImageRecord, pageBytes: Int?) async throws
+        -> (packages: Int, kernelNeedsBoot: Bool, kernel: String, tools: String?, pageSize: Int?, switchesTo: Int?) {
         func answer(_ script: String, _ what: String) async throws -> String {
             let result = try await guestCapture(machine, Self.rootRequest(script), readTimeout: 120)
             guard result.report == ExitReport(status: 0) else {
@@ -502,7 +538,20 @@ extension ImageBuilder {
         let held = try await passingChecks(checks, machine: machine)
         let before = try await answer(LinuxSetup.packageList, "list the packages")
         progress("system-update", "Installing \(record.systemShort)'s package updates")
-        let steps = [LinuxSetup.waitForNetwork] + LinuxSetup.systemUpdate
+        let pageSize = LinuxPageSize.parsed(try await answer(LinuxSetup.pageSize, "read the kernel's page size"))
+        let base = LinuxBase.known(for: record.linux)
+        var kernel: LinuxKernel?
+        if let wanted = pageBytes ?? (record.linux?.pageSize == nil ? base?.defaultPageBytes : nil), wanted != pageSize {
+            guard let base else {
+                throw AgentVMError.linuxBase("--page-size \(wanted >> 10)k: this agent-vm knows no other kernel for \(record.systemShort)")
+            }
+            kernel = try base.kernel(pageBytes: wanted)
+            notice("  note: \(record.systemShort)'s kernel with \(LinuxPageSize.name(wanted)) pages takes the place of the one with \(pageSize.map(LinuxPageSize.name) ?? "?") pages")
+        }
+        var steps = [LinuxSetup.waitForNetwork] + LinuxSetup.systemUpdate
+        if let kernel, let updates = steps.firstIndex(of: LinuxSetup.systemUpdates) {
+            steps.insert(LinuxSetup.kernel(kernel), at: updates)
+        }
         try await runLinuxSteps(steps, machine: machine, offset: 0, count: steps.count)
         let packages = LinuxSetup.packageChanges(before: before, after: try await answer(LinuxSetup.packageList, "list the packages"))
         let holds = try await passingChecks(checks, machine: machine)
@@ -521,7 +570,7 @@ extension ImageBuilder {
         } else {
             log("  \(packages) \(packages == 1 ? "package" : "packages") changed in \(Int(Self.seconds(clock.now - began))) s\(needsBoot ? "; a new kernel is installed" : "")")
         }
-        return (packages, needsBoot, running, tools)
+        return (packages, needsBoot, running, tools, pageSize, kernel?.pageBytes)
     }
 
     /// The names of the checks that pass now.
@@ -638,8 +687,14 @@ extension ImageBuilder {
                 // The kernel a box of the image boots from now on.
                 let kernel = try await guestCapture(machine, Self.rootRequest(LinuxSetup.kernel))
                 if kernel.report == ExitReport(status: 0), let running = try? LinuxSetup.token(kernel.stdout, what: "kernel version") {
-                    log("  kernel \(running)")
                     record.linux?.kernel = running
+                    let pages = try await guestCapture(machine, Self.rootRequest(LinuxSetup.pageSize))
+                    // A size that cannot be read leaves what the record has: one that names none
+                    // would get the system's default kernel at the next update.
+                    if pages.report == ExitReport(status: 0), let size = LinuxPageSize.parsed(pages.stdout) {
+                        record.linux?.pageSize = size
+                    }
+                    log("  kernel \(running)\(record.linux?.pageSize.map { ", \(LinuxPageSize.name($0)) pages" } ?? "")")
                 }
             }
             try await shutDownAfterUpdate(machine, guest: guest)

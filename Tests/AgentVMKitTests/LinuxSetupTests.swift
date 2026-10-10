@@ -10,11 +10,14 @@ import Testing
 @testable import AgentVMKit
 
 @Suite struct LinuxSetupTests {
+    static let sixteen = LinuxKernel(pageBytes: 16384, package: "linux-image-arm64-16k", flavor: "arm64-16k")
+
     static var everyStep: [LinuxSetup.Step] {
         return [LinuxSetup.waitForFirstBoot] + LinuxSetup.steps(user: "agent", tools: true) + LinuxSetup.seal(distribution: "debian") + LinuxSetup.sealChecks()
             + LinuxSetup.seal(distribution: "ubuntu") + LinuxSetup.sealChecks(distribution: "ubuntu") + LinuxSetup.systemUpdate + [LinuxSetup.removeNeedrestart]
             + [LinuxSetup.Step("packages", LinuxSetup.packageList), LinuxSetup.Step("newest kernel", LinuxSetup.newestKernel)]
             + [LinuxSetup.accountCheck(user: "agent"), LinuxSetup.waitForNetwork, LinuxSetup.packageLists, LinuxSetup.tools]
+            + [LinuxSetup.kernel(Self.sixteen), LinuxSetup.Step("page size", LinuxSetup.pageSize)]
     }
 
     /// The first word of every command in `script`: after the start, `;`, `&&`, `||`, `|`,
@@ -69,6 +72,25 @@ import Testing
         // apt asks nothing and dpkg prints plain lines.
         #expect(LinuxSetup.environment["DEBIAN_FRONTEND"] == "noninteractive")
         #expect(LinuxSetup.apt == "/usr/bin/apt-get -q -y -o Dpkg::Use-Pty=0")
+    }
+
+    @Test func anotherKernelTakesThePlaceOfTheImagesBeforeTheUpdates() {
+        // No kernel named: the cloud image's own stays, and no step speaks of one.
+        #expect(!LinuxSetup.steps(user: "agent", tools: true).contains { $0.name.contains("kernel") })
+        let names = LinuxSetup.steps(user: "agent", tools: false, kernel: Self.sixteen).map(\.name)
+        // After the lists (apt must know the package) and before the updates (which would
+        // fetch a new build of the kernel that goes).
+        #expect(names == ["account agent", "package lists", "kernel with 16 KiB pages (linux-image-arm64-16k)", "system updates", "git, jq, unzip, zip", "git settings"])
+        let script = LinuxSetup.kernel(Self.sixteen).script
+        // The question about removing the running kernel is answered before anything is removed.
+        #expect(script.hasPrefix("/usr/bin/echo 'linux-base linux-base/removing-running-kernel boolean false' | /usr/bin/debconf-set-selections || exit 1; /usr/bin/apt-get -q -y -o Dpkg::Use-Pty=0 install linux-image-arm64-16k || exit 1; "))
+        // Every installed kernel package of another flavor goes, and the step fails when a
+        // kernel of another flavor is still in /boot.
+        #expect(script.contains(#"| /usr/bin/sed -n 's/^installed //p' | /usr/bin/grep -v -e '-arm64-16k$')"; if [ -n "$others" ]; then /usr/bin/apt-get -q -y -o Dpkg::Use-Pty=0 purge $others || exit 1; fi; "#))
+        #expect(script.contains(#"if [ "$left" != "0" ]; then /usr/bin/ls /boot; exit 1; fi"#))
+        // The way back names its own flavor.
+        #expect(LinuxSetup.kernel(LinuxKernel(pageBytes: 4096, package: "linux-image-cloud-arm64", flavor: "cloud-arm64")).script.contains("grep -v -e '-cloud-arm64$'"))
+        #expect(LinuxSetup.pageSize == "/usr/bin/getconf PAGESIZE")
     }
 
     @Test func sealingRemovesTheWaysInAndTheChecksNameThem() {

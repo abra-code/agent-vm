@@ -18,13 +18,17 @@ public struct LinuxSystem: Codable, Equatable, Sendable {
     public var kernel: String?
     /// "arm64".
     public var architecture: String
+    /// The size in bytes of that kernel's memory pages (4096, 16384); nil in a record written
+    /// before it was read.
+    public var pageSize: Int?
 
-    public init(distribution: String, version: String, name: String, kernel: String? = nil, architecture: String = "arm64") {
+    public init(distribution: String, version: String, name: String, kernel: String? = nil, architecture: String = "arm64", pageSize: Int? = nil) {
         self.distribution = distribution
         self.version = version
         self.name = name
         self.kernel = kernel
         self.architecture = architecture
+        self.pageSize = pageSize
     }
 
     /// "Debian 13": the distribution as people write it, and its version.
