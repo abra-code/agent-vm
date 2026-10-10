@@ -108,6 +108,10 @@ extension FileSystem {
     ///   clone and gets its permissions back, on both sides. An ACL that denies reading the ACL
     ///   itself cannot be saved and stays removed.
     /// - An entry that disappears while the tree is walked is left out.
+    /// - An extended attribute of a folder that the system lets no ordinary program read or set
+    ///   (`com.apple.security.private.scoped-bookmark-key`, which macOS puts on a folder an
+    ///   application was given lasting access to) is left out: the copy has the folder's other
+    ///   attributes.
     ///
     /// A failed clone leaves no destination behind.
     static func cloneTree(_ source: String, to destination: String) throws {
@@ -444,8 +448,10 @@ extension FileSystem {
                     }
                     return fsetxattr(destination, name, value, got, 0, 0) == 0 ? 0 : errno
                 }
-                // One that went away meanwhile is not an error.
-                guard code == 0 || code == ENOATTR else {
+                // One that went away meanwhile is not an error. One that is listed but may not
+                // be read or set (EPERM) is the system's own and is left out; what an ACL of the
+                // folder denies is the listing, with EACCES.
+                guard code == 0 || code == ENOATTR || code == EPERM else {
                     return code
                 }
                 start = end + 1

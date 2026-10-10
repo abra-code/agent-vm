@@ -322,6 +322,11 @@ public final class BoxSupervisor {
             // The box's disk remembers the project its last run shared; nothing is shared now.
             // Before the box is ready, so that no share's own writing can come first.
             _ = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest(nil))
+            // For images made before this was a file in the image (LinuxSetup.stopOnKernelFault).
+            let told = try? await guestCapture(machine, LinuxSetup.stopOnKernelFaultRequest)
+            if told?.report != ExitReport(status: 0) {
+                log("Could not tell the guest's kernel to stop at its first fault; a fault may go on to damage the box's disk")
+            }
         }
         state.set(.ready, guestVersion: hello.version, guestFeatures: hello.features ?? [])
         log("Ready in \(Int(ImageBuilder.seconds(clock.now - began))) s: agent-vm-guest \(hello.version ?? "?")")
@@ -345,6 +350,9 @@ public final class BoxSupervisor {
         var suspendingMark = SuspendingClock.now
         while machine.isRunning && !state.stopRequested {
             try? await Task.sleep(for: .milliseconds(250))
+            if console?.sawKernelPanic == true {
+                break
+            }
             let continuousNow = ContinuousClock.now
             if continuousNow - lastProgress >= ProxyServer.progressInterval {
                 // The bytes of open connections, off this loop: the log is a file.
@@ -372,7 +380,13 @@ public final class BoxSupervisor {
         }
         // Before the guest goes: a connection whose end is not logged in time keeps these bytes.
         proxy.logProgress()
-        if machine.isRunning {
+        if console?.sawKernelPanic == true && machine.isRunning {
+            // Also when a stop was asked for in the same moment. Nothing runs in the guest any more, and nothing in it would answer a shutdown.
+            state.set(.stopping, guestVersion: nil)
+            log("The guest's kernel panicked (the reason is at the end of \(box.consoleLogURL.path)); stopping the box")
+            noteStop("the guest's kernel panicked")
+            try? await machine.forceStop()
+        } else if machine.isRunning {
             await shutDown(machine)
         } else {
             log("The guest stopped\(machine.failure.map { ": \($0)" } ?? "")")

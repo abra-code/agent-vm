@@ -45,6 +45,34 @@ import Testing
         log.close()
     }
 
+    @Test func aKernelPanicIsSeen() throws {
+        let scratch = try Scratch()
+        let log = try ConsoleLog(url: scratch.root.appendingPathComponent("console.log"))
+        Self.write(Array("[    1.0] Internal error: Oops: 0000000096000004 [#1] SMP\r\n[    1.1] Kernel panic - not ".utf8), to: log)
+        usleep(300_000)
+        #expect(!log.sawKernelPanic)
+        // The rest of the line, in a read of its own.
+        Self.write(Array("syncing: Fatal exception\r\n".utf8), to: log)
+        log.close()
+        #expect(log.sawKernelPanic)
+    }
+
+    @Test func aKernelPanicIsSeenInAFloodThatIsDropped() throws {
+        let scratch = try Scratch()
+        let log = try ConsoleLog(url: scratch.root.appendingPathComponent("console.log"), bytesPerMinute: 64)
+        Self.write(Self.lines(100) + Array("Kernel panic - not syncing: Attempted to kill init!\n".utf8), to: log)
+        log.close()
+        #expect(log.sawKernelPanic)
+    }
+
+    @Test func anOrdinaryBootIsNoPanic() throws {
+        let scratch = try Scratch()
+        let log = try ConsoleLog(url: scratch.root.appendingPathComponent("console.log"))
+        Self.write(Array("Kernel command line: panic=0\r\nKernel panic - not\r\nsyncing\r\n".utf8), to: log)
+        log.close()
+        #expect(!log.sawKernelPanic)
+    }
+
     @Test func rotatesAtTheLimit() throws {
         let scratch = try Scratch()
         let url = scratch.root.appendingPathComponent("console.log")

@@ -86,6 +86,9 @@ import Testing
         #expect(seal.contains(#"GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0""#))
         #expect(seal.contains("LLMNR=no"))
         #expect(seal.contains("vmw_vsock_virtio_transport"))
+        #expect(seal.contains("'kernel.panic_on_oops = 1\\n' > /etc/sysctl.d/90-agent-vm.conf"))
+        #expect(LinuxSetup.stopOnKernelFaultRequest.user == "root")
+        #expect(LinuxSetup.stopOnKernelFaultRequest.argv?.last == #"/usr/bin/printf '1\n' > /proc/sys/kernel/panic_on_oops"#)
         let checks = LinuxSetup.sealChecks(daemonPort: 1024)
         #expect(checks.map(\.name) == ["no ssh server", "no ssh server unit", "nothing listens on TCP port 22", "no TCP port is open to the network",
                                        "nothing listens on vsock but the guest daemon", "the removed packages are gone", "no update timer is on",

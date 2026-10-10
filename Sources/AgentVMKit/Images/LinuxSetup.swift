@@ -207,7 +207,23 @@ enum LinuxSetup {
              timeout: 300),
         // The daemon listens on vsock; loading its transport by name removes a race at boot.
         Step("vsock at boot", #"/usr/bin/printf 'vmw_vsock_virtio_transport\n' > /etc/modules-load.d/agent-vm.conf"#),
+        stopOnKernelFault,
     ]
+
+    static let stopOnKernelFaultFile = "/etc/sysctl.d/90-agent-vm.conf"
+
+    /// A kernel that met a fault in itself ("Oops") goes on running by default, with whatever
+    /// the fault left wrong in its memory, and may write that to the disk: a box was left with
+    /// a damaged file system this way, twice. With this it stops at the first fault (a panic),
+    /// which the supervisor sees on the console, and the disk keeps what the journal has.
+    static let stopOnKernelFault = Step("stop at a kernel fault",
+                                        #"/usr/bin/printf 'kernel.panic_on_oops = 1\n' > \#(stopOnKernelFaultFile) && /usr/bin/chmod 644 \#(stopOnKernelFaultFile) && "#
+                                            + #"/usr/bin/printf '1\n' > /proc/sys/kernel/panic_on_oops"#)
+
+    /// The same for a box that is starting, whatever its image has: what the supervisor runs,
+    /// as root, before the box is ready.
+    static let stopOnKernelFaultRequest = GuestRequest(op: .exec, argv: ["/bin/sh", "-c", #"/usr/bin/printf '1\n' > /proc/sys/kernel/panic_on_oops"#],
+                                                       cwd: "/", user: "root")
 
     /// What Ubuntu's cloud image has beside Debian's that a box must not have, or has no use
     /// for (an inventory of a fresh Ubuntu 26.04 image, 2026-10-07):

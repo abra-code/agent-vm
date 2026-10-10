@@ -14,6 +14,12 @@
 //   deleted folder) drops the bytes.
 //
 // The content is the guest's: print it only through `tail`, which makes it printable.
+//
+// The reader also watches for the line a Linux kernel prints when it gives up ("Kernel panic -
+// not syncing"). A kernel in that state runs nothing more, and nothing else tells the Mac so:
+// the machine counts as running. A program in the guest that gets text onto the console (root,
+// or anything whose words the kernel repeats in a message) can print that line too, which
+// stops its own box and nothing else.
 
 import Darwin
 import Foundation
@@ -35,6 +41,7 @@ final class ConsoleLog: @unchecked Sendable {
     private let lock = NSLock()
     private var closing = false
     private var closed = false
+    private var panicked = false
 
     // The reader thread's own.
     private var file: Int32 = -1
@@ -42,6 +49,18 @@ final class ConsoleLog: @unchecked Sendable {
     private var windowStart = ConsoleLog.now()
     private var windowBytes = 0
     private var dropped = 0
+    /// The end of what was read before, as long as the panic line less one: the line may
+    /// arrive in two reads.
+    private var carried: [UInt8] = []
+
+    static let panicLine = Array("Kernel panic - not syncing".utf8)
+
+    /// Whether the guest's kernel said it panicked.
+    var sawKernelPanic: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return panicked
+    }
 
     /// Starts a new `console.log` at `url`; the one of the last boot, if any, is kept as
     /// `console.log.1`. `window` is the "minute", shorter in a test.
@@ -166,12 +185,37 @@ final class ConsoleLog: @unchecked Sendable {
 
     /// One block from the guest: written while the minute's budget lasts, else counted.
     private func take(_ bytes: UnsafeRawBufferPointer) {
+        watch(bytes)
         endWindowIfOver()
         let allowed = max(0, min(bytes.count, bytesPerMinute - windowBytes))
         windowBytes += allowed
         dropped += bytes.count - allowed
         if allowed > 0 {
             append(UnsafeRawBufferPointer(rebasing: bytes[0..<allowed]))
+        }
+    }
+
+    /// Looks for the panic line in what came, dropped or not.
+    private func watch(_ bytes: UnsafeRawBufferPointer) {
+        guard !sawKernelPanic else {
+            return
+        }
+        let line = Self.panicLine
+        let text = carried + Array(bytes)
+        carried = Array(text.suffix(line.count - 1))
+        guard text.count >= line.count else {
+            return
+        }
+        var index = 0
+        let last = text.count - line.count
+        while index <= last {
+            if text[index] == line[0], text[index..<(index + line.count)].elementsEqual(line) {
+                lock.lock()
+                panicked = true
+                lock.unlock()
+                return
+            }
+            index += 1
         }
     }
 
