@@ -317,6 +317,9 @@ extension ImageBuilder {
             let extras = LinuxMachineExtras(console: console?.writeHandle)
             var machine = try makeMachine(for: image, files: files, extras: extras)
             try checkCanceled()
+            if guest == .linux, LinuxPageNote.hasSmallPages(image.record.linux) {
+                try checkHostMemory(memoryBytes: image.record.memoryBytes, what: "the update of \(image.name)")
+            }
             progress("boot", "Booting a copy of \(image.name)\(image.record.updateSeconds.map { " (the last update took \(Int($0.rounded())) s)" } ?? "")",
                      expectedSeconds: image.record.updateSeconds)
             try await start(machine, of: image)

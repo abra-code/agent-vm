@@ -109,6 +109,14 @@ extension ImageBuilder {
         if let note = LinuxPageNote.forBuild(options.base, pageBytes: kernel.pageBytes) {
             notice("  note: \(note)")
         }
+        // The first boot is on the cloud image's kernel, the first of the system's. Looked at
+        // after the download and before anything is made: a refusal leaves the name free for
+        // another try.
+        if (options.base.kernels.first?.pageBytes ?? 4096) < LinuxPageNote.hostPageBytes {
+            let what = kernel != options.base.kernels.first
+                ? "the first boot of the build, until the kernel with \(LinuxPageSize.name(kernel.pageBytes)) pages is installed," : "the build of \(options.name)"
+            try checkHostMemory(memoryBytes: options.memoryBytes, what: what)
+        }
 
         var record = ImageRecord(
             formatVersion: ImageRecord.formatVersion(passwordID: nil, guest: .linux), name: options.name, state: .installing, failure: nil,
