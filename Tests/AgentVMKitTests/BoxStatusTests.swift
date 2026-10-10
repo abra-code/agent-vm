@@ -21,6 +21,7 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
     func controlStop() {}
     func controlReload() throws {}
     func controlShare(path: String, readOnly: Bool) throws {}
+    func controlUnshare() throws {}
     func controlView(interactive: Bool) throws {}
     func controlType(text: String?) throws {}
     func controlSyncClock() throws -> Double { throw AgentVMError.guestRefused("not in tests") }

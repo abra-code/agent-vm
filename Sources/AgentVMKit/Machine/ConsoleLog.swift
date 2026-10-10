@@ -42,6 +42,7 @@ final class ConsoleLog: @unchecked Sendable {
     private var closing = false
     private var closed = false
     private var panicked = false
+    private var diskErrors = false
 
     // The reader thread's own.
     private var file: Int32 = -1
@@ -54,6 +55,15 @@ final class ConsoleLog: @unchecked Sendable {
     private var carried: [UInt8] = []
 
     static let panicLine = Array("Kernel panic - not syncing".utf8)
+    /// What ext4 prints when it finds its own data wrong; the file system is read-only next.
+    static let diskErrorLine = Array("EXT4-fs error".utf8)
+
+    /// Whether the guest's file system said it found errors.
+    var sawDiskErrors: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return diskErrors
+    }
 
     /// Whether the guest's kernel said it panicked.
     var sawKernelPanic: Bool {
@@ -195,28 +205,37 @@ final class ConsoleLog: @unchecked Sendable {
         }
     }
 
-    /// Looks for the panic line in what came, dropped or not.
+    /// Looks for the panic line and the file system's error line in what came, dropped or not.
     private func watch(_ bytes: UnsafeRawBufferPointer) {
         guard !sawKernelPanic else {
             return
         }
-        let line = Self.panicLine
         let text = carried + Array(bytes)
-        carried = Array(text.suffix(line.count - 1))
+        carried = Array(text.suffix(Self.panicLine.count - 1))
+        if Self.holds(text, Self.panicLine) {
+            lock.lock()
+            panicked = true
+            lock.unlock()
+        } else if !sawDiskErrors, Self.holds(text, Self.diskErrorLine) {
+            lock.lock()
+            diskErrors = true
+            lock.unlock()
+        }
+    }
+
+    private static func holds(_ text: [UInt8], _ line: [UInt8]) -> Bool {
         guard text.count >= line.count else {
-            return
+            return false
         }
         var index = 0
         let last = text.count - line.count
         while index <= last {
             if text[index] == line[0], text[index..<(index + line.count)].elementsEqual(line) {
-                lock.lock()
-                panicked = true
-                lock.unlock()
-                return
+                return true
             }
             index += 1
         }
+        return false
     }
 
     private func endWindowIfOver() {
@@ -304,7 +323,8 @@ final class ConsoleLog: @unchecked Sendable {
         return all.suffix(max(0, lines)).joined(separator: "\n")
     }
 
-    private static func end(of url: URL) -> String {
+    /// The end of the log at `url`, as it is: for looking, not for printing (see `tail`).
+    static func end(of url: URL) -> String {
         let descriptor = Darwin.open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard descriptor >= 0 else {
             return ""

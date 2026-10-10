@@ -73,6 +73,23 @@ import Testing
         #expect(!log.sawKernelPanic)
     }
 
+    @Test func fileSystemErrorsAreSeen() throws {
+        let scratch = try Scratch()
+        let url = scratch.root.appendingPathComponent("console.log")
+        let log = try ConsoleLog(url: url)
+        Self.write(Array("box login: [  968.951994] EXT4-fs err".utf8), to: log)
+        usleep(300_000)
+        #expect(!log.sawDiskErrors)
+        Self.write(Array("or (device vda1): ext4_lookup:1821: inode #24287: comm tar: iget: checksum invalid\r\n[  968.96] EXT4-fs (vda1): Remounting filesystem read-only\r\n".utf8), to: log)
+        log.close()
+        #expect(log.sawDiskErrors && !log.sawKernelPanic)
+        // What the commands read afterwards, from the file.
+        #expect(GuestTrouble.found(inConsole: ConsoleLog.end(of: url)) == .damagedDisk)
+        #expect(GuestTrouble.found(inConsole: "EXT4-fs (vda1): recovery complete\nEXT4-fs (vda1): re-mounted r/w.") == nil)
+        #expect(GuestTrouble.found(inConsole: "EXT4-fs error\nKernel panic - not syncing: Attempted to kill init!") == .kernelPanic)
+        #expect(GuestTrouble.found(inConsole: "") == nil)
+    }
+
     @Test func rotatesAtTheLimit() throws {
         let scratch = try Scratch()
         let url = scratch.root.appendingPathComponent("console.log")

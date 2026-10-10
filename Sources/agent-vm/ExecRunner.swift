@@ -58,6 +58,11 @@ struct ExecRunner {
         }
     }
 
+    /// What the box's console says went wrong with the box, as a second line; else nothing.
+    private static func trouble(_ box: Box) -> String {
+        return GuestTrouble.found(in: box).map { "\n\($0.words(for: box))" } ?? ""
+    }
+
     private func runInBox() throws -> Never {
         signal(SIGPIPE, SIG_IGN)
         let box = try store.box(named: self.box)
@@ -89,7 +94,15 @@ struct ExecRunner {
 
         // The control connection stays open for the whole run: the supervisor keeps the vsock
         // connection alive until it closes (and closes it if this process dies).
-        let (control, guest, status) = try ControlClient.openGuest(path: box.controlSocketPath, project: projectPath, readOnly: readOnly)
+        let control: Int32
+        let guest: Int32
+        let status: ControlResponse
+        do {
+            (control, guest, status) = try ControlClient.openGuest(path: box.controlSocketPath, project: projectPath, readOnly: readOnly)
+        } catch let AgentVMError.supervisorRefused(message) where message.hasPrefix("\(AgentVMError.guestUnreachable(""))") {
+            // The supervisor could not reach the guest: its error arrives as the refusal's text.
+            throw AgentVMError.supervisorRefused("\(message)\(Self.trouble(box))")
+        }
         var size: TerminalSize?
         // Whether the guest takes the size in pixels too (resize frames of 8 bytes).
         let pixels = status.guestFeatures?.contains(GuestFeature.terminalPixels) == true
@@ -137,6 +150,10 @@ struct ExecRunner {
         } catch let refusal as ExecRefusal {
             // Like env(1) and shells: 127 when the program is not found, 126 when it cannot run.
             Stderr.write("agent-vm: \(refusal.message)\n")
+            // No account can be looked up on a disk that went read-only on its own errors.
+            if refusal.message.hasPrefix("no such account"), let trouble = GuestTrouble.found(in: box), trouble == .damagedDisk {
+                Stderr.write("agent-vm: \(trouble.words(for: box))\n")
+            }
             ExecExit.shared.exit(refusal.status)
         }
         ExecExit.shared.started(guestPid: session.pid)
@@ -219,7 +236,8 @@ struct ExecRunner {
                 Self.report(notice, box: box, terminal: terminal, prompts: prompts)
             })
         } catch {
-            throw AgentVMError.guestUnreachable("the connection to box \(box.name) ended: \(error)")
+            // The supervisor stops a box whose kernel panicked; say so, not only that it ended.
+            throw AgentVMError.guestUnreachable("the connection to box \(box.name) ended: \(error)\(Self.trouble(box))")
         }
         withExtendedLifetime(sources) {}
         // Exit at once: the stdin thread may still be blocked reading a terminal. Closing the

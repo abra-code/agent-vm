@@ -467,6 +467,8 @@ final class FakeHandler: ControlHandler, @unchecked Sendable {
 
     private(set) var sharedPaths: [String] = []
 
+    func controlUnshare() throws {}
+
     func controlShare(path: String, readOnly: Bool) throws {
         lock.lock()
         sharedPaths.append(path)

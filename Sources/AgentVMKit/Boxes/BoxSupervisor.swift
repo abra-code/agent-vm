@@ -225,6 +225,15 @@ public final class BoxSupervisor {
                 throw AgentVMError.boxNotRunning(name)
             }
             try await self.shareProject(path, readOnly: readOnly, claim: claim)
+        } unshare: { [weak self] asked in
+            guard let self else {
+                throw AgentVMError.boxNotRunning(name)
+            }
+            if asked {
+                try await self.unshareProject(asked: true)
+            } else {
+                self.projectReleased()
+            }
         } view: { [weak self] interactive in
             guard let self else {
                 throw AgentVMError.boxNotRunning(name)
@@ -295,6 +304,12 @@ public final class BoxSupervisor {
                 try? await machine.forceStop()
                 return
             }
+            if console?.sawKernelPanic == true {
+                log("The guest's kernel panicked while booting (the reason is at the end of \(box.consoleLogURL.path)); stopping the box")
+                noteStop("the guest's kernel panicked while booting")
+                try? await machine.forceStop()
+                throw AgentVMError.guestUnreachable("the guest's kernel panicked while booting\(consoleTail())")
+            }
             if !machine.isRunning {
                 log("The guest stopped while booting\(machine.failure.map { ": \($0)" } ?? "")")
                 noteStop("the guest stopped while booting\(machine.failure.map { ": \($0)" } ?? "")")
@@ -352,6 +367,10 @@ public final class BoxSupervisor {
             try? await Task.sleep(for: .milliseconds(250))
             if console?.sawKernelPanic == true {
                 break
+            }
+            if !diskErrorsLogged, console?.sawDiskErrors == true {
+                diskErrorsLogged = true
+                log("The guest's file system reports errors (\(box.consoleLogURL.path)): the box's disk is damaged, and programs may be refused; `agent-vm box recreate \(box.name)` makes the box again")
             }
             let continuousNow = ContinuousClock.now
             if continuousNow - lastProgress >= ProxyServer.progressInterval {
@@ -445,7 +464,7 @@ public final class BoxSupervisor {
         let began = ContinuousClock.now
         let deadline = began + bootLimit
         let expected = guest
-        while ContinuousClock.now < deadline && machine.isRunning && !state.stopRequested {
+        while ContinuousClock.now < deadline && machine.isRunning && !state.stopRequested && console?.sawKernelPanic != true {
             if let connection = try? await machine.connect(toPort: GuestProtocol.port) {
                 let descriptor = connection.descriptor
                 Self.setReadTimeout(descriptor, seconds: 10)
@@ -470,6 +489,9 @@ public final class BoxSupervisor {
 
     /// A periodic clock sync is under way.
     private var clockSyncing = false
+
+    /// The guest's file system errors were logged, once.
+    private var diskErrorsLogged = false
 
     /// How often the guest's clock is set while the box runs, and how long a sleep of the Mac
     /// must have been to set it at once.
@@ -523,6 +545,10 @@ public final class BoxSupervisor {
     /// `claim`: the caller runs a program on the project (an exec); the share then stays as
     /// it is until the claim is released (`SupervisorState.releaseProject`).
     func shareProject(_ path: String, readOnly: Bool, claim: Bool) async throws {
+        // Someone wants a project now: a pending unshare of an unused one is off.
+        unshareGeneration += 1
+        let calledOff = unsharePending
+        unsharePending = false
         let previous = shareQueue
         let task = Task { @MainActor in
             _ = await previous?.result
@@ -532,7 +558,124 @@ public final class BoxSupervisor {
             }
         }
         shareQueue = task
+        do {
+            try await task.value
+        } catch {
+            // A request that failed runs nothing on the project: the unshare it called off
+            // is due again, or the project would stay shared with no program on it.
+            if calledOff {
+                projectReleased()
+            }
+            throw error
+        }
+    }
+
+    /// How long after its last program ended a project stays shared: a script that runs one
+    /// program after another on it does not mount and unmount each time.
+    static let unshareDelay: Duration = .seconds(5)
+
+    /// Counts the share requests and the releases, so that an unshare that waited
+    /// `unshareDelay` knows whether anything happened meanwhile.
+    private var unshareGeneration = 0
+
+    /// An unshare is waiting out `unshareDelay`.
+    private var unsharePending = false
+
+    /// A program on the project ended. When it was the last, the project is taken away from
+    /// the box after `unshareDelay`, unless one is asked for again by then: a box that goes on
+    /// running after its session must not keep the Mac's folder, with whatever the session
+    /// left running in it.
+    func projectReleased() {
+        guard state.projectClaims == 0, state.project != nil else {
+            return
+        }
+        unshareGeneration += 1
+        let generation = unshareGeneration
+        unsharePending = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.unshareDelay)
+            guard let self, self.unshareGeneration == generation else {
+                return
+            }
+            self.unsharePending = false
+            guard !self.state.stopRequested else {
+                return
+            }
+            try? await self.unshareProject(asked: false)
+        }
+    }
+
+    /// Takes the shared project away from the box, in turn with the share requests. `asked`:
+    /// a person's request (`box unshare`), which is refused while programs run on the project
+    /// and fails when the guest cannot let go of it; otherwise both are only logged.
+    func unshareProject(asked: Bool) async throws {
+        let previous = shareQueue
+        let task = Task { @MainActor in
+            _ = await previous?.result
+            guard let machine = self.machine, self.state.snapshot.state == .ready else {
+                if asked {
+                    throw AgentVMError.supervisorRefused("box \(self.box.name) is not ready")
+                }
+                return
+            }
+            guard let current = self.state.project else {
+                return
+            }
+            guard self.state.projectClaims == 0 else {
+                if asked {
+                    throw AgentVMError.supervisorRefused("box \(self.box.name) is running programs on \(current.path); wait until they end")
+                }
+                return
+            }
+            do {
+                try await self.removeProject(current, machine: machine, force: true)
+            } catch {
+                if !asked {
+                    self.log("\(current.path) stays shared after its last program ended: \(error)")
+                }
+                throw error
+            }
+        }
+        shareQueue = task
         try await task.value
+    }
+
+    /// Unmounts the project in the guest and takes the folder out of the device's share.
+    ///
+    /// `force`: the folder is taken away whatever the guest answers. That is for a project no
+    /// program of the person's runs on any more: what still holds it in the box is what a
+    /// session left behind, and the guest's word that it cannot unmount is not what keeps the
+    /// Mac's folder shared. Without it (one project replacing another) a refusal is an error.
+    private func removeProject(_ current: (path: String, readOnly: Bool), machine: GuestMachine, force: Bool = false) async throws {
+        let guest = self.guest
+        let layout: ShareLayout = guest == .linux ? .single : .namedEntry
+        var held: String?
+        do {
+            let result = try await guestCapture(machine, ProjectShare.unmountRequest(current.path, guest: guest))
+            if result.report != ExitReport(status: 0) {
+                held = Printable.line(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines), limit: 200)
+            }
+        } catch {
+            guard force else {
+                throw error
+            }
+            held = "\(error)"
+        }
+        if let held {
+            guard force else {
+                throw AgentVMError.supervisorRefused("\(current.path) is still in use in box \(box.name) (\(held)); end the programs using it first")
+            }
+            _ = try? await guestCapture(machine, ProjectShare.forcedUnmountRequest(current.path, guest: guest))
+            log("\(current.path) was still in use in the box (\(held)); it is taken away regardless, and the programs that worked in it there are ended")
+        }
+        state.setProject(nil)
+        try machine.share(tag: ProjectShare.tag(for: guest), directory: nil, readOnly: false, layout: layout)
+        if guest == .linux {
+            // No project, no safe place for git.
+            _ = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest(nil))
+        }
+        log("Unshared \(current.path)")
+        note(.init(.unshare, path: current.path))
     }
 
     private func replaceProject(_ path: String, readOnly: Bool) async throws {
@@ -553,18 +696,7 @@ public final class BoxSupervisor {
             throw AgentVMError.supervisorRefused("box \(box.name) is running programs on \(current.path)\(current.readOnly ? " (read only)" : ""); wait until they end, or use another box")
         }
         if let current {
-            let result = try await guestCapture(machine, ProjectShare.unmountRequest(current.path, guest: guest))
-            guard result.report == ExitReport(status: 0) else {
-                throw AgentVMError.supervisorRefused("\(current.path) is still in use in box \(box.name) (\(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))); end the programs using it first")
-            }
-            state.setProject(nil)
-            try machine.share(tag: tag, directory: nil, readOnly: false, layout: layout)
-            if guest == .linux {
-                // No project, no safe place for git.
-                _ = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest(nil))
-            }
-            log("Unshared \(current.path)")
-            note(.init(.unshare, path: current.path))
+            try await removeProject(current, machine: machine)
             // While the previous project was mounted the guest could change folders on the
             // new one's path (a symlink swapped in); it has no access now, so resolve again.
             guard try ProjectShare.validated(path, storeRoot: storeRoot) == project else {
@@ -820,12 +952,15 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
     private let box: Box
     private let proxy: ProxyServer
     private let share: @Sendable @MainActor (String, Bool, Bool) async throws -> Void
+    /// true: a person asked (`box unshare`); false: the last program on the project ended.
+    private let unshare: @Sendable @MainActor (Bool) async throws -> Void
     private let view: @Sendable @MainActor (Bool) throws -> Void
     private let type: @Sendable @MainActor (String?) async throws -> Void
     private let syncClock: @Sendable @MainActor () async throws -> Double
 
     init(state: SupervisorState, machine: GuestMachine, box: Box, proxy: ProxyServer,
          share: @escaping @Sendable @MainActor (String, Bool, Bool) async throws -> Void,
+         unshare: @escaping @Sendable @MainActor (Bool) async throws -> Void,
          view: @escaping @Sendable @MainActor (Bool) throws -> Void,
          type: @escaping @Sendable @MainActor (String?) async throws -> Void,
          syncClock: @escaping @Sendable @MainActor () async throws -> Double) {
@@ -837,6 +972,29 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         self.box = box
         self.proxy = proxy
         self.share = share
+        self.unshare = unshare
+    }
+
+    /// Takes the project away on the main actor; blocks this control thread for at most 60 s.
+    func controlUnshare() throws {
+        let result = ShareResult()
+        let done = DispatchSemaphore(value: 0)
+        let unshare = self.unshare
+        Task { @MainActor in
+            do {
+                try await unshare(true)
+                result.set(nil)
+            } catch {
+                result.set(error)
+            }
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + 60) == .success else {
+            throw AgentVMError.guestUnreachable("unsharing the project of box \(box.name) timed out")
+        }
+        if let error = result.error {
+            throw error
+        }
     }
 
     /// Shares a project on the main actor; blocks this control thread (at most 5 minutes:
@@ -974,16 +1132,20 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
             let lent = try openConnection()
             state.execOpened()
             let claimed = project != nil
+            let unshare = self.unshare
             return LentConnection(descriptor: lent.descriptor, release: {
                 lent.release()
                 state.execClosed()
                 if claimed {
                     state.releaseProject()
+                    Task { @MainActor in try? await unshare(false) }
                 }
             })
         } catch {
             if project != nil {
                 state.releaseProject()
+                let unshare = self.unshare
+                Task { @MainActor in try? await unshare(false) }
             }
             throw error
         }

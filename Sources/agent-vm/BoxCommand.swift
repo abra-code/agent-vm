@@ -24,7 +24,7 @@ struct BoxCommand: ParsableCommand {
             shows what exec and shell ran there, `box status` shows its state without \
             starting anything, and `box info` adds the space it takes on disk.
             """,
-        subcommands: [Create.self, Recreate.self, SetSize.self, List.self, Status.self, Info.self, Start.self, GC.self, SyncClock.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self, EventLogCommand.self, Send.self,
+        subcommands: [Create.self, Recreate.self, SetSize.self, List.self, Status.self, Info.self, Start.self, GC.self, SyncClock.self, Unshare.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self, EventLogCommand.self, Send.self,
                       Packs.self, Serve.self]
     )
 
@@ -1096,6 +1096,55 @@ struct BoxCommand: ParsableCommand {
                 return
             }
             print(String(format: "Set the clock of box %@ (it was %.1f s %@)", box.name, abs(offset), offset >= 0 ? "behind" : "ahead"))
+        }
+    }
+
+    struct Unshare: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "unshare",
+            abstract: "Take the shared project folder away from a running box.",
+            discussion: """
+                A box has your project folder only while a program started on it runs \
+                (`exec --project`, `box shell --project`, avm): a few seconds after the last one \
+                ends, the supervisor unmounts the folder in the box and stops sharing it, so a \
+                box that goes on running cannot change your files with whatever was left running \
+                in it; a program left behind that still works in the folder loses it. This command \
+                does the same at once, for a folder that was shared without a program. Refused \
+                while programs started on the project run.
+                """)
+
+        @Argument(help: "The running box.")
+        var name: String
+
+        @OptionGroup var options: StoreOptions
+
+        func run() throws {
+            let box = try options.boxStore.box(named: name)
+            guard box.isRunning else {
+                throw AgentVMError.boxNotRunning(box.name)
+            }
+            // An older supervisor cannot decode the operation and answers with a decoding error.
+            let status = try ControlClient.request(.status, path: box.controlSocketPath)
+            guard let version = status.supervisorVersion, version.compare("0.7.27", options: .numeric) != .orderedAscending else {
+                throw AgentVMError.supervisorRefused("box \(box.name) was started by an agent-vm older than 0.7.27; restart it (`agent-vm box stop \(box.name)`, then `box start`), which unshares too")
+            }
+            guard let project = status.project else {
+                if options.json {
+                    try Output.json(status)
+                } else {
+                    print("Box \(box.name) has no project shared")
+                }
+                return
+            }
+            let response = try ControlClient.request(ControlRequest(op: .unshare), path: box.controlSocketPath, timeout: 70)
+            guard response.ok else {
+                throw AgentVMError.supervisorRefused(response.error ?? "box \(box.name) did not unshare \(project)")
+            }
+            if options.json {
+                try Output.json(response)
+                return
+            }
+            print("Unshared \(project) from box \(box.name)")
         }
     }
 

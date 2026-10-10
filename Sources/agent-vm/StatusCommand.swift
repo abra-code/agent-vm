@@ -176,6 +176,11 @@ struct StatusCommand: AsyncParsableCommand {
                 }
                 if let project = status.project {
                     line += "  project \(project)\(status.projectReadOnly == true ? " (read only)" : "")"
+                    // A project is unshared soon after its last program ended; one that stays
+                    // is held by something left running in the box.
+                    if status.activeExecs == 0 {
+                        line += " (no program of yours runs on it; agent-vm box unshare \(entry.box.name))"
+                    }
                 }
                 if let execs = status.activeExecs, execs > 0 {
                     line += "  \(execs) program\(execs == 1 ? "" : "s")"

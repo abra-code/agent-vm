@@ -24,6 +24,8 @@ public struct ControlRequest: Codable, Equatable, Sendable {
         case reload
         /// Share a project folder into the box at the same path (`path`, `readOnly`).
         case share
+        /// Take the shared project folder away from the box; refused while programs run on it.
+        case unshare
         /// Show the box's screen in a window on this Mac (`interactive`: keyboard and mouse too).
         case view
         /// Type into the open window's focused field in the guest: `text`, or the box password.
@@ -120,6 +122,7 @@ public protocol ControlHandler: AnyObject, Sendable {
     func controlStop()
     func controlReload() throws
     func controlShare(path: String, readOnly: Bool) throws
+    func controlUnshare() throws
     func controlView(interactive: Bool) throws
     func controlType(text: String?) throws
     /// Sets the guest's clock; returns how far it was behind.
@@ -459,6 +462,13 @@ public final class ControlServer: @unchecked Sendable {
                         throw AgentVMError.guestRefused("share needs a path")
                     }
                     try handler.controlShare(path: path, readOnly: request.readOnly ?? false)
+                    try? ControlChannel.send(handler.controlStatus(), over: connection)
+                } catch {
+                    try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)
+                }
+            case .unshare:
+                do {
+                    try handler.controlUnshare()
                     try? ControlChannel.send(handler.controlStatus(), over: connection)
                 } catch {
                     try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)

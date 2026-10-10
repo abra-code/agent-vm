@@ -155,6 +155,24 @@ public enum ProjectShare {
         return GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script, "sh"] + (path.map { [$0] } ?? []), cwd: "/", user: "root")
     }
 
+    /// What the guest runs, as root, after an unmount that was refused because the folder is in
+    /// use, when the folder is taken away regardless. Its result is not waited on for anything:
+    /// the Mac stops sharing either way.
+    ///
+    /// In a Linux guest the programs that hold the folder are ended first (those whose working
+    /// folder, root, program file or an open file is in it), then it is unmounted, lazily if
+    /// that still fails. Ending them is not for the Mac's sake: a virtiofs mount that lives on
+    /// in a program is the one the next share of this box would get, and it answers every call
+    /// with an I/O error once the Mac stopped sharing (measured: the next exec could not enter
+    /// the project). A macOS guest unmounts by force.
+    static func forcedUnmountRequest(_ path: String, guest: GuestKind) -> GuestRequest {
+        guard guest == .linux else {
+            return GuestRequest(op: .exec, argv: ["/sbin/umount", "-f", (path as NSString).deletingLastPathComponent], cwd: "/", user: "root")
+        }
+        let script = #"for p in /proc/[0-9]*; do hit=; for l in "$p/cwd" "$p/root" "$p/exe" "$p"/fd/*; do t=$(/usr/bin/readlink "$l" 2>/dev/null) || continue; case "$t" in "$1"|"$1"/*) hit=1; break;; esac; done; [ -n "$hit" ] && kill -9 "${p#/proc/}" 2>/dev/null; done; /usr/bin/sleep 0.3; /usr/bin/umount "$1" 2>/dev/null || /usr/bin/umount -l "$1""#
+        return GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script, "sh", path], cwd: "/", user: "root")
+    }
+
     /// What the guest runs, as root, to unmount the share for the project at `path`. Succeeds
     /// when nothing is mounted there any more (the guest unmounted it, or a failed share never
     /// mounted it), so a lost mount cannot block every later share.
