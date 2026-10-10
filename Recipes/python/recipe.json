@@ -8,19 +8,22 @@
     },
     {
       "name": "Python and uv",
-      "run": "/opt/homebrew/bin/brew install python uv",
+      "run": "/opt/homebrew/bin/brew install python3 uv",
       "env": { "HOMEBREW_NO_ANALYTICS": "1", "HOMEBREW_NO_ENV_HINTS": "1" },
       "timeoutSeconds": 3600
-    },
+    }
+  ],
+  "update": [
     {
-      "name": "python and pip without the 3",
-      "run": "ln -sf ../opt/python/libexec/bin/python /opt/homebrew/bin/python && ln -sf ../opt/python/libexec/bin/pip /opt/homebrew/bin/pip"
+      "name": "The Python that Homebrew calls python3 now, and uv",
+      "run": "/opt/homebrew/bin/brew install python3 uv",
+      "env": { "HOMEBREW_NO_ANALYTICS": "1", "HOMEBREW_NO_ENV_HINTS": "1" },
+      "timeoutSeconds": 3600
     }
   ],
   "checks": [
     "python3 -c 'import sys; assert sys.version_info >= (3, 12), sys.version; print(sys.executable, sys.version.split()[0])'",
-    "python --version",
-    "pip --version",
+    "pip3 --version",
     "uv --version",
     "python3 -m venv /tmp/agent-vm-venv-check && /tmp/agent-vm-venv-check/bin/python -c 'import ssl; print(ssl.OPENSSL_VERSION)' && rm -rf /tmp/agent-vm-venv-check"
   ]

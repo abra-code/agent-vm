@@ -292,7 +292,7 @@ test_linux_node_and_the_agents() {
     assert_status 0 || return 1
     run_avm box start "$_box"
     assert_status 0 || return 1
-    run_avm exec --box "$_box" -- /bin/sh -c 'node --version && command -v claude codex opencode uv python && mkdir -p ~/shtest-p && cd ~/shtest-p && npm init -y > /dev/null && npm install --no-fund --no-audit left-pad > /dev/null && ls node_modules'
+    run_avm exec --box "$_box" -- /bin/sh -c 'node --version && command -v claude codex opencode uv python3 && mkdir -p ~/shtest-p && cd ~/shtest-p && npm init -y > /dev/null && npm install --no-fund --no-audit left-pad > /dev/null && ls node_modules'
     local _tools="$STATUS $OUT"
     run_avm exec --box "$_box" -- node -e 'fetch("https://registry.npmjs.org/left-pad").then(r => console.log("fetch", r.status))'
     local _fetch="$STATUS $OUT"

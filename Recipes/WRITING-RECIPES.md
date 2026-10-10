@@ -184,7 +184,7 @@ The shipped recipes are in the `Recipes` folder beside the agent-vm program, the
 |---|---|
 | `homebrew/recipe.json` | A root step that makes a folder for the box user, a download without `sudo`, a copied file, an update step. |
 | `node/recipe.json` | Needing another recipe: a first step that fails with a clear message when Homebrew is missing. |
-| `python/recipe.json` | Links that give a tool a second name on the path (`python` and `pip` without the 3); a check that proves more than `--version`. |
+| `python/recipe.json` | An update step that follows a name its package manager moves (`python3`); a check that proves more than `--version`. |
 | `agent-clis/recipe.json` | Global npm installs, and an update step that installs the newest. |
 | `acp-agents/recipe.json` | Versions pinned as parameters with defaults; checks that run each program. |
 | `xcode/recipe.json` | An input file; what was unpacked from it is checked before it is used; root steps. |
