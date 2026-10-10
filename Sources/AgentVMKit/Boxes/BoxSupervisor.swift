@@ -693,7 +693,12 @@ public final class BoxSupervisor {
             return
         }
         if let current, state.projectClaims > 0 {
-            throw AgentVMError.supervisorRefused("box \(box.name) is running programs on \(current.path)\(current.readOnly ? " (read only)" : ""); wait until they end, or use another box")
+            // The same folder in the same mode would have been taken: say that it is the other
+            // folder (or mode) that cannot be, and what can.
+            let mode = current.readOnly ? " (read only)" : ""
+            let asked = current.path == project ? "the same folder \(readOnly ? "read only" : "for writing")" : project
+            throw AgentVMError.supervisorRefused("box \(box.name) is running programs on \(current.path)\(mode), and a box shares one folder at a time, so it cannot share \(asked) now; "
+                + "start from \(current.path)\(mode) to work beside those programs, wait until they end, or use another box")
         }
         if let current {
             try await removeProject(current, machine: machine)
