@@ -111,4 +111,23 @@ import Testing
         #expect(PickerView.physicalLines([70, 10], columns: 40) == 3)
         #expect(PickerView.physicalLines([0, 40, 41], columns: 40) == 4)
     }
+
+    /// The setting has its own line under the title, which says how to change it only when it
+    /// can be changed, and takes one line from the rows.
+    @Test func theSettingHasALineUnderTheTitle() {
+        let changing = PickerModel(sections: sections, selected: nil, setting: PickerSetting(label: "snapshot", values: ["whole folder", "none"]))
+        let drawn = lines(changing, columns: 100)
+        #expect(drawn[1] == "  snapshot: whole folder  Tab changes")
+        #expect(drawn[2] == "  Running")
+        let fixed = PickerModel(sections: sections, selected: nil, setting: PickerSetting(label: "snapshot", values: ["none (--no-snapshot)"]))
+        #expect(lines(fixed, columns: 100)[1] == "  snapshot: none (--no-snapshot)")
+        #expect(PickerView.listHeight(rows: 12, filtering: false, setting: true) == PickerView.listHeight(rows: 12, filtering: false) - 1)
+        for columns in [10, 20, 33] {
+            for line in lines(changing, columns: columns) {
+                #expect(TextWidth.of(RawSession.visible(line)) <= columns - 1)
+            }
+        }
+        let menu = NumberedMenu.menu(title: "t", sections: sections, filter: "", numbers: [:], columns: 80, setting: changing.setting)
+        #expect(menu[1] == "  snapshot: whole folder")
+    }
 }

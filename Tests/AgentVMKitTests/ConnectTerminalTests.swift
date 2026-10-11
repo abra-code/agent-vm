@@ -445,6 +445,73 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
         #expect(program.exitStatus() == 130)
     }
 
+    /// The box list says what is snapshotted; Tab changes it, and the steps follow.
+    @Test func tabInTheBoxListChangesTheSnapshot() throws {
+        let store = try ConnectScratch()
+        let program = try connect(store, ["--dry-run", "--shell"])
+        #expect(program.waitFor("snapshot: whole folder"))
+        program.type("\t")
+        #expect(program.waitFor("snapshot: git folders only"))
+        program.type("\r")
+        #expect(program.exitStatus() == 0)
+        #expect(program.text.contains("Snapshot: git folders only"), "\(program.text)")
+        #expect(program.text.contains("snapshot the git folders of"), "\(program.text)")
+
+        let none = try connect(store, ["--dry-run", "--shell"])
+        #expect(none.waitFor("snapshot: whole folder"))
+        none.type("\t\t")
+        #expect(none.waitFor("snapshot: none"))
+        none.type("\r")
+        #expect(none.exitStatus() == 0)
+        #expect(!none.text.contains("  snapshot "), "\(none.text)")
+    }
+
+    /// What the command line says is shown and cannot be changed in the list.
+    @Test func aNamedSnapshotIsOnlyShownInTheBoxList() throws {
+        let store = try ConnectScratch()
+        let program = try connect(store, ["--dry-run", "--shell", "--git-snapshot"])
+        #expect(program.waitFor("snapshot: git folders only (--git-snapshot)"))
+        #expect(!program.text.contains("Tab changes"))
+        program.type("\t\r")
+        #expect(program.exitStatus() == 0)
+        #expect(program.text.contains("snapshot the git folders of"), "\(program.text)")
+
+        let readOnly = try connect(store, ["--dry-run", "--shell", "--read-only"])
+        #expect(readOnly.waitFor("snapshot: none (the folder is shared read only)"))
+        readOnly.type("\r")
+        #expect(readOnly.exitStatus() == 0)
+    }
+
+    /// What is remembered for the folder is where the list starts, and is said when no list
+    /// is shown; the command line's word goes before it.
+    @Test func theRememberedSnapshotIsUsedAndSaid() throws {
+        let store = try ConnectScratch()
+        let project = try #require(realpath(store.scratch.project.path, nil).map { pointer -> String in
+            defer { free(pointer) }
+            return String(cString: pointer)
+        })
+        try ConnectChoices(store: store.home).remember(ConnectChoice(target: .box, box: "b2", launch: "shell", snapshot: SnapshotChoice.none), for: project)
+
+        let listed = try connect(store, ["--dry-run", "--shell"])
+        #expect(listed.waitFor("snapshot: none"))
+        listed.type("\r")
+        #expect(listed.exitStatus() == 0)
+        #expect(!listed.text.contains("as remembered for this folder"))
+        // The list is erased; the line stays.
+        #expect(listed.text.contains("Snapshot: none\r\n"), "\(listed.text.debugDescription)")
+        #expect(!listed.text.contains("  snapshot "), "\(listed.text)")
+
+        let named = try connect(store, ["b1", "--dry-run", "--shell"])
+        #expect(named.exitStatus() == 0)
+        #expect(named.text.contains("none, as remembered for this folder (--whole-snapshot, --git-snapshot or Tab in the list of boxes changes it)"), "\(named.text)")
+        #expect(!named.text.contains("  snapshot "), "\(named.text)")
+
+        let whole = try connect(store, ["b1", "--dry-run", "--shell", "--whole-snapshot"])
+        #expect(whole.exitStatus() == 0)
+        #expect(!whole.text.contains("as remembered"))
+        #expect(whole.text.contains("  snapshot "), "\(whole.text)")
+    }
+
     @Test func theStartShowsTheLastBootTime() throws {
         let store = try ConnectScratch()
         // As the supervisor logs a start that became ready.

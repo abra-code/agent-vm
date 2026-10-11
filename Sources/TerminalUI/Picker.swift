@@ -6,6 +6,9 @@
 // arrows move, Enter chooses, Escape clears the filter and then quits. Without cursor control
 // (TERM=dumb) it is a numbered menu read as a line.
 //
+// A picker may carry one setting: a line under the title that names it and its value, which Tab
+// changes to the next of its values. It is what the choice is made with, not a row.
+//
 // PickerModel (the filter, the selection, scrolling) and PickerView (the lines for a model at a
 // size) know nothing of the terminal, so both are tested without one.
 
@@ -39,32 +42,69 @@ public struct PickerSection: Equatable, Sendable {
     }
 }
 
+/// A setting shown under a picker's title: `label: value`. With more than one value, Tab goes
+/// to the next one; with one, the line only says how things are.
+public struct PickerSetting: Equatable, Sendable {
+    public var label: String
+    public var values: [String]
+    /// The value shown, an index into `values`.
+    public private(set) var index: Int
+
+    public init(label: String, values: [String], index: Int = 0) {
+        self.label = label
+        self.values = values
+        self.index = values.indices.contains(index) ? index : 0
+    }
+
+    var canChange: Bool {
+        return values.count > 1
+    }
+
+    var value: String {
+        return values.isEmpty ? "" : values[index]
+    }
+
+    mutating func next() {
+        if canChange {
+            index = (index + 1) % values.count
+        }
+    }
+}
+
 public struct Picker: Sendable {
     public let title: String
     public let sections: [PickerSection]
     public let selected: String?
+    public let setting: PickerSetting?
 
-    public init(title: String, sections: [PickerSection], selected: String? = nil) {
+    public init(title: String, sections: [PickerSection], selected: String? = nil, setting: PickerSetting? = nil) {
         self.title = title
         self.sections = sections
         self.selected = selected
+        self.setting = setting
     }
 
     /// The chosen row's id. Its lines are erased before it returns or throws.
     public func run(on terminal: Terminal) throws -> String {
+        return try choose(on: terminal).id
+    }
+
+    /// The chosen row's id, and the index of the setting's value when it was chosen (nil
+    /// without a setting). Its lines are erased before it returns or throws.
+    public func choose(on terminal: Terminal) throws -> (id: String, setting: Int?) {
         guard terminal.isInteractive else {
             throw TerminalUIError.notInteractive
         }
         if !terminal.style.cursorControl {
-            return try NumberedMenu(title: title, sections: sections, selected: selected).run(on: terminal)
+            return try NumberedMenu(title: title, sections: sections, selected: selected, setting: setting).run(on: terminal)
         }
         return try RawSession.run(terminal) { session in
-            var model = PickerModel(sections: sections, selected: selected)
+            var model = PickerModel(sections: sections, selected: selected, setting: setting)
             var decoder = KeyDecoder()
             var height = 3
             func redraw() {
                 let size = session.size()
-                height = PickerView.listHeight(rows: size.rows, filtering: !model.filter.isEmpty)
+                height = PickerView.listHeight(rows: size.rows, filtering: !model.filter.isEmpty, setting: model.setting != nil)
                 model.settleWindow(height: height)
                 session.draw(PickerView.lines(title: title, model: model, rows: size.rows, columns: size.columns,
                                               colors: terminal.style.colors), hideCursor: true)
@@ -95,7 +135,7 @@ public struct Picker: Sendable {
                     case .continuing:
                         break
                     case .chosen(let id):
-                        return id
+                        return (id, model.setting?.index)
                     case .canceled:
                         throw TerminalUIError.canceled
                     }
@@ -126,9 +166,11 @@ struct PickerModel {
     private(set) var offset = 0
     /// What the filter lets through, section titles included.
     private(set) var shown: [Item] = []
+    private(set) var setting: PickerSetting?
 
-    init(sections: [PickerSection], selected: String?) {
+    init(sections: [PickerSection], selected: String?, setting: PickerSetting? = nil) {
         self.sections = sections
+        self.setting = setting
         shown = Self.items(sections, filter: "")
         let rows = shown.compactMap(\.row)
         if let selected, rows.contains(where: { $0.id == selected && $0.enabled }) {
@@ -202,7 +244,9 @@ struct PickerModel {
             if TextWidth.printable(String(character)) == String(character) {
                 setFilter(filter + String(character))
             }
-        case .tab, .left, .right, .delete:
+        case .tab:
+            setting?.next()
+        case .left, .right, .delete:
             break
         }
         return .continuing
@@ -352,8 +396,17 @@ enum PickerView {
 
     /// Lines for the rows at most: the block is at most the window's rows minus 2, and at least
     /// 3 lines of rows.
-    static func listHeight(rows: Int, filtering: Bool) -> Int {
-        return max(3, rows - 2 - 1 - (filtering ? 1 : 0))
+    static func listHeight(rows: Int, filtering: Bool, setting: Bool = false) -> Int {
+        return max(3, rows - 2 - 1 - (filtering ? 1 : 0) - (setting ? 1 : 0))
+    }
+
+    /// The setting's line: its name and value, and how to change it when it can be.
+    static func settingLine(_ setting: PickerSetting) -> Styled {
+        var line = Styled("  " + TextWidth.printable(setting.label) + ": " + TextWidth.printable(setting.value))
+        if setting.canChange {
+            line.append("  Tab changes", dim: true)
+        }
+        return line
     }
 
     static func lines(title: String, model: PickerModel, rows: Int, columns: Int, colors: Bool) -> [String] {
@@ -364,6 +417,9 @@ enum PickerView {
             titleLine.append(hint, dim: true)
         }
         lines.append(titleLine.render(width: width, colors: colors))
+        if let setting = model.setting {
+            lines.append(settingLine(setting).render(width: width, colors: colors))
+        }
         if !model.filter.isEmpty {
             lines.append(Styled("  filter: " + TextWidth.printable(model.filter)).render(width: width, colors: colors))
         }
@@ -382,7 +438,7 @@ enum PickerView {
             }
         }
 
-        let height = listHeight(rows: rows, filtering: !model.filter.isEmpty)
+        let height = listHeight(rows: rows, filtering: !model.filter.isEmpty, setting: model.setting != nil)
         let window = PickerModel.window(total: model.shown.count, height: height, selected: model.selectedIndex,
                                         offset: model.offset, shown: model.shown)
         if window.above {
@@ -509,15 +565,17 @@ struct Styled {
 
 /// The picker without cursor control: numbered lines and a line read with the terminal's own
 /// editing. A number picks, Enter the preselected row, text filters (rows keep their numbers),
-/// q or the end of input quits.
+/// q or the end of input quits. A line with a Tab in it changes the setting.
 struct NumberedMenu {
     let title: String
     let sections: [PickerSection]
     let selected: String?
+    var setting: PickerSetting?
 
-    func run(on terminal: Terminal) throws -> String {
+    func run(on terminal: Terminal) throws -> (id: String, setting: Int?) {
         return try RawSession.run(terminal, mode: .line(echo: true)) { session in
             let model = PickerModel(sections: sections, selected: selected)
+            var setting = setting
             var numbers: [String: Int] = [:]
             var byNumber: [Int: String] = [:]
             for row in model.allRows where row.enabled {
@@ -527,14 +585,20 @@ struct NumberedMenu {
             var filter = ""
             while true {
                 session.write(Self.menu(title: title, sections: sections, filter: filter, numbers: numbers,
-                                        columns: session.size().columns).joined(separator: "\n") + "\n")
+                                        columns: session.size().columns, setting: setting).joined(separator: "\n") + "\n")
                 let enterPart = model.selectedID.flatMap { numbers[$0] }.map { "Enter for \($0), " } ?? ""
                 let range = numbers.isEmpty ? "" : numbers.count == 1 ? "Choose 1 " : "Choose 1-\(numbers.count) "
-                session.write("\(range)(\(enterPart)text to filter, q to quit): ")
-                let answer = try LineReader.readLine(session).trimmingCharacters(in: .whitespaces)
+                let settingPart = setting?.canChange == true ? "Tab then Enter changes \(TextWidth.printable(setting?.label ?? "")), " : ""
+                session.write("\(range)(\(enterPart)text to filter, \(settingPart)q to quit): ")
+                let line = try LineReader.readLine(session)
+                if line.contains("\t"), setting?.canChange == true {
+                    setting?.next()
+                    continue
+                }
+                let answer = line.trimmingCharacters(in: .whitespaces)
                 if answer.isEmpty {
                     if let id = model.selectedID {
-                        return id
+                        return (id, setting?.index)
                     }
                     continue
                 }
@@ -542,14 +606,15 @@ struct NumberedMenu {
                     throw TerminalUIError.canceled
                 }
                 if let number = Int(answer), let id = byNumber[number] {
-                    return id
+                    return (id, setting?.index)
                 }
                 filter = answer
             }
         }
     }
 
-    static func menu(title: String, sections: [PickerSection], filter: String, numbers: [String: Int], columns: Int) -> [String] {
+    static func menu(title: String, sections: [PickerSection], filter: String, numbers: [String: Int], columns: Int,
+                     setting: PickerSetting? = nil) -> [String] {
         let width = max(1, columns - 1)
         let items = PickerModel.items(sections, filter: filter)
         let allRows = sections.flatMap(\.rows)
@@ -562,6 +627,9 @@ struct NumberedMenu {
         }
         let numberWidth = String(max(1, numbers.count)).count
         var lines = [TextWidth.cut(TextWidth.printable(title), to: width)]
+        if let setting {
+            lines.append(TextWidth.cut("  " + TextWidth.printable(setting.label) + ": " + TextWidth.printable(setting.value), to: width))
+        }
         if items.isEmpty {
             lines.append("  no match")
         }

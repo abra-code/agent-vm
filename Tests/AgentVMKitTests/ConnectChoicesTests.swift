@@ -86,4 +86,25 @@ import Testing
         let names = try FileManager.default.contentsOfDirectory(atPath: scratch.root.path)
         #expect(names.filter { $0.contains(ConnectChoices.fileName) } == [ConnectChoices.fileName])
     }
+
+    /// What was snapshotted is kept with the folder's choice; a file written before it was
+    /// kept reads as no word about it (the whole folder).
+    @Test func theSnapshotChoiceIsKept() throws {
+        let scratch = try Scratch()
+        let choices = ConnectChoices(store: scratch.root)
+        try choices.remember(ConnectChoice(target: .box, box: "dev1", snapshot: .git), for: "/p")
+        try choices.remember(ConnectChoice(target: .box, box: "dev1", snapshot: SnapshotChoice.none), for: "/q")
+        #expect(choices.choice(for: "/p")?.snapshot == .git)
+        #expect(choices.choice(for: "/q")?.snapshot == SnapshotChoice.none)
+        #expect(String(decoding: try Data(contentsOf: choices.url), as: UTF8.self).contains(#""snapshot" : "git""#))
+        let older = #"{"version": 1, "projects": {"/p": {"target": "box", "box": "dev1", "at": "2026-09-26T10:15:00Z"}}}"#
+        try Data(older.utf8).write(to: choices.url)
+        #expect(choices.choice(for: "/p")?.box == "dev1")
+        #expect(choices.choice(for: "/p")?.snapshot == nil)
+        // A word of a later agent-vm: none said, and the rest of the file is read.
+        try Data(older.replacingOccurrences(of: #""box": "dev1""#, with: #""box": "dev1", "snapshot": "tags""#).utf8).write(to: choices.url)
+        #expect(choices.choice(for: "/p")?.box == "dev1")
+        #expect(choices.choice(for: "/p")?.snapshot == nil)
+        #expect(SnapshotChoice.allCases.map(\.option) == ["--whole-snapshot", "--git-snapshot", "--no-snapshot"])
+    }
 }

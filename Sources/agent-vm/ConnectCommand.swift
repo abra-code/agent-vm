@@ -74,7 +74,9 @@ enum ConnectHelp {
             without one (nothing to undo then). --git-snapshot snapshots only the git folders \
             (every .git under the folder), which takes seconds for a huge folder of many \
             repositories: the report and the undo are then of those folders alone, and \
-            working files are not covered.
+            working files are not covered. What was snapshotted is remembered for the folder \
+            and used the next time; the list of boxes shows it and Tab changes it there, and \
+            --whole-snapshot goes back to the whole folder.
 
             Text the program copies (what you select in an agent's interface) is put on this \
             Mac's clipboard while you are using the session; --no-clipboard turns that off. \
@@ -115,6 +117,9 @@ struct ConnectOptions: ParsableArguments {
     @Flag(name: .customLong("git-snapshot"), help: "Snapshot only the git folders (every .git under the folder): fast for a huge folder; working files are then neither reported nor undone.")
     var gitSnapshot = false
 
+    @Flag(name: .customLong("whole-snapshot"), help: "Snapshot the whole folder, when --git-snapshot or --no-snapshot is remembered for it.")
+    var wholeSnapshot = false
+
     @Flag(name: .customLong("no-clipboard"), help: "Do not let the program put text on this Mac's clipboard.")
     var noClipboard = false
 
@@ -130,6 +135,12 @@ struct ConnectOptions: ParsableArguments {
     @Argument(parsing: .postTerminator, help: "A command to run instead of an agent or a login shell, after --.")
     var command: [String] = []
 
+    /// What the command line says to snapshot; nil: nothing said, so what is remembered for
+    /// the folder.
+    var namedSnapshot: SnapshotChoice? {
+        return noSnapshot ? SnapshotChoice.none : gitSnapshot ? .git : wholeSnapshot ? .whole : nil
+    }
+
     /// Usage errors (64): options that do not go together, and the --secret and --env forms.
     func check() throws {
         if [agent != nil, shell, !command.isEmpty].filter({ $0 }).count > 1 {
@@ -143,6 +154,9 @@ struct ConnectOptions: ParsableArguments {
         }
         if gitSnapshot && (noSnapshot || readOnly || noProject) {
             throw ValidationError("--git-snapshot does not go with --no-snapshot, --read-only or --no-project: those take no snapshot")
+        }
+        if wholeSnapshot && (noSnapshot || gitSnapshot || readOnly || noProject) {
+            throw ValidationError("--whole-snapshot does not go with --git-snapshot, --no-snapshot, --read-only or --no-project")
         }
         try SecretOptions.validate(secrets)
         do {

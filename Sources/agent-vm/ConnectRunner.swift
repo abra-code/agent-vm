@@ -258,6 +258,10 @@ struct ConnectRunner {
         if options.namedLaunch == nil && namedAgent == nil {
             warnAbout(catalog)
         }
+        // What to snapshot: the command line's word, else what is remembered for the folder,
+        // which the box list shows and Tab changes there.
+        var snapshot = options.namedSnapshot ?? remembered?.snapshot ?? .whole
+        var snapshotSeen = options.namedSnapshot != nil
 
         boxes: while true {
             var place: Place
@@ -269,11 +273,12 @@ struct ConnectRunner {
                 place = .new(image: namedImage, name: newBox?.name)
                 chosenInPicker = false
             } else {
-                guard let chosen = try choosePlace(project: project, remembered: remembered, terminal: terminal) else {
+                guard let chosen = try choosePlace(project: project, remembered: remembered, snapshot: &snapshot, terminal: terminal) else {
                     continue
                 }
                 place = chosen
                 chosenInPicker = true
+                snapshotSeen = true
             }
             // A new temporary box's name, chosen once and free now.
             var temporaryName: String?
@@ -313,10 +318,16 @@ struct ConnectRunner {
                     target = name.map { .newKept(image: image.name, name: $0) } ?? .newTemporary(image: image.name)
                 }
                 let request = ConnectRequest(target: target, launch: launch, project: project, readOnly: options.readOnly,
-                                             snapshot: !options.noSnapshot, secrets: options.secrets, env: options.env,
+                                             snapshot: snapshot != .none, secrets: options.secrets, env: options.env,
                                              extraAllow: newBox?.allow ?? [], cpus: newBox?.cpus, memoryBytes: newBox?.memoryBytes,
                                              refresh: newBox?.refresh ?? false, clipboard: !options.noClipboard,
-                                             gitSnapshot: options.gitSnapshot)
+                                             gitSnapshot: snapshot == .git)
+                // A remembered choice that was neither named nor shown in the list is said:
+                // less than the whole folder must never be a surprise.
+                if !snapshotSeen, snapshot != .whole, let project, !options.readOnly {
+                    snapshotSeen = true
+                    print("Snapshot of \(Self.tilde(project)): \(snapshot.words), as remembered for this folder (--whole-snapshot\(snapshot == .git ? ", --no-snapshot" : ", --git-snapshot") or Tab in the list of boxes changes it)")
+                }
                 var (facts, secretEntries) = try self.facts(for: launch, box: existing, running: runningBox != nil, probed: probed)
                 facts.temporaryName = temporaryName
                 let steps = ConnectPlanner.steps(for: request, facts: facts)
@@ -367,7 +378,7 @@ struct ConnectRunner {
 
     /// The box list: an existing box, or a new temporary or kept box (then the image list, and
     /// for a kept box its name). Nil: choose again.
-    private func choosePlace(project: String?, remembered: ConnectChoice?, terminal: Terminal) throws -> Place? {
+    private func choosePlace(project: String?, remembered: ConnectChoice?, snapshot: inout SnapshotChoice, terminal: Terminal) throws -> Place? {
         let offers = try self.offers()
         let images = try imageOffers()
         let usable = images.filter { $0.reason == nil }
@@ -382,7 +393,19 @@ struct ConnectRunner {
         }
         let (sections, selected) = ConnectPickers.boxSections(offers, newBoxes: !usable.isEmpty, project: project, remembered: remembered)
         let title = "AgentVM - " + (project.map { "project " + Self.tilde($0) } ?? "no folder shared")
-        let id = try Picker(title: title, sections: sections, selected: selected).run(on: terminal)
+        let setting = project.map { _ in
+            ConnectPickers.snapshotSetting(named: options.namedSnapshot, readOnly: options.readOnly, current: snapshot)
+        }
+        let (id, settingIndex) = try Picker(title: title, sections: sections, selected: selected, setting: setting).choose(on: terminal)
+        if let settingIndex, let setting, setting.values.count > 1 {
+            let chosen = SnapshotChoice.allCases[settingIndex]
+            // The list is erased: what is left says a change, and anything less than the
+            // whole folder.
+            if chosen != snapshot || chosen != .whole {
+                print("Snapshot: \(chosen.words)")
+            }
+            snapshot = chosen
+        }
         switch id {
         case ConnectPickers.newTemporaryID, ConnectPickers.newKeptID:
             // Escape in the image list or at the name goes back to the box list.
@@ -755,7 +778,7 @@ struct ConnectRunner {
                     throw ConnectError.interrupted(arrived)
                 }
                 if pacer.isDue() {
-                    let faster = gitOnly ? "" : "; --git-snapshot copies only the git folders"
+                    let faster = gitOnly ? "; it is then remembered for this folder" : "; --git-snapshot copies only the git folders; either is then remembered for this folder"
                     print("  still copying \(Self.tilde(project)): \(met) files and folders so far (Control-C stops; --no-snapshot runs without a snapshot\(faster))")
                 }
             }
@@ -830,11 +853,13 @@ struct ConnectRunner {
         case .agent(let agent):
             launchID = agent.id
         }
+        // A read-only share takes no snapshot whatever the choice is: it stays as it was.
+        let snapshot: SnapshotChoice? = request.readOnly ? previous?.snapshot : !request.snapshot ? SnapshotChoice.none : request.gitSnapshot ? .git : .whole
         let choice: ConnectChoice
         if case .newTemporary(let image) = request.target {
-            choice = ConnectChoice(target: .temporary, image: image, launch: launchID, readOnly: request.readOnly)
+            choice = ConnectChoice(target: .temporary, image: image, launch: launchID, readOnly: request.readOnly, snapshot: snapshot)
         } else {
-            choice = ConnectChoice(target: .box, box: box, launch: launchID, readOnly: request.readOnly)
+            choice = ConnectChoice(target: .box, box: box, launch: launchID, readOnly: request.readOnly, snapshot: snapshot)
         }
         do {
             try ConnectChoices(store: root).remember(choice, for: project)

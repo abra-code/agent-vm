@@ -9,6 +9,34 @@
 import Darwin
 import Foundation
 
+/// What is snapshotted of a folder shared read-write before a session.
+public enum SnapshotChoice: String, Codable, CaseIterable, Equatable, Sendable {
+    /// Every file and folder.
+    case whole
+    /// Only the git folders (every `.git` under the folder).
+    case git
+    /// Nothing: no report and no undo afterwards.
+    case none
+
+    /// For a person: "snapshot: <words>".
+    public var words: String {
+        switch self {
+        case .whole: return "whole folder"
+        case .git: return "git folders only"
+        case .none: return "none"
+        }
+    }
+
+    /// The avm option that asks for it.
+    public var option: String {
+        switch self {
+        case .whole: return "--whole-snapshot"
+        case .git: return "--git-snapshot"
+        case .none: return "--no-snapshot"
+        }
+    }
+}
+
 public struct ConnectChoice: Codable, Equatable, Sendable {
     public enum Target: String, Codable, Sendable {
         /// An existing box (`box`).
@@ -23,15 +51,33 @@ public struct ConnectChoice: Codable, Equatable, Sendable {
     /// What ran: "shell", or an agent's id.
     public var launch: String?
     public var readOnly: Bool?
+    /// What was snapshotted of the folder; nil (a file of an earlier agent-vm, or a folder
+    /// only ever shared read only): the whole folder.
+    public var snapshot: SnapshotChoice?
     public var at: Date
 
-    public init(target: Target, box: String? = nil, image: String? = nil, launch: String? = nil, readOnly: Bool? = nil, at: Date = Date()) {
+    public init(target: Target, box: String? = nil, image: String? = nil, launch: String? = nil, readOnly: Bool? = nil,
+                snapshot: SnapshotChoice? = nil, at: Date = Date()) {
         self.target = target
         self.box = box
         self.image = image
         self.launch = launch
         self.readOnly = readOnly
+        self.snapshot = snapshot
         self.at = at
+    }
+
+    /// A snapshot word this agent-vm does not know (a later one's) reads as none said, so the
+    /// rest of the file is still read.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        target = try container.decode(Target.self, forKey: .target)
+        box = try container.decodeIfPresent(String.self, forKey: .box)
+        image = try container.decodeIfPresent(String.self, forKey: .image)
+        launch = try container.decodeIfPresent(String.self, forKey: .launch)
+        readOnly = try container.decodeIfPresent(Bool.self, forKey: .readOnly)
+        snapshot = (try? container.decodeIfPresent(String.self, forKey: .snapshot)).flatMap { $0 }.flatMap(SnapshotChoice.init(rawValue:))
+        at = try container.decode(Date.self, forKey: .at)
     }
 }
 

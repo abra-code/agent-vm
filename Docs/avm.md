@@ -6,7 +6,7 @@
 
 ```
 avm [to] [<box>] [--box <box>] [--agent <id> | --shell | -- <command> ...] [--project <folder> | --no-project]
-    [--read-only] [--no-snapshot] [--git-snapshot] [--no-clipboard] [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
+    [--read-only] [--no-snapshot | --git-snapshot | --whole-snapshot] [--no-clipboard] [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
 avm new <image> [--temp | --name <box>] [--refresh] [--allow RULE ...] [--cpus N] [--memory-gb N]
     [the same --agent, --shell, -- <command>, sharing and --dry-run options]
 avm list [--json] [--project <folder>]
@@ -17,7 +17,7 @@ avm agents [--json]
 - **`to`** is the default subcommand, so `avm dev1` is `avm to dev1`. A box named `new`, `list`, `agents`, `to` or `help` is reached with `--box`: `avm --box list`.
 - **What runs:** an agent from the catalog (`--agent <id>`; see [Agents](#agents)), the account's login shell (`--shell`), or the command after `--`; without any of them, avm shows the list of what it can run. An agent or a command runs through the login shell as well (`$SHELL -l -c`), so `~/.zprofile` applies as it does in `agent-vm box shell`, with its words passed unchanged.
 - **`--project <folder>`** shares that folder instead of the current one; **`--no-project`** shares none, and the program starts in the box user's home folder.
-- **`--read-only`** shares the folder read only: programs in the box cannot change it, so no snapshot is taken. **`--no-snapshot`** shares it read-write without a snapshot, so there is nothing to report or undo afterwards. **`--git-snapshot`** snapshots only the folder's git folders, for a huge folder; see [A snapshot of the git folders only](#a-snapshot-of-the-git-folders-only).
+- **`--read-only`** shares the folder read only: programs in the box cannot change it, so no snapshot is taken. **`--no-snapshot`** shares it read-write without a snapshot, so there is nothing to report or undo afterwards. **`--git-snapshot`** snapshots only the folder's git folders, for a huge folder; see [A snapshot of the git folders only](#a-snapshot-of-the-git-folders-only). What was snapshotted is remembered for the folder and used the next time without any of these options (since 0.7.36); **`--whole-snapshot`** goes back to the whole folder. See [What is snapshotted, per folder](#what-is-snapshotted-per-folder).
 - **`--secret`** and **`--env`** are passed on to `agent-vm exec` (see the README's Boxes and exec section): `--secret NAME` takes a value from your Keychain, `--env NAME=VALUE` or `--env NAME` sets a variable.
 - **`--no-clipboard`**: text the program copies is not put on your Mac's clipboard (see [Terminals](#terminals)).
 - **`--dry-run`** prints the steps instead of taking them, and exits 0. It creates, starts, shares, stores and remembers nothing, asks nothing, and needs a terminal only to show a list.
@@ -146,7 +146,7 @@ A secret's state is `set`, `missing`, or `asks`: stored by another build of agen
 
 ## Snapshot and report
 
-Before the session, avm snapshots a folder it shares read-write: an instant copy-on-write copy in the agent-vm store, recorded as a session (see the README's Sessions section; `agent-vm session list` shows them). The folder must be on the same volume as the store. The copy takes no space, but every file and folder is visited, so a very large folder takes minutes: after 3 seconds, and then every 10, a line says how far it is (`still copying ~/src: 412160 files and folders so far (Control-C stops; --no-snapshot runs without a snapshot; --git-snapshot copies only the git folders)`), since 0.7.29.
+Before the session, avm snapshots a folder it shares read-write: an instant copy-on-write copy in the agent-vm store, recorded as a session (see the README's Sessions section; `agent-vm session list` shows them). The folder must be on the same volume as the store. The copy takes no space, but every file and folder is visited, so a very large folder takes minutes: after 3 seconds, and then every 10, a line says how far it is (`still copying ~/src: 412160 files and folders so far (Control-C stops; --no-snapshot runs without a snapshot; --git-snapshot copies only the git folders; either is then remembered for this folder)`), since 0.7.29.
 
 After the session, avm reports what changed since the snapshot:
 
@@ -171,6 +171,22 @@ k) keep the changes  r) show every change  u) undo them all [K/r/u]
 - **A session that ends with a signal** (the terminal closed, `kill`): nothing is asked; the session is ended, kept for undo, and avm exits with 128 + the signal. A Control-C while the report is made or the undo runs takes effect after that step, never halfway. A Control-C while the snapshot is taken stops the copy (since 0.7.29; before, it waited for the copy to end): what was copied is removed, no session is made, nothing is run, and avm exits with 130.
 - **Kept snapshots take space** as the folder changes: `agent-vm session discard --older-than 7` frees those that ended more than a week ago.
 
+
+### What is snapshotted, per folder
+
+avm does not ask what to snapshot. It uses what the folder was last run with, shows it, and lets you change it (since 0.7.36):
+
+- **Three choices:** the whole folder (what a folder avm has not seen starts with), the git folders only, or none.
+- **The list of boxes shows it** on a line under the title, and **Tab** goes to the next choice:
+  ```
+  AgentVM - project ~/src  type to filter, arrows, Enter; Esc quits
+    snapshot: git folders only  Tab changes
+  ```
+- **`--whole-snapshot`, `--git-snapshot` and `--no-snapshot`** say it on the command line. The line in the list then only shows it (`snapshot: none (--no-snapshot)`), as it does for `--read-only`.
+- **It is remembered when the session starts,** with the box and what ran (see [Remembered choices](#remembered-choices)), for exactly that folder: a folder inside it or above it has its own. A read-only run takes no snapshot and leaves what is remembered as it was.
+- **When no list is shown** (`avm dev1`) and the folder's choice is not the whole folder, one line says so before anything is done: `Snapshot of ~/src: none, as remembered for this folder (--whole-snapshot, --git-snapshot or Tab in the list of boxes changes it)`. A run without a snapshot is never silent.
+- **A folder set to the git folders that has none:** avm says so and asks whether to go on without a snapshot, each time.
+- `avm list` shows the choice after the remembered box, and `avm list --json` has it as `remembered.snapshot`: `whole`, `git` or `none`; absent means the whole folder.
 
 ### A snapshot of the git folders only
 
@@ -210,6 +226,7 @@ AgentVM - project ~/src/app  type to filter, arrows, Enter; Esc quits
   | typing | filters: every word must appear in the row, in any case |
   | Backspace, Control-U, Control-W | edit the filter |
   | Enter | choose |
+  | Tab | the next snapshot choice, in the list of boxes (see [What is snapshotted, per folder](#what-is-snapshotted-per-folder)) |
   | Escape | clear the filter; with no filter, quit (status 130) |
   | Control-C | quit (status 130) |
   | Control-D | quit, when the filter is empty |
@@ -222,7 +239,7 @@ AgentVM - project ~/src/app  type to filter, arrows, Enter; Esc quits
 
 ## Remembered choices
 
-The box (or, for a temporary box, its image) and what ran, chosen for each folder, are kept in `connect.json` in the agent-vm store (`~/Library/Application Support/agent-vm`, or `$AGENT_VM_HOME`). The file is private (mode 0600) and holds the 200 most recent folders. It records folder paths, box or image names, what ran (an agent's id or `shell`; a command after `--` leaves it as it was) and whether the folder was shared read only; nothing secret. It also keeps which of your own agents you agreed to run (the id and the digest of its file). A missing or damaged file counts as empty and is replaced the next time: the lists start at the top, and your own agents are asked about again. `--dry-run` and `--no-project` runs are not remembered.
+The box (or, for a temporary box, its image) and what ran, chosen for each folder, are kept in `connect.json` in the agent-vm store (`~/Library/Application Support/agent-vm`, or `$AGENT_VM_HOME`). The file is private (mode 0600) and holds the 200 most recent folders. It records folder paths, box or image names, what ran (an agent's id or `shell`; a command after `--` leaves it as it was), whether the folder was shared read only and what was snapshotted of it (since 0.7.36); nothing secret. It also keeps which of your own agents you agreed to run (the id and the digest of its file). A missing or damaged file counts as empty and is replaced the next time: the lists start at the top, and your own agents are asked about again. `--dry-run` and `--no-project` runs are not remembered.
 
 `avm list --json` shows it:
 
@@ -234,7 +251,7 @@ The box (or, for a temporary box, its image) and what ran, chosen for each folde
   ],
   "project" : "/Users/me/src/app",
   "projectProblem" : null,
-  "remembered" : {"at" : "2026-09-26T10:15:00Z", "box" : "dev1", "launch" : "shell", "readOnly" : false, "target" : "box"}
+  "remembered" : {"at" : "2026-09-26T10:15:00Z", "box" : "dev1", "launch" : "shell", "readOnly" : false, "snapshot" : "whole", "target" : "box"}
 }
 ```
 
@@ -262,6 +279,7 @@ Errors go to stderr, prefixed with the name avm was started as (`avm:` or `agent
   - a number chooses that row;
   - Enter chooses the preselected row;
   - other text filters the rows, which keep their numbers;
+  - a Tab, then Enter, goes to the next snapshot choice in the list of boxes;
   - `q` or the end of input quits.
 - **A window closed without ending its programs:** a terminal can close a window and keep its programs running (seen once with Ghostty 1.3.1, until the application quit). The session then goes on unseen and the box keeps its folder, so avm refuses another folder there and points to the exec log: `agent-vm box execlog <box> --json` gives the session's `hostPid`; `kill` on that process id ends it.
 - **If avm is killed** with SIGKILL while its list is showing, nothing can put the terminal back; type `reset`. The same goes for a killed session (`kill -9` on avm): the program in the box keeps running, and its `agent-vm exec` is left without a terminal. `agent-vm box execlog <box> --json` gives that exec's process id (`hostPid`).

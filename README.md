@@ -215,6 +215,7 @@ avm dev1 --no-project      # share no folder (the shell starts in the box user's
 avm dev1 --read-only       # share the folder read only (nothing to snapshot)
 avm dev1 --no-snapshot     # share it read-write without a snapshot (nothing to undo)
 avm dev1 --git-snapshot    # snapshot only the git folders: seconds for a huge folder of repositories
+avm dev1 --whole-snapshot  # back to the whole folder; avm remembers the last of these three per folder
 avm dev1 --no-clipboard    # what the program copies does not reach this Mac's clipboard
 avm list                   # the boxes avm offers, and the choice remembered for this folder
 avm agents                 # the agents avm can run, and whether their secrets are set

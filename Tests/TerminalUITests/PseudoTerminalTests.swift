@@ -354,6 +354,23 @@ func sameSettings(_ a: termios, _ b: termios) -> Bool {
         #expect(throws: TerminalUIError.canceled) { try quitting.wait(pty) }
     }
 
+    /// The numbered menu shows the setting; a line with a Tab in it goes to the next value.
+    @Test func dumbTerminalsChangeTheSettingWithATabLine() throws {
+        let pty = try PseudoTerminal()
+        let terminal = terminal(pty, environment: ["TERM": "dumb"])
+        let sections = sections
+        let running = Running {
+            try Picker(title: "Pick a box", sections: sections, setting: PickerSetting(label: "snapshot", values: ["whole folder", "none"]))
+                .choose(on: terminal).setting ?? -1
+        }
+        #expect(pty.waitFor("Tab then Enter changes snapshot, q to quit): "))
+        #expect(pty.text.contains("  snapshot: whole folder"))
+        pty.type("\t\n")
+        #expect(pty.waitFor("  snapshot: none"))
+        pty.type("1\n")
+        #expect(try running.wait(pty) == 1)
+    }
+
     @Test func notATerminalThrows() throws {
         var descriptors: [Int32] = [0, 0]
         #expect(pipe(&descriptors) == 0)

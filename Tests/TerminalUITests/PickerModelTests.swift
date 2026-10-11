@@ -204,4 +204,25 @@ import Testing
         #expect(drawn.count == 16)
         #expect(drawn.last == "  > row 19")
     }
+
+    /// Tab goes through a setting's values and around; it is not text for the filter, and a
+    /// setting with one value stays.
+    @Test func tabChangesTheSetting() {
+        var model = PickerModel(sections: sections, selected: nil, setting: PickerSetting(label: "snapshot", values: ["a", "b", "c"], index: 1))
+        #expect(model.setting?.value == "b")
+        #expect(model.handle(.tab, visibleHeight: 10) == .continuing)
+        #expect(model.setting?.value == "c")
+        _ = model.handle(.tab, visibleHeight: 10)
+        #expect(model.setting?.value == "a")
+        #expect(model.filter.isEmpty && model.selectedID == "dev1")
+
+        var fixed = PickerModel(sections: sections, selected: nil, setting: PickerSetting(label: "snapshot", values: ["only"]))
+        _ = fixed.handle(.tab, visibleHeight: 10)
+        #expect(fixed.setting?.index == 0)
+        var without = PickerModel(sections: sections, selected: nil)
+        #expect(without.handle(.tab, visibleHeight: 10) == .continuing)
+        #expect(without.setting == nil)
+        // An index outside the values starts at the first.
+        #expect(PickerSetting(label: "s", values: ["a", "b"], index: 7).index == 0)
+    }
 }

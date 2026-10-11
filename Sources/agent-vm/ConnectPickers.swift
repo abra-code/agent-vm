@@ -173,16 +173,30 @@ enum ConnectPickers {
         return ([PickerSection(title: nil, rows: rows)], selected)
     }
 
+    /// The box picker's line about the snapshot. What the command line or the share decided is
+    /// only said; otherwise Tab goes through the choices, starting at `current`.
+    static func snapshotSetting(named: SnapshotChoice?, readOnly: Bool, current: SnapshotChoice) -> PickerSetting {
+        if readOnly {
+            return PickerSetting(label: "snapshot", values: ["none (the folder is shared read only)"])
+        }
+        if let named {
+            return PickerSetting(label: "snapshot", values: ["\(named.words) (\(named.option))"])
+        }
+        let all = SnapshotChoice.allCases
+        return PickerSetting(label: "snapshot", values: all.map(\.words), index: all.firstIndex(of: current) ?? 0)
+    }
+
     /// `connect list` for a person, and the plain list printed when there is no terminal to
     /// choose on.
     static func listLines(_ offers: [Offer], images: [ImageOffer] = [], project: String?, projectProblem: String?, remembered: ConnectChoice?) -> [String] {
         var lines: [String] = []
         if let project {
             var line = "Project: \(ConnectRunner.tilde(project))"
+            let snapshot = "; snapshot: \((remembered?.snapshot ?? .whole).words)"
             if let remembered, remembered.target == .box, let box = remembered.box {
-                line += " (remembered: box \(box)\(remembered.launch.map { ", " + launchName($0) } ?? ""))"
+                line += " (remembered: box \(box)\(remembered.launch.map { ", " + launchName($0) } ?? "")\(snapshot))"
             } else if let remembered, remembered.target == .temporary, let image = remembered.image {
-                line += " (remembered: a temporary box from \(image)\(remembered.launch.map { ", " + launchName($0) } ?? ""))"
+                line += " (remembered: a temporary box from \(image)\(remembered.launch.map { ", " + launchName($0) } ?? "")\(snapshot))"
             }
             lines.append(line)
         } else if let projectProblem {
