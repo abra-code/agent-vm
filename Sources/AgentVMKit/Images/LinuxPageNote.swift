@@ -22,9 +22,11 @@ public enum LinuxPageNote {
         return (system.pageSize ?? 4096) < hostPageBytes
     }
 
-    /// Whether agent-vm knows a kernel with pages of the Mac's size or larger for the system.
+    /// Whether the system's images get a kernel with pages of the Mac's size when none is
+    /// asked for. A larger kernel that is only there on request (Ubuntu's 64 KiB one) is not
+    /// what the notes send people to.
     public static func hasLargerKernel(_ system: LinuxSystem?) -> Bool {
-        return LinuxBase.known(for: system)?.kernels.contains { $0.pageBytes >= hostPageBytes } ?? false
+        return LinuxBase.known(for: system).map { $0.defaultPageBytes >= hostPageBytes } ?? false
     }
 
     static let risk = "can lose kernel memory and stop when the Mac runs short of memory (macOS 27)"
@@ -48,7 +50,7 @@ public enum LinuxPageNote {
         guard pageBytes < hostPageBytes else {
             return nil
         }
-        let larger = base.kernels.contains { $0.pageBytes >= hostPageBytes }
+        let larger = base.defaultPageBytes >= hostPageBytes
         let remedy = larger ? "leave out --page-size for the kernel with 16 KiB pages" : "\(base.name) packages no kernel with 16 KiB pages; Debian does"
         return "a box of this image has a kernel with \(LinuxPageSize.name(pageBytes)) memory pages and \(risk); \(remedy)"
     }

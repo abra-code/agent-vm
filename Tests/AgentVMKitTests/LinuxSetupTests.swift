@@ -97,6 +97,13 @@ import Testing
         #expect(script.contains(#"if [ "$left" != "0" ]; then /usr/bin/ls /boot; exit 1; fi"#))
         // The way back names its own flavor.
         #expect(LinuxSetup.kernel(LinuxKernel(pageBytes: 4096, package: "linux-image-cloud-arm64", flavor: "cloud-arm64")).script.contains("grep -v -e '-cloud-arm64$'"))
+        // Ubuntu's kernel with 64 KiB pages: the stand-in for the firmware set, nothing recommended;
+        // the 4 KiB flavor "generic" does not match its names, nor the other way around.
+        let large = LinuxSetup.kernel(LinuxKernel(pageBytes: 65536, package: "linux-image-generic-64k", flavor: "generic-64k",
+                                                  alongside: ["linux-firmware-minimal"], withoutRecommended: true)).script
+        #expect(large.contains("install --no-install-recommends linux-image-generic-64k linux-firmware-minimal || exit 1; "))
+        #expect(large.contains("grep -v -e '-generic-64k$'"))
+        #expect(!script.contains("--no-install-recommends"))
         #expect(LinuxSetup.pageSize == "/usr/bin/getconf PAGESIZE")
     }
 

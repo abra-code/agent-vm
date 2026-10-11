@@ -85,7 +85,13 @@ import Testing
         #expect(throws: AgentVMError.linuxBase("--page-size 64k: Debian 13 has kernels with 4k or 16k pages")) { _ = try debian.kernel(pageBytes: 65536) }
         let ubuntu = try LinuxBase.named("ubuntu")
         #expect(ubuntu.defaultPageBytes == 4096)
-        #expect(throws: AgentVMError.linuxBase("--page-size 16k: Ubuntu 26.04 has only a kernel with 4k pages")) { _ = try ubuntu.kernel(pageBytes: 16384) }
+        #expect(throws: AgentVMError.linuxBase("--page-size 16k: Ubuntu 26.04 has kernels with 4k or 64k pages")) { _ = try ubuntu.kernel(pageBytes: 16384) }
+        // Ubuntu's larger kernel is there on request only, and comes without the firmware set.
+        let large = try ubuntu.kernel(pageBytes: 65536)
+        #expect(large.package == "linux-image-generic-64k" && large.flavor == "generic-64k")
+        #expect(large.alongside == ["linux-firmware-minimal"] && large.withoutRecommended)
+        #expect(!LinuxPageNote.hasLargerKernel(LinuxSystem(distribution: "ubuntu", version: "26.04", name: "Ubuntu 26.04")))
+        #expect(LinuxPageNote.hasLargerKernel(LinuxSystem(distribution: "debian", version: "13", name: "Debian 13")))
         // Every default is a kernel the system has.
         for base in LinuxBase.known {
             #expect(base.kernels.contains { $0.pageBytes == base.defaultPageBytes }, "\(base.id)")

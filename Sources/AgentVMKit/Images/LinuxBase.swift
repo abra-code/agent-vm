@@ -51,8 +51,14 @@ public struct LinuxBase: Sendable, Equatable {
                   folder: URL(string: "https://cloud-images.ubuntu.com/resolute/current/")!,
                   file: "resolute-server-cloudimg-arm64.img", checksumList: "SHA256SUMS", digest: .sha256, member: "",
                   manifest: nil,
-                  // Ubuntu packages no kernel with 16 KiB pages.
-                  kernels: [LinuxKernel(pageBytes: 4096, package: "linux-image-virtual", flavor: "generic")],
+                  // Ubuntu packages no kernel with 16 KiB pages. Its kernel with 64 KiB pages asks
+                  // for linux-firmware (700 MB of firmware for hardware a virtual machine does not
+                  // have). linux-firmware-minimal is Ubuntu's empty package that stands in for it,
+                  // and it recommends the same firmware, so recommended packages are left out:
+                  // 303 MB to download instead of 999 MB.
+                  kernels: [LinuxKernel(pageBytes: 4096, package: "linux-image-virtual", flavor: "generic"),
+                            LinuxKernel(pageBytes: 65536, package: "linux-image-generic-64k", flavor: "generic-64k",
+                                        alongside: ["linux-firmware-minimal"], withoutRecommended: true)],
                   defaultPageBytes: 4096),
     ]
 
@@ -147,11 +153,17 @@ public struct LinuxKernel: Sendable, Equatable {
     public var package: String
     /// What the names of its packages end with: "arm64-16k", "cloud-arm64".
     public var flavor: String
+    /// Packages installed in the same step, which decide what `package` brings with it.
+    public var alongside: [String]
+    /// Install without the packages these recommend.
+    public var withoutRecommended: Bool
 
-    public init(pageBytes: Int, package: String, flavor: String) {
+    public init(pageBytes: Int, package: String, flavor: String, alongside: [String] = [], withoutRecommended: Bool = false) {
         self.pageBytes = pageBytes
         self.package = package
         self.flavor = flavor
+        self.alongside = alongside
+        self.withoutRecommended = withoutRecommended
     }
 }
 

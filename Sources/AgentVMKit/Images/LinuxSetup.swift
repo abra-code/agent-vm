@@ -190,7 +190,7 @@ enum LinuxSetup {
     static func kernel(_ kernel: LinuxKernel) -> Step {
         return Step("kernel with \(LinuxPageSize.name(kernel.pageBytes)) pages (\(kernel.package))",
                     #"/usr/bin/echo 'linux-base linux-base/removing-running-kernel boolean false' | /usr/bin/debconf-set-selections || exit 1; "#
-                    + "\(apt) install \(kernel.package) || exit 1; "
+                    + "\(apt) install \(kernel.withoutRecommended ? "--no-install-recommends " : "")\(([kernel.package] + kernel.alongside).joined(separator: " ")) || exit 1; "
                     + #"others="$(/usr/bin/dpkg-query -W -f '${db:Status-Status} ${Package}\n' 'linux-image-*' | /usr/bin/sed -n 's/^installed //p' | /usr/bin/grep -v -e '-\#(kernel.flavor)$')"; "#
                     + #"if [ -n "$others" ]; then \#(apt) purge $others || exit 1; fi; "#
                     + #"left="$(/usr/bin/ls /boot/vmlinuz-* | /usr/bin/grep -c -v -e '-\#(kernel.flavor)$')"; if [ "$left" != "0" ]; then /usr/bin/ls /boot; exit 1; fi; /usr/bin/ls /boot/vmlinuz-*"#,
