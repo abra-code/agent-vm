@@ -189,19 +189,63 @@ import Testing
         #expect(try scratch.read("b/.git/HEAD") == "ref: refs/heads/bbbb\n")
     }
 
-    @Test func aRepositoryDeletedWholeCannotGetItsGitFolderBack() throws {
+    /// The folders above a git folder are not in the snapshot: undo makes the missing ones,
+    /// at any depth, and puts the git folders back into them.
+    @Test func aRepositoryDeletedWholeGetsItsGitFolderBack() throws {
+        let scratch = try Scratch()
+        try populate(scratch)
+        try scratch.write("deep/a/b/c/repo/.git/HEAD", "ref: refs/heads/deep\n")
+        try scratch.write("deep/a/b/c/repo/work.txt", "not committed\n")
+        let session = try scratch.store.start(project: scratch.project.path, scope: .gitFolders)
+        try FileManager.default.removeItem(atPath: scratch.path("group"))
+        try FileManager.default.removeItem(atPath: scratch.path("deep"))
+
+        let report = try scratch.store.report(id: session.id)
+        #expect(Set(report.changes.map(\.path)) == ["deep/a/b/c/repo/.git", "group/tree/.git", "group/two/.git"])
+        let outcome = try scratch.store.undo(id: session.id)
+        #expect(outcome.isComplete)
+        #expect(outcome.session.record.state == .undone)
+        #expect(try scratch.read("deep/a/b/c/repo/.git/HEAD") == "ref: refs/heads/deep\n")
+        #expect(try scratch.read("group/two/.git/HEAD") == "ref: refs/heads/main\n")
+        #expect(try scratch.read("group/tree/.git") == "gitdir: ../two/.git/worktrees/tree\n")
+        // Working files were never in the snapshot.
+        #expect(!FileManager.default.fileExists(atPath: scratch.path("deep/a/b/c/repo/work.txt")))
+        #expect(!FileManager.default.fileExists(atPath: scratch.path("group/two/notes.txt")))
+    }
+
+    /// The folder left above a deleted repository, made read-only, does not stop undo: it is
+    /// opened up for the folders made in it and is read-only again afterwards.
+    @Test func aLockedFolderAboveADeletedRepositoryDoesNotStopUndo() throws {
+        let scratch = try Scratch()
+        try populate(scratch)
+        let session = try scratch.store.start(project: scratch.project.path, scope: .gitFolders)
+        try FileManager.default.removeItem(atPath: scratch.path("group/two"))
+        try FileManager.default.removeItem(atPath: scratch.path("group/tree"))
+        #expect(chmod(scratch.path("group"), 0o555) == 0)
+        defer { _ = chmod(scratch.path("group"), 0o755) }
+
+        let outcome = try scratch.store.undo(id: session.id)
+        #expect(outcome.isComplete)
+        #expect(try scratch.read("group/two/.git/HEAD") == "ref: refs/heads/main\n")
+        var info = stat()
+        #expect(lstat(scratch.path("group"), &info) == 0 && info.st_mode & 0o777 == 0o555)
+    }
+
+    /// A file or a link where a folder above a git folder was is not moved away by undo (it
+    /// is a working file, outside what this kind of session touches): said, and the session
+    /// stays.
+    @Test func aFolderAboveAGitFolderReplacedByAFileIsRefused() throws {
         let scratch = try Scratch()
         try populate(scratch)
         let session = try scratch.store.start(project: scratch.project.path, scope: .gitFolders)
         try FileManager.default.removeItem(atPath: scratch.path("group"))
+        try scratch.write("group", "a file now\n")
 
-        let report = try scratch.store.report(id: session.id)
-        #expect(Set(report.changes.map(\.path)) == ["group/tree/.git", "group/two/.git"])
         let outcome = try scratch.store.undo(id: session.id)
-        // The folders above are not the snapshot's to put back: said, and the session stays.
         #expect(!outcome.isComplete)
         #expect(outcome.restore?.failed.keys.sorted() == ["group/tree/.git", "group/two/.git"])
         #expect(outcome.session.record.state == .active)
+        #expect(try scratch.read("group") == "a file now\n")
     }
 
     /// A git folder the agent closed after changing it (no permission at all, or listing

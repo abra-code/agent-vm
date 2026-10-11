@@ -126,7 +126,7 @@ public enum RiskRules {
                  matchers: [.gitFile("config"), .gitFile("config.worktree"), .gitFile("attributes"), .name(".gitattributes"),
                             .name(".gitmodules")]),
         PathRule(id: "git-dir", severity: .high,
-                 reason: "git folder or gitfile added or replaced: git commands run inside it (shell prompts included) use its hooks and configuration",
+                 reason: "git folder or gitfile added, replaced or deleted: git commands run there (shell prompts included) use the hooks and configuration of what is there now, or of a repository above it",
                  matchers: [.name(".git")]),
 
         // The agents' own configuration: loaded by the next agent run, boxed or not.

@@ -19,6 +19,11 @@
 // - a parent the agent made read-only, locked or denied with an ACL is opened up just for the
 //   one operation and gets its state back (its own permission change, if any, is a listed
 //   change restored at the end).
+//
+// A snapshot of the git folders only does not hold the folders above a git folder, so a
+// repository deleted whole leaves no parent to put its `.git` back into. For such a session the
+// missing folders on the way are made (plain ones, with the permissions any new folder gets):
+// made inside the open folder above and then opened as every other, never through a symlink.
 
 import Darwin
 import Foundation
@@ -53,6 +58,7 @@ enum ProjectRestorer {
         try FileSystem.makeDirectory(staging)
         defer { try? FileSystem.removeTree(staging) }
         let folderMetadata: (Change) -> Bool = { $0.kind == .metadata && $0.type == .directory }
+        let makingParents = session.record.scope == .gitFolders
 
         // Phase 1, deepest first: move the agent's version aside (not for deletions, which have
         // nothing to move, nor for folder permission changes, which are fixed in place).
@@ -76,7 +82,7 @@ enum ProjectRestorer {
             .sorted { depth($0.path) < depth($1.path) }
         for (index, change) in toRestore.enumerated() {
             do {
-                let place = try Place(root: root, project: project, path: change.path)
+                let place = try Place(root: root, project: project, path: change.path, makingParents: makingParents)
                 defer { place.close() }
                 let staged = staging + "/\(index)"
                 try cloneEntry(snapshot + "/" + change.path, to: staged)
@@ -121,8 +127,9 @@ enum ProjectRestorer {
         let path: String
 
         /// Opens the parent of `path` from the project's open folder `root`, one name at a
-        /// time. Throws when a name on the way is not a real folder (a symlink included).
-        init(root: Int32, project: String, path: String) throws {
+        /// time. Throws when a name on the way is not a real folder (a symlink included). With
+        /// `makingParents`, a folder on the way that does not exist is made.
+        init(root: Int32, project: String, path: String, makingParents: Bool = false) throws {
             let components = RelativePath.components(path).map(String.init)
             guard let name = components.last, components.allSatisfy({ $0 != "." && $0 != ".." }) else {
                 throw AgentVMError.unsuitableProject(path: project + "/" + path, reason: "not an entry inside the project")
@@ -134,8 +141,20 @@ enum ProjectRestorer {
             var reached = project
             for component in components.dropLast() {
                 reached += "/" + component
-                let next = FileSystem.openFolder(at: current, component)
-                let code = errno
+                var next = FileSystem.openFolder(at: current, component)
+                var code = errno
+                if next < 0, code == ENOENT, makingParents {
+                    // Made by something else in between is as good; a link put there instead
+                    // is refused by the open.
+                    do {
+                        try Place.makeFolder(in: current, component, path: reached)
+                    } catch {
+                        Darwin.close(current)
+                        throw error
+                    }
+                    next = FileSystem.openFolder(at: current, component)
+                    code = errno
+                }
                 Darwin.close(current)
                 guard next >= 0 else {
                     guard code == ENOTDIR || code == ELOOP else {
@@ -152,6 +171,26 @@ enum ProjectRestorer {
 
         func close() {
             Darwin.close(parent)
+        }
+
+        /// Makes the folder `name` in the open folder `parent`. A parent the agent locked
+        /// (read-only, immutable, a deny ACL) is opened up for it and gets its state back.
+        private static func makeFolder(in parent: Int32, _ name: String, path: String) throws {
+            if mkdirat(parent, name, 0o777) == 0 || errno == EEXIST {
+                return
+            }
+            let firstError = errno
+            guard firstError == EACCES || firstError == EPERM else {
+                throw AgentVMError.system(operation: "create folder \(path)", code: firstError)
+            }
+            let saved = try FileSystem.unlockEntry(descriptor: parent, name: "the folder of \(path)")
+            defer {
+                FileSystem.restoreEntry(descriptor: parent, saved)
+                saved.free()
+            }
+            guard mkdirat(parent, name, 0o777) == 0 || errno == EEXIST else {
+                throw AgentVMError.system(operation: "create folder \(path)", code: errno)
+            }
         }
     }
 
