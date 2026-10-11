@@ -255,6 +255,28 @@ public struct ImageRecord: Codable, Equatable, Sendable {
         public var recipeDigest: String?
     }
 
+    /// Whether the record names image `name` as what it was built from, or as where one of
+    /// its recipes ran.
+    func names(image name: String) -> Bool {
+        return derivedFrom?.image == name || (recipes ?? []).contains { $0.inheritedFrom == name }
+    }
+
+    /// After `image rename`: every place that named `old` names `new`.
+    mutating func rename(image old: String, to new: String) {
+        if derivedFrom?.image == old {
+            derivedFrom?.image = new
+        }
+        if let listed = recipes {
+            recipes = listed.map { recipe in
+                var recipe = recipe
+                if recipe.inheritedFrom == old {
+                    recipe.inheritedFrom = new
+                }
+                return recipe
+            }
+        }
+    }
+
     public struct RecipeInfo: Codable, Equatable, Sendable {
         public var description: String?
         /// SHA-256 of the recipe and the files it copies.

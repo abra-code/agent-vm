@@ -154,6 +154,9 @@ public struct ImageStore: Sendable {
             throw AgentVMError.corruptImageRecord(path: path, reason: error.localizedDescription)
         }
         guard record.name == name else {
+            if let mark = BoxStore.RenameMark.read(in: directory), mark.to == name {
+                throw AgentVMError.corruptImageRecord(path: path, reason: "renaming image \(mark.from) to \(mark.to) was interrupted; `agent-vm image rename \(mark.from) \(mark.to)` finishes it")
+            }
             throw AgentVMError.corruptImageRecord(path: path, reason: "it names image \(record.name)")
         }
         if let problem = record.numbersProblem {
@@ -208,7 +211,7 @@ public struct ImageStore: Sendable {
         } catch {
             throw AgentVMError.corruptImageRecord(path: staged.path, reason: "cannot write: \(error.localizedDescription)")
         }
-        guard rename(image.updateURL.path, image.updateCommitURL.path) == 0 else {
+        guard Darwin.rename(image.updateURL.path, image.updateCommitURL.path) == 0 else {
             throw AgentVMError.system(operation: "rename \(image.updateURL.path)", code: errno)
         }
         _ = try settle(image, updating: true)
@@ -233,7 +236,7 @@ public struct ImageStore: Sendable {
                 guard FileSystem.exists(source) else {
                     continue
                 }
-                guard rename(source, image.directory.appendingPathComponent(name).path) == 0 else {
+                guard Darwin.rename(source, image.directory.appendingPathComponent(name).path) == 0 else {
                     throw AgentVMError.system(operation: "move \(source) into place", code: errno)
                 }
             }
@@ -267,6 +270,137 @@ public struct ImageStore: Sendable {
         try FileSystem.removeTree(directory.path)
         // The account password goes with the last image or box that names it.
         passwords.removeUnused(store: root)
+    }
+
+    // MARK: - Renaming
+
+    public struct Renamed: Sendable {
+        public var image: GoldenImage
+        /// The boxes made from the image, whose records name it by its new name now.
+        public var boxes: [String]
+        /// The images built from it (`image create --from`), likewise.
+        public var images: [String]
+        /// How many folders' remembered choices (avm) named the image.
+        public var rememberedFolders: Int
+    }
+
+    /// Gives an image another name: its folder and record, the records of the boxes made from
+    /// it and of the images built from it, and avm's remembered choices. Boxes of it may be
+    /// running: a box is a clone and only its record names the image. Refused while the image
+    /// is being built, updated or cloned, while an image built from it is being built or changed, for a
+    /// name that is taken, and while a job that has not ended was started for it.
+    @discardableResult
+    public func rename(_ old: String, to new: String) throws -> Renamed {
+        guard Self.isValidName(old) else {
+            throw AgentVMError.invalidImageName(old)
+        }
+        guard Self.isValidName(new) else {
+            throw AgentVMError.invalidImageName(new)
+        }
+        guard old != new else {
+            throw AgentVMError.cannotRename(what: "image \(old)", reason: "\(new) is the name it has")
+        }
+        // Box records are rewritten: the lock that guards them (see BoxStore.resize).
+        guard let recordLock = try FolderLock.tryAcquire(AccountPasswordStore.lockPath(store: root), patience: AccountPasswordStore.lockPatience) else {
+            throw AgentVMError.system(operation: "rename image \(old) while account passwords are moved into the Keychain", code: EBUSY)
+        }
+        defer { recordLock.release() }
+        let oldDirectory = imagesDirectory.appendingPathComponent(old, isDirectory: true)
+        let newDirectory = imagesDirectory.appendingPathComponent(new, isDirectory: true)
+        let mark = BoxStore.RenameMark(from: old, to: new)
+        let resuming = !FileSystem.exists(oldDirectory.path)
+        if resuming {
+            // The folder moved and the rest did not happen: finished below.
+            guard BoxStore.RenameMark.read(in: newDirectory) == mark else {
+                throw AgentVMError.imageNotFound(old)
+            }
+        } else if FileSystem.exists(newDirectory.path) {
+            throw AgentVMError.imageExists(name: new, state: (try? image(named: new))?.record.state.rawValue ?? "unreadable")
+        }
+        let directory = resuming ? newDirectory : oldDirectory
+        // Both, as for a delete: a build or a clone holds the first, an update the second.
+        guard let lock = try FolderLock.tryAcquire(directory.appendingPathComponent(Self.lockName).path),
+              let changeLock = try FolderLock.tryAcquire(directory.appendingPathComponent(Self.updateLockName).path, patience: FolderLock.testPatience) else {
+            throw AgentVMError.imageBusy(resuming ? new : old)
+        }
+        defer {
+            changeLock.release()
+            lock.release()
+        }
+        if !resuming {
+            // An update that was decided and not finished is finished first: its record
+            // would otherwise replace the renamed one.
+            _ = try settle(try image(named: old), updating: true)
+            if let job = JobStore(root: root).unfinishedJob(for: "image:\(old)", naming: old, with: ["--from", "--image"]) {
+                throw AgentVMError.cannotRename(what: "image \(old)", reason: "job \(job) names it and has not ended")
+            }
+            // A rebuild of it that is under way or waiting to take its place is found by the
+            // image's name, and would be left behind as an image of its own.
+            let rebuild = Self.rebuildName(for: old)
+            if FileSystem.exists(imagesDirectory.appendingPathComponent(rebuild).path) {
+                throw AgentVMError.cannotRename(what: "image \(old)", reason: "a rebuild of it (\(rebuild)) is under way or was left unfinished; `agent-vm image rebuild \(old)` finishes it, `agent-vm image delete \(rebuild)` drops it")
+            }
+        }
+        // The images built from it name it in their records; a build or an update of one of
+        // them writes its record from a copy read earlier, so none may be under way. Both
+        // locks: a build (`image create --from`, a rebuild) holds the first while its recipes
+        // run, an update the second.
+        let dependents = try list().images.filter { $0.name != old && $0.name != new && $0.record.names(image: old) }
+        var dependentLocks: [FolderLock] = []
+        defer { dependentLocks.forEach { $0.release() } }
+        for dependent in dependents {
+            // With patience: a box being cloned from it holds the first for a moment.
+            guard let built = try FolderLock.tryAcquire(dependent.directory.appendingPathComponent(Self.lockName).path, patience: FolderLock.testPatience) else {
+                throw AgentVMError.cannotRename(what: "image \(old)", reason: "image \(dependent.name), which was built from it, is being built or used by another agent-vm process")
+            }
+            dependentLocks.append(built)
+            guard let held = try tryLockForChange(dependent) else {
+                throw AgentVMError.cannotRename(what: "image \(old)", reason: "image \(dependent.name), which was built from it, is being changed by another agent-vm process")
+            }
+            dependentLocks.append(held)
+            // As for the image itself: an update of it that was decided and not finished
+            // holds a record that names the old name, and would put it back later.
+            if FileSystem.exists(dependent.updateCommitURL.path) {
+                _ = try settle(dependent, updating: true)
+            }
+        }
+        if !resuming {
+            try mark.write(in: oldDirectory)
+            guard renamex_np(oldDirectory.path, newDirectory.path, UInt32(RENAME_EXCL)) == 0 else {
+                let code = errno
+                BoxStore.RenameMark.remove(in: oldDirectory)
+                if code == EEXIST {
+                    throw AgentVMError.imageExists(name: new, state: "made meanwhile")
+                }
+                throw AgentVMError.system(operation: "rename \(oldDirectory.path) to \(newDirectory.path)", code: code)
+            }
+        }
+        // From here every step may be taken again.
+        let path = newDirectory.appendingPathComponent(Self.recordName).path
+        var record: ImageRecord
+        do {
+            record = try SessionStore.decoder.decode(ImageRecord.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        } catch {
+            throw AgentVMError.corruptImageRecord(path: path, reason: error.localizedDescription)
+        }
+        guard record.name == old || record.name == new else {
+            throw AgentVMError.corruptImageRecord(path: path, reason: "it names image \(record.name)")
+        }
+        record.name = new
+        let renamed = GoldenImage(record: record, directory: newDirectory)
+        try save(renamed)
+        var images: [String] = []
+        for dependent in dependents {
+            // Read again under its lock.
+            let current = try image(named: dependent.name)
+            try update(current) { $0.rename(image: old, to: new) }
+            images.append(dependent.name)
+        }
+        let boxes = try BoxStore(root: root).repointImage(from: old, to: new)
+        // Not worth failing for: avm's lists then start at the top for those folders.
+        let folders = (try? ConnectChoices(store: root).rename(image: old, to: new)) ?? 0
+        BoxStore.RenameMark.remove(in: newDirectory)
+        return Renamed(image: renamed, boxes: boxes, images: images.sorted(), rememberedFolders: folders)
     }
 
     private func save(_ image: GoldenImage) throws {

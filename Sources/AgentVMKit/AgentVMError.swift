@@ -97,6 +97,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case boxDisposed(String)
     /// Another agent-vm command is changing the box folder now (`reason`); nothing was done.
     case boxBusy(String, reason: String)
+    /// A box or an image keeps its name (`what` is "box dev1" or "image dev"); nothing was done.
+    case cannotRename(what: String, reason: String)
     /// `box recreate` deleted the box, and creating it again failed; `command` makes it by hand.
     case boxNotRecreated(name: String, reason: String, command: String)
     /// Secrets in the Keychain (SecretStore). Messages name a secret, never its value.
@@ -249,6 +251,8 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return "\(operation) failed: \(message)"
         case let .boxBusy(name, reason):
             return "box \(name) was left as it was: \(reason); try again in a moment"
+        case let .cannotRename(what, reason):
+            return "\(what) keeps its name: \(reason)"
         case let .boxNotRecreated(name, reason, command):
             return "box \(name) was deleted, but creating it again failed: \(reason); create it with: \(command)"
         case let .boxDisposed(name):

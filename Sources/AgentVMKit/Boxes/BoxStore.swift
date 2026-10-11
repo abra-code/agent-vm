@@ -73,6 +73,9 @@ public struct BoxRecord: Codable, Equatable, Sendable {
     /// The image's `passwordID` when the box was made: the Keychain item with the account's
     /// password, shared with the image. Nil when the box has a `Password` file.
     public var passwordID: String?
+    /// The names the box had before `box rename`, oldest first. What a session noted about a
+    /// box, it noted under the name the box had then.
+    public var formerNames: [String]?
 
     public var effectiveNetwork: BoxNetwork {
         return network ?? .legacy
@@ -330,6 +333,9 @@ public struct BoxStore: Sendable {
             throw AgentVMError.corruptBoxRecord(path: path, reason: error.localizedDescription)
         }
         guard record.name == name else {
+            if let mark = RenameMark.read(in: directory), mark.to == name {
+                throw AgentVMError.corruptBoxRecord(path: path, reason: "renaming box \(mark.from) to \(mark.to) was interrupted; `agent-vm box rename \(mark.from) \(mark.to)` finishes it")
+            }
             throw AgentVMError.corruptBoxRecord(path: path, reason: "it names box \(record.name)")
         }
         if let problem = RecordNumbers.problem(cpuCount: record.cpuCount, memoryBytes: record.memoryBytes, diskBytes: nil) {
@@ -616,6 +622,156 @@ public struct BoxStore: Sendable {
             }
         }
         return (deleted, problems)
+    }
+
+    // MARK: - Renaming
+
+    /// In a box's or an image's folder while it is renamed: the two names. A rename that was
+    /// interrupted after the folder moved is finished by giving the same command again.
+    struct RenameMark: Codable, Equatable {
+        static let fileName = ".rename"
+        var from: String
+        var to: String
+
+        static func read(in directory: URL) -> RenameMark? {
+            guard let data = try? Data(contentsOf: directory.appendingPathComponent(fileName)) else {
+                return nil
+            }
+            return try? JSONDecoder().decode(RenameMark.self, from: data)
+        }
+
+        func write(in directory: URL) throws {
+            let url = directory.appendingPathComponent(Self.fileName)
+            do {
+                try JSONEncoder().encode(self).write(to: url, options: .atomic)
+            } catch {
+                throw AgentVMError.system(operation: "write \(url.path)", code: EIO)
+            }
+        }
+
+        static func remove(in directory: URL) {
+            _ = unlink(directory.appendingPathComponent(fileName).path)
+        }
+    }
+
+    public struct Renamed: Sendable {
+        public var box: Box
+        /// How many folders' remembered choices (avm) named the box and name it by its new
+        /// name now.
+        public var rememberedFolders: Int
+    }
+
+    /// Gives a stopped box another name: its folder and record, and avm's remembered choices.
+    /// What the box holds, its rules and its logs stay; its former name is kept in the record,
+    /// so a session that ran programs in it still finds them. Refused for a running box, a
+    /// temporary one (it is deleted once it stops), a name that is taken, and a box a job
+    /// that has not ended was started for.
+    @discardableResult
+    public func rename(_ old: String, to new: String) throws -> Renamed {
+        guard ImageStore.isValidName(old) else {
+            throw AgentVMError.invalidBoxName(old)
+        }
+        guard ImageStore.isValidName(new) else {
+            throw AgentVMError.invalidBoxName(new)
+        }
+        guard old != new else {
+            throw AgentVMError.cannotRename(what: "box \(old)", reason: "\(new) is the name it has")
+        }
+        // As in `resize`: the record is rewritten, and so is it when account passwords move
+        // into the Keychain.
+        guard let recordLock = try FolderLock.tryAcquire(AccountPasswordStore.lockPath(store: root), patience: AccountPasswordStore.lockPatience) else {
+            throw AgentVMError.system(operation: "rename box \(old) while account passwords are moved into the Keychain", code: EBUSY)
+        }
+        defer { recordLock.release() }
+        let oldDirectory = boxesDirectory.appendingPathComponent(old, isDirectory: true)
+        let newDirectory = boxesDirectory.appendingPathComponent(new, isDirectory: true)
+        let mark = RenameMark(from: old, to: new)
+        if !FileSystem.exists(oldDirectory.path) {
+            // The folder moved and the rest did not happen: finished here.
+            guard RenameMark.read(in: newDirectory) == mark else {
+                throw AgentVMError.boxNotFound(old)
+            }
+            guard let lock = try FolderLock.tryAcquire(newDirectory.appendingPathComponent(Self.lockName).path, patience: FolderLock.testPatience) else {
+                throw AgentVMError.boxRunning(new)
+            }
+            defer { lock.release() }
+            return try finishRename(mark, directory: newDirectory)
+        }
+        guard !FileSystem.exists(newDirectory.path) else {
+            throw AgentVMError.boxExists(new)
+        }
+        let lock: FolderLock?
+        do {
+            lock = try FolderLock.tryAcquire(oldDirectory.appendingPathComponent(Self.lockName).path, patience: FolderLock.testPatience)
+        } catch AgentVMError.system(_, ENOENT) {
+            throw AgentVMError.boxNotFound(old)
+        }
+        guard let lock else {
+            throw AgentVMError.boxRunning(old)
+        }
+        defer { lock.release() }
+        // As in `resize`: a lock file made in what a delete left is taken away again.
+        guard FileSystem.exists(oldDirectory.appendingPathComponent(Self.recordName).path) else {
+            unlink(oldDirectory.appendingPathComponent(Self.lockName).path)
+            rmdir(oldDirectory.path)
+            throw AgentVMError.boxNotFound(old)
+        }
+        let current = try box(named: old)
+        guard current.record.disposable != true else {
+            throw AgentVMError.cannotRename(what: "box \(old)", reason: "it is a temporary box, deleted once it stops")
+        }
+        if let job = JobStore(root: root).unfinishedJob(for: "box:\(old)") {
+            throw AgentVMError.cannotRename(what: "box \(old)", reason: "job \(job) was started for it and has not ended")
+        }
+        try mark.write(in: oldDirectory)
+        guard renamex_np(oldDirectory.path, newDirectory.path, UInt32(RENAME_EXCL)) == 0 else {
+            let code = errno
+            RenameMark.remove(in: oldDirectory)
+            if code == EEXIST {
+                throw AgentVMError.boxExists(new)
+            }
+            throw AgentVMError.system(operation: "rename \(oldDirectory.path) to \(newDirectory.path)", code: code)
+        }
+        return try finishRename(mark, directory: newDirectory)
+    }
+
+    /// The steps after the folder has its new name; each may be taken again.
+    private func finishRename(_ mark: RenameMark, directory: URL) throws -> Renamed {
+        let path = directory.appendingPathComponent(Self.recordName).path
+        var record: BoxRecord
+        do {
+            record = try SessionStore.decoder.decode(BoxRecord.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        } catch {
+            throw AgentVMError.corruptBoxRecord(path: path, reason: error.localizedDescription)
+        }
+        guard record.name == mark.from || record.name == mark.to else {
+            throw AgentVMError.corruptBoxRecord(path: path, reason: "it names box \(record.name)")
+        }
+        record.name = mark.to
+        var former = (record.formerNames ?? []).filter { $0 != mark.to && $0 != mark.from }
+        former.append(mark.from)
+        record.formerNames = former
+        let box = Box(record: record, directory: directory)
+        try save(box)
+        BoxEventLog(url: box.eventsLogURL).append(.init(.rename, detail: "from \(mark.from) to \(mark.to)"))
+        // Not worth failing for: avm's lists then start at the top for those folders.
+        let folders = (try? ConnectChoices(store: root).rename(box: mark.from, to: mark.to)) ?? 0
+        RenameMark.remove(in: directory)
+        return Renamed(box: box, rememberedFolders: folders)
+    }
+
+    /// Makes every box of image `old` name `new` as its image; returns their names. The caller
+    /// holds the lock that guards box records (AccountPasswordStore.lockPath). A running box
+    /// is changed too: its record is read only by commands, as for a rule change.
+    func repointImage(from old: String, to new: String) throws -> [String] {
+        var changed: [String] = []
+        for box in try list().boxes where box.record.image == old {
+            var record = box.record
+            record.image = new
+            try save(Box(record: record, directory: box.directory))
+            changed.append(box.name)
+        }
+        return changed
     }
 
     /// Records the Keychain item that holds the box's password (AccountPasswordMove); the

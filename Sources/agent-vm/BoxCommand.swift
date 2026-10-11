@@ -24,7 +24,7 @@ struct BoxCommand: ParsableCommand {
             shows what exec and shell ran there, `box status` shows its state without \
             starting anything, and `box info` adds the space it takes on disk.
             """,
-        subcommands: [Create.self, Recreate.self, SetSize.self, List.self, Status.self, Info.self, Start.self, GC.self, SyncClock.self, Unshare.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self, EventLogCommand.self, Send.self,
+        subcommands: [Create.self, Recreate.self, SetSize.self, Rename.self, List.self, Status.self, Info.self, Start.self, GC.self, SyncClock.self, Unshare.self, Stop.self, Delete.self, Shell.self, View.self, ExecLogCommand.self, Network.self, NetLog.self, EventLogCommand.self, Send.self,
                       Packs.self, Serve.self]
     )
 
@@ -382,6 +382,39 @@ struct BoxCommand: ParsableCommand {
                 return
             }
             print("Box \(box.name): \(box.record.cpuCount) CPUs, \(box.record.memoryBytes >> 30) GB of memory")
+        }
+    }
+
+    struct Rename: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Give a stopped box another name.",
+            discussion: """
+                The box's folder and record get the new name; what the box holds, its rules \
+                and its logs stay, and what avm remembers per folder follows. The box must be \
+                stopped. A temporary box cannot be renamed (it is deleted once it stops), nor \
+                a box a job that has not ended was started for. The name inside the box (its \
+                host name) does not change. If the command is interrupted, give it again to \
+                finish.
+                """)
+
+        @Argument(help: "The box's name now.")
+        var name: String
+
+        @Argument(help: "Its new name.")
+        var newName: String
+
+        @OptionGroup var options: StoreOptions
+
+        func run() throws {
+            let renamed = try options.boxStore.rename(name, to: newName)
+            if options.json {
+                try Output.json(renamed.box.record)
+                return
+            }
+            print("Renamed box \(name) to \(newName)")
+            if renamed.rememberedFolders > 0 {
+                print("  avm remembered it for \(renamed.rememberedFolders) folder\(renamed.rememberedFolders == 1 ? "" : "s"), by its new name now")
+            }
         }
     }
 

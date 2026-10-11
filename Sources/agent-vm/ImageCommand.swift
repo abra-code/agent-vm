@@ -19,7 +19,7 @@ struct ImageCommand: ParsableCommand {
             off again and shuts the guest down. Starting virtual machines needs the binaries \
             built by Scripts/build.sh (see `agent-vm doctor`).
             """,
-        subcommands: [Create.self, List.self, Info.self, Delete.self, Setup.self, View.self, Update.self, Rebuild.self, UpdateGuest.self, FetchIPSW.self]
+        subcommands: [Create.self, List.self, Info.self, Rename.self, Delete.self, Setup.self, View.self, Update.self, Rebuild.self, UpdateGuest.self, FetchIPSW.self]
     )
 
     struct Create: AsyncParsableCommand {
@@ -871,6 +871,46 @@ struct ImageCommand: ParsableCommand {
             }
             for line in entry.lines {
                 print(line)
+            }
+        }
+    }
+
+    struct Rename: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Give an image another name.",
+            discussion: """
+                The image's folder and record get the new name, and so does everything that \
+                names the image: the boxes made from it (running ones too; a box is a copy \
+                and only notes its image's name), the images built from it, and what avm \
+                remembers per folder. Refused while the image is being built, updated or \
+                copied, while an image built from it is being built or updated, for a name \
+                that is taken, and while a job that has not ended was started for it. If the \
+                command is interrupted, give it again to finish.
+                """)
+
+        @Argument(help: "The image's name now.")
+        var name: String
+
+        @Argument(help: "Its new name.")
+        var newName: String
+
+        @OptionGroup var options: StoreOptions
+
+        func run() throws {
+            let renamed = try options.imageStore.rename(name, to: newName)
+            if options.json {
+                try Output.json(renamed.image.record)
+                return
+            }
+            print("Renamed image \(name) to \(newName)")
+            if !renamed.boxes.isEmpty {
+                print("  its boxes name it so now: \(renamed.boxes.joined(separator: ", "))")
+            }
+            if !renamed.images.isEmpty {
+                print("  the images built from it name it so now: \(renamed.images.joined(separator: ", "))")
+            }
+            if renamed.rememberedFolders > 0 {
+                print("  avm remembered it for \(renamed.rememberedFolders) folder\(renamed.rememberedFolders == 1 ? "" : "s"), by its new name now")
             }
         }
     }

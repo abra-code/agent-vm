@@ -443,6 +443,34 @@ public struct JobStore: Sendable {
         return (jobs, problems)
     }
 
+    /// The id of a job that has not ended (queued or running) and was started for `target`
+    /// ("box:<name>", "image:<name>"), if there is one. Its command names the target, so the
+    /// target must keep its name until the job ends.
+    ///
+    /// `options` and `name`: also a job whose command gives `name` to one of those options
+    /// (`--from dev`, `--image=dev`): a job that builds on an image or makes a box of it is
+    /// started for what it makes, and still names the image.
+    public func unfinishedJob(for target: String, naming name: String? = nil, with options: [String] = []) -> String? {
+        let jobs = (try? list(endedWithin: 0).jobs) ?? []
+        return jobs.first { job in
+            guard job.state == .queued || job.state == .running else {
+                return false
+            }
+            if job.targets.contains(target) {
+                return true
+            }
+            guard let name else {
+                return false
+            }
+            return job.command.indices.contains { index in
+                let word = job.command[index]
+                return options.contains { option in
+                    word == "\(option)=\(name)" || (word == option && index + 1 < job.command.count && job.command[index + 1] == name)
+                }
+            }
+        }?.id
+    }
+
     // MARK: - Changing
 
     /// Asks a running job to stop: SIGINT to its runner, which passes it to the command. agent-vm

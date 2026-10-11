@@ -77,7 +77,7 @@ extension BoxCommand {
         static func text(_ event: BoxEventLog.Event) -> String {
             var line = "\(Output.time(event.time))  \(event.event.rawValue.padding(toLength: 8, withPad: " ", startingAt: 0))"
             switch event.event {
-            case .start, .ready, .stop:
+            case .start, .ready, .stop, .rename:
                 line += event.detail.map { "  \($0)" } ?? ""
             case .share:
                 line += "  \(event.path ?? "?")\(event.readOnly == true ? " (read only)" : "")"

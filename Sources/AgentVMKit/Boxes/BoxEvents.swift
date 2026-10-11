@@ -34,6 +34,8 @@ public struct BoxEventLog: Sendable {
         case type
         /// Files were copied into the box (`items`).
         case send
+        /// The box got another name (`detail`: "from <old> to <new>").
+        case rename
     }
 
     /// A file or folder sent to the box.
@@ -70,7 +72,7 @@ public struct BoxEventLog: Sendable {
         public var running: Bool?
         public var items: [Item]?
         /// start: the image and the network mode; ready: the guest daemon's version; stop:
-        /// why, when it was not asked for.
+        /// why, when it was not asked for; rename: the two names.
         public var detail: String?
 
         public init(_ event: Kind, time: Date = Date(), pid: Int32? = getpid(), path: String? = nil, readOnly: Bool? = nil,

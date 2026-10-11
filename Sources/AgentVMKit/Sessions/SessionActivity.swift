@@ -123,26 +123,47 @@ public struct SessionActivity: Encodable, Equatable, Sendable {
         }
         let window = Self.window(of: session.record, now: now)
         let keptEntries = boxes.isEmpty ? [] : kept.list()
+        let renamed = boxes.isEmpty ? [] : ((try? boxStore.list().boxes) ?? []).filter { $0.record.formerNames != nil }
         var programs: [Program] = []
         var entries: [NetworkLog.Entry] = []
         var notes: [String] = []
+        // The folders read so far (a kept folder by its id, a box by its path), and whether each
+        // held programs of the session. A session that went on in a box after `box rename`
+        // noted the box under both names: its logs are read once.
+        var read: [String: Bool] = [:]
         for name in boxes {
             // The box as it is now, and every kept folder of a box of that name that holds
             // programs of this session (the box may have been deleted and made again).
-            var folders: [(folder: URL, temporary: Bool)] = []
-            for entry in keptEntries where entry.logs.box == name && entry.logs.sessions?.contains(session.id) == true {
-                if let readable = try? kept.readable(entry.logs.id, temporary: temporary) {
-                    folders.append(readable)
+            var folders: [(key: String, folder: URL, temporary: Bool)] = []
+            var found = false
+            for entry in keptEntries where (entry.logs.box == name || entry.logs.formerNames?.contains(name) == true)
+                && entry.logs.sessions?.contains(session.id) == true {
+                let key = "kept " + entry.logs.id
+                if let held = read[key] {
+                    found = found || held
+                } else if let readable = try? kept.readable(entry.logs.id, temporary: temporary) {
+                    folders.append((key, readable.folder, readable.temporary))
                 } else {
+                    read[key] = false
                     notes.append("the kept logs \(entry.logs.id) of box \(name) could not be read")
                 }
             }
+            var current: [Box] = []
             if let box = try? boxStore.box(named: name) {
-                folders.append((box.directory, false))
+                current.append(box)
             }
-            var found = false
+            // A box that had this name when the session ran (`box rename`).
+            current += renamed.filter { $0.record.formerNames?.contains(name) == true }
+            for box in current {
+                if let held = read[box.directory.path] {
+                    found = found || held
+                } else {
+                    folders.append((box.directory.path, box.directory, false))
+                }
+            }
             for source in folders {
                 let ran = ExecLog(url: source.folder.appendingPathComponent(BoxStore.execLogName)).records { $0.session == session.id }
+                read[source.key] = !ran.isEmpty
                 if !ran.isEmpty {
                     found = true
                     programs += ran.map { Program(box: name, program: $0) }

@@ -133,6 +133,45 @@ public struct ConnectChoices: Sendable {
         try write(file)
     }
 
+    /// After `box rename`: the folders whose choice was box `old` now name `new`. Returns how
+    /// many.
+    @discardableResult
+    public func rename(box old: String, to new: String) throws -> Int {
+        return try rename { choice in
+            guard choice.target == .box, choice.box == old else {
+                return false
+            }
+            choice.box = new
+            return true
+        }
+    }
+
+    /// After `image rename`: the folders whose choice was a temporary box from image `old`
+    /// now name `new`. Returns how many.
+    @discardableResult
+    public func rename(image old: String, to new: String) throws -> Int {
+        return try rename { choice in
+            guard choice.image == old else {
+                return false
+            }
+            choice.image = new
+            return true
+        }
+    }
+
+    private func rename(_ change: (inout ConnectChoice) -> Bool) throws -> Int {
+        var file = read()
+        var count = 0
+        for (project, var choice) in file.projects where change(&choice) {
+            file.projects[project] = choice
+            count += 1
+        }
+        if count > 0 {
+            try write(file)
+        }
+        return count
+    }
+
     private func write(_ file: File) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

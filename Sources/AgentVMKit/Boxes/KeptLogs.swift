@@ -48,6 +48,8 @@ public struct KeptLogs: Sendable {
         /// The folder's name in Logs/: what `store logs --remove` takes.
         public var id: String
         public var box: String
+        /// The names the box had before (`box rename`), when it had any.
+        public var formerNames: [String]?
         /// What the box's record said; nil when it could not be read.
         public var image: String?
         public var guest: GuestKind?
@@ -210,7 +212,7 @@ public struct KeptLogs: Sendable {
             _ = rmdir(kept.path)
             throw failure ?? AgentVMError.system(operation: "move the logs of box \(name)", code: EIO)
         }
-        let entry = Record(id: id, box: name, image: record?.image, guest: record?.effectiveGuest, disposable: record?.disposable,
+        let entry = Record(id: id, box: name, formerNames: record?.formerNames, image: record?.image, guest: record?.effectiveGuest, disposable: record?.disposable,
                            boxCreatedAt: record?.createdAt, keptAt: now, logBytes: logBytes, sessions: sessions.isEmpty ? nil : sessions)
         // Without its record the folder is still there to open, and is removed by its age.
         try? SessionStore.encoder.encode(entry).write(to: kept.appendingPathComponent(Self.recordName), options: .atomic)

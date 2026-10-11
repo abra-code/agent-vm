@@ -207,7 +207,14 @@ What changes:
 No. A derived image is a clone made at `image create --from`. To pass a change on, update the derived image too (`image update`), or build it again on its base as it is now: `agent-vm image rebuild <image>` runs the image's own recipes on a fresh clone of the base and keeps the name.
 
 **Can I change a box's CPUs or memory, or rename a box or an image?**
-CPUs and memory of a stopped box, yes: `agent-vm box set <box> --cpus N --memory-gb N`, and what the box holds stays. What to choose is in [processors-and-memory.md](processors-and-memory.md). The same for its network: `box network` changes the rules at once, and the mode while the box is stopped. An image's CPUs and memory are only what its new boxes start with. Nothing can be renamed.
+CPUs and memory of a stopped box, yes: `agent-vm box set <box> --cpus N --memory-gb N`, and what the box holds stays. What to choose is in [processors-and-memory.md](processors-and-memory.md). The same for its network: `box network` changes the rules at once, and the mode while the box is stopped. An image's CPUs and memory are only what its new boxes start with.
+
+Names, yes (since 0.7.39):
+
+- **`agent-vm box rename <box> <new-name>`** renames a stopped box. What it holds, its rules and its logs stay, and what avm remembers per folder follows. A temporary box cannot be renamed (it is deleted once it stops). The name inside the box (its host name) does not change. A session that ran programs in the box still lists them: the box's record keeps its former names.
+- **`agent-vm image rename <image> <new-name>`** renames an image, and with it everything that names it: the boxes made from it (running ones too, since a box is a copy and only notes its image's name), the images built from it, and what avm remembers. It is refused while the image is being built, updated or copied, or while an image built from it is being built or updated.
+- **Both are refused** for a name that is taken, and while a job that has not ended was started for the box or the image (its command names it). If either command is interrupted, the box or image says so when it is next used; giving the same command again finishes the rename.
+- **What does not follow:** scripts and applications of your own that keep the old name, and the names of logs kept from deleted boxes.
 
 **How do I know that a macOS update exists?**
 `agent-vm status --check-updates` asks Apple for the newest macOS and names the images that are behind it, with the command that installs it. The answer is kept: until you ask again, plain `status` and `image list` repeat it without a network. Nothing is checked or installed by itself.
