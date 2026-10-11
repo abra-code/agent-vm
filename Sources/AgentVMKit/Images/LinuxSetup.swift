@@ -187,16 +187,18 @@ enum LinuxSetup {
         return String(path.dropFirst(prefix.count)) != running.trimmingCharacters(in: .whitespacesAndNewlines)
     }
     /// Makes `kernel` the only kernel installed, and so the one the system boots: its package
-    /// is installed and every kernel package of another flavor purged. The boot menu's first
-    /// entry is then this kernel with no setting of ours, and the newest file in /boot is the
+    /// is installed and every kernel and kernel modules package of another flavor purged. The
+    /// modules go too because Ubuntu's depend on "the kernel or its unsigned build": with them
+    /// left, apt installs the unsigned build in place of the kernel it removes. The boot menu's
+    /// first entry is then this kernel with no setting of ours, and the newest file in /boot is the
     /// kernel that boots (`newestKernel`). Removing the kernel that is running asks a question
     /// (linux-base's linux-check-removal, whose answer by default is to stop); it is answered
     /// first. The running kernel stays in memory until the next boot.
     static func kernel(_ kernel: LinuxKernel) -> Step {
         return Step("kernel with \(LinuxPageSize.name(kernel.pageBytes)) pages (\(kernel.package))",
                     #"/usr/bin/echo 'linux-base linux-base/removing-running-kernel boolean false' | /usr/bin/debconf-set-selections || exit 1; "#
-                    + "\(apt) install \(kernel.withoutRecommended ? "--no-install-recommends " : "")\(([kernel.package] + kernel.alongside).joined(separator: " ")) || exit 1; "
-                    + #"others="$(/usr/bin/dpkg-query -W -f '${db:Status-Status} ${Package}\n' 'linux-image-*' | /usr/bin/sed -n 's/^installed //p' | /usr/bin/grep -v -e '-\#(kernel.flavor)$')"; "#
+                    + "\(apt) install \(kernel.package) || exit 1; "
+                    + #"others="$(/usr/bin/dpkg-query -W -f '${db:Status-Status} ${Package}\n' 'linux-image-*' 'linux-modules-*' 'linux-main-modules-*' 2> /dev/null | /usr/bin/sed -n 's/^installed //p' | /usr/bin/grep -v -e '-\#(kernel.flavor)$' -e '^\#(kernel.package)$')"; "#
                     + #"if [ -n "$others" ]; then \#(apt) purge $others || exit 1; fi; "#
                     + #"left="$(/usr/bin/ls /boot/vmlinuz-* | /usr/bin/grep -c -v -e '-\#(kernel.flavor)$')"; if [ "$left" != "0" ]; then /usr/bin/ls /boot; exit 1; fi; /usr/bin/ls /boot/vmlinuz-*"#,
                     timeout: kernelDownloadTimeout)

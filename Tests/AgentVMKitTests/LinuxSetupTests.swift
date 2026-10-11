@@ -93,17 +93,14 @@ import Testing
         #expect(script.hasPrefix("/usr/bin/echo 'linux-base linux-base/removing-running-kernel boolean false' | /usr/bin/debconf-set-selections || exit 1; /usr/bin/apt-get -q -y -o Dpkg::Use-Pty=0 install linux-image-arm64-16k || exit 1; "))
         // Every installed kernel package of another flavor goes, and the step fails when a
         // kernel of another flavor is still in /boot.
-        #expect(script.contains(#"| /usr/bin/sed -n 's/^installed //p' | /usr/bin/grep -v -e '-arm64-16k$')"; if [ -n "$others" ]; then /usr/bin/apt-get -q -y -o Dpkg::Use-Pty=0 purge $others || exit 1; fi; "#))
+        #expect(script.contains(#"| /usr/bin/sed -n 's/^installed //p' | /usr/bin/grep -v -e '-arm64-16k$' -e '^linux-image-arm64-16k$')"; if [ -n "$others" ]; then /usr/bin/apt-get -q -y -o Dpkg::Use-Pty=0 purge $others || exit 1; fi; "#))
+        // The modules packages are in the list: Ubuntu's would bring the kernel's unsigned build in.
+        #expect(script.contains(#"'linux-image-*' 'linux-modules-*' 'linux-main-modules-*' 2> /dev/null | /usr/bin/sed"#))
         #expect(script.contains(#"if [ "$left" != "0" ]; then /usr/bin/ls /boot; exit 1; fi"#))
         // The way back names its own flavor.
         #expect(LinuxSetup.kernel(LinuxKernel(pageBytes: 4096, package: "linux-image-cloud-arm64", flavor: "cloud-arm64")).script.contains("grep -v -e '-cloud-arm64$'"))
-        // Ubuntu's kernel with 64 KiB pages: the stand-in for the firmware set, nothing recommended;
-        // the 4 KiB flavor "generic" does not match its names, nor the other way around.
-        let large = LinuxSetup.kernel(LinuxKernel(pageBytes: 65536, package: "linux-image-generic-64k", flavor: "generic-64k",
-                                                  alongside: ["linux-firmware-minimal"], withoutRecommended: true)).script
-        #expect(large.contains("install --no-install-recommends linux-image-generic-64k linux-firmware-minimal || exit 1; "))
-        #expect(large.contains("grep -v -e '-generic-64k$'"))
-        #expect(!script.contains("--no-install-recommends"))
+        // The package itself is kept by name: Ubuntu's "linux-image-virtual" does not end with its flavor.
+        #expect(LinuxSetup.kernel(LinuxKernel(pageBytes: 4096, package: "linux-image-virtual", flavor: "generic")).script.contains("grep -v -e '-generic$' -e '^linux-image-virtual$'"))
         #expect(LinuxSetup.pageSize == "/usr/bin/getconf PAGESIZE")
     }
 

@@ -23,8 +23,7 @@ public enum LinuxPageNote {
     }
 
     /// Whether the system's images get a kernel with pages of the Mac's size when none is
-    /// asked for. A larger kernel that is only there on request (Ubuntu's 64 KiB one) is not
-    /// what the notes send people to.
+    /// asked for.
     public static func hasLargerKernel(_ system: LinuxSystem?) -> Bool {
         return LinuxBase.known(for: system).map { $0.defaultPageBytes >= hostPageBytes } ?? false
     }

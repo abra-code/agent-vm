@@ -51,14 +51,9 @@ public struct LinuxBase: Sendable, Equatable {
                   folder: URL(string: "https://cloud-images.ubuntu.com/resolute/current/")!,
                   file: "resolute-server-cloudimg-arm64.img", checksumList: "SHA256SUMS", digest: .sha256, member: "",
                   manifest: nil,
-                  // Ubuntu packages no kernel with 16 KiB pages. Its kernel with 64 KiB pages asks
-                  // for linux-firmware (700 MB of firmware for hardware a virtual machine does not
-                  // have). linux-firmware-minimal is Ubuntu's empty package that stands in for it,
-                  // and it recommends the same firmware, so recommended packages are left out:
-                  // 303 MB to download instead of 999 MB.
-                  kernels: [LinuxKernel(pageBytes: 4096, package: "linux-image-virtual", flavor: "generic"),
-                            LinuxKernel(pageBytes: 65536, package: "linux-image-generic-64k", flavor: "generic-64k",
-                                        alongside: ["linux-firmware-minimal"], withoutRecommended: true)],
+                  // Ubuntu packages no kernel with 16 KiB pages. Its other kernel, linux-image-generic-64k,
+                  // has 64 KiB pages, which a Mac's processor does not have (`LinuxPageSize.unsupported`).
+                  kernels: [LinuxKernel(pageBytes: 4096, package: "linux-image-virtual", flavor: "generic")],
                   defaultPageBytes: 4096),
     ]
 
@@ -147,23 +142,17 @@ public struct LinuxBase: Sendable, Equatable {
 
 /// A kernel a distribution packages.
 public struct LinuxKernel: Sendable, Equatable {
-    /// The size of its memory pages: 4096, 16384 or 65536.
+    /// The size of its memory pages: 4096 or 16384.
     public var pageBytes: Int
     /// The package that installs it and brings its updates: "linux-image-arm64-16k".
     public var package: String
     /// What the names of its packages end with: "arm64-16k", "cloud-arm64".
     public var flavor: String
-    /// Packages installed in the same step, which decide what `package` brings with it.
-    public var alongside: [String]
-    /// Install without the packages these recommend.
-    public var withoutRecommended: Bool
 
-    public init(pageBytes: Int, package: String, flavor: String, alongside: [String] = [], withoutRecommended: Bool = false) {
+    public init(pageBytes: Int, package: String, flavor: String) {
         self.pageBytes = pageBytes
         self.package = package
         self.flavor = flavor
-        self.alongside = alongside
-        self.withoutRecommended = withoutRecommended
     }
 }
 
@@ -173,6 +162,11 @@ public enum LinuxPageSize {
     public static func name(_ bytes: Int) -> String {
         return "\(bytes >> 10) KiB"
     }
+
+    /// The size no guest on a Mac can have: Apple's processors translate addresses for pages of
+    /// 4 KiB and 16 KiB only, and a kernel built for 64 KiB pages stops before it prints a line.
+    /// The option still reads "64k", so that the refusal can say why.
+    public static let unsupported = 65536
 
     /// The bytes `--page-size <value>` names: "4k", "16k" or "64k", in either case.
     public static func bytes(_ value: String) -> Int? {
@@ -196,11 +190,19 @@ public enum LinuxPageSize {
 extension LinuxBase {
     /// The kernel with pages of that size, or a refusal that names the sizes there are.
     public func kernel(pageBytes: Int) throws -> LinuxKernel {
+        guard pageBytes != LinuxPageSize.unsupported else {
+            throw AgentVMError.linuxBase("--page-size 64k: a Mac's processor has no 64 KiB pages, and a kernel built for them does not start in a box; \(name) has \(Self.sizes(kernels))")
+        }
         guard let kernel = kernels.first(where: { $0.pageBytes == pageBytes }) else {
-            let sizes = kernels.map { "\($0.pageBytes >> 10)k" }.joined(separator: " or ")
-            throw AgentVMError.linuxBase("--page-size \(pageBytes >> 10)k: \(name) has \(kernels.count == 1 ? "only a kernel" : "kernels") with \(sizes) pages")
+            throw AgentVMError.linuxBase("--page-size \(pageBytes >> 10)k: \(name) has \(Self.sizes(kernels))")
         }
         return kernel
+    }
+
+    /// "kernels with 4k or 16k pages", "only a kernel with 4k pages".
+    private static func sizes(_ kernels: [LinuxKernel]) -> String {
+        let sizes = kernels.map { "\($0.pageBytes >> 10)k" }.joined(separator: " or ")
+        return "\(kernels.count == 1 ? "only a kernel" : "kernels") with \(sizes) pages"
     }
 
     /// The known system an image's record describes, whatever it was built from (a download, a

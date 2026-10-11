@@ -55,7 +55,7 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .customLong("cloud-image"), help: ArgumentHelp("With --linux: a cloud image file of your own (.tar.xz, .img, .qcow2 or .raw) in place of the download. It is trusted because you give it, and its SHA-512 is recorded.", valueName: "path"))
         var cloudImage: String?
 
-        @Option(name: .customLong("page-size"), help: ArgumentHelp("With --linux: the size of the kernel's memory pages, 4k, 16k or 64k, of those the system packages a kernel for (Debian: 4k, 16k; Ubuntu: 4k). Default: 16k where there is one. On macOS 27.0 a Linux guest with 4k pages can lose kernel memory when the Mac runs short of memory; 16k is the Mac's own page size.", valueName: "size"))
+        @Option(name: .customLong("page-size"), help: ArgumentHelp("With --linux: the size of the kernel's memory pages, 4k or 16k, of those the system packages a kernel for (Debian: 4k, 16k; Ubuntu: 4k). Default: 16k where there is one. On macOS 27.0 a Linux guest with 4k pages can lose kernel memory when the Mac runs short of memory; 16k is the Mac's own page size.", valueName: "size"))
         var pageSize: String?
 
         @Option(name: .long, help: "A ready image to start from instead of a restore image or a cloud image; the new image runs the system its base runs. Without --recipe: a copy of it with nothing added.")
@@ -102,7 +102,7 @@ struct ImageCommand: ParsableCommand {
                 throw ValidationError("--page-size chooses the kernel of a new Linux image: give --linux <release> with it (an image made with --from has its base's kernel; `image update --system --page-size` changes it)")
             }
             if let pageSize, LinuxPageSize.bytes(pageSize) == nil {
-                throw ValidationError("--page-size takes 4k, 16k or 64k")
+                throw ValidationError("--page-size takes 4k or 16k")
             }
             if recipe.isEmpty && !(inputs.isEmpty && settings.isEmpty) {
                 throw ValidationError("--input and --set give values to a recipe's inputs and parameters; add --recipe")
@@ -364,7 +364,7 @@ struct ImageCommand: ParsableCommand {
         @Flag(name: .long, help: "Update the image's system: macOS (and the Command Line Tools), or a Linux image's packages.")
         var system = false
 
-        @Option(name: .customLong("page-size"), help: ArgumentHelp("With --system, for Linux images: the size of the kernel's memory pages from now on (4k, 16k or 64k, of those the system packages a kernel for). Without it an image keeps the size it has; one built before agent-vm 0.7.30 gets its system's default (16k for Debian).", valueName: "size"))
+        @Option(name: .customLong("page-size"), help: ArgumentHelp("With --system, for Linux images: the size of the kernel's memory pages from now on (4k or 16k, of those the system packages a kernel for). Without it an image keeps the size it has; one built before agent-vm 0.7.30 gets its system's default (16k for Debian).", valueName: "size"))
         var pageSize: String?
 
         @Flag(name: .customLong("macos"), help: "The same as --system, for macOS images only.")
@@ -408,7 +408,7 @@ struct ImageCommand: ParsableCommand {
             }
             if let pageSize {
                 guard LinuxPageSize.bytes(pageSize) != nil else {
-                    throw ValidationError("--page-size takes 4k, 16k or 64k")
+                    throw ValidationError("--page-size takes 4k or 16k")
                 }
                 guard system, !macOS else {
                     throw ValidationError("--page-size changes a Linux image's kernel, with the system's update: add --system")
