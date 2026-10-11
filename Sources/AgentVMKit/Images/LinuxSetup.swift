@@ -34,6 +34,11 @@ enum LinuxSetup {
     /// plain lines (with a terminal of its own it sends blank lines by the hundred).
     static let apt = "/usr/bin/apt-get -q -y -o Dpkg::Use-Pty=0"
 
+    /// The quiet time allowed to a step that may download a kernel. apt prints nothing while
+    /// one package downloads, and Ubuntu's kernel modules are one package of 283 MB: 76
+    /// minutes of silence at 0.5 Mbit/s. A stuck download still ends, by apt's own timeouts.
+    static let kernelDownloadTimeout = 3 * 3600
+
     /// Packages a Linux image has that the cloud image lacks and agent-vm or its recipes use.
     static let packages = ["git", "jq", "unzip", "zip"]
     /// What `--command-line-tools` means on Linux: the compiler and make.
@@ -136,7 +141,7 @@ enum LinuxSetup {
 
     static let packageLists = Step("package lists", "\(apt) -o APT::Update::Error-Mode=any -o Acquire::Retries=3 update", timeout: 600)
     /// A changed configuration file keeps what the image has (what sealing wrote among it).
-    static let systemUpdates = Step("system updates", "\(apt) -o Dpkg::Options::=--force-confold dist-upgrade", timeout: 1800)
+    static let systemUpdates = Step("system updates", "\(apt) -o Dpkg::Options::=--force-confold dist-upgrade", timeout: kernelDownloadTimeout)
 
     /// What `image update --system` runs in a Linux image: the distribution's updates, then
     /// what they left behind (an older kernel, downloaded packages).
@@ -194,7 +199,7 @@ enum LinuxSetup {
                     + #"others="$(/usr/bin/dpkg-query -W -f '${db:Status-Status} ${Package}\n' 'linux-image-*' | /usr/bin/sed -n 's/^installed //p' | /usr/bin/grep -v -e '-\#(kernel.flavor)$')"; "#
                     + #"if [ -n "$others" ]; then \#(apt) purge $others || exit 1; fi; "#
                     + #"left="$(/usr/bin/ls /boot/vmlinuz-* | /usr/bin/grep -c -v -e '-\#(kernel.flavor)$')"; if [ "$left" != "0" ]; then /usr/bin/ls /boot; exit 1; fi; /usr/bin/ls /boot/vmlinuz-*"#,
-                    timeout: 1800)
+                    timeout: kernelDownloadTimeout)
     }
 
     static let tools = Step("the compiler and make (\(toolsPackage))", "\(apt) install \(toolsPackage)", timeout: 1800)
