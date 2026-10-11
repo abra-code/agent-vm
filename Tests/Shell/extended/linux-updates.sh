@@ -345,6 +345,7 @@ test_linux_rebuild_from_the_cloud_image() {
 
     local _release
     _release="$(linux_test_release)"
+    export AGENT_VM_WITHHELD_LINUX=1
     run_avm image rebuild "$_image" --linux "$_release" --json
     assert_status 0 || return 1
     assert_err_events || return 1

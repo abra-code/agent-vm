@@ -8,7 +8,6 @@ This page says what a Linux box is, what differs from a macOS box, and what to k
 
 ```sh
 agent-vm image create deb --linux debian-13          # about a minute after a 0.2 GB download; no clicks
-agent-vm image create ub --linux ubuntu-26.04        # or Ubuntu: two and a half minutes after a 0.9 GB download
 agent-vm image create deb-tools --from deb --recipe Recipes/linux-node/recipe.json --recipe Recipes/agent-clis/recipe.json
 agent-vm box create work --image deb-tools --allow pack:anthropic --allow pack:npm
 agent-vm box start work                              # ready in about 3 seconds
@@ -16,7 +15,7 @@ agent-vm exec --box work --project ~/Development/app -- npm test
 avm new deb-tools                                    # or a temporary box with your folder, on this terminal
 ```
 
-- **The system** is Debian 13 or Ubuntu 26.04 (since 0.7.11) for ARM, built from the distribution's own cloud image. [Debian or Ubuntu](#debian-or-ubuntu) says what differs.
+- **The system** is Debian 13 for ARM, built from Debian's own cloud image. Ubuntu 26.04 is built by the same code and withheld for now: [Debian or Ubuntu](#debian-or-ubuntu) says why and what differs.
 - **No screen, no password, no ssh.** A Linux box is reached through `exec`, `box shell` and `avm`, and nothing else listens in it.
 - **The same protections as a macOS box:** one shared folder, the allowlist network through the proxy on your Mac, a snapshot and a report around every `avm` session, disposable boxes.
 
@@ -39,7 +38,9 @@ Defaults for a new Linux image: 4 CPUs, 4 GB of memory, a 32 GB disk, the user `
 
 ## Debian or Ubuntu
 
-Both are built, sealed, run and updated by the same commands, and every test of Linux boxes passes on both. Choose by what your work expects to find.
+**Ubuntu is withheld** (since 0.7.41): `image create --linux ubuntu` and `image rebuild --linux ubuntu` are refused, and `agent-vm version` does not list it. Ubuntu packages kernels with 4 KiB and with 64 KiB pages and none with 16 KiB; on macOS 27 a box on the first can lose kernel memory and stop, and the second does not start on a Mac ([The kernel's page size](#the-kernels-page-size)). It comes back when there is a kernel for it that is safe, or when macOS no longer has the defect. An Ubuntu image that exists is used and updated as before. To build one all the same, for a test, set `AGENT_VM_WITHHELD_LINUX=1`.
+
+Both are built, sealed, run and updated by the same commands, and every test of Linux boxes passed on both. The table says what differs.
 
 | | Debian 13 | Ubuntu 26.04 (since 0.7.11) |
 |---|---|---|
@@ -64,7 +65,7 @@ A kernel manages memory in pages of one size, fixed when the kernel is built: 4 
 - **Why:** on macOS 27.0 a Linux guest whose kernel has 4 KiB pages can lose memory of the kernel's own when the Mac runs short of memory and pushes the guest's memory out: the lost memory reads as zeros, the kernel meets a fault, and the box stops (the README's "A kernel fault stops the box"). It is not agent-vm's defect, and other tools that use the Virtualization framework see it too. In our tests two Debian boxes of 8 GB that used their memory faulted in 2 of 8 runs with 4 KiB pages and in none of 16 with 16 KiB pages, while the Mac was made to push about 3 GB out; Ubuntu boxes faulted in 8 of 8.
 - **Debian:** the image is built with `linux-image-arm64-16k` in place of the cloud image's kernel, the same kernel version with another page size. The kernel is the first thing a build installs: the image is then booted again and must come up with 16 KiB pages, and the rest of the setup (the account, the updates, the packages, the recipes) runs on that kernel, so that as little as can be runs on the one that can fault (since 0.7.32; before, the whole build ran on the cloud image's kernel). The package is Debian's full kernel; the cloud image's own, a smaller build for virtual machines, is removed.
 - **An image built before 0.7.30** gets that kernel at its next `agent-vm image update <image> --system`, which says so, installs it first and boots the copy on it before the updates; then `agent-vm box recreate <box>` gives each box the new disk.
-- **Ubuntu** packages no kernel with 16 KiB pages, and its images keep the 4 KiB kernel. Until Apple fixes macOS, prefer Debian for a box that runs beside memory-hungry work on the Mac.
+- **Ubuntu** packages no kernel with 16 KiB pages, and its images keep the 4 KiB kernel. That is why new Ubuntu images are withheld (since 0.7.41; [Debian or Ubuntu](#debian-or-ubuntu)).
 - **Ubuntu's kernel with 64 KiB pages does not help** (since 0.7.40 `--page-size 64k` is refused; 0.7.37 to 0.7.39 offered it for Ubuntu): Apple's processors have pages of 4 KiB and 16 KiB only, and a kernel built for 64 KiB pages (`linux-image-generic-64k`) stops before it prints its first line. An update that tried it failed at the boot on the new kernel and left its image as it was.
 - **agent-vm says where this applies** (since 0.7.31): `agent-vm doctor` has a line "linux kernels" that names the ready Linux images whose kernel has 4 KiB pages and the command that moves those that can be moved; `box start` and `avm` add a note when the box they start is such a one; `image create` says so before it builds one. A box keeps the kernel it was made with until `box recreate`, and its note goes by what its record says: a kernel you installed by hand is not seen.
 - **The Mac's memory is looked at before an image job boots on a 4 KiB kernel** (since 0.7.33): the first boot of every `image create --linux` (until the 16 KiB kernel is installed; the whole build for Ubuntu), an `image create --from` of an image with such a kernel, and an `image update` of one. With less to spare than the guest's memory, or when macOS reports memory pressure, the job says so in a note and goes on; when macOS reports critical memory pressure, or pressure with less than 1 GB to spare, it is refused before anything is made or booted (the image's name stays free), since it would most likely fail part of the way. "To spare" is what macOS can give without compressing or swapping: free memory, cached files, and purgeable memory.
@@ -74,7 +75,7 @@ A kernel manages memory in pages of one size, fixed when the kernel is built: 4 
 
 | Command | With a Linux image or box |
 |---|---|
-| `image create --linux <release>` | Builds the image from the release's cloud image: `debian-13` or `ubuntu-26.04` (`debian` or `ubuntu` alone means the newest known of it). `--cloud-image` takes a file of your own. |
+| `image create --linux <release>` | Builds the image from the release's cloud image: `debian-13` (`debian` alone means the newest known of it; `ubuntu-26.04` is withheld). `--cloud-image` takes a file of your own. |
 | `image create --from`, `--recipe`, `--input`, `--set`, `--cpus`, `--memory-gb`, `--disk-gb`, `--user` | As for macOS. A recipe must be for Linux (`"guest": "linux"` or `"any"`); see [image-recipes.md](image-recipes.md). |
 | `image create --command-line-tools` | Means the compiler and make (`build-essential`). On by default. |
 | `image update --system` | Installs the distribution's package updates. `--macos` is refused, with this name. |

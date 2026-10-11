@@ -75,7 +75,6 @@ A Linux image needs no restore image and no `image setup` (since 0.7.4):
 
 ```sh
 agent-vm image create deb --linux debian-13                # Debian's cloud image (0.2 GB), about a minute, no clicks
-agent-vm image create ub --linux ubuntu-26.04              # or Ubuntu's (0.9 GB), about two and a half minutes (since 0.7.11)
 ```
 
 `image setup` opens the image in a window with System Settings on Full Disk Access; the README's Images section walks through it. Without it, a program in a box that opens the account's Desktop, Documents or Downloads waits on a permission prompt that nobody sees.

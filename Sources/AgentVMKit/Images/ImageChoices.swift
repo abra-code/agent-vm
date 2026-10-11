@@ -23,9 +23,10 @@ public struct LinuxRelease: Encodable, Sendable, Equatable {
         version = base.version
     }
 
-    /// Every system, in the order of `LinuxBase.known`: the newest of each distribution first.
+    /// Every system that is offered, in the order of `LinuxBase.known`: the newest of each
+    /// distribution first.
     public static var all: [LinuxRelease] {
-        return LinuxBase.known.map(LinuxRelease.init)
+        return LinuxBase.offered().map(LinuxRelease.init)
     }
 
     /// Whether a word can be an id: what a client may check before it puts one on a command line.

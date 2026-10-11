@@ -62,6 +62,8 @@ done
 
 [ -x "$AGENT_VM" ] || die "no agent-vm at $AGENT_VM; build it with Scripts/build.sh"
 export AGENT_VM
+# A test that wants a withheld Linux system sets this itself.
+unset AGENT_VM_WITHHELD_LINUX
 # Scratch folders live under /private/tmp: control socket paths must stay under 104 bytes.
 SCRATCH_ROOT="$(/usr/bin/mktemp -d /private/tmp/avm-tests.XXXXXX)"
 status=$?

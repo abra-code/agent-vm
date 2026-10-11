@@ -58,13 +58,30 @@ import Testing
         }
     }
 
+    static let withheldToo = ["AGENT_VM_WITHHELD_LINUX": "1"]
+
     @Test func debianMeansTheNewest() throws {
         #expect(try LinuxBase.named("debian-13").id == "debian-13")
         #expect(try LinuxBase.named("debian").id == LinuxBase.known.first { $0.distribution == "debian" }?.id)
-        #expect(try LinuxBase.named("ubuntu-26.04").name == "Ubuntu 26.04")
-        #expect(try LinuxBase.named("ubuntu").id == "ubuntu-26.04")
+        #expect(throws: AgentVMError.linuxBase("--linux nope: this agent-vm knows debian-13 (debian alone means its newest)")) {
+            _ = try LinuxBase.named("nope", environment: [:])
+        }
+        // Ubuntu is known and withheld: refused with the reason, by either name, and left out of
+        // what is offered. Images of it are still found by their records.
+        #expect(LinuxBase.offered(environment: [:]).map(\.id) == ["debian-13"])
+        for name in ["ubuntu", "ubuntu-26.04"] {
+            #expect(throws: AgentVMError.linuxBase("--linux \(name): Ubuntu 26.04 is not offered in this release: it packages no kernel with 16 KiB pages, and a box on its 4 KiB kernel can lose kernel memory and stop when the Mac runs short of memory (macOS 27); this agent-vm builds debian-13")) {
+                _ = try LinuxBase.named(name, environment: [:])
+            }
+        }
+        #expect(LinuxBase.known(for: LinuxSystem(distribution: "ubuntu", version: "26.04", name: "Ubuntu 26.04"))?.id == "ubuntu-26.04")
+        // The variable for tests of what is not released offers it again; any other value does not.
+        #expect(try LinuxBase.named("ubuntu-26.04", environment: Self.withheldToo).name == "Ubuntu 26.04")
+        #expect(try LinuxBase.named("ubuntu", environment: Self.withheldToo).id == "ubuntu-26.04")
+        #expect(LinuxBase.offered(environment: Self.withheldToo) == LinuxBase.known)
+        #expect(LinuxBase.offered(environment: ["AGENT_VM_WITHHELD_LINUX": "yes"]).map(\.id) == ["debian-13"])
         #expect(throws: AgentVMError.linuxBase("--linux nope: this agent-vm knows debian-13, ubuntu-26.04 (debian or ubuntu alone means its newest)")) {
-            _ = try LinuxBase.named("nope")
+            _ = try LinuxBase.named("nope", environment: Self.withheldToo)
         }
         // What was typed is shown made printable, and cut.
         #expect(throws: AgentVMError.self) { _ = try LinuxBase.named("x\u{1B}[2J") }
@@ -83,7 +100,7 @@ import Testing
         #expect(try debian.kernel(pageBytes: 16384) == LinuxKernel(pageBytes: 16384, package: "linux-image-arm64-16k", flavor: "arm64-16k"))
         #expect(try debian.kernel(pageBytes: 4096).flavor == "cloud-arm64")
         #expect(throws: AgentVMError.linuxBase("--page-size 64k: a Mac's processor has no 64 KiB pages, and a kernel built for them does not start in a box; Debian 13 has kernels with 4k or 16k pages")) { _ = try debian.kernel(pageBytes: 65536) }
-        let ubuntu = try LinuxBase.named("ubuntu")
+        let ubuntu = try LinuxBase.named("ubuntu", environment: Self.withheldToo)
         #expect(ubuntu.defaultPageBytes == 4096)
         #expect(throws: AgentVMError.linuxBase("--page-size 16k: Ubuntu 26.04 has only a kernel with 4k pages")) { _ = try ubuntu.kernel(pageBytes: 16384) }
         // Ubuntu packages a kernel with 64 KiB pages, which no Mac can run: the refusal says so.
@@ -119,7 +136,7 @@ import Testing
 
     @Test func theReleasesAreSaidForAProgram() throws {
         let releases = LinuxRelease.all
-        #expect(releases.map(\.id) == LinuxBase.known.map(\.id))
+        #expect(releases.map(\.id) == LinuxBase.offered().map(\.id))
         #expect(releases.first == LinuxRelease(try LinuxBase.named("debian-13")))
         #expect(Set(releases.map(\.id)).count == releases.count)
         for release in releases {
@@ -671,7 +688,7 @@ final class FolderServer: @unchecked Sendable {
         let debian = try LinuxBase.named("debian")
         #expect(LinuxPageNote.forBuild(debian, pageBytes: 16384) == nil)
         #expect(LinuxPageNote.forBuild(debian, pageBytes: 4096)?.hasSuffix("; leave out --page-size for the kernel with 16 KiB pages") == true)
-        #expect(LinuxPageNote.forBuild(try LinuxBase.named("ubuntu"), pageBytes: 4096)?.hasSuffix("; Ubuntu 26.04 packages no kernel with 16 KiB pages; Debian does") == true)
+        #expect(LinuxPageNote.forBuild(try LinuxBase.named("ubuntu", environment: ["AGENT_VM_WITHHELD_LINUX": "1"]), pageBytes: 4096)?.hasSuffix("; Ubuntu 26.04 packages no kernel with 16 KiB pages; Debian does") == true)
     }
 
     @Test func doctorNamesTheImagesAndWhatHelpsEach() {
