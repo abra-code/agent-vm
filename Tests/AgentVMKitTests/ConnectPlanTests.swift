@@ -67,6 +67,14 @@ import Testing
         #expect(arguments.starts(with: ["exec", "--tty", "--box", "b1", "--project", "/p", "--read-only", "--clipboard", "--"]))
     }
 
+    @Test func aGitSnapshotIsAStepOfItsOwnKind() {
+        let request = ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", snapshot: true, gitSnapshot: true)
+        let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: true, ownPid: pid))
+        #expect(steps.contains(.snapshot(project: "/p", gitOnly: true)))
+        #expect(steps.contains(.report(project: "/p")))
+        #expect(ConnectStep.snapshot(project: "/p", gitOnly: true).text == "snapshot the git folders of /p")
+    }
+
     @Test func noSnapshotMeansNoReport() {
         let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", snapshot: false),
                                          facts: ConnectFacts(boxRunning: false, ownPid: pid))

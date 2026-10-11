@@ -6,7 +6,7 @@
 
 ```
 avm [to] [<box>] [--box <box>] [--agent <id> | --shell | -- <command> ...] [--project <folder> | --no-project]
-    [--read-only] [--no-snapshot] [--no-clipboard] [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
+    [--read-only] [--no-snapshot] [--git-snapshot] [--no-clipboard] [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
 avm new <image> [--temp | --name <box>] [--refresh] [--allow RULE ...] [--cpus N] [--memory-gb N]
     [the same --agent, --shell, -- <command>, sharing and --dry-run options]
 avm list [--json] [--project <folder>]
@@ -17,7 +17,7 @@ avm agents [--json]
 - **`to`** is the default subcommand, so `avm dev1` is `avm to dev1`. A box named `new`, `list`, `agents`, `to` or `help` is reached with `--box`: `avm --box list`.
 - **What runs:** an agent from the catalog (`--agent <id>`; see [Agents](#agents)), the account's login shell (`--shell`), or the command after `--`; without any of them, avm shows the list of what it can run. An agent or a command runs through the login shell as well (`$SHELL -l -c`), so `~/.zprofile` applies as it does in `agent-vm box shell`, with its words passed unchanged.
 - **`--project <folder>`** shares that folder instead of the current one; **`--no-project`** shares none, and the program starts in the box user's home folder.
-- **`--read-only`** shares the folder read only: programs in the box cannot change it, so no snapshot is taken. **`--no-snapshot`** shares it read-write without a snapshot, so there is nothing to report or undo afterwards.
+- **`--read-only`** shares the folder read only: programs in the box cannot change it, so no snapshot is taken. **`--no-snapshot`** shares it read-write without a snapshot, so there is nothing to report or undo afterwards. **`--git-snapshot`** snapshots only the folder's git folders, for a huge folder; see [A snapshot of the git folders only](#a-snapshot-of-the-git-folders-only).
 - **`--secret`** and **`--env`** are passed on to `agent-vm exec` (see the README's Boxes and exec section): `--secret NAME` takes a value from your Keychain, `--env NAME=VALUE` or `--env NAME` sets a variable.
 - **`--no-clipboard`**: text the program copies is not put on your Mac's clipboard (see [Terminals](#terminals)).
 - **`--dry-run`** prints the steps instead of taking them, and exits 0. It creates, starts, shares, stores and remembers nothing, asks nothing, and needs a terminal only to show a list.
@@ -146,7 +146,7 @@ A secret's state is `set`, `missing`, or `asks`: stored by another build of agen
 
 ## Snapshot and report
 
-Before the session, avm snapshots a folder it shares read-write: an instant copy-on-write copy in the agent-vm store, recorded as a session (see the README's Sessions section; `agent-vm session list` shows them). The folder must be on the same volume as the store. The copy takes no space, but every file and folder is visited, so a very large folder takes minutes: after 3 seconds, and then every 10, a line says how far it is (`still copying ~/src: 412160 files and folders so far (Control-C stops; --no-snapshot runs without a snapshot)`), since 0.7.29.
+Before the session, avm snapshots a folder it shares read-write: an instant copy-on-write copy in the agent-vm store, recorded as a session (see the README's Sessions section; `agent-vm session list` shows them). The folder must be on the same volume as the store. The copy takes no space, but every file and folder is visited, so a very large folder takes minutes: after 3 seconds, and then every 10, a line says how far it is (`still copying ~/src: 412160 files and folders so far (Control-C stops; --no-snapshot runs without a snapshot; --git-snapshot copies only the git folders)`), since 0.7.29.
 
 After the session, avm reports what changed since the snapshot:
 
@@ -170,6 +170,17 @@ k) keep the changes  r) show every change  u) undo them all [K/r/u]
   - the folder is on another volume than the store, or the snapshot failed: going on means nothing can be undone, so stopping is the default.
 - **A session that ends with a signal** (the terminal closed, `kill`): nothing is asked; the session is ended, kept for undo, and avm exits with 128 + the signal. A Control-C while the report is made or the undo runs takes effect after that step, never halfway. A Control-C while the snapshot is taken stops the copy (since 0.7.29; before, it waited for the copy to end): what was copied is removed, no session is made, nothing is run, and avm exits with 130.
 - **Kept snapshots take space** as the folder changes: `agent-vm session discard --older-than 7` frees those that ended more than a week ago.
+
+
+### A snapshot of the git folders only
+
+`--git-snapshot` (since 0.7.34) snapshots only the git folders: every entry named `.git` under the shared folder, with what is in it. It is meant for one large folder that holds many repositories, where the whole snapshot takes minutes. Measured on a folder of 114 GB with 133 repositories and about a million files: 9 seconds against 100 for the snapshot, 7 against 24 for the report, 9 against 76 to discard it.
+
+- **What it covers:** the repositories' own files: commits, branches, the index, hooks, configuration. The report lists what changed there and flags what runs code later on this Mac (a hook, `core.fsmonitor`); undo puts those folders back, so history an agent rewrote, a branch it deleted or a hook it planted is undone.
+- **What it does not cover:** working files. They are not in the snapshot, so they are neither reported nor undone: uncommitted work, files git ignores, and files outside any repository are as the agent left them. After an undo, git can restore tracked files from the last commit (`git status`, `git restore`).
+- **How the git folders are found:** by listing folders, never through a symlink or into another volume. A worktree's or submodule's `.git` file is taken as well. A folder that cannot be read is named when the snapshot is taken and in every report, since git folders inside it are not covered. A folder without any git folder is refused: avm says so and asks whether to go on without a snapshot.
+- **A repository that is deleted whole** cannot get its git folder back by undo, because the folder above it is not in the snapshot: undo says which could not be restored, and the snapshot keeps them (`agent-vm session list --json` gives its path).
+- `agent-vm session start --git-only` is the same for a session started by hand; `agent-vm session undo --whole-tree` is refused for such a session.
 
 ## The list
 

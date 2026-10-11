@@ -19,8 +19,17 @@ public struct SessionRecord: Codable, Equatable, Sendable {
         case discarded
     }
 
-    /// Bumped on incompatible changes to this record.
-    public static let currentFormatVersion = 1
+    /// What of the project the snapshot holds.
+    public enum Scope: String, Codable, Sendable {
+        /// Only the git folders: every entry named `.git` under the project, with what is in
+        /// it. Working files are not in the snapshot, so they are neither reported nor undone.
+        case gitFolders
+    }
+
+    /// Bumped on incompatible changes to this record. A record that an older agent-vm reads
+    /// right keeps the older number: 2 is written only for a session with a `scope`, which an
+    /// agent-vm that knows only whole snapshots would report and undo wrongly.
+    public static let currentFormatVersion = 2
 
     public var formatVersion: Int
     public var id: String
@@ -37,6 +46,13 @@ public struct SessionRecord: Codable, Equatable, Sendable {
     public var undoneAt: Date?
     /// Name (inside the session folder) of the tree that `undo` replaced, if any.
     public var replacedTree: String?
+    /// Absent: the snapshot holds the whole project.
+    public var scope: Scope?
+    /// With `scope` `gitFolders`: folders that could not be read when the snapshot was taken,
+    /// so git folders inside them are not in it (at most `SessionStore.unsearchedLimit` are
+    /// named; `unsearchedCount` is how many there were).
+    public var unsearched: [String]?
+    public var unsearchedCount: Int?
 
     public var startedAt: Date {
         return Date(timeIntervalSince1970: Double(startSeconds) + Double(startNanoseconds) / 1_000_000_000)

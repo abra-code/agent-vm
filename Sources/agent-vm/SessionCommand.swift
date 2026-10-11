@@ -17,6 +17,8 @@ struct SessionCommand: ParsableCommand {
             clone of every file). The agent then edits the real folder; `report` lists what \
             changed and flags files that run code later on this Mac; `undo` puts back what \
             changed and keeps what the agent left behind for recovery.
+            `start --git-only` snapshots only the git folders (every .git under the project): \
+            seconds for a huge tree, with a report and an undo of those folders alone.
             State lives in $AGENT_VM_HOME (default ~/Library/Application Support/agent-vm); the \
             project must be on the same APFS volume.
             """,
@@ -29,6 +31,9 @@ struct SessionCommand: ParsableCommand {
         @Option(name: .long, help: "The project folder the agent will work on.")
         var project: String
 
+        @Flag(name: .customLong("git-only"), help: "Snapshot only the git folders (every .git under the project). Fast for a huge tree; working files are then neither reported nor undone.")
+        var gitOnly = false
+
         @OptionGroup var options: StoreOptions
 
         func run() throws {
@@ -37,7 +42,7 @@ struct SessionCommand: ParsableCommand {
             // With --json nothing but the answer is written; a program has its own way to wait.
             var pacer = ProgressPacer()
             let json = options.json
-            let session = try options.store.start(project: project) { met in
+            let session = try options.store.start(project: project, scope: gitOnly ? .gitFolders : nil) { met in
                 if !json && pacer.isDue() {
                     Stderr.write("still copying: \(met) files and folders so far\n")
                 }
@@ -49,7 +54,15 @@ struct SessionCommand: ParsableCommand {
             }
             print("Started session \(session.id) for \(session.record.project)")
             print("  snapshot: \(session.snapshotPath) (\(elapsed.formatted(.units(allowed: [.seconds, .milliseconds], width: .narrow))))")
-            print("  undo everything with: agent-vm session undo \(session.id)")
+            if session.record.scope == .gitFolders {
+                print("  the git folders only: what changes in them is reported and can be undone, working files are not covered")
+                if let count = session.record.unsearchedCount {
+                    print("  \(count) folder\(count == 1 ? "" : "s") could not be read and \(count == 1 ? "was" : "were") not searched for git folders: \((session.record.unsearched ?? []).joined(separator: ", "))\(count > (session.record.unsearched ?? []).count ? ", ..." : "")")
+                }
+                print("  put the git folders back with: agent-vm session undo \(session.id)")
+            } else {
+                print("  undo everything with: agent-vm session undo \(session.id)")
+            }
         }
     }
 
@@ -172,6 +185,10 @@ struct SessionCommand: ParsableCommand {
                 them; the rest stays undoable. --whole-tree instead swaps the whole folder with a \
                 copy of the snapshot in one atomic step (programs with the project open then keep \
                 seeing the replaced copy until they reopen it).
+
+                A session started with --git-only puts back the git folders alone; working \
+                files stay as the agent left them (git can then restore tracked files from \
+                the last commit), and --whole-tree is refused.
                 """)
 
         @Argument(help: "The session id.")
@@ -197,7 +214,7 @@ struct SessionCommand: ParsableCommand {
             if options.json {
                 try Output.json(UndoJSON(session: SessionOutput(session), restore: outcome.restore))
             } else if !path.isEmpty, outcome.isComplete, let restore = outcome.restore {
-                print("Restored \(restore.restored.count) changed entries of \(session.record.project) to their state at \(Output.time(session.record.startedAt)).")
+                print("Restored \(restore.restored.count) changed entries of \(Self.subject(session)) to their state at \(Output.time(session.record.startedAt)).")
                 if let replaced = session.replacedTreePath {
                     print("  what the agent left there is kept at: \(replaced)")
                 }
@@ -221,7 +238,10 @@ struct SessionCommand: ParsableCommand {
             let session = outcome.session
             var lines: [String] = []
             if outcome.isComplete {
-                lines.append("Restored \(session.record.project) to its state at \(Output.time(session.record.startedAt)).")
+                lines.append("Restored \(subject(session)) to \(session.record.scope == nil ? "its" : "their") state at \(Output.time(session.record.startedAt)).")
+                if session.record.scope != nil {
+                    lines.append("  working files are as the agent left them: the snapshot held the git folders only")
+                }
                 if let restore = outcome.restore {
                     lines.append("  \(restore.restored.count) changed entries put back")
                 } else {
@@ -237,9 +257,18 @@ struct SessionCommand: ParsableCommand {
                     lines.append("  \(path): \(reason)")
                 }
                 lines.append("  \(restore.remaining) changes remain; the session can still be undone.")
-                lines.append("  Retry, or swap the whole folder: agent-vm session undo \(session.id) --whole-tree")
+                if session.record.scope == nil {
+                    lines.append("  Retry, or swap the whole folder: agent-vm session undo \(session.id) --whole-tree")
+                } else {
+                    lines.append("  Retry with: agent-vm session undo \(session.id)")
+                }
             }
             return lines
+        }
+
+        /// What an undo of the session puts back, in words.
+        static func subject(_ session: Session) -> String {
+            return session.record.scope == nil ? session.record.project : "the git folders of \(session.record.project)"
         }
 
         struct UndoJSON: Encodable {

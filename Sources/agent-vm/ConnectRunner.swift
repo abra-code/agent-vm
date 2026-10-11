@@ -315,7 +315,8 @@ struct ConnectRunner {
                 let request = ConnectRequest(target: target, launch: launch, project: project, readOnly: options.readOnly,
                                              snapshot: !options.noSnapshot, secrets: options.secrets, env: options.env,
                                              extraAllow: newBox?.allow ?? [], cpus: newBox?.cpus, memoryBytes: newBox?.memoryBytes,
-                                             refresh: newBox?.refresh ?? false, clipboard: !options.noClipboard)
+                                             refresh: newBox?.refresh ?? false, clipboard: !options.noClipboard,
+                                             gitSnapshot: options.gitSnapshot)
                 var (facts, secretEntries) = try self.facts(for: launch, box: existing, running: runningBox != nil, probed: probed)
                 facts.temporaryName = temporaryName
                 let steps = ConnectPlanner.steps(for: request, facts: facts)
@@ -628,8 +629,8 @@ struct ConnectRunner {
                     guard response.ok else {
                         throw ConnectError.shareRefused(message: response.error ?? "box \(name) did not share \(project)", box: name)
                     }
-                case let .snapshot(project):
-                    let (taken, signal) = try snapshot(project, store: sessions, terminal: terminal)
+                case let .snapshot(project, gitOnly):
+                    let (taken, signal) = try snapshot(project, gitOnly: gitOnly, store: sessions, terminal: terminal)
                     session = taken
                     if let signal {
                         // A temporary box is left to its owner lease: it stops when this exits.
@@ -744,23 +745,31 @@ struct ConnectRunner {
     /// during the step comes back with it, the session already ended. A large project takes
     /// minutes to copy: after a few seconds a line says how far the copy is, and a signal
     /// stops it, leaving no snapshot.
-    private func snapshot(_ project: String, store: SessionStore, terminal: Terminal) throws -> (Session?, Int32?) {
+    private func snapshot(_ project: String, gitOnly: Bool, store: SessionStore, terminal: Terminal) throws -> (Session?, Int32?) {
         var pacer = ProgressPacer()
         let (result, signal) = SignalHold.watched { hold in
-            try store.start(project: project) { met in
+            try store.start(project: project, scope: gitOnly ? .gitFolders : nil) { met in
                 if let arrived = hold.arrived() {
                     // Removing what was copied takes a while too (10 s for 240000 entries).
                     print("  stopping; removing what was copied")
                     throw ConnectError.interrupted(arrived)
                 }
                 if pacer.isDue() {
-                    print("  still copying \(Self.tilde(project)): \(met) files and folders so far (Control-C stops; --no-snapshot runs without a snapshot)")
+                    let faster = gitOnly ? "" : "; --git-snapshot copies only the git folders"
+                    print("  still copying \(Self.tilde(project)): \(met) files and folders so far (Control-C stops; --no-snapshot runs without a snapshot\(faster))")
                 }
             }
         }
         switch result {
         case .success(let session):
-            print("Snapshot of \(Self.tilde(project)) taken (session \(session.id))")
+            if session.record.scope == .gitFolders {
+                print("Snapshot of the git folders of \(Self.tilde(project)) taken (session \(session.id)); working files are not covered")
+                if let count = session.record.unsearchedCount {
+                    print("  \(count) folder\(count == 1 ? "" : "s") could not be read and \(count == 1 ? "was" : "were") not searched for git folders")
+                }
+            } else {
+                print("Snapshot of \(Self.tilde(project)) taken (session \(session.id))")
+            }
             if let signal {
                 ConnectReport.end(session, store: store, warn: warn)
                 return (session, signal)

@@ -20,7 +20,8 @@ enum ConnectReport {
                                (summary.typeChanged, "changed type"), (summary.metadata, "permission")] where count > 0 {
             counts.append(words == "permission" ? "\(count) permission change\(count == 1 ? "" : "s")" : "\(count) \(words)")
         }
-        var line = "Session \(report.session): \(counts.joined(separator: ", ")) in \(ConnectRunner.tilde(report.project))"
+        let place = report.scope == .gitFolders ? "the git folders of " : ""
+        var line = "Session \(report.session): \(counts.joined(separator: ", ")) in \(place)\(ConnectRunner.tilde(report.project))"
         var review: [String] = []
         if summary.flaggedHigh > 0 {
             review.append("\(summary.flaggedHigh) high")
@@ -66,7 +67,7 @@ enum ConnectReport {
         // What ran and what was contacted, in one line; the whole is `session report`.
         let activity = SessionActivity.of(session, root: store.root).line(size: StoreCommand.Logs.size)
         if report.isEmpty && report.warnings.isEmpty {
-            print("No changes in \(project).")
+            print(report.scope == .gitFolders ? "No changes in the git folders of \(project) (working files were not compared)." : "No changes in \(project).")
             if let activity {
                 print("  \(activity)")
             }
@@ -80,7 +81,7 @@ enum ConnectReport {
         if report.isEmpty {
             // Something could not be examined, so the scan may have missed a change: the
             // snapshot stays.
-            print("No changes found in \(project), but:")
+            print("No changes found in \(report.scope == .gitFolders ? "the git folders of " : "")\(project), but:")
             for warning in report.warnings {
                 print("  warning: \(Printable.line(warning))")
             }

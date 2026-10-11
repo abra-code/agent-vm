@@ -9,6 +9,9 @@
 // equal when both are still clones of the same data (same APFS clone id), otherwise byte for
 // byte, so a touched-but-identical file is not reported. Deletions and additions come from
 // comparing the two trees, since a deleted file has no ctime.
+//
+// A session whose snapshot holds only the git folders is compared in those alone: every entry
+// named `.git` under the project and what is in it. Nothing else is walked, on either side.
 
 import Darwin
 import Foundation
@@ -78,6 +81,9 @@ public struct ChangeReport: Codable, Sendable {
     /// when the session ended or just before it was discarded: what had changed by then
     /// (`generatedAt`), not what differs now. Absent on a report made from the snapshot.
     public var saved: Bool?
+    /// Set when the snapshot holds only a part of the project: the changes are those of that
+    /// part, and what else changed in the project is not here.
+    public var scope: SessionRecord.Scope?
 
     public var isEmpty: Bool { changes.isEmpty }
 }
@@ -119,6 +125,11 @@ enum RelativePath {
     static func depth(_ path: String) -> Int {
         return components(path).count
     }
+
+    /// True when `path` is an entry named `.git` or inside one.
+    static func isInGitFolder(_ path: String) -> Bool {
+        return components(path).contains(where: FileSystem.isGitName)
+    }
 }
 
 enum ChangeScanner {
@@ -126,8 +137,20 @@ enum ChangeScanner {
     static func report(session: Session, now: Date = Date()) throws -> ChangeReport {
         let record = session.record
         var warnings: [String] = []
-        let before = try walk(session.snapshotPath, warnings: &warnings)
-        let after = try walk(record.project, warnings: &warnings)
+        let gitOnly = record.scope == .gitFolders
+        var before = try walk(session.snapshotPath, warnings: &warnings)
+        let after: [String: TreeEntryInfo]
+        if gitOnly {
+            // The snapshot also has the plain folders above its git folders.
+            before = before.filter { RelativePath.isInGitFolder($0.key) }
+            after = try walkGitFolders(record.project, warnings: &warnings)
+            if let count = record.unsearchedCount, count > 0 {
+                let named = (record.unsearched ?? []).joined(separator: ", ")
+                warnings.append("\(count) folder\(count == 1 ? "" : "s") could not be read when the snapshot was taken, so git folders inside \(count == 1 ? "it" : "them") are not in it: \(named)\(count > (record.unsearched ?? []).count ? ", ..." : "")")
+            }
+        } else {
+            after = try walk(record.project, warnings: &warnings)
+        }
         let repositories = repositories(in: after)
         let nowSeconds = Int64(now.timeIntervalSince1970)
 
@@ -156,6 +179,9 @@ enum ChangeScanner {
         let rootChanged = rootNow.map {
             changedSinceStart(Int64($0.st_ctimespec.tv_sec), Int64($0.st_ctimespec.tv_nsec))
         } ?? true
+        // With git folders only, the folders above a git folder are not in the walk: each is
+        // examined here, once.
+        var aboveGitFolders: [String: Bool] = [:]
         func insideChangedFolder(_ path: String) -> Bool {
             if rootChanged {
                 return true
@@ -163,8 +189,24 @@ enum ChangeScanner {
             var current = path
             while let parent = RelativePath.parent(current) {
                 current = parent
-                if let folder = after[current], changedSinceStart(folder.changeSeconds, folder.changeNanoseconds) {
-                    return true
+                if let folder = after[current] {
+                    if changedSinceStart(folder.changeSeconds, folder.changeNanoseconds) {
+                        return true
+                    }
+                } else if gitOnly {
+                    let changed: Bool
+                    if let known = aboveGitFolders[current] {
+                        changed = known
+                    } else {
+                        var info = stat()
+                        // One that cannot be examined proves nothing.
+                        changed = lstat(record.project + "/" + current, &info) != 0
+                            || changedSinceStart(Int64(info.st_ctimespec.tv_sec), Int64(info.st_ctimespec.tv_nsec))
+                        aboveGitFolders[current] = changed
+                    }
+                    if changed {
+                        return true
+                    }
                 }
             }
             return false
@@ -271,7 +313,8 @@ enum ChangeScanner {
 
         // The project folder itself (the walks skip their roots): permissions or flags the agent
         // changed on it are reported as ".", which undo puts back.
-        if let rootBefore = try? FileSystem.status(session.snapshotPath),
+        // Not with git folders only: the snapshot's own folder is not a copy of it then.
+        if !gitOnly, let rootBefore = try? FileSystem.status(session.snapshotPath),
            let rootAfter = rootNow,
            rootBefore.st_mode & 0o7777 != rootAfter.st_mode & 0o7777
             || (rootBefore.st_flags & FileSystem.comparedFlags) != (rootAfter.st_flags & FileSystem.comparedFlags) {
@@ -310,8 +353,10 @@ enum ChangeScanner {
             }
         }
 
-        return ChangeReport(session: record.id, project: record.project, snapshotPath: session.snapshotPath, startedAt: record.startedAt, generatedAt: now,
-                            summary: summary, changes: changes, warnings: warnings)
+        var report = ChangeReport(session: record.id, project: record.project, snapshotPath: session.snapshotPath, startedAt: record.startedAt, generatedAt: now,
+                                  summary: summary, changes: changes, warnings: warnings)
+        report.scope = record.scope
+        return report
     }
 
     private static func makeChange(_ repositories: Set<String>, _ path: String, _ kind: ChangeKind, new: TreeEntryInfo?,
@@ -355,9 +400,78 @@ enum ChangeScanner {
         return result
     }
 
-    /// Every entry under `root` keyed by path relative to it. Symlinks are not followed and the
-    /// walk does not enter other mounted volumes.
-    static func walk(_ root: String, warnings: inout [String]) throws -> [String: TreeEntryInfo] {
+    /// Every entry named `.git` under `root` and every entry inside one, keyed by path relative
+    /// to `root`: what a snapshot of the git folders holds of a project.
+    static func walkGitFolders(_ root: String, warnings: inout [String]) throws -> [String: TreeEntryInfo] {
+        var entries: [String: TreeEntryInfo] = [:]
+        let found = try FileSystem.gitEntries(under: root)
+        for folder in found.unsearched {
+            warnings.append("\(folder) cannot be read, so git folders inside it were not examined")
+        }
+        for relative in found.found {
+            var status = stat()
+            guard lstat(root + "/" + relative, &status) == 0 else {
+                // Gone since it was found; anything else (its folder lists its entries but
+                // does not let them be examined) is said, since it then looks deleted.
+                if errno != ENOENT {
+                    warnings.append("\(relative) could not be examined: \(String(cString: strerror(errno)))")
+                }
+                continue
+            }
+            guard var entry = entryInfo(status, unreadable: false) else {
+                continue
+            }
+            if entry.type == .directory {
+                var inside: [String: TreeEntryInfo] = [:]
+                do {
+                    // A git folder that cannot be listed or searched is replaced as a whole,
+                    // like any unreadable folder; otherwise its entries would look deleted.
+                    inside = try walk(root + "/" + relative, warnings: &warnings, prefix: relative + "/", rootUnreadable: &entry.unreadable)
+                } catch {
+                    warnings.append("\(relative) could not be examined: \(error)")
+                    entry.unreadable = true
+                }
+                entries.merge(inside) { first, _ in first }
+            }
+            entries[relative] = entry
+        }
+        return entries
+    }
+
+    /// One entry as a walk records it; nil for what holds no content (a socket, FIFO or device).
+    private static func entryInfo(_ status: stat, unreadable: Bool) -> TreeEntryInfo? {
+        let type: EntryType
+        switch status.st_mode & S_IFMT {
+        case S_IFREG: type = .file
+        case S_IFDIR: type = .directory
+        case S_IFLNK: type = .symlink
+        case S_IFSOCK, S_IFIFO, S_IFCHR, S_IFBLK:
+            // Left out of the snapshot (they hold no content), so left out here too: a live
+            // socket such as git's fsmonitor must not show up as added, or be moved by undo.
+            return nil
+        default: type = .other
+        }
+        return TreeEntryInfo(
+            type: type,
+            mode: UInt16(status.st_mode & 0o7777),
+            size: Int64(status.st_size),
+            flags: status.st_flags,
+            linkCount: UInt16(truncatingIfNeeded: status.st_nlink),
+            changeSeconds: Int64(status.st_ctimespec.tv_sec),
+            changeNanoseconds: Int64(status.st_ctimespec.tv_nsec),
+            unreadable: unreadable)
+    }
+
+    /// Every entry under `root` keyed by path relative to it, with `prefix` before each key.
+    /// Symlinks are not followed and the walk does not enter other mounted volumes.
+    static func walk(_ root: String, warnings: inout [String], prefix: String = "") throws -> [String: TreeEntryInfo] {
+        var rootUnreadable = false
+        return try walk(root, warnings: &warnings, prefix: prefix, rootUnreadable: &rootUnreadable)
+    }
+
+    /// The same, and sets `rootUnreadable` when `root` itself cannot be listed or does not let
+    /// its entries be examined (the walk records no entry for its root).
+    static func walk(_ root: String, warnings: inout [String], prefix: String, rootUnreadable: inout Bool) throws -> [String: TreeEntryInfo] {
         var entries: [String: TreeEntryInfo] = [:]
         guard let rootCopy = strdup(root) else {
             throw AgentVMError.system(operation: "walk \(root)", code: ENOMEM)
@@ -375,9 +489,12 @@ enum ChangeScanner {
         while let entry = fts_read(tree) {
             let info = Int32(entry.pointee.fts_info)
             if entry.pointee.fts_level == 0 || info == FTS_DP {
+                if entry.pointee.fts_level == 0, info == FTS_DNR {
+                    rootUnreadable = true
+                }
                 continue
             }
-            let relative = String(cString: entry.pointee.fts_path + prefixLength)
+            let relative = prefix + String(cString: entry.pointee.fts_path + prefixLength)
             guard info != FTS_NS, info != FTS_ERR, let status = entry.pointee.fts_statp?.pointee else {
                 warnings.append("\(relative) could not be examined: \(String(cString: strerror(entry.pointee.fts_errno)))")
                 // A folder that lists its entries but does not let them be examined (no search
@@ -386,29 +503,15 @@ enum ChangeScanner {
                 if let parent = entry.pointee.fts_parent, parent.pointee.fts_level > 0,
                    let parentRelative = RelativePath.parent(relative) {
                     entries[parentRelative]?.unreadable = true
+                } else if entry.pointee.fts_level == 1 {
+                    rootUnreadable = true
                 }
                 continue
             }
-            let type: EntryType
-            switch status.st_mode & S_IFMT {
-            case S_IFREG: type = .file
-            case S_IFDIR: type = .directory
-            case S_IFLNK: type = .symlink
-            case S_IFSOCK, S_IFIFO, S_IFCHR, S_IFBLK:
-                // Left out of the snapshot (they hold no content), so left out here too: a live
-                // socket such as git's fsmonitor must not show up as added, or be moved by undo.
+            guard let found = entryInfo(status, unreadable: info == FTS_DNR) else {
                 continue
-            default: type = .other
             }
-            entries[relative] = TreeEntryInfo(
-                type: type,
-                mode: UInt16(status.st_mode & 0o7777),
-                size: Int64(status.st_size),
-                flags: status.st_flags,
-                linkCount: UInt16(truncatingIfNeeded: status.st_nlink),
-                changeSeconds: Int64(status.st_ctimespec.tv_sec),
-                changeNanoseconds: Int64(status.st_ctimespec.tv_nsec),
-                unreadable: info == FTS_DNR)
+            entries[relative] = found
         }
         return entries
     }

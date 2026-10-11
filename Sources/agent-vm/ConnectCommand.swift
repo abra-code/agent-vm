@@ -71,7 +71,10 @@ enum ConnectHelp {
             changed, flagging files that run code later on this Mac, and asks: keep the \
             changes, show every change, or undo them all. --read-only shares the folder read \
             only (nothing can change, so no snapshot); --no-snapshot shares it read-write \
-            without one (nothing to undo then).
+            without one (nothing to undo then). --git-snapshot snapshots only the git folders \
+            (every .git under the folder), which takes seconds for a huge folder of many \
+            repositories: the report and the undo are then of those folders alone, and \
+            working files are not covered.
 
             Text the program copies (what you select in an agent's interface) is put on this \
             Mac's clipboard while you are using the session; --no-clipboard turns that off. \
@@ -109,6 +112,9 @@ struct ConnectOptions: ParsableArguments {
     @Flag(name: .customLong("no-snapshot"), help: "Do not snapshot a folder shared read-write, so there is nothing to undo afterwards.")
     var noSnapshot = false
 
+    @Flag(name: .customLong("git-snapshot"), help: "Snapshot only the git folders (every .git under the folder): fast for a huge folder; working files are then neither reported nor undone.")
+    var gitSnapshot = false
+
     @Flag(name: .customLong("no-clipboard"), help: "Do not let the program put text on this Mac's clipboard.")
     var noClipboard = false
 
@@ -134,6 +140,9 @@ struct ConnectOptions: ParsableArguments {
         }
         if readOnly && noProject {
             throw ValidationError("--read-only and --no-project do not go together: --read-only shares a folder read only")
+        }
+        if gitSnapshot && (noSnapshot || readOnly || noProject) {
+            throw ValidationError("--git-snapshot does not go with --no-snapshot, --read-only or --no-project: those take no snapshot")
         }
         try SecretOptions.validate(secrets)
         do {

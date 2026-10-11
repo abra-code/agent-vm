@@ -166,6 +166,9 @@ enum Output {
         if report.saved == true {
             print("  saved \(time(report.generatedAt)): what had changed by then; the snapshot is gone, so nothing can be compared or undone")
         }
+        if report.scope == .gitFolders {
+            print("  the git folders only (every .git under the project): what else changed is not listed")
+        }
         print("  since \(time(report.startedAt)): \(summary.added) added, \(summary.deleted) deleted, \(summary.modified) modified, \(summary.typeChanged) changed type, \(summary.metadata) permission changes")
         if summary.flaggedHigh + summary.flaggedMedium > 0 {
             print("  review first: \(summary.flaggedHigh) high, \(summary.flaggedMedium) medium")

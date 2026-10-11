@@ -5,7 +5,8 @@
 //
 //   Sessions/.lock                 flock serializing every state change
 //   Sessions/<id>/session.json     the SessionRecord
-//   Sessions/<id>/snapshot/        APFS clone of the project taken at start
+//   Sessions/<id>/snapshot/        APFS clone of the project taken at start (or of its git
+//                                  folders only: the record's `scope`)
 //   Sessions/<id>/report.json      the change report, saved for when the snapshot is gone
 //   Sessions/<id>/replaced-<ts>/   the tree `undo` swapped out (kept for recovery)
 //
@@ -43,11 +44,20 @@ public struct SessionStore: Sendable {
 
     // MARK: - Operations
 
+    /// At most this many of the folders a search for git folders could not read are named in
+    /// a session's record.
+    static let unsearchedLimit = 20
+
     /// Takes a snapshot of `projectPath` and records a new active session. `progress` is
     /// called now and then while the project is copied, with the number of files and folders
     /// met so far; what it throws stops the copy, and no session is made.
+    ///
+    /// With `scope` `gitFolders` the snapshot holds only the entries named `.git` under the
+    /// project and what is in them: fast for a huge tree, and the report and undo then cover
+    /// those alone. A project without any is refused.
     @discardableResult
-    public func start(project projectPath: String, progress: ((Int) throws -> Void)? = nil) throws -> Session {
+    public func start(project projectPath: String, scope: SessionRecord.Scope? = nil,
+                      progress: ((Int) throws -> Void)? = nil) throws -> Session {
         try StoreRoot.prepare(root)
         try FileSystem.makeDirectories(sessionsDirectory.path)
         let project = try validatedProject(projectPath)
@@ -67,15 +77,26 @@ public struct SessionStore: Sendable {
 
             // Taken BEFORE the clone: anything that changes from here on has a later ctime.
             let start = FileSystem.now()
+            var unsearched: [String]?
             do {
-                try FileSystem.cloneTree(project, to: directory.appendingPathComponent(Self.snapshotName).path, progress: progress)
+                let snapshot = directory.appendingPathComponent(Self.snapshotName).path
+                switch scope {
+                case nil:
+                    try FileSystem.cloneTree(project, to: snapshot, progress: progress)
+                case .gitFolders:
+                    let entries = try FileSystem.cloneGitFolders(project, to: snapshot, progress: progress)
+                    guard !entries.found.isEmpty else {
+                        throw AgentVMError.unsuitableProject(path: project, reason: "no git folder (.git) was found in it, so a snapshot of the git folders would hold nothing")
+                    }
+                    unsearched = entries.unsearched.isEmpty ? nil : entries.unsearched
+                }
             } catch {
                 try? FileSystem.removeTree(directory.path)
                 throw error
             }
 
             let record = SessionRecord(
-                formatVersion: SessionRecord.currentFormatVersion,
+                formatVersion: scope == nil ? 1 : SessionRecord.currentFormatVersion,
                 id: id,
                 project: project,
                 projectDevice: Int64(projectInfo.st_dev),
@@ -84,7 +105,10 @@ public struct SessionStore: Sendable {
                 state: .active,
                 endedAt: nil,
                 undoneAt: nil,
-                replacedTree: nil)
+                replacedTree: nil,
+                scope: scope,
+                unsearched: unsearched.map { Array($0.prefix(Self.unsearchedLimit)) },
+                unsearchedCount: unsearched?.count)
             let session = Session(record: record, directory: directory)
             do {
                 try save(session)
@@ -259,6 +283,9 @@ public struct SessionStore: Sendable {
     /// is under them, relative to the project or absolute inside it; the rest of the session
     /// stays undoable. The session becomes `undone` only once nothing changed remains.
     ///
+    /// A session whose snapshot holds only the git folders puts back those: `wholeTree` is
+    /// refused for it, since the swap would replace the project with the git folders alone.
+    ///
     /// Stop the agent first either way.
     @discardableResult
     public func undo(id: String, mode: UndoMode = .changedFiles, paths: [String]? = nil) throws -> UndoOutcome {
@@ -271,6 +298,10 @@ public struct SessionStore: Sendable {
             try requireProject(of: current)
             guard FileSystem.exists(current.snapshotPath) else {
                 throw AgentVMError.corruptSessionRecord(path: current.directory.path, reason: "the snapshot folder is missing")
+            }
+            if mode == .wholeTree, current.record.scope != nil {
+                throw AgentVMError.wrongSessionState(id: id, state: "a snapshot of the git folders only, which undo without --whole-tree puts back",
+                                                     operation: "swap the whole project folder for the snapshot of")
             }
             if mode == .wholeTree, let paths {
                 throw AgentVMError.invalidUndoPath(paths.first ?? "", reason: "a whole-tree undo restores everything")

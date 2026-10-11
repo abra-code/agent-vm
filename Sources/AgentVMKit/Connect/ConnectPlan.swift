@@ -42,6 +42,8 @@ public struct ConnectRequest: Equatable, Sendable {
     /// Snapshot the folder before the session and report on it afterwards; only for a folder
     /// shared read-write.
     public var snapshot: Bool
+    /// The snapshot holds only the folder's git folders (--git-snapshot).
+    public var gitSnapshot: Bool
     /// The person's --secret specs, passed on to exec.
     public var secrets: [String]
     /// The person's --env specs, passed on to exec.
@@ -58,7 +60,8 @@ public struct ConnectRequest: Equatable, Sendable {
 
     public init(target: ConnectTarget, launch: ConnectLaunch, project: String?, readOnly: Bool = false, snapshot: Bool = false,
                 secrets: [String] = [], env: [String] = [], extraAllow: [String] = [], cpus: Int? = nil, memoryBytes: UInt64? = nil,
-                refresh: Bool = false, clipboard: Bool = true) {
+                refresh: Bool = false, clipboard: Bool = true, gitSnapshot: Bool = false) {
+        self.gitSnapshot = gitSnapshot
         self.refresh = refresh
         self.clipboard = clipboard
         self.target = target
@@ -127,7 +130,8 @@ public enum ConnectStep: Equatable, Sendable {
     /// Share the folder into the running box.
     case share(box: String, project: String, readOnly: Bool)
     /// Snapshot the folder (a session in the store), so what the session changes can be undone.
-    case snapshot(project: String)
+    /// With `gitOnly`, only its git folders.
+    case snapshot(project: String, gitOnly: Bool = false)
     /// Run the session: agent-vm with these arguments, on this terminal.
     case run(arguments: [String])
     /// Stop the temporary box connect created, and delete it.
@@ -182,8 +186,8 @@ public enum ConnectStep: Equatable, Sendable {
             return "start box \(box)"
         case let .share(_, project, readOnly):
             return "share \(project) (\(readOnly ? "read only" : "read-write"))"
-        case let .snapshot(project):
-            return "snapshot \(project)"
+        case let .snapshot(project, gitOnly):
+            return gitOnly ? "snapshot the git folders of \(project)" : "snapshot \(project)"
         case let .run(arguments):
             return "run: agent-vm \(ConnectPlanner.shellQuoted(arguments))"
         case let .report(project):
@@ -269,7 +273,7 @@ public enum ConnectPlanner {
             steps.append(.share(box: name, project: project, readOnly: request.readOnly))
         }
         if let snapshot {
-            steps.append(.snapshot(project: snapshot))
+            steps.append(.snapshot(project: snapshot, gitOnly: request.gitSnapshot))
         }
         steps.append(.run(arguments: childArguments(box: name, project: request.project, readOnly: request.readOnly,
                                                     secrets: secrets, env: env, argv: launchArgv(request.launch),
