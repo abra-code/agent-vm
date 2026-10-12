@@ -137,7 +137,9 @@ test_connect_keeps_changes() {
     "$AGENT_VM" session discard "$_id" > /dev/null 2>&1
     assert_status 0 || return 1
     assert_out_contains "review first: 12 medium" || return 1
-    assert_out_contains "... and 2 more flagged; r shows every change" || return 1
+    # The list has every flagged entry, and Enter with nothing marked keeps them all.
+    assert_out_contains "medium  added  hook12" || return 1
+    assert_out_contains "keep all" || return 1
     assert_out_contains "Kept. Undo later with: agent-vm session undo $_id" || return 1
     assert_exists "$_project/new.txt" || return 1
     assert_eq "$_state" "ended" "the session" || return 1

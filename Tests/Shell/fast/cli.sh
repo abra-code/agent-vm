@@ -125,6 +125,20 @@ test_box_view_types_one_thing() {
 }
 
 # agent-vm version names the guest daemon next to it, with the digest images record.
+# The package document's version is the tool's, and its component's identifier ends with it:
+# one identifier for every version makes Installer empty the folder of the version before.
+test_package_project_names_this_version() {
+    run_avm --version
+    local _version="$OUT"
+    local _document="$REPO_ROOT/Packaging/agent-vm.pkgbld"
+    local _packaged
+    _packaged="$(/usr/bin/jq -r '.PROJECT.VERSION' "$_document")"
+    assert_eq "$_packaged" "$_version" "the package document's version" || return 1
+    local _identifier
+    _identifier="$(/usr/bin/jq -r '.COMPONENTS[0].IDENTIFIER' "$_document")"
+    assert_eq "$_identifier" "com.abracode.pkg.agent-vm.$_version" "the component's identifier" || return 1
+}
+
 test_version_names_the_guest_daemon() {
     run_avm --version
     local _version="$OUT"

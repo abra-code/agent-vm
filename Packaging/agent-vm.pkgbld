@@ -73,9 +73,9 @@
           "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/LICENSE"
         }
       ],
-      "IDENTIFIER" : "com.abracode.pkg.agent-vm",
+      "IDENTIFIER" : "com.abracode.pkg.agent-vm.0.7.43",
       "VERSION" : "",
-      "DESCRIPTION" : "Installs this version in ~\/.local\/share\/agent-vm\/versions and points ~\/.local\/bin\/agent-vm and ~\/.local\/bin\/avm at it. Earlier versions stay where they are, so boxes they started keep running.",
+      "DESCRIPTION" : "Installs this version in ~\/.local\/share\/agent-vm\/versions and points ~\/.local\/bin\/agent-vm and ~\/.local\/bin\/avm at it. An earlier version that a running box or job still uses stays until a later install; the others are removed.",
       "SELECTED" : true,
       "INSTALL_LOCATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}",
       "POSTINSTALL" : "postinstall",

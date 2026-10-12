@@ -14,7 +14,14 @@
 # real executable, and knows it is avm by the name it was started as.
 #
 # A new version installs into a folder of its own and the links move, so a box supervisor
-# started by the previous version keeps running from files nothing touches.
+# started by the previous version keeps running from files nothing touches: the package's
+# identifier ends with the version, so Installer takes no version for an upgrade of another.
+#
+# Earlier versions are removed at the end, so they do not pile up (about 60 MB each): every
+# version folder but this one, unless a program is running from it. When the list of running
+# programs cannot be read, or one of them was started through the links in ~/.local/bin (the
+# list then does not say which version it is), nothing is removed this time; a later install
+# removes it.
 #
 # Each link is replaced by renaming a new link over it, so there is no moment without one.
 # Something at ~/.local/bin/agent-vm that is not a symbolic link was put there by hand and is
@@ -106,5 +113,44 @@ for name in agent-vm avm; do
         continue
     fi
     say "$link -> $target"
+done
+
+# Earlier versions that nothing runs from. ps names each program by the path it was started
+# with: a supervisor or a job by its version folder, a command typed in a shell by the link.
+running="$(/bin/ps -axo comm= 2>/dev/null)"
+ps_status=$?
+if [ "$ps_status" -ne 0 ] || [ -z "$running" ]; then
+    say "could not list the running programs - earlier versions were left in place"
+    exit 0
+fi
+case "$running" in
+    *"/.local/bin/agent-vm"*|*"/.local/bin/avm"*)
+        say "agent-vm or avm is running - earlier versions were left in place"
+        exit 0
+        ;;
+esac
+for old in "$versions_dir"/*; do
+    name="${old##*/}"
+    # Only what looks like a version, is a real folder, and is not the one just installed.
+    case "$name" in
+        [0-9]*.[0-9]*) ;;
+        *) continue ;;
+    esac
+    if [ ! -d "$old" ] || [ -L "$old" ] || [ "$old" = "$version_dir" ]; then
+        continue
+    fi
+    case "$running" in
+        *"$old/"*)
+            say "version $name is still running something - left in place"
+            continue
+            ;;
+    esac
+    /bin/rm -rf "$old"
+    rm_status=$?
+    if [ "$rm_status" -eq 0 ]; then
+        say "removed earlier version $name"
+    else
+        say "could not remove $old"
+    fi
 done
 exit 0
