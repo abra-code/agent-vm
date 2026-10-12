@@ -101,6 +101,45 @@ test_avm_runs_in_the_folder_with_the_safety_net() {
     assert_eq "$_state" "undone" "the undone session" || return 1
 }
 
+# A kept box: after the session avm asks whether to stop it, and the answer is the default the
+# next time, so Enter alone repeats it; --no-stop leaves it running without a question.
+test_avm_asks_whether_to_stop_a_kept_box() {
+    require_linux_image || return $(( $? == 1 ? 0 : 1 ))
+    avm_link || return 1
+    make_project "$SCRATCH/project"
+    local _project
+    _project="$(cd "$SCRATCH/project" && /bin/pwd -P)"
+    local _name="shtest-lstop-$$"
+    cleanup_on_exit box "$_name"
+    on_terminal "$(answer_when_done "$_project/.done" 'y')" "$SCRATCH/avm" new "$LINUX_TEST_IMAGE" --name "$_name" --project "$_project" --no-snapshot -- /usr/bin/touch "$_project/.done"
+    assert_status 0 || return 1
+    # A folder avm has not seen: no is the default.
+    assert_out_contains "Stop box $_name? [y/N]" || return 1
+    assert_out_contains "Stopping box $_name" || return 1
+    assert_out_contains "stopped (" || return 1
+    assert_not_contains "$OUT" "keeps running" "the output" || return 1
+    run_avm box status "$_name" --json
+    assert_json state stopped || return 1
+    run_avm_link list --json --project "$_project"
+    assert_json remembered.stop true || return 1
+
+    # The answer is the default now: Enter stops the box again.
+    /bin/rm -f "$_project/.done"
+    on_terminal "$(answer_when_done "$_project/.done" '\n')" "$SCRATCH/avm" "$_name" --project "$_project" --no-snapshot -- /usr/bin/touch "$_project/.done"
+    assert_status 0 || return 1
+    assert_out_contains "Stop box $_name? [Y/n]" || return 1
+    run_avm box status "$_name" --json
+    assert_json state stopped || return 1
+
+    # --no-stop: no question, and the box runs on.
+    on_terminal ':' "$SCRATCH/avm" "$_name" --no-stop --project "$_project" --no-snapshot -- /usr/bin/true
+    assert_status 0 || return 1
+    assert_not_contains "$OUT" "Stop box" "the output" || return 1
+    assert_out_contains "Box $_name keeps running" || return 1
+    run_avm box status "$_name" --json
+    assert_json state running || return 1
+}
+
 # An agent is looked for, and run, through the login shell, which is where the box user's own
 # tool folder (~/.local/bin, where npm put the agents) comes onto the path. A scratch catalog
 # ($AGENT_VM_AGENTS_FILE), so the store's own agents are never touched.

@@ -102,7 +102,7 @@ test_connect_new_kept_box_stays() {
     avm_link || return 1
     local _name="shtest-kept-$$"
     cleanup_on_exit box "$_name"
-    on_terminal ':' "$SCRATCH/avm" new "$TEST_IMAGE" --name "$_name" --no-project -- /usr/bin/true
+    on_terminal ':' "$SCRATCH/avm" new "$TEST_IMAGE" --name "$_name" --no-stop --no-project -- /usr/bin/true
     assert_status 0 || return 1
     assert_out_contains "Creating box $_name from $TEST_IMAGE" || return 1
     assert_out_contains "Box $_name keeps running" || return 1

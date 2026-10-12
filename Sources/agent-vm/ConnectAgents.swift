@@ -24,7 +24,7 @@ extension ConnectRunner {
     /// cannot be chosen; for a stopped or new box nothing is known yet; a dry run asks nothing
     /// of the box.
     func chooseLaunch(boxName: String, temporary: Bool, runningBox: Box?, catalog: AgentCatalog, namedAgent: AgentEntry?,
-                      remembered: String?, probed: inout Set<String>?, terminal: Terminal) throws -> (ConnectLaunch, Bool) {
+                      remembered: String?, probed: inout Set<String>?, project: String?, terminal: Terminal) throws -> (ConnectLaunch, Bool) {
         if let launch = options.namedLaunch {
             return (launch, false)
         }
@@ -48,7 +48,8 @@ extension ConnectRunner {
         let (sections, selected) = ConnectPickers.launchSections(catalog.entries, setSecrets: setSecrets, installed: probed,
                                                                  remembered: remembered)
         let kind = temporary ? "temporary: deleted when you leave" : "kept"
-        let id = try Picker(title: "Run in box \(boxName) (\(kind))", sections: sections, selected: selected).run(on: terminal)
+        let id = try ConnectScreen.picker("Run in box \(boxName) (\(kind))", context: ConnectScreen.context(project: project),
+                                          sections: sections, selected: selected, terminal: terminal).run(on: terminal)
         guard id != AgentCatalog.shellID, let agent = catalog.entry(id: id) else {
             print("Login shell")
             return (.shell, true)
@@ -114,7 +115,7 @@ extension ConnectRunner {
                 }
                 answered.agentAgreed = true
             case .offerSecret:
-                if let name = try offerSecret(agent, terminal: terminal) {
+                if let name = try offerSecret(agent, boxName: boxName, terminal: terminal) {
                     answered.setSecrets.append(name)
                     stored.insert(name)
                 }
@@ -131,7 +132,7 @@ extension ConnectRunner {
         // go on without it, or set a new value.
         if answered.secretsListed, let secret = agent.secrets.first(where: { answered.setSecrets.contains($0.name) }),
            !stored.contains(secret.name), secretEntries.first(where: { $0.name == secret.name })?.readable == false {
-            if !(try useFoundSecret(secret.name, agent: agent, terminal: terminal)) {
+            if !(try useFoundSecret(secret.name, agent: agent, boxName: boxName, terminal: terminal)) {
                 // None of the agent's secrets, not the next one set either.
                 answered.setSecrets.removeAll { name in agent.secrets.contains { $0.name == name } }
             }
@@ -205,11 +206,12 @@ extension ConnectRunner {
 
     /// The choice for a secret found in the Keychain that another build of agent-vm stored:
     /// use it (the default), go on without it, or set a new value. False: go on without it.
-    private func useFoundSecret(_ name: String, agent: AgentEntry, terminal: Terminal) throws -> Bool {
+    private func useFoundSecret(_ name: String, agent: AgentEntry, boxName: String, terminal: Terminal) throws -> Bool {
         let rows = [PickerRow(id: "use", columns: ["Use the value in the Keychain"], note: "if macOS asks to allow access, choose Always Allow"),
                     PickerRow(id: "without", columns: ["Go on without it"], note: agent.login == nil ? nil : "log in inside the box"),
                     PickerRow(id: "new", columns: ["Set a new value"])]
-        let picker = Picker(title: "\(name) is in the Keychain", sections: [PickerSection(title: nil, rows: rows)], selected: "use")
+        let picker = ConnectScreen.picker("\(name) is in the Keychain", context: "\(agent.name) in box \(boxName)",
+                                          sections: [PickerSection(title: nil, rows: rows)], selected: "use", terminal: terminal)
         while true {
             switch try picker.run(on: terminal) {
             case "without":
@@ -232,11 +234,11 @@ extension ConnectRunner {
 
     /// The offer when none of the agent's secrets is set: set one now, or go on without. The
     /// name stored, or nil.
-    private func offerSecret(_ agent: AgentEntry, terminal: Terminal) throws -> String? {
+    private func offerSecret(_ agent: AgentEntry, boxName: String, terminal: Terminal) throws -> String? {
         var rows = agent.secrets.map { PickerRow(id: $0.name, columns: ["Set \($0.name) now"], note: $0.label) }
         rows.append(PickerRow(id: Self.withoutSecret, columns: ["Go on without"], note: agent.login == nil ? nil : "log in inside the box"))
-        let picker = Picker(title: "\(agent.name) signs in with one of these; none is set yet",
-                            sections: [PickerSection(title: nil, rows: rows)], selected: nil)
+        let picker = ConnectScreen.picker("\(agent.name) signs in with one of these; none is set yet", context: "\(agent.name) in box \(boxName)",
+                                          sections: [PickerSection(title: nil, rows: rows)], selected: nil, terminal: terminal)
         while true {
             let id = try picker.run(on: terminal)
             guard id != Self.withoutSecret else {

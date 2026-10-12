@@ -12,7 +12,7 @@ import Testing
     let pid: Int32 = 4711
 
     @Test func aStoppedBoxIsStartedWithoutAnOwner() {
-        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p"),
+        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", stop: false),
                                          facts: ConnectFacts(boxRunning: false, ownPid: pid))
         #expect(steps.count == 3)
         #expect(steps[0] == .start(box: "b1", ownerPid: nil))
@@ -25,14 +25,14 @@ import Testing
     }
 
     @Test func aRunningBoxIsNotStarted() {
-        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p"),
+        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", stop: false),
                                          facts: ConnectFacts(boxRunning: true, ownPid: pid))
         #expect(steps.count == 2)
         #expect(steps[0] == .share(box: "b1", project: "/p", readOnly: false))
     }
 
     @Test func noProjectMeansNoShare() {
-        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: nil),
+        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: nil, stop: false),
                                          facts: ConnectFacts(boxRunning: true, ownPid: pid))
         #expect(steps.count == 1)
         guard case .run(let arguments) = steps[0] else {
@@ -43,7 +43,7 @@ import Testing
     }
 
     @Test func aReadWriteShareIsSnapshotted() {
-        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", snapshot: true),
+        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", snapshot: true, stop: false),
                                          facts: ConnectFacts(boxRunning: true, ownPid: pid))
         #expect(steps.count == 4)
         #expect(steps[0] == .share(box: "b1", project: "/p", readOnly: false))
@@ -56,7 +56,7 @@ import Testing
     }
 
     @Test func readOnlyTakesNoSnapshot() {
-        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", readOnly: true, snapshot: true),
+        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", readOnly: true, snapshot: true, stop: false),
                                          facts: ConnectFacts(boxRunning: true, ownPid: pid))
         #expect(steps.count == 2)
         #expect(steps[0] == .share(box: "b1", project: "/p", readOnly: true))
@@ -68,20 +68,42 @@ import Testing
     }
 
     @Test func aGitSnapshotIsAStepOfItsOwnKind() {
-        let request = ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", snapshot: true, gitSnapshot: true)
+        let request = ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", snapshot: true, gitSnapshot: true, stop: false)
         let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: true, ownPid: pid))
         #expect(steps.contains(.snapshot(project: "/p", gitOnly: true)))
         #expect(steps.contains(.report(project: "/p")))
         #expect(ConnectStep.snapshot(project: "/p", gitOnly: true).text == "snapshot the git folders of /p")
     }
 
+    @Test func aKeptBoxIsOfferedToBeStoppedBeforeTheReport() {
+        // Nothing said: asked after the session, and before the report, so that nothing in the
+        // box can change the folder during an undo.
+        let asked = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", snapshot: true),
+                                         facts: ConnectFacts(boxRunning: true, ownPid: pid))
+        #expect(asked.suffix(2) == [.offerStop(box: "b1", stop: nil), .report(project: "/p")])
+        #expect(ConnectStep.offerStop(box: "b1", stop: nil).text == "ask whether to stop box b1")
+        // --stop: the same step, with the answer.
+        let named = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: nil, stop: true),
+                                         facts: ConnectFacts(boxRunning: true, ownPid: pid))
+        #expect(named.last == .offerStop(box: "b1", stop: true))
+        #expect(ConnectStep.offerStop(box: "b1", stop: true).text == "stop box b1, unless other programs run in it")
+        // A new kept box is asked about too; a temporary one is stopped and deleted, never asked.
+        let kept = ConnectPlanner.steps(for: ConnectRequest(target: .newKept(image: "img", name: "k1"), launch: .shell, project: nil),
+                                        facts: ConnectFacts(boxRunning: false, ownPid: pid))
+        #expect(kept.last == .offerStop(box: "k1", stop: nil))
+        let temporary = ConnectPlanner.steps(for: ConnectRequest(target: .newTemporary(image: "img"), launch: .shell, project: nil, stop: true),
+                                             facts: ConnectFacts(boxRunning: false, ownPid: pid, temporaryName: "avm-img-000001"))
+        #expect(temporary.last == .stopAndDelete(box: "avm-img-000001"))
+        #expect(!temporary.contains { if case .offerStop = $0 { return true } else { return false } })
+    }
+
     @Test func noSnapshotMeansNoReport() {
-        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", snapshot: false),
+        let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: "/p", snapshot: false, stop: false),
                                          facts: ConnectFacts(boxRunning: false, ownPid: pid))
         #expect(!steps.contains(.snapshot(project: "/p")))
         #expect(!steps.contains(.report(project: "/p")))
         // No folder, nothing to snapshot.
-        let none = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: nil, snapshot: true),
+        let none = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .shell, project: nil, snapshot: true, stop: false),
                                         facts: ConnectFacts(boxRunning: true, ownPid: pid))
         #expect(none.count == 1)
     }
@@ -92,7 +114,7 @@ import Testing
                             secretsNeeded: .one, env: ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"])
 
     @Test func anAgentOnARunningBoxWithEverything() {
-        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: "/p", secrets: ["MINE"], env: ["X=1"])
+        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: "/p", secrets: ["MINE"], env: ["X=1"], stop: false)
         let facts = ConnectFacts(boxRunning: true, boxRules: ["pack:anthropic"], setSecrets: ["ANTHROPIC_API_KEY", "OTHER"],
                                  probed: ["claude"], ownPid: pid)
         let steps = ConnectPlanner.steps(for: request, facts: facts)
@@ -110,7 +132,7 @@ import Testing
         // person's --env or --secret sets the same variable.
         let facts = ConnectFacts(boxRunning: true, setSecrets: ["ANTHROPIC_API_KEY"], probed: ["claude"], ownPid: pid)
         for (secrets, env) in [([String](), ["ANTHROPIC_API_KEY=sk-mine"]), (["ANTHROPIC_API_KEY=MY_KEY"], [String]())] {
-            let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil, secrets: secrets, env: env)
+            let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil, secrets: secrets, env: env, stop: false)
             guard case let .run(arguments)? = ConnectPlanner.steps(for: request, facts: facts).last else {
                 Issue.record("no run step")
                 continue
@@ -120,7 +142,7 @@ import Testing
         }
         // Nor is a secret offered when none is set but the person gives the variable.
         let none = ConnectFacts(boxRunning: true, probed: ["claude"], ownPid: pid)
-        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil, env: ["ANTHROPIC_API_KEY=sk-mine"])
+        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil, env: ["ANTHROPIC_API_KEY=sk-mine"], stop: false)
         #expect(!ConnectPlanner.steps(for: request, facts: none).contains { $0.isQuestion })
     }
 
@@ -164,7 +186,7 @@ import Testing
     }
 
     @Test func aMissingSecretIsOffered() {
-        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil)
+        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil, stop: false)
         let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: true, probed: ["claude"], ownPid: pid))
         #expect(steps.first == .offerSecret(agent: "Claude Code", secrets: ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]))
         #expect(steps.first?.text == "offer to set one of: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY")
@@ -174,13 +196,13 @@ import Testing
         #expect(!unlisted.contains { $0.isQuestion })
         var optional = claude
         optional.secretsNeeded = .optional
-        let none = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .agent(optional), project: nil),
+        let none = ConnectPlanner.steps(for: ConnectRequest(target: .box("b1"), launch: .agent(optional), project: nil, stop: false),
                                         facts: ConnectFacts(boxRunning: true, probed: [], ownPid: pid))
         #expect(!none.contains { $0.isQuestion })
     }
 
     @Test func missingRulesAreAsked() {
-        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil)
+        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil, stop: false)
         let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: true, boxRules: ["api.anthropic.com"],
                                                                             setSecrets: ["CLAUDE_CODE_OAUTH_TOKEN"], probed: [], ownPid: pid))
         #expect(steps.first == .askRules(box: "b1", rules: ["pack:anthropic"]))
@@ -189,14 +211,14 @@ import Testing
 
     @Test func anOpenBoxIsNotAsked() {
         // An open (or off) box has no rules to add to: boxRules is nil.
-        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil)
+        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: nil, stop: false)
         let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: true, boxRules: nil,
                                                                             setSecrets: ["CLAUDE_CODE_OAUTH_TOKEN"], probed: [], ownPid: pid))
         #expect(!steps.contains { $0.isQuestion })
     }
 
     @Test func aStoppedBoxIsProbedAfterTheStart() {
-        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: "/p", snapshot: true)
+        let request = ConnectRequest(target: .box("b1"), launch: .agent(claude), project: "/p", snapshot: true, stop: false)
         let steps = ConnectPlanner.steps(for: request, facts: ConnectFacts(boxRunning: false, setSecrets: ["CLAUDE_CODE_OAUTH_TOKEN"],
                                                                             ownPid: pid))
         #expect(Array(steps.prefix(4)) == [.start(box: "b1", ownerPid: nil), .probe(box: "b1", command: "claude"),
@@ -303,12 +325,12 @@ import Testing
         let readOnly = ConnectPlanner.childArguments(box: "b", project: "/p", readOnly: true, secrets: [], env: [], argv: ["x"])
         #expect(readOnly == ["exec", "--tty", "--box", "b", "--project", "/p", "--read-only", "--clipboard", "--", "x"])
         // --no-clipboard: the session child is not told to take clipboard requests.
-        let closed = ConnectPlanner.steps(for: ConnectRequest(target: .box("b"), launch: .command(["make"]), project: nil, clipboard: false),
+        let closed = ConnectPlanner.steps(for: ConnectRequest(target: .box("b"), launch: .command(["make"]), project: nil, clipboard: false, stop: false),
                                           facts: ConnectFacts(boxRunning: true, ownPid: pid))
         #expect(closed == [.run(arguments: ["exec", "--tty", "--box", "b", "--"] + ConnectPlanner.loginWrapper + ["make"])])
         // The request's specs reach the child as given.
         let steps = ConnectPlanner.steps(for: ConnectRequest(target: .box("b"), launch: .command(["make"]), project: nil,
-                                                             secrets: ["TOKEN=NAME", "B"], env: ["Y"]),
+                                                             secrets: ["TOKEN=NAME", "B"], env: ["Y"], stop: false),
                                          facts: ConnectFacts(boxRunning: true, ownPid: pid))
         #expect(steps == [.run(arguments: ["exec", "--tty", "--box", "b", "--secret", "TOKEN=NAME", "--secret", "B", "--env", "Y", "--clipboard", "--"]
                                   + ConnectPlanner.loginWrapper + ["make"])])

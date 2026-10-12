@@ -27,6 +27,15 @@ public enum SnapshotChoice: String, Codable, CaseIterable, Equatable, Sendable {
         }
     }
 
+    /// What the choice means for the session, in a line.
+    public var meaning: String {
+        switch self {
+        case .whole: return "every file: any change is reported and can be undone"
+        case .git: return "every .git folder only: fast for a huge folder; working files are not covered"
+        case .none: return "nothing: no report and no undo after the session"
+        }
+    }
+
     /// The avm option that asks for it.
     public var option: String {
         switch self {
@@ -54,10 +63,14 @@ public struct ConnectChoice: Codable, Equatable, Sendable {
     /// What was snapshotted of the folder; nil (a file of an earlier agent-vm, or a folder
     /// only ever shared read only): the whole folder.
     public var snapshot: SnapshotChoice?
+    /// Whether the box was stopped after the session, when that was asked or named; nil: never
+    /// yet.
+    public var stop: Bool?
     public var at: Date
 
     public init(target: Target, box: String? = nil, image: String? = nil, launch: String? = nil, readOnly: Bool? = nil,
-                snapshot: SnapshotChoice? = nil, at: Date = Date()) {
+                snapshot: SnapshotChoice? = nil, stop: Bool? = nil, at: Date = Date()) {
+        self.stop = stop
         self.target = target
         self.box = box
         self.image = image
@@ -77,6 +90,7 @@ public struct ConnectChoice: Codable, Equatable, Sendable {
         launch = try container.decodeIfPresent(String.self, forKey: .launch)
         readOnly = try container.decodeIfPresent(Bool.self, forKey: .readOnly)
         snapshot = (try? container.decodeIfPresent(String.self, forKey: .snapshot)).flatMap { $0 }.flatMap(SnapshotChoice.init(rawValue:))
+        stop = try container.decodeIfPresent(Bool.self, forKey: .stop)
         at = try container.decode(Date.self, forKey: .at)
     }
 }
@@ -91,6 +105,9 @@ public struct ConnectChoices: Sendable {
         var projects: [String: ConnectChoice]
         /// The user's agent entries agreed to: id to the digest of the file agreed to.
         var agents: [String: String]?
+        /// Whether the box was stopped after the last session without a folder where that was
+        /// asked or named.
+        var stop: Bool?
     }
 
     public let url: URL
@@ -102,6 +119,32 @@ public struct ConnectChoices: Sendable {
     /// The choice last made for `project` (a canonical path), if any.
     public func choice(for project: String) -> ConnectChoice? {
         return read().projects[project]
+    }
+
+    /// Whether to stop the box after a session, as last answered for `project`, or for
+    /// sessions without a folder (nil); nil: never answered.
+    public func stop(for project: String?) -> Bool? {
+        let file = read()
+        guard let project else {
+            return file.stop
+        }
+        return file.projects[project]?.stop
+    }
+
+    /// Records the answer to whether the box is stopped after a session: with `project`'s
+    /// choice (when one is recorded for it), or for sessions without a folder (nil).
+    public func rememberStop(_ stop: Bool, for project: String?) throws {
+        var file = read()
+        if let project {
+            guard var choice = file.projects[project] else {
+                return
+            }
+            choice.stop = stop
+            file.projects[project] = choice
+        } else {
+            file.stop = stop
+        }
+        try write(file)
     }
 
     /// Whether the person agreed to run the user's agent `id` as the file with `digest`.
@@ -180,7 +223,7 @@ public struct ConnectChoices: Sendable {
     }
 
     private func read() -> File {
-        let empty = File(version: 1, projects: [:], agents: nil)
+        let empty = File(version: 1, projects: [:], agents: nil, stop: nil)
         guard let data = try? Data(contentsOf: url) else {
             return empty
         }

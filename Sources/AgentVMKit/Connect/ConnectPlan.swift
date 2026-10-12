@@ -57,11 +57,14 @@ public struct ConnectRequest: Equatable, Sendable {
     public var refresh: Bool
     /// Let the program put text on the Mac's clipboard (off with --no-clipboard).
     public var clipboard: Bool
+    /// Stop a kept box after the session (--stop) or leave it running (--no-stop); nil: ask.
+    public var stop: Bool?
 
     public init(target: ConnectTarget, launch: ConnectLaunch, project: String?, readOnly: Bool = false, snapshot: Bool = false,
                 secrets: [String] = [], env: [String] = [], extraAllow: [String] = [], cpus: Int? = nil, memoryBytes: UInt64? = nil,
-                refresh: Bool = false, clipboard: Bool = true, gitSnapshot: Bool = false) {
+                refresh: Bool = false, clipboard: Bool = true, gitSnapshot: Bool = false, stop: Bool? = nil) {
         self.gitSnapshot = gitSnapshot
+        self.stop = stop
         self.refresh = refresh
         self.clipboard = clipboard
         self.target = target
@@ -138,6 +141,8 @@ public enum ConnectStep: Equatable, Sendable {
     case stopAndDelete(box: String)
     /// Report what changed in the folder since the snapshot, then keep it or undo it.
     case report(project: String)
+    /// After the session in a kept box: stop it (`stop` true), or ask whether to (nil).
+    case offerStop(box: String, stop: Bool?)
 
     /// The tools update of an image a new box is about to be made from, when asked for.
     case refresh(image: String)
@@ -192,6 +197,8 @@ public enum ConnectStep: Equatable, Sendable {
             return "run: agent-vm \(ConnectPlanner.shellQuoted(arguments))"
         case let .report(project):
             return "report what changed in \(project), then keep or undo it"
+        case let .offerStop(box, stop):
+            return stop == true ? "stop box \(box), unless other programs run in it" : "ask whether to stop box \(box)"
         }
     }
 }
@@ -282,6 +289,9 @@ public enum ConnectPlanner {
         // and the report is final.
         if temporary {
             steps.append(.stopAndDelete(box: name))
+        } else if request.stop != false {
+            // Before the report as well, for the same reason. --no-stop leaves the box alone.
+            steps.append(.offerStop(box: name, stop: request.stop))
         }
         if let snapshot {
             steps.append(.report(project: snapshot))

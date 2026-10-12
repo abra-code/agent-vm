@@ -35,7 +35,7 @@ test_connect_probe_finds_the_agents() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     avm_link || return 1
     agents_file
-    on_terminal ':' "$SCRATCH/avm" "$BOX" --agent probe --no-project
+    on_terminal ':' "$SCRATCH/avm" "$BOX" --no-stop --agent probe --no-project
     assert_status 0 || return 1
     assert_out_contains "Probe in box $BOX" || return 1
     assert_not_contains "$OUT" "not installed" "the output" || return 1
@@ -50,7 +50,7 @@ test_connect_says_what_is_not_installed() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     avm_link || return 1
     agents_file
-    on_terminal ':' "$SCRATCH/avm" "$BOX" --agent missing --no-project
+    on_terminal ':' "$SCRATCH/avm" "$BOX" --no-stop --agent missing --no-project
     assert_status 1 || return 1
     assert_out_contains "Missing (no-such-agent) is not installed in box $BOX" || return 1
     assert_out_contains "then npm install --global no-such-agent" || return 1
@@ -62,7 +62,7 @@ test_connect_launch_picker_marks_missing_agents() {
     agents_file
     # Enter takes the first row that can be chosen: the probe agent. Typed once the picker shows
     # (after the probe): script(1) sends Control-D when its input ends, which quits the picker.
-    on_terminal "/bin/sleep 8; printf '\\r'" "$SCRATCH/avm" "$BOX" --no-project
+    on_terminal "/bin/sleep 8; printf '\\r'" "$SCRATCH/avm" "$BOX" --no-stop --no-project
     assert_status 0 || return 1
     assert_out_contains "Run in box $BOX (kept)" || return 1
     assert_out_contains "not installed" || return 1

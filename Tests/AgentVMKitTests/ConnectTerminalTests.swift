@@ -206,18 +206,20 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
         let store = try ConnectScratch()
         let program = try connect(store, ["--dry-run"])
         let before = program.settings()
-        #expect(program.waitFor("AgentVM - project"))
+        #expect(program.waitFor("Choose a box"))
         program.type("\u{1B}")
         #expect(program.exitStatus() == 130)
         #expect(sameTerminalSettings(program.settings(), before))
-        #expect(program.text.hasSuffix("\u{1B}[?25h"), "\(program.text.debugDescription)")
+        // The cursor is shown and the screen from before the list is back.
+        #expect(program.text.hasSuffix("\u{1B}[?25h\u{1B}[?1049l"), "\(program.text.debugDescription)")
+        #expect(program.text.contains("\u{1B}[?1049h"))
     }
 
     @Test func sigtermInThePickerRestoresAndExits143() throws {
         let store = try ConnectScratch()
         let program = try connect(store, ["--dry-run"])
         let before = program.settings()
-        #expect(program.waitFor("AgentVM - project"))
+        #expect(program.waitFor("Choose a box"))
         kill(program.pid, SIGTERM)
         #expect(program.exitStatus() == 143)
         #expect(sameTerminalSettings(program.settings(), before))
@@ -226,7 +228,7 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
     @Test func downAndEnterChooseTheSecondBox() throws {
         let store = try ConnectScratch()
         let program = try connect(store, ["--dry-run", "--shell"])
-        #expect(program.waitFor("AgentVM - project"))
+        #expect(program.waitFor("Choose a box"))
         program.type("\u{1B}[B\r")
         #expect(program.exitStatus() == 0)
         #expect(program.text.contains("start box b2"), "\(program.text)")
@@ -236,7 +238,7 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
     @Test func typingFilters() throws {
         let store = try ConnectScratch()
         let program = try connect(store, ["--dry-run"])
-        #expect(program.waitFor("AgentVM - project"))
+        #expect(program.waitFor("Choose a box"))
         program.type("b2")
         #expect(program.waitFor("filter: b2"))
         program.type("\r")
@@ -249,7 +251,7 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
         var environment = store.environment
         environment["NO_COLOR"] = "1"
         let program = try connect(store, ["--dry-run"], environment: environment)
-        #expect(program.waitFor("AgentVM - project"))
+        #expect(program.waitFor("Choose a box"))
         program.type("\r")
         #expect(program.exitStatus() == 0)
         #expect(!program.text.contains("\u{1B}[7m"))
@@ -263,7 +265,7 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
         #expect(symlink(store.agentVM, link) == 0)
         let program = try TerminalProgram(link, arguments: ["--project", store.scratch.project.path, "--dry-run"],
                                           environment: store.environment)
-        #expect(program.waitFor("AgentVM - project"))
+        #expect(program.waitFor("Choose a box"))
         program.type("\r")
         #expect(program.exitStatus() == 0)
         #expect(program.text.contains("avm would:"))
@@ -392,7 +394,7 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
     @Test func aNewKeptBoxFromTheLists() throws {
         let store = try ConnectScratch()
         let program = try connect(store, ["--dry-run", "--shell"])
-        #expect(program.waitFor("AgentVM - project"))
+        #expect(program.waitFor("Choose a box"))
         program.type("kept")
         #expect(program.waitFor("filter: kept"))
         program.type("\r")
@@ -410,7 +412,7 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
     @Test func aNewTemporaryBoxFromTheLists() throws {
         let store = try ConnectScratch()
         let program = try connect(store, ["--dry-run", "--shell"])
-        #expect(program.waitFor("AgentVM - project"))
+        #expect(program.waitFor("Choose a box"))
         program.type("temporary")
         #expect(program.waitFor("filter: temporary"))
         program.type("\r")
@@ -425,7 +427,7 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
     @Test func escapeInTheImageListGoesBackToTheBoxes() throws {
         let store = try ConnectScratch()
         let program = try connect(store, ["--dry-run", "--shell"])
-        #expect(program.waitFor("AgentVM - project"))
+        #expect(program.waitFor("Choose a box"))
         program.type("kept\r")
         #expect(program.waitFor("New kept box from an image"))
         program.type("\u{1B}")
@@ -434,7 +436,7 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
             guard let images = program.text.range(of: "New kept box from an image", options: .backwards) else {
                 return false
             }
-            return program.text[images.upperBound...].contains("AgentVM - project")
+            return program.text[images.upperBound...].contains("Choose a box")
         }
         let deadline = Date().addingTimeInterval(10)
         while !boxListAfterImages() && Date() < deadline {
@@ -449,18 +451,18 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
     @Test func tabInTheBoxListChangesTheSnapshot() throws {
         let store = try ConnectScratch()
         let program = try connect(store, ["--dry-run", "--shell"])
-        #expect(program.waitFor("snapshot: whole folder"))
+        #expect(program.waitFor("[whole folder]"))
         program.type("\t")
-        #expect(program.waitFor("snapshot: git folders only"))
+        #expect(program.waitFor("[git folders only]"))
         program.type("\r")
         #expect(program.exitStatus() == 0)
         #expect(program.text.contains("Snapshot: git folders only"), "\(program.text)")
         #expect(program.text.contains("snapshot the git folders of"), "\(program.text)")
 
         let none = try connect(store, ["--dry-run", "--shell"])
-        #expect(none.waitFor("snapshot: whole folder"))
+        #expect(none.waitFor("[whole folder]"))
         none.type("\t\t")
-        #expect(none.waitFor("snapshot: none"))
+        #expect(none.waitFor("[none]"))
         none.type("\r")
         #expect(none.exitStatus() == 0)
         #expect(!none.text.contains("  snapshot "), "\(none.text)")
@@ -470,14 +472,14 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
     @Test func aNamedSnapshotIsOnlyShownInTheBoxList() throws {
         let store = try ConnectScratch()
         let program = try connect(store, ["--dry-run", "--shell", "--git-snapshot"])
-        #expect(program.waitFor("snapshot: git folders only (--git-snapshot)"))
+        #expect(program.waitFor("git folders only (--git-snapshot)"))
         #expect(!program.text.contains("Tab changes"))
         program.type("\t\r")
         #expect(program.exitStatus() == 0)
         #expect(program.text.contains("snapshot the git folders of"), "\(program.text)")
 
         let readOnly = try connect(store, ["--dry-run", "--shell", "--read-only"])
-        #expect(readOnly.waitFor("snapshot: none (the folder is shared read only)"))
+        #expect(readOnly.waitFor("none (the folder is shared read only)"))
         readOnly.type("\r")
         #expect(readOnly.exitStatus() == 0)
     }
@@ -493,7 +495,7 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
         try ConnectChoices(store: store.home).remember(ConnectChoice(target: .box, box: "b2", launch: "shell", snapshot: SnapshotChoice.none), for: project)
 
         let listed = try connect(store, ["--dry-run", "--shell"])
-        #expect(listed.waitFor("snapshot: none"))
+        #expect(listed.waitFor("[none]"))
         listed.type("\r")
         #expect(listed.exitStatus() == 0)
         #expect(!listed.text.contains("as remembered for this folder"))

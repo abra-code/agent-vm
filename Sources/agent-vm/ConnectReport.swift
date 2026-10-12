@@ -134,7 +134,7 @@ enum ConnectReport {
 
     private static func undo(_ session: Session, store: SessionStore, box: Box, project: String, terminal: Terminal,
                              warn: (String) -> Void) -> Int32? {
-        // The box keeps running with the folder shared: what connect can see using it is other
+        // A box left running still has the folder shared: what connect can see using it is other
         // clients' programs (exec counts them). Programs the agent left running in the
         // background are not counted; the documentation says to stop them first.
         // Held: the count can take a second or more, and a signal then must not leave the
@@ -179,7 +179,7 @@ enum ConnectReport {
     /// Programs other than this session's running in the box through exec. The supervisor may
     /// still count this session's connection for a moment after the child exited, so a count
     /// above 0 is asked again a few times before it is believed.
-    private static func otherPrograms(in box: Box) -> Int {
+    static func otherPrograms(in box: Box) -> Int {
         var count = 0
         for attempt in 0..<4 {
             if attempt > 0 {

@@ -1,13 +1,18 @@
 // Sources/TerminalUI/Picker.swift
 //
-// A list to choose one row from, drawn inline under the cursor (never the alternate screen, so
-// the scrollback keeps what came before) and erased when done. Rows sit in titled sections and
+// A list to choose one row from, drawn inline under the cursor (so the scrollback keeps what
+// came before) and erased when done. Rows sit in titled sections and
 // have aligned columns and a note; disabled rows are shown but never chosen. Typing filters,
 // arrows move, Enter chooses, Escape clears the filter and then quits. Without cursor control
 // (TERM=dumb) it is a numbered menu read as a line.
 //
 // A picker may carry one setting: a line under the title that names it and its value, which Tab
 // changes to the next of its values. It is what the choice is made with, not a row.
+//
+// A picker given a screen (PickerScreen) takes the whole window instead, on the terminal's
+// alternate screen: a banner at the top, the title, the setting as a section of its own with
+// every value shown, the rows, and the keys on the last line. What was on the terminal comes
+// back when it is done.
 //
 // PickerModel (the filter, the selection, scrolling) and PickerView (the lines for a model at a
 // size) know nothing of the terminal, so both are tested without one.
@@ -49,11 +54,22 @@ public struct PickerSetting: Equatable, Sendable {
     public var values: [String]
     /// The value shown, an index into `values`.
     public private(set) var index: Int
+    /// What the setting is about, after its name on a picker's screen.
+    public var note: String?
+    /// What each value means, shown under the values on a picker's screen; empty, or one for
+    /// each value.
+    public var details: [String]
 
-    public init(label: String, values: [String], index: Int = 0) {
+    public init(label: String, values: [String], index: Int = 0, note: String? = nil, details: [String] = []) {
         self.label = label
         self.values = values
         self.index = values.indices.contains(index) ? index : 0
+        self.note = note
+        self.details = details
+    }
+
+    var detail: String? {
+        return details.indices.contains(index) ? details[index] : nil
     }
 
     var canChange: Bool {
@@ -71,17 +87,41 @@ public struct PickerSetting: Equatable, Sendable {
     }
 }
 
+/// What a picker that takes the whole window shows around its rows.
+public struct PickerScreen: Equatable, Sendable {
+    /// Lines of art at the top, centered; left out when the window is too small for them.
+    public var banner: [String]
+    /// The product's name, on the first line when the banner is left out.
+    public var name: String
+    /// A line under the banner: what the choice is for.
+    public var context: String?
+    /// What Escape does, for the line of keys: "quit" or "back".
+    public var escape: String
+
+    public init(banner: [String], name: String, context: String? = nil, escape: String = "quit") {
+        self.banner = banner
+        self.name = name
+        self.context = context
+        self.escape = escape
+    }
+}
+
 public struct Picker: Sendable {
     public let title: String
     public let sections: [PickerSection]
     public let selected: String?
     public let setting: PickerSetting?
+    /// Not nil: the picker takes the whole window (with cursor control; the numbered menu of
+    /// TERM=dumb is the same either way).
+    public let screen: PickerScreen?
 
-    public init(title: String, sections: [PickerSection], selected: String? = nil, setting: PickerSetting? = nil) {
+    public init(title: String, sections: [PickerSection], selected: String? = nil, setting: PickerSetting? = nil,
+                screen: PickerScreen? = nil) {
         self.title = title
         self.sections = sections
         self.selected = selected
         self.setting = setting
+        self.screen = screen
     }
 
     /// The chosen row's id. Its lines are erased before it returns or throws.
@@ -90,7 +130,8 @@ public struct Picker: Sendable {
     }
 
     /// The chosen row's id, and the index of the setting's value when it was chosen (nil
-    /// without a setting). Its lines are erased before it returns or throws.
+    /// without a setting). Its lines are erased (or its screen left) before it returns or
+    /// throws.
     public func choose(on terminal: Terminal) throws -> (id: String, setting: Int?) {
         guard terminal.isInteractive else {
             throw TerminalUIError.notInteractive
@@ -98,12 +139,19 @@ public struct Picker: Sendable {
         if !terminal.style.cursorControl {
             return try NumberedMenu(title: title, sections: sections, selected: selected, setting: setting).run(on: terminal)
         }
-        return try RawSession.run(terminal) { session in
+        return try RawSession.run(terminal, alternateScreen: screen != nil) { session in
             var model = PickerModel(sections: sections, selected: selected, setting: setting)
             var decoder = KeyDecoder()
             var height = 3
             func redraw() {
                 let size = session.size()
+                if let screen {
+                    height = PickerScreenView.layout(screen, rows: size.rows, columns: size.columns, setting: model.setting).listHeight
+                    model.settleWindow(height: height)
+                    session.drawScreen(PickerScreenView.lines(title: title, screen: screen, model: model, rows: size.rows,
+                                                              columns: size.columns, colors: terminal.style.colors))
+                    return
+                }
                 height = PickerView.listHeight(rows: size.rows, filtering: !model.filter.isEmpty, setting: model.setting != nil)
                 model.settleWindow(height: height)
                 session.draw(PickerView.lines(title: title, model: model, rows: size.rows, columns: size.columns,
@@ -428,34 +476,44 @@ enum PickerView {
             return lines
         }
 
-        // Columns line up across every row, so they do not move while filtering.
-        let allRows = model.allRows
-        let columnCount = allRows.map(\.columns.count).max() ?? 0
-        var columnWidths = [Int](repeating: 0, count: columnCount)
-        for row in allRows {
+        let height = listHeight(rows: rows, filtering: !model.filter.isEmpty, setting: model.setting != nil)
+        return lines + listLines(model, height: height, colors: colors).map { $0.render(width: width, colors: colors) }
+    }
+
+    /// The widest each column is in any row: columns line up across every row, so they do not
+    /// move while filtering.
+    static func columnWidths(_ rows: [PickerRow]) -> [Int] {
+        let columnCount = rows.map(\.columns.count).max() ?? 0
+        var widths = [Int](repeating: 0, count: columnCount)
+        for row in rows {
             for (index, column) in row.columns.enumerated() {
-                columnWidths[index] = max(columnWidths[index], TextWidth.of(TextWidth.printable(column)))
+                widths[index] = max(widths[index], TextWidth.of(TextWidth.printable(column)))
             }
         }
+        return widths
+    }
 
-        let height = listHeight(rows: rows, filtering: !model.filter.isEmpty, setting: model.setting != nil)
+    /// The shown items that fit `height` lines around the selection, with lines saying how many
+    /// more there are above and below.
+    static func listLines(_ model: PickerModel, height: Int, colors: Bool) -> [Styled] {
+        let columnWidths = columnWidths(model.allRows)
         let window = PickerModel.window(total: model.shown.count, height: height, selected: model.selectedIndex,
                                         offset: model.offset, shown: model.shown)
+        var lines: [Styled] = []
         if window.above {
-            lines.append(Styled("  ... \(window.offset) more above", dim: true).render(width: width, colors: colors))
+            lines.append(Styled("  ... \(window.offset) more above", dim: true))
         }
         for item in model.shown[window.offset..<(window.offset + window.count)] {
             switch item {
             case .title(let title):
-                lines.append(Styled("  " + TextWidth.printable(title), bold: true).render(width: width, colors: colors))
+                lines.append(Styled("  " + TextWidth.printable(title), bold: true))
             case .row(let row):
-                lines.append(rowLine(row, selected: row.id == model.selectedID, columnWidths: columnWidths, colors: colors)
-                    .render(width: width, colors: colors))
+                lines.append(rowLine(row, selected: row.id == model.selectedID, columnWidths: columnWidths, colors: colors))
             }
         }
         if window.below {
             let more = model.shown.count - window.offset - window.count
-            lines.append(Styled("  ... \(more) more below", dim: true).render(width: width, colors: colors))
+            lines.append(Styled("  ... \(more) more below", dim: true))
         }
         return lines
     }
@@ -487,6 +545,158 @@ enum PickerView {
     /// Rows each line takes after the window changed to `columns` (see RawSession).
     static func physicalLines(_ widths: [Int], columns: Int) -> Int {
         return RawSession.physicalLines(widths, columns: columns)
+    }
+}
+
+/// The lines of a picker that has the whole window: exactly as many as the window has rows.
+///
+///     (the banner, centered, or the name alone in a small window)
+///     (the context, centered)
+///
+///     Title   type to filter
+///
+///     Setting  what it is about
+///       [value]  value  value   Tab changes
+///       what the value means
+///
+///     rows ...
+///
+///     Up/Down move   Enter choose   ...
+enum PickerScreenView {
+    struct Layout: Equatable {
+        /// The banner fits, with room left for rows.
+        var banner: Bool
+        /// Lines for the rows.
+        var listHeight: Int
+    }
+
+    /// Rows a list should have before the banner may take lines from it.
+    static let rowsBesideBanner = 6
+
+    /// Lines above the rows, and the two below them (a blank one and the keys).
+    private static func fixedLines(_ screen: PickerScreen, banner: Bool, setting: PickerSetting?) -> Int {
+        // With the banner: a blank line, the art, the context, a blank line. Without: the name
+        // and the context on one line, a blank line.
+        let top = banner ? screen.banner.count + 3 : 2
+        // The title (with the filter) and a blank line; the setting's name, values, meaning and
+        // a blank line.
+        return top + 2 + (setting == nil ? 0 : 4) + 2
+    }
+
+    static func layout(_ screen: PickerScreen, rows: Int, columns: Int, setting: PickerSetting?) -> Layout {
+        let width = max(1, columns - 1)
+        let bannerWidth = screen.banner.map { TextWidth.of($0) }.max() ?? 0
+        let left = rows - fixedLines(screen, banner: true, setting: setting)
+        if !screen.banner.isEmpty && bannerWidth <= width && left >= rowsBesideBanner {
+            return Layout(banner: true, listHeight: left)
+        }
+        return Layout(banner: false, listHeight: max(3, rows - fixedLines(screen, banner: false, setting: setting)))
+    }
+
+    /// The setting's values, the chosen one in brackets (and reverse video, with colors).
+    static func valuesLine(_ setting: PickerSetting) -> Styled {
+        var line = Styled("    ")
+        guard setting.canChange else {
+            line.append(TextWidth.printable(setting.value))
+            return line
+        }
+        for (index, value) in setting.values.enumerated() {
+            if index > 0 {
+                line.append("  ")
+            }
+            if index == setting.index {
+                line.append("[" + TextWidth.printable(value) + "]", bold: true, reverse: true)
+            } else {
+                line.append(" " + TextWidth.printable(value) + " ")
+            }
+        }
+        line.append("   Tab changes", dim: true)
+        return line
+    }
+
+    /// The keys, on the last line.
+    static func keysLine(setting: PickerSetting?, escape: String, filtering: Bool) -> Styled {
+        var keys = [("Up/Down", "move"), ("Enter", "choose")]
+        if let setting, setting.canChange {
+            keys.append(("Tab", TextWidth.printable(setting.label)))
+        }
+        keys.append(("Esc", filtering ? "clear the filter" : escape))
+        var line = Styled("  ")
+        for (index, (key, does)) in keys.enumerated() {
+            if index > 0 {
+                line.append("   ")
+            }
+            line.append(key, bold: true)
+            line.append(" " + does, dim: true)
+        }
+        return line
+    }
+
+    static func lines(title: String, screen: PickerScreen, model: PickerModel, rows: Int, columns: Int, colors: Bool) -> [String] {
+        let width = max(1, columns - 1)
+        let layout = layout(screen, rows: rows, columns: columns, setting: model.setting)
+
+        // The part under the banner, as a block: the title, the setting, the rows, the keys.
+        // The filter has its place on the title's line, so that typing moves nothing.
+        var titleLine = Styled("  " + TextWidth.printable(title), bold: true)
+        if model.filter.isEmpty {
+            titleLine.append("   type to filter", dim: true)
+        } else {
+            titleLine.append("   filter: " + TextWidth.printable(model.filter))
+        }
+        var body: [Styled] = [titleLine, Styled("")]
+        if let setting = model.setting {
+            let label = TextWidth.printable(setting.label)
+            var name = Styled("  " + label.prefix(1).uppercased() + label.dropFirst(), bold: true)
+            if let note = setting.note {
+                name.append("  " + TextWidth.printable(note), dim: true)
+            }
+            body += [name, valuesLine(setting), Styled("    " + TextWidth.printable(setting.detail ?? ""), dim: true), Styled("")]
+        }
+        var list = model.shown.isEmpty ? [Styled("  no match", dim: true)] : PickerView.listLines(model, height: layout.listHeight, colors: colors)
+        while list.count < layout.listHeight {
+            list.append(Styled(""))
+        }
+        body += list
+        body += [Styled(""), keysLine(setting: model.setting, escape: screen.escape, filtering: !model.filter.isEmpty)]
+
+        // As wide as its widest line could be with any filter and any value, so that the block
+        // stays where it is while typing; in the middle of the window.
+        let columnWidths = PickerView.columnWidths(model.allRows)
+        var natural = model.allRows.map { TextWidth.of(PickerView.rowLine($0, selected: false, columnWidths: columnWidths, colors: colors).text) }.max() ?? 0
+        natural = max(natural, body.prefix(body.count - list.count - 2).map { TextWidth.of($0.text) }.max() ?? 0)
+        natural = max(natural, TextWidth.of(keysLine(setting: model.setting, escape: "clear the filter", filtering: false).text))
+        if let setting = model.setting {
+            natural = max(natural, setting.details.map { 4 + TextWidth.of(TextWidth.printable($0)) }.max() ?? 0)
+        }
+        // Without the banner the name and the context are the block's first line.
+        var name = Styled("  " + TextWidth.printable(screen.name), bold: true)
+        if let context = screen.context {
+            name.append("  " + TextWidth.printable(context), dim: true)
+        }
+        let bannerWidth = screen.banner.map { TextWidth.of($0) }.max() ?? 0
+        let bodyWidth = min(width, max(natural, layout.banner ? bannerWidth : TextWidth.of(name.text)))
+        let margin = String(repeating: " ", count: (width - bodyWidth) / 2)
+
+        func centered(_ line: Styled) -> String {
+            let space = max(0, (width - TextWidth.of(line.text)) / 2)
+            return String(repeating: " ", count: space) + line.render(width: width - space, colors: colors)
+        }
+        var lines: [String] = []
+        if layout.banner {
+            lines.append("")
+            // As a block, so that lines of different lengths keep their columns.
+            let space = String(repeating: " ", count: max(0, (width - bannerWidth) / 2))
+            lines += screen.banner.map { space + Styled($0, bold: true).render(width: width - space.count, colors: colors) }
+            lines.append(centered(Styled(TextWidth.printable(screen.context ?? ""), dim: true)))
+            lines.append("")
+        } else {
+            lines.append(margin + name.render(width: bodyWidth, colors: colors))
+            lines.append("")
+        }
+        lines += body.map { margin + $0.render(width: bodyWidth, colors: colors) }
+        // A window too small for it all loses its last lines, never scrolls.
+        return Array(lines.prefix(max(1, rows)))
     }
 }
 

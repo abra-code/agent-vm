@@ -174,6 +174,40 @@ func sameSettings(_ a: termios, _ b: termios) -> Bool {
         #expect(pty.text.hasSuffix("\u{1B}[J\u{1B}[0m\u{1B}[?25h"))
     }
 
+    /// A picker with a screen draws on the alternate screen and leaves it, however it ends.
+    @Test func aPickerWithAScreenTakesTheWindowAndGivesItBack() throws {
+        let screen = PickerScreen(banner: ["BANNER"], name: "Product", context: "the context")
+        for keys in ["\u{1B}[B\r", "\u{1B}"] {
+            let pty = try PseudoTerminal()
+            let before = pty.settings()
+            let terminal = terminal(pty)
+            let sections = sections
+            let running = Running { try Picker(title: "Pick a box", sections: sections, screen: screen).run(on: terminal) }
+            #expect(pty.waitFor("Enter"))
+            #expect(pty.text.hasPrefix(RawSession.enterAlternateScreen))
+            #expect(pty.text.contains("BANNER"))
+            #expect(pty.text.contains("the context"))
+            pty.type(keys)
+            if keys.hasSuffix("\r") {
+                #expect(try running.wait(pty) == "second")
+            } else {
+                #expect(throws: TerminalUIError.canceled) { try running.wait(pty) }
+            }
+            #expect(pty.text.hasSuffix("\u{1B}[0m" + RawSession.leaveAlternateScreen))
+            #expect(sameSettings(pty.settings(), before))
+        }
+        // Without cursor control there is no screen: the numbered menu, as without one.
+        let pty = try PseudoTerminal()
+        let terminal = terminal(pty, environment: ["TERM": "dumb"])
+        let sections = sections
+        let running = Running { try Picker(title: "Pick a box", sections: sections, screen: screen).run(on: terminal) }
+        #expect(pty.waitFor("Choose 1-2"))
+        pty.type("2\n")
+        #expect(try running.wait(pty) == "second")
+        #expect(!pty.text.contains("\u{1B}"))
+        #expect(!pty.text.contains("BANNER"))
+    }
+
     @Test func theTerminalSettingsComeBack() throws {
         for keys in ["\r", "\u{1B}", "\u{03}"] {
             let pty = try PseudoTerminal()

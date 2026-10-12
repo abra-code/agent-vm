@@ -304,7 +304,8 @@ struct ConnectRunner {
                 }
                 let (launch, launchChosenInPicker) = try chooseLaunch(boxName: boxName, temporary: temporary, runningBox: runningBox,
                                                                       catalog: catalog, namedAgent: namedAgent,
-                                                                      remembered: remembered?.launch, probed: &probed, terminal: terminal)
+                                                                      remembered: remembered?.launch, probed: &probed, project: project,
+                                                                      terminal: terminal)
                 if !options.dryRun && !terminal.isInteractive {
                     throw ConnectError.sessionNeedsTerminal
                 }
@@ -321,7 +322,7 @@ struct ConnectRunner {
                                              snapshot: snapshot != .none, secrets: options.secrets, env: options.env,
                                              extraAllow: newBox?.allow ?? [], cpus: newBox?.cpus, memoryBytes: newBox?.memoryBytes,
                                              refresh: newBox?.refresh ?? false, clipboard: !options.noClipboard,
-                                             gitSnapshot: snapshot == .git)
+                                             gitSnapshot: snapshot == .git, stop: options.stop)
                 // A remembered choice that was neither named nor shown in the list is said:
                 // less than the whole folder must never be a surprise.
                 if !snapshotSeen, snapshot != .whole, let project, !options.readOnly {
@@ -392,11 +393,12 @@ struct ConnectRunner {
             throw ConnectError.pickerNeedsTerminal(name: invokedAs)
         }
         let (sections, selected) = ConnectPickers.boxSections(offers, newBoxes: !usable.isEmpty, project: project, remembered: remembered)
-        let title = "AgentVM - " + (project.map { "project " + Self.tilde($0) } ?? "no folder shared")
+        let context = ConnectScreen.context(project: project)
         let setting = project.map { _ in
             ConnectPickers.snapshotSetting(named: options.namedSnapshot, readOnly: options.readOnly, current: snapshot)
         }
-        let (id, settingIndex) = try Picker(title: title, sections: sections, selected: selected, setting: setting).choose(on: terminal)
+        let (id, settingIndex) = try ConnectScreen.picker("Choose a box", plainTitle: "AgentVM - " + context, context: context, sections: sections,
+                                                          selected: selected, setting: setting, terminal: terminal).choose(on: terminal)
         if let settingIndex, let setting, setting.values.count > 1 {
             let chosen = SnapshotChoice.allCases[settingIndex]
             // The list is erased: what is left says a change, and anything less than the
@@ -429,7 +431,8 @@ struct ConnectRunner {
         let images = try imageOffers()
         let (imageSections, imageSelected) = ConnectPickers.imageSections(images, remembered: remembered?.image)
         let title = temporary ? "New temporary box (deleted when you leave) from an image" : "New kept box from an image"
-        let name = try Picker(title: title, sections: imageSections, selected: imageSelected).run(on: terminal)
+        let name = try ConnectScreen.picker(title, context: ConnectScreen.context(project: project), sections: imageSections,
+                                            selected: imageSelected, escape: "back", terminal: terminal).run(on: terminal)
         guard let image = images.first(where: { $0.image.name == name })?.image else {
             return nil
         }
@@ -552,6 +555,8 @@ struct ConnectRunner {
         var started = false
         var session: Session?
         var outcome: SessionChild.Outcome?
+        // The kept box was stopped after the session, or the reason it runs on was said.
+        var boxSettled = false
         do {
             for step in steps {
                 switch step {
@@ -705,6 +710,18 @@ struct ConnectRunner {
                         }
                         return 128 + signal
                     }
+                case let .offerStop(_, stop):
+                    guard let current = box, outcome != nil else {
+                        continue
+                    }
+                    let (settled, signal) = offerStop(current, named: stop, project: request.project, terminal: terminal)
+                    boxSettled = settled
+                    if let signal {
+                        if let session {
+                            ConnectReport.end(session, store: sessions, warn: warn)
+                        }
+                        return 128 + signal
+                    }
                 case .report:
                     guard let session, let current = box else {
                         // The person went on without a snapshot.
@@ -728,10 +745,71 @@ struct ConnectRunner {
             }
             throw error
         }
-        if let current = box, current.record.disposable != true {
+        if let current = box, current.record.disposable != true, !boxSettled {
             print("Box \(current.name) keeps running; stop it with: agent-vm box stop \(current.name)")
         }
         return outcome?.status ?? 0
+    }
+
+    /// After the session in a kept box: stops it when asked to (`named`, or the answer to the
+    /// question, whose default is the last answer for the folder), unless other programs run in
+    /// it. Escape or Control-C at the question leaves the box running and the last answer as it
+    /// was. True when the box was stopped or the reason it runs on was said; and a signal that
+    /// arrived at the question or during the stop. A box that has stopped on its own is only
+    /// said to have.
+    private func offerStop(_ box: Box, named: Bool?, project: String?, terminal: Terminal) -> (settled: Bool, signal: Int32?) {
+        // It stopped on its own (a shutdown from inside): nothing to ask.
+        guard box.isRunning else {
+            print("Box \(box.name) has stopped")
+            return (true, nil)
+        }
+        // Another terminal or an application may be using the box (exec counts their programs).
+        let (counted, countSignal) = SignalHold.around { ConnectReport.otherPrograms(in: box) }
+        if let countSignal {
+            return (false, countSignal)
+        }
+        let others = (try? counted.get()) ?? 0
+        if others > 0 {
+            print("Box \(box.name) keeps running: \(others == 1 ? "1 other program runs" : "\(others) other programs run") in it; stop it with: agent-vm box stop \(box.name)")
+            return (true, nil)
+        }
+        let choices = ConnectChoices(store: root)
+        var stop = named ?? false
+        if named == nil {
+            do {
+                stop = try Confirm("Stop box \(box.name)?", defaultAnswer: choices.stop(for: project) ?? false).run(on: terminal)
+            } catch TerminalUIError.interrupted(let signal) {
+                return (false, signal)
+            } catch {
+                return (false, nil)
+            }
+        }
+        do {
+            try choices.rememberStop(stop, for: project)
+        } catch {
+            warn("cannot remember this choice: \(error)")
+        }
+        guard stop else {
+            return (false, nil)
+        }
+        print("Stopping box \(box.name)")
+        let clock = ContinuousClock()
+        let began = clock.now
+        let (result, signal) = SignalHold.around { () -> Void in
+            do {
+                try BoxLauncher.stop(box)
+            } catch AgentVMError.boxNotRunning {
+                // It stopped on its own (the guest shut down).
+            }
+        }
+        switch result {
+        case .success:
+            print("  stopped (\((clock.now - began).components.seconds) s); start it again with: \(invokedAs == "avm" ? "avm" : "agent-vm connect") \(box.name)")
+            return (true, signal)
+        case .failure(let error):
+            warn("could not stop box \(box.name): \(error); stop it with: agent-vm box stop \(box.name)")
+            return (true, signal)
+        }
     }
 
     /// Stops the temporary box and deletes it, with signals held; a signal that arrived
@@ -855,11 +933,14 @@ struct ConnectRunner {
         }
         // A read-only share takes no snapshot whatever the choice is: it stays as it was.
         let snapshot: SnapshotChoice? = request.readOnly ? previous?.snapshot : !request.snapshot ? SnapshotChoice.none : request.gitSnapshot ? .git : .whole
+        // Whether the box is stopped afterwards is answered after the session: as it was.
         let choice: ConnectChoice
         if case .newTemporary(let image) = request.target {
-            choice = ConnectChoice(target: .temporary, image: image, launch: launchID, readOnly: request.readOnly, snapshot: snapshot)
+            choice = ConnectChoice(target: .temporary, image: image, launch: launchID, readOnly: request.readOnly, snapshot: snapshot,
+                                   stop: previous?.stop)
         } else {
-            choice = ConnectChoice(target: .box, box: box, launch: launchID, readOnly: request.readOnly, snapshot: snapshot)
+            choice = ConnectChoice(target: .box, box: box, launch: launchID, readOnly: request.readOnly, snapshot: snapshot,
+                                   stop: previous?.stop)
         }
         do {
             try ConnectChoices(store: root).remember(choice, for: project)

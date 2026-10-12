@@ -58,10 +58,11 @@ enum ConnectHelp {
             it at the same path (--project \
             another one, --no-project none), and runs what you choose there on this terminal: \
             an agent from the catalog (Claude Code, Codex, opencode; --agent <id>), a login \
-            shell (--shell), or a command (after --). Exit it to come back. A box that was \
-            started keeps running afterwards; stop it with agent-vm box stop <box>. A \
-            temporary box is stopped and deleted when you leave, or when \(name) exits \
-            however it exits; a kept one (new <image> --name <box>) stays.
+            shell (--shell), or a command (after --). Exit it to come back. \(name) then asks \
+            whether to stop the box, with your last answer as the default (--stop and \
+            --no-stop answer beforehand); a box left running is stopped with agent-vm box \
+            stop <box>. A temporary box is stopped and deleted when you leave, or when \
+            \(name) exits however it exits; a kept one (new <image> --name <box>) stays.
 
             When none of an agent's secrets (an API key or token) is set, \(name) offers to \
             set one in the Keychain; when the box does not allow the agent's hosts, it asks \
@@ -85,7 +86,8 @@ enum ConnectHelp {
             Forms:
             \(lines)
 
-            In the lists: arrows (or Control-P, Control-N) move, typing filters, Enter \
+            The lists take the whole terminal window and give it back when you have \
+            chosen: arrows (or Control-P, Control-N) move, typing filters, Enter \
             chooses, Escape clears the filter and then quits. The choices are remembered per \
             folder and preselected next time. Exit status: the program's; 1 when connecting \
             failed; 64 for a usage error or no terminal; 75 when no VM slot is free; 130 when \
@@ -122,6 +124,9 @@ struct ConnectOptions: ParsableArguments {
 
     @Flag(name: .customLong("no-clipboard"), help: "Do not let the program put text on this Mac's clipboard.")
     var noClipboard = false
+
+    @Flag(inversion: .prefixedNo, help: "Stop a kept box after the session, or leave it running, without asking (default: ask, with the last answer as the default).")
+    var stop: Bool?
 
     @Option(name: .customLong("secret"), parsing: .singleValue, help: SecretOptions.help)
     var secrets: [String] = []

@@ -21,6 +21,40 @@ import Testing
         #expect(choices.choice(for: "/other") == nil)
     }
 
+    /// Whether the box is stopped after a session: each folder's own answer, and one for
+    /// sessions without a folder; kept through the other writes.
+    @Test func theStopAnswerIsRememberedForTheFolderAndOverall() throws {
+        let scratch = try Scratch()
+        let choices = ConnectChoices(store: scratch.root)
+        #expect(choices.stop(for: "/p") == nil)
+        #expect(choices.stop(for: nil) == nil)
+        try choices.remember(ConnectChoice(target: .box, box: "dev1"), for: "/p")
+        try choices.remember(ConnectChoice(target: .box, box: "dev2"), for: "/q")
+        #expect(choices.stop(for: "/p") == nil)
+        try choices.rememberStop(true, for: "/p")
+        #expect(choices.stop(for: "/p") == true)
+        #expect(choices.choice(for: "/p")?.stop == true)
+        #expect(choices.choice(for: "/p")?.box == "dev1")
+        // Another folder, and sessions without one, have their own.
+        #expect(choices.stop(for: "/q") == nil)
+        #expect(choices.stop(for: nil) == nil)
+        try choices.rememberStop(false, for: "/q")
+        #expect(choices.stop(for: "/q") == false)
+        #expect(choices.stop(for: "/p") == true)
+        try choices.rememberStop(true, for: nil)
+        #expect(choices.stop(for: nil) == true)
+        #expect(choices.stop(for: "/q") == false)
+        // A folder with no choice recorded gets none.
+        try choices.rememberStop(true, for: "/other")
+        #expect(choices.stop(for: "/other") == nil)
+        #expect(choices.choice(for: "/other") == nil)
+        // A later choice for the folder that carries the answer on, and agreements, keep it.
+        try choices.remember(ConnectChoice(target: .box, box: "dev3", stop: choices.choice(for: "/p")?.stop), for: "/p")
+        try choices.agree(agent: "aider", digest: "aa")
+        #expect(choices.stop(for: "/p") == true)
+        #expect(choices.stop(for: nil) == true)
+    }
+
     /// An agreement is to an agent's file as it was: another digest is not agreed to, and the
     /// folders' choices and the agreements are kept through each other's writes.
     @Test func agentAgreementsAreKeptByDigest() throws {

@@ -176,14 +176,17 @@ enum ConnectPickers {
     /// The box picker's line about the snapshot. What the command line or the share decided is
     /// only said; otherwise Tab goes through the choices, starting at `current`.
     static func snapshotSetting(named: SnapshotChoice?, readOnly: Bool, current: SnapshotChoice) -> PickerSetting {
+        let note = "what is copied of the folder first, to report and undo changes"
         if readOnly {
-            return PickerSetting(label: "snapshot", values: ["none (the folder is shared read only)"])
+            return PickerSetting(label: "snapshot", values: ["none (the folder is shared read only)"], note: note,
+                                 details: ["nothing in the box can change the folder"])
         }
         if let named {
-            return PickerSetting(label: "snapshot", values: ["\(named.words) (\(named.option))"])
+            return PickerSetting(label: "snapshot", values: ["\(named.words) (\(named.option))"], note: note, details: [named.meaning])
         }
         let all = SnapshotChoice.allCases
-        return PickerSetting(label: "snapshot", values: all.map(\.words), index: all.firstIndex(of: current) ?? 0)
+        return PickerSetting(label: "snapshot", values: all.map(\.words), index: all.firstIndex(of: current) ?? 0, note: note,
+                             details: all.map(\.meaning))
     }
 
     /// `connect list` for a person, and the plain list printed when there is no terminal to

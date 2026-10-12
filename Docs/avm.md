@@ -6,7 +6,8 @@
 
 ```
 avm [to] [<box>] [--box <box>] [--agent <id> | --shell | -- <command> ...] [--project <folder> | --no-project]
-    [--read-only] [--no-snapshot | --git-snapshot | --whole-snapshot] [--no-clipboard] [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
+    [--read-only] [--no-snapshot | --git-snapshot | --whole-snapshot] [--stop | --no-stop] [--no-clipboard]
+    [--secret NAME ...] [--env NAME[=VALUE] ...] [--dry-run]
 avm new <image> [--temp | --name <box>] [--refresh] [--allow RULE ...] [--cpus N] [--memory-gb N]
     [the same --agent, --shell, -- <command>, sharing and --dry-run options]
 avm list [--json] [--project <folder>]
@@ -19,6 +20,7 @@ avm agents [--json]
 - **`--project <folder>`** shares that folder instead of the current one; **`--no-project`** shares none, and the program starts in the box user's home folder.
 - **`--read-only`** shares the folder read only: programs in the box cannot change it, so no snapshot is taken. **`--no-snapshot`** shares it read-write without a snapshot, so there is nothing to report or undo afterwards. **`--git-snapshot`** snapshots only the folder's git folders, for a huge folder; see [A snapshot of the git folders only](#a-snapshot-of-the-git-folders-only). What was snapshotted is remembered for the folder and used the next time without any of these options (since 0.7.36); **`--whole-snapshot`** goes back to the whole folder. See [What is snapshotted, per folder](#what-is-snapshotted-per-folder).
 - **`--secret`** and **`--env`** are passed on to `agent-vm exec` (see the README's Boxes and exec section): `--secret NAME` takes a value from your Keychain, `--env NAME=VALUE` or `--env NAME` sets a variable.
+- **`--stop`** stops a kept box after the session and **`--no-stop`** leaves it running, without the question avm asks otherwise (since 0.7.42); see [Stopping the box](#stopping-the-box). Neither matters for a temporary box, which is always stopped and deleted.
 - **`--no-clipboard`**: text the program copies is not put on your Mac's clipboard (see [Terminals](#terminals)).
 - **`--dry-run`** prints the steps instead of taking them, and exits 0. It creates, starts, shares, stores and remembers nothing, asks nothing, and needs a terminal only to show a list.
 - **`avm --version`** and **`avm help <subcommand>`** work as for agent-vm. `avm --help` lists the subcommands; the options are under `avm to --help`.
@@ -29,17 +31,34 @@ avm agents [--json]
 2. **The box:** the one named, the one you choose in the list (below), or a new one from an image. Disposable boxes that have stopped are deleted first, as `box list` does (`box gc`).
 3. **What to run:** the one named, or the one you choose in the second list: the agents, then the login shell. For a running box, avm first checks which agents it has, and one it lacks cannot be chosen.
 4. **Questions, for an agent:** when none of its secrets is set, avm offers to set one; when the box does not allow its hosts, avm asks to add them. See [Agents](#agents).
-5. **Create and start:** a new box is created first (`Creating box avm-dev-agents-3f2a91 from dev-agents (temporary: deleted when you leave)`), and the next line says what it may reach (`it allows: pack:anthropic`, since 0.5.13): a new box takes the agent's hosts and your `--allow` rules without a question, so they are always shown. A stopped box is started (`Starting box dev1`, then `Box dev1 is running (14 s)`). A box that is stopping is waited for, then started again. avm makes itself the owner of a temporary box it created only: that box stops when avm exits, however it exits. Any other box keeps running after avm exits. While it starts, the line shows the seconds passing and how long the box took the last time (`Starting box dev1  12 s (usually about 29 s)`); without cursor control (`TERM=dumb`), a line every 10 seconds.
+5. **Create and start:** a new box is created first (`Creating box avm-dev-agents-3f2a91 from dev-agents (temporary: deleted when you leave)`), and the next line says what it may reach (`it allows: pack:anthropic`, since 0.5.13): a new box takes the agent's hosts and your `--allow` rules without a question, so they are always shown. A stopped box is started (`Starting box dev1`, then `Box dev1 is running (14 s)`). A box that is stopping is waited for, then started again. avm makes itself the owner of a temporary box it created only: that box stops when avm exits, however it exits. Any other box has no owner: it runs on after avm exits, unless you have it stopped after the session. While it starts, the line shows the seconds passing and how long the box took the last time (`Starting box dev1  12 s (usually about 29 s)`); without cursor control (`TERM=dumb`), a line every 10 seconds.
 6. **Installed?** For an agent not checked in the list (named with `--agent`, or a box that was stopped), avm checks that its command is in the box. When it is not, avm says how to get it and stops (or, when you chose the agent in the list, shows the list again).
 7. **Share:** the folder is shared into the box at the same path (`Sharing ~/src/app (read-write)`). A box shares one folder at a time. When programs in the box still use another folder, the box refuses: avm says so and, when you chose the box in the list, shows the list again.
 8. **Snapshot:** a folder shared read-write is snapshotted (`Snapshot of ~/src/app taken (session 20260926-101500-7c1e)`), unless `--no-snapshot`; see [Snapshot and report](#snapshot-and-report).
 9. **Remember:** the choices are recorded for the folder (below).
 10. **The session:** `agent-vm exec --tty` runs as avm's child on your terminal. Your terminal is in raw mode, so keys such as Control-C go to the program, and the window size follows. Exit the agent or the shell (or let the command end) to come back.
 11. **After:** the terminal's settings are put back, the cursor is shown and text attributes are reset, even if the session was killed. When it did not end normally, mouse reporting, bracketed paste and the kitty keyboard mode are turned off too.
-12. **The report**, when a snapshot was taken: what changed, then keep or undo (below).
-13. A kept box is left running: `Box dev1 keeps running; stop it with: agent-vm box stop dev1`. A temporary box is stopped and deleted right after the session, before the report (`Stopping box avm-dev-agents-3f2a91 (temporary)`, then `stopped and deleted (5 s)`), so nothing in it can change the folder during an undo.
+12. **Stop the box?** A temporary box is stopped and deleted right after the session, before the report (`Stopping box avm-dev-agents-3f2a91 (temporary)`, then `stopped and deleted (5 s)`), so nothing in it can change the folder during an undo. For a kept box avm asks, at the same point and for the same reason (`Stop box dev1? [y/N]`; see [Stopping the box](#stopping-the-box)).
+13. **The report**, when a snapshot was taken: what changed, then keep or undo (below).
+14. A kept box that was not stopped: `Box dev1 keeps running; stop it with: agent-vm box stop dev1`.
 
-avm stops and deletes only the temporary box it created in that run.
+avm deletes only the temporary box it created in that run.
+
+### Stopping the box
+
+After the session in a kept box (one you chose or named, or a new one made with `--name`), avm asks whether to stop it (since 0.7.42; before, the box was always left running):
+
+```
+Stop box dev1? [y/N]
+Stopping box dev1
+  stopped (4 s); start it again with: avm dev1
+```
+
+- **The default is your last answer** for the folder (`no` the first time; sessions without a folder, `--no-project`, share one answer of their own), so Enter repeats it. It is kept with the folder's other choices (see [Remembered choices](#remembered-choices)).
+- **Escape or Control-C** leaves the box running and the remembered answer as it was.
+- **`--stop` and `--no-stop`** answer beforehand: no question. `--stop` is remembered as an answer; `--no-stop` changes nothing.
+- **A box other programs run in** (another terminal, or an application, through `agent-vm exec`) is not stopped and not asked about: `Box dev1 keeps running: 1 other program runs in it`. Programs the agent left running in the background are not counted, and a stop ends them.
+- **A stopped box holds no memory** on the Mac, and nothing in it can change the folder afterwards. Starting it again takes a few seconds for a Linux box and longer for a macOS one.
 
 `--dry-run` prints the same steps:
 
@@ -53,6 +72,7 @@ avm would:
   share /Users/me/src/app (read-write)
   snapshot /Users/me/src/app
   run: agent-vm exec --tty --box dev1 --project /Users/me/src/app --env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 -- /bin/sh -c 'exec "$SHELL" -l -c '\''exec "$0" "$@"'\'' "$@"' sh claude
+  ask whether to stop box dev1
   report what changed in /Users/me/src/app, then keep or undo it
 ```
 
@@ -177,12 +197,13 @@ k) keep the changes  r) show every change  u) undo them all [K/r/u]
 avm does not ask what to snapshot. It uses what the folder was last run with, shows it, and lets you change it (since 0.7.36):
 
 - **Three choices:** the whole folder (what a folder avm has not seen starts with), the git folders only, or none.
-- **The list of boxes shows it** on a line under the title, and **Tab** goes to the next choice:
+- **The list of boxes shows it** as a section of its own above the boxes, with every choice, the current one marked, and what it means; **Tab** goes to the next choice:
   ```
-  AgentVM - project ~/src  type to filter, arrows, Enter; Esc quits
-    snapshot: git folders only  Tab changes
+  Snapshot  what is copied of the folder first, to report and undo changes
+     whole folder   [git folders only]   none    Tab changes
+    every .git folder only: fast for a huge folder; working files are not covered
   ```
-- **`--whole-snapshot`, `--git-snapshot` and `--no-snapshot`** say it on the command line. The line in the list then only shows it (`snapshot: none (--no-snapshot)`), as it does for `--read-only`.
+- **`--whole-snapshot`, `--git-snapshot` and `--no-snapshot`** say it on the command line. The list then only shows it (`none (--no-snapshot)`), as it does for `--read-only`.
 - **It is remembered when the session starts,** with the box and what ran (see [Remembered choices](#remembered-choices)), for exactly that folder: a folder inside it or above it has its own. A read-only run takes no snapshot and leaves what is remembered as it was.
 - **When no list is shown** (`avm dev1`) and the folder's choice is not the whole folder, one line says so before anything is done: `Snapshot of ~/src: none, as remembered for this folder (--whole-snapshot, --git-snapshot or Tab in the list of boxes changes it)`. A run without a snapshot is never silent.
 - **A folder set to the git folders that has none:** avm says so and asks whether to go on without a snapshot, each time.
@@ -202,7 +223,20 @@ avm does not ask what to snapshot. It uses what the folder was last run with, sh
 ## The list
 
 ```
-AgentVM - project ~/src/app  type to filter, arrows, Enter; Esc quits
+             _                         _   __     __ __  __
+            / \     __ _   ___  _ __  | |_ \ \   / /|  \/  |
+           / _ \   / _` | / _ \| '_ \ | __| \ \ / / | |\/| |
+          / ___ \ | (_| ||  __/| | | || |_   \ V /  | |  | |
+         /_/   \_\ \__, | \___||_| |_| \__|   \_/   |_|  |_|
+                   |___/
+                         project ~/src/app
+
+  Choose a box   type to filter
+
+  Snapshot  what is copied of the folder first, to report and undo changes
+    [whole folder]   git folders only    none    Tab changes
+    every file: any change is reported and can be undone
+
   Running
   > dev1                   dev-agents  running  project ~/src/app
     avm-dev-agents-3f2a91  dev-agents  running  project ~/src/lib, temporary, ends with process 4711
@@ -211,7 +245,11 @@ AgentVM - project ~/src/app  type to filter, arrows, Enter; Esc quits
   New box
     Temporary box from an image...                 deleted when you leave
     Kept box from an image...
+
+  Up/Down move   Enter choose   Tab snapshot   Esc quit
 ```
+
+- **The whole window** (since 0.7.42): every list of avm's (the boxes, the images, what to run, an agent's secrets) takes the terminal window, on the terminal's alternate screen, and gives it back when you have chosen: what was on the terminal before is there again, and under it a line for each choice made (`Box dev1`, `Snapshot: git folders only`). The last line of the window names the keys. In a window too small for it (fewer than about 24 rows, or narrower than the banner) the banner is left out and the first line says `AgentVM` and the folder. The questions (`[y/N]`, a new box's name, a secret) are asked on a line, as before.
 
 - **Rows:** every box that is not stopped comes first, with the folder it shares, how many programs run in it, and, for a temporary box, the process whose exit stops it. Then come the stopped boxes, then the two New box rows.
 - **Shown but not choosable:** an unresponsive box, and a temporary box that is stopping for good.
@@ -232,14 +270,13 @@ AgentVM - project ~/src/app  type to filter, arrows, Enter; Esc quits
   | Control-D | quit, when the filter is empty |
 
 - **Preselected:** the box remembered for this folder (or `Temporary box from an image...` when a temporary box was), else the first running box that already shares it.
-- **Drawing:** the list is drawn under the cursor, not on a separate screen, and erased when done, so the terminal's scrollback keeps what came before.
 - **Escape is a lone ESC with nothing after it for 50 ms.** Over a slow connection an arrow key's bytes can arrive further apart than that; they are then taken as Escape, then text for the filter.
 - **Without a terminal** (stdin or stdout not a terminal), avm prints the list and exits 64.
 - `avm list` prints the same rows, then the ready images for a new box, and needs no terminal. `--json` has `boxes` and `images` (each image's `name`, `guest`, `system`, `macOSVersion`, `description`, `offered` and `reason`; each box has `guest` and `system` too, since 0.7.2: `guest` is `macos` or `linux`, `system` the system in words, and `macOSVersion` is null for a Linux image).
 
 ## Remembered choices
 
-The box (or, for a temporary box, its image) and what ran, chosen for each folder, are kept in `connect.json` in the agent-vm store (`~/Library/Application Support/agent-vm`, or `$AGENT_VM_HOME`). The file is private (mode 0600) and holds the 200 most recent folders. It records folder paths, box or image names, what ran (an agent's id or `shell`; a command after `--` leaves it as it was), whether the folder was shared read only and what was snapshotted of it (since 0.7.36); nothing secret. It also keeps which of your own agents you agreed to run (the id and the digest of its file). A missing or damaged file counts as empty and is replaced the next time: the lists start at the top, and your own agents are asked about again. `--dry-run` and `--no-project` runs are not remembered.
+The box (or, for a temporary box, its image) and what ran, chosen for each folder, are kept in `connect.json` in the agent-vm store (`~/Library/Application Support/agent-vm`, or `$AGENT_VM_HOME`). The file is private (mode 0600) and holds the 200 most recent folders. It records folder paths, box or image names, what ran (an agent's id or `shell`; a command after `--` leaves it as it was), whether the folder was shared read only, what was snapshotted of it (since 0.7.36) and whether the box was stopped afterwards (since 0.7.42); nothing secret. It also keeps which of your own agents you agreed to run (the id and the digest of its file). A missing or damaged file counts as empty and is replaced the next time: the lists start at the top, and your own agents are asked about again. `--dry-run` and `--no-project` runs are not remembered.
 
 `avm list --json` shows it:
 
@@ -251,7 +288,7 @@ The box (or, for a temporary box, its image) and what ran, chosen for each folde
   ],
   "project" : "/Users/me/src/app",
   "projectProblem" : null,
-  "remembered" : {"at" : "2026-09-26T10:15:00Z", "box" : "dev1", "launch" : "shell", "readOnly" : false, "snapshot" : "whole", "target" : "box"}
+  "remembered" : {"at" : "2026-09-26T10:15:00Z", "box" : "dev1", "launch" : "shell", "readOnly" : false, "snapshot" : "whole", "stop" : false, "target" : "box"}
 }
 ```
 
@@ -275,14 +312,14 @@ Errors go to stderr, prefixed with the name avm was started as (`avm:` or `agent
 
 - **Copying from an agent** (since 0.7.24): select in the agent's interface with the mouse and copy as the agent has it (Claude Code and opencode copy when the button is released; Control-C with a selection and `/copy` work too). The text is on your Mac's clipboard, in any terminal. avm takes text only, only while you are using the session (a key or the mouse within the last 2 seconds), and never lets the box read your clipboard; `--no-clipboard` turns it off (see the README's Boxes and exec section). Command-C belongs to your terminal and copies what the terminal has selected, which is nothing while the agent has the mouse. To select in the terminal itself, hold Fn while dragging in Terminal (or turn off View > Allow Mouse Reporting), Option in iTerm2, Shift in Ghostty, kitty, WezTerm and VS Code; then Command-C works as everywhere.
 - `NO_COLOR` set to anything (see no-color.org) turns off bold, dim and reverse video; the selected row is still marked with `>`.
-- With `TERM=dumb`, or no `TERM` (an Emacs shell buffer, some CI terminals), nothing moves the cursor. The list becomes a numbered menu read as a line:
+- With `TERM=dumb`, or no `TERM` (an Emacs shell buffer, some CI terminals), nothing moves the cursor and no list takes the window. The list becomes a numbered menu read as a line:
   - a number chooses that row;
   - Enter chooses the preselected row;
   - other text filters the rows, which keep their numbers;
   - a Tab, then Enter, goes to the next snapshot choice in the list of boxes;
   - `q` or the end of input quits.
 - **A window closed without ending its programs:** a terminal can close a window and keep its programs running (seen once with Ghostty 1.3.1, until the application quit). The session then goes on unseen and the box keeps its folder, so avm refuses another folder there and points to the exec log: `agent-vm box execlog <box> --json` gives the session's `hostPid`; `kill` on that process id ends it.
-- **If avm is killed** with SIGKILL while its list is showing, nothing can put the terminal back; type `reset`. The same goes for a killed session (`kill -9` on avm): the program in the box keeps running, and its `agent-vm exec` is left without a terminal. `agent-vm box execlog <box> --json` gives that exec's process id (`hostPid`).
+- **If avm is killed** with SIGKILL while its list is showing, nothing can put the terminal back; type `reset` (the list's screen stays as well; `reset` leaves it in most terminals, and `printf '\033[?1049l'` does in the others). The same goes for a killed session (`kill -9` on avm): the program in the box keeps running, and its `agent-vm exec` is left without a terminal. `agent-vm box execlog <box> --json` gives that exec's process id (`hostPid`).
 
 ## Completion
 

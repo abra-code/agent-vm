@@ -3,7 +3,8 @@
 // One widget's hold on the terminal. `RawSession.run` saves the terminal settings, puts the
 // terminal in raw mode (or, for the numbered menus of TERM=dumb, in line mode), watches the
 // signals that must end or redraw a widget, and on every way out (a return, a thrown error, a
-// signal) erases what the widget drew and gives everything back: the settings, the cursor, the
+// signal) erases what the widget drew (or leaves the alternate screen, for a widget that has
+// the whole window) and gives everything back: the settings, the cursor, the
 // signal dispositions, the fault handlers. No other code sets the terminal's modes while a
 // widget runs.
 //
@@ -38,6 +39,9 @@ final class RawSession {
 
     let terminal: Terminal
     let mode: Mode
+    /// The widget has the whole window, on the terminal's alternate screen: what was on the
+    /// terminal before comes back when it ends. Only with cursor control, in raw mode.
+    let alternateScreen: Bool
     private let saved: termios
     private let queue: Int32
     private var previousActions: [(Int32, sigaction)] = []
@@ -51,22 +55,24 @@ final class RawSession {
     private var cursorHidden = false
 
     /// Runs `body` with the terminal in `mode`, and restores everything however it ends.
-    static func run<T>(_ terminal: Terminal, mode: Mode = .raw, _ body: (RawSession) throws -> T) throws -> T {
+    static func run<T>(_ terminal: Terminal, mode: Mode = .raw, alternateScreen: Bool = false,
+                       _ body: (RawSession) throws -> T) throws -> T {
         guard terminal.isInteractive else {
             throw TerminalUIError.notInteractive
         }
         // Lines already printed with stdio come first.
         fflush(nil)
-        let session = try RawSession(terminal: terminal, mode: mode)
+        let session = try RawSession(terminal: terminal, mode: mode, alternateScreen: alternateScreen)
         defer {
             session.restore()
         }
         return try body(session)
     }
 
-    private init(terminal: Terminal, mode: Mode) throws {
+    private init(terminal: Terminal, mode: Mode, alternateScreen: Bool) throws {
         self.terminal = terminal
         self.mode = mode
+        self.alternateScreen = alternateScreen && mode == .raw && terminal.style.cursorControl
         var settings = termios()
         guard tcgetattr(terminal.input, &settings) == 0 else {
             buffer.deallocate()
@@ -98,7 +104,7 @@ final class RawSession {
         }
 
         CrashRestore.install(input: terminal.input, output: terminal.output, settings: saved,
-                             cursorControl: terminal.style.cursorControl)
+                             cursorControl: terminal.style.cursorControl, alternateScreen: self.alternateScreen)
         var changed = saved
         switch mode {
         case .raw:
@@ -119,7 +125,15 @@ final class RawSession {
             }
         }
         _ = tcsetattr(terminal.input, TCSADRAIN, &changed)
+        if self.alternateScreen {
+            terminal.write(Self.enterAlternateScreen)
+        }
     }
+
+    /// The alternate screen, cleared, the cursor at its top and hidden.
+    static let enterAlternateScreen = "\u{1B}[?1049h\u{1B}[2J\u{1B}[H\u{1B}[?25l"
+    /// The cursor shown, and the screen from before the widget.
+    static let leaveAlternateScreen = "\u{1B}[?25h\u{1B}[?1049l"
 
     /// The next thing that happens: input, a signal, or `timeoutMilliseconds` passing (nil:
     /// wait for ever). Signals come before input read at the same time.
@@ -204,6 +218,18 @@ final class RawSession {
             cursorColumn = cursor.column
         }
         terminal.write(text)
+    }
+
+    /// Draws `lines` from the top of the alternate screen, in place of everything on it. Each
+    /// line must fit in the window's columns minus 1, and there must be no more lines than the
+    /// window has rows: nothing wraps or scrolls. Lines are overwritten in place, so nothing
+    /// flickers.
+    func drawScreen(_ lines: [String]) {
+        guard alternateScreen else {
+            draw(lines, hideCursor: true)
+            return
+        }
+        terminal.write("\u{1B}[H" + lines.map { $0 + "\u{1B}[K" }.joined(separator: "\r\n") + "\u{1B}[J")
     }
 
     /// Keeps what is drawn: the cursor goes below it and the next draw starts a new block.
@@ -301,7 +327,9 @@ final class RawSession {
     /// handlers and the signal dispositions, in that order. A signal that arrived after the
     /// widget last looked is delivered again under the disposition put back, so it is not lost.
     private func restore() {
-        if terminal.style.cursorControl {
+        if alternateScreen {
+            terminal.write((terminal.style.colors ? "\u{1B}[0m" : "") + Self.leaveAlternateScreen)
+        } else if terminal.style.cursorControl {
             var text = backToTop()
             if terminal.style.colors {
                 text += "\u{1B}[0m"

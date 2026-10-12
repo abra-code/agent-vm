@@ -46,7 +46,7 @@ test_connect_runs_a_command_in_the_folder() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     avm_link || return 1
     make_project "$SCRATCH/project"
-    on_terminal ':' /bin/sh -c "cd '$SCRATCH/project' && '$SCRATCH/avm' $BOX -- /bin/sh -c 'pwd -P; echo in-\$((6*7))'"
+    on_terminal ':' /bin/sh -c "cd '$SCRATCH/project' && '$SCRATCH/avm' $BOX --no-stop -- /bin/sh -c 'pwd -P; echo in-\$((6*7))'"
     assert_status 0 || return 1
     assert_out_contains "Sharing $SCRATCH/project (read-write)" || return 1
     assert_out_contains "$(cd "$SCRATCH/project" && /bin/pwd -P)" || return 1
@@ -67,10 +67,10 @@ test_connect_runs_a_command_in_the_folder() {
 test_connect_passes_the_program_status() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     avm_link || return 1
-    on_terminal ':' "$SCRATCH/avm" "$BOX" --no-project -- /bin/sh -c 'exit 7'
+    on_terminal ':' "$SCRATCH/avm" "$BOX" --no-stop --no-project -- /bin/sh -c 'exit 7'
     assert_status 7 || return 1
     # Also when started with SIGCHLD ignored, which exec passes on: the child is not reaped unseen.
-    on_terminal ':' /usr/bin/perl -e '$SIG{CHLD} = "IGNORE"; exec @ARGV' "$SCRATCH/avm" "$BOX" --no-project -- /bin/sh -c 'exit 7'
+    on_terminal ':' /usr/bin/perl -e '$SIG{CHLD} = "IGNORE"; exec @ARGV' "$SCRATCH/avm" "$BOX" --no-stop --no-project -- /bin/sh -c 'exit 7'
     assert_status 7 || return 1
 }
 
@@ -79,7 +79,7 @@ test_connect_starts_a_stopped_kept_box() {
     avm_link || return 1
     run_avm box stop "$BOX"
     assert_status 0 || return 1
-    on_terminal ':' "$SCRATCH/avm" "$BOX" --no-project -- /usr/bin/true
+    on_terminal ':' "$SCRATCH/avm" "$BOX" --no-stop --no-project -- /usr/bin/true
     assert_status 0 || return 1
     assert_out_contains "Starting box $BOX" || return 1
     # The box started in file_setup, so its last boot time is known.
@@ -94,7 +94,7 @@ test_connect_starts_a_stopped_kept_box() {
 test_connect_restores_the_terminal() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     avm_link || return 1
-    on_terminal ':' /bin/sh -c "/bin/stty -g > '$SCRATCH/tty-before'; '$SCRATCH/avm' $BOX --no-project -- /bin/sh -c 'exit 5'; echo avm-status=\$?; /bin/stty -g > '$SCRATCH/tty-after'"
+    on_terminal ':' /bin/sh -c "/bin/stty -g > '$SCRATCH/tty-before'; '$SCRATCH/avm' $BOX --no-stop --no-project -- /bin/sh -c 'exit 5'; echo avm-status=\$?; /bin/stty -g > '$SCRATCH/tty-after'"
     assert_status 0 || return 1
     assert_out_contains "avm-status=5" || return 1
     local _before
@@ -115,7 +115,7 @@ test_connect_refuses_a_busy_box() {
     "$AGENT_VM" exec --box "$BOX" --project "$_first" -- /bin/sleep 20 &
     local _pid=$!
     /bin/sleep 5
-    on_terminal ':' "$SCRATCH/avm" "$BOX" --project "$_second" -- /usr/bin/true
+    on_terminal ':' "$SCRATCH/avm" "$BOX" --no-stop --project "$_second" -- /usr/bin/true
     kill -INT "$_pid"
     wait "$_pid" 2>/dev/null
     assert_status 1 || return 1
@@ -129,7 +129,7 @@ test_connect_keeps_changes() {
     changing_project "$SCRATCH/project"
     local _project
     _project="$(cd "$SCRATCH/project" && /bin/pwd -P)"
-    on_terminal "$(answer_when_done "$_project/.done" 'k\n')" "$SCRATCH/avm" "$BOX" --project "$_project" -- /bin/sh "$_project/work.sh"
+    on_terminal "$(answer_when_done "$_project/.done" 'k\n')" "$SCRATCH/avm" "$BOX" --no-stop --project "$_project" -- /bin/sh "$_project/work.sh"
     local _id
     _id="$(session_id)"
     local _state
@@ -149,7 +149,7 @@ test_connect_undoes_changes() {
     changing_project "$SCRATCH/project"
     local _project
     _project="$(cd "$SCRATCH/project" && /bin/pwd -P)"
-    on_terminal "$(answer_when_done "$_project/.done" 'u\n')" "$SCRATCH/avm" "$BOX" --project "$_project" -- /bin/sh "$_project/work.sh"
+    on_terminal "$(answer_when_done "$_project/.done" 'u\n')" "$SCRATCH/avm" "$BOX" --no-stop --project "$_project" -- /bin/sh "$_project/work.sh"
     local _id
     _id="$(session_id)"
     local _state
@@ -169,7 +169,7 @@ test_connect_read_only() {
     make_project "$SCRATCH/project"
     local _project
     _project="$(cd "$SCRATCH/project" && /bin/pwd -P)"
-    on_terminal ':' "$SCRATCH/avm" "$BOX" --read-only --project "$_project" -- /usr/bin/touch "$_project/x"
+    on_terminal ':' "$SCRATCH/avm" "$BOX" --no-stop --read-only --project "$_project" -- /usr/bin/touch "$_project/x"
     assert_status 1 || return 1
     assert_out_contains "Sharing $_project (read only)" || return 1
     assert_not_contains "$OUT" "Snapshot of" "the output" || return 1
@@ -187,7 +187,7 @@ test_connect_second_session_goes_on_without_a_snapshot() {
     local _first
     _first="$(json_value id)"
     # Enter takes the default: go on without a new snapshot.
-    on_terminal "printf '\\n'" "$SCRATCH/avm" "$BOX" --project "$_project" -- /usr/bin/true
+    on_terminal "printf '\\n'" "$SCRATCH/avm" "$BOX" --no-stop --project "$_project" -- /usr/bin/true
     local _status="$STATUS"
     "$AGENT_VM" session end "$_first" > /dev/null 2>&1
     "$AGENT_VM" session discard "$_first" > /dev/null 2>&1
