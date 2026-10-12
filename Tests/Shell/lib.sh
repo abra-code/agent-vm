@@ -242,7 +242,7 @@ fake_linux_image() {
   "diskBytes" : 34359738368,
   "macAddress" : "da:51:72:d4:e5:73",
   "userName" : "agent",
-  "guestFeatures" : ["terminal", "time-sync", "terminal-pixels"],
+  "guestFeatures" : ["terminal", "time-sync", "terminal-pixels", "flow-control"],
   "guestVersion" : "test",
   "guestProtocol" : 1
 }

@@ -236,8 +236,12 @@ public final class GuestServer: @unchecked Sendable {
             return
         }
         let pid = started.pid
+        // With a window in the request, output waits for the host's acknowledgments and input
+        // for this daemon's (GuestFlow). A host from before the feature names none.
+        let gate = GuestFlow.accepted(request.window).map { CreditGate(window: $0) }
+        let input = gate == nil ? nil : InputQueue(window: GuestFlow.window)
         do {
-            try channel.send(.response, json: GuestResponse(ok: true, v: AgentVM.guestProtocolVersion, pid: pid))
+            try channel.send(.response, json: GuestResponse(ok: true, v: AgentVM.guestProtocolVersion, pid: pid, window: gate == nil ? nil : GuestFlow.window))
         } catch {
             _ = kill(-pid, SIGKILL)
         }
@@ -251,22 +255,24 @@ public final class GuestServer: @unchecked Sendable {
 
         let output = DispatchGroup()
         let stopTerminal = StopFlag()
+        let finishing = StopFlag()
         if let terminal = started.terminal {
             output.enter()
             Thread.detachNewThread {
                 // The master is closed at the end of runExec, not here: the host reader uses it
                 // (resize, foreground job) until then, and a closed number may be reused by
                 // another exec's terminal.
-                Self.pumpTerminal(terminal, into: channel, stop: stopTerminal)
+                Self.pumpTerminal(terminal, into: channel, gate: gate, finishing: finishing, stop: stopTerminal)
                 output.leave()
             }
         } else {
             for (descriptor, type) in [(started.stdout, FrameType.stdout), (started.stderr, FrameType.stderr)] {
                 output.enter()
                 Thread.detachNewThread {
-                    Self.pump(descriptor, type, into: channel)
+                    Self.pump(descriptor, type, into: channel, gate: gate, finishing: finishing) {
+                        output.leave()
+                    }
                     close(descriptor)
-                    output.leave()
                 }
             }
         }
@@ -283,17 +289,26 @@ public final class GuestServer: @unchecked Sendable {
         let stdin = OnceCloser(started.stdin)
         let readerDone = DispatchSemaphore(value: 0)
         Thread.detachNewThread {
-            Self.readHost(channel: channel, pid: pid, terminal: started.terminal, stdin: stdin, exited: exited)
+            Self.readHost(channel: channel, pid: pid, terminal: started.terminal, stdin: stdin, exited: exited, gate: gate, input: input)
             readerDone.signal()
+        }
+        // With flow control the reader only queues the input, and this thread writes it: the
+        // reader must get to the host's acknowledgments whatever the program does with its input.
+        let writerDone = DispatchSemaphore(value: 0)
+        if let input {
+            Thread.detachNewThread {
+                Self.writeInput(input, to: stdin, channel: channel)
+                writerDone.signal()
+            }
         }
 
         reaped.wait()
-        // Background children may hold the pipes open; do not wait for them forever. Pumps
-        // still running after this find the channel closed.
-        if output.wait(timeout: .now() + 2) == .timedOut, started.terminal != nil {
-            // The terminal pump polls; stopped, it returns at once.
-            stopTerminal.set()
-            _ = output.wait(timeout: .now() + 1)
+        // Background children may hold the pipes open; do not wait for them forever. After
+        // two seconds the pumps deliver what the program left behind (what can be read at
+        // once, however long the host takes to accept it) and end.
+        if output.wait(timeout: .now() + 2) == .timedOut {
+            finishing.set()
+            output.wait()
         }
         #if os(macOS)
         // No notice may follow the exit frame.
@@ -303,9 +318,14 @@ public final class GuestServer: @unchecked Sendable {
             try? channel.send(.exit, json: report)
         }
         stdin.close()
+        input?.close()
         channel.shutdownBoth()
-        // The reader must be out of `receive` before the descriptor is closed and reused.
+        // The reader must be out of `receive` before the descriptor is closed and reused, and
+        // the input's writer out of the channel and the program's stdin.
         readerDone.wait()
+        if input != nil {
+            writerDone.wait()
+        }
         if let terminal = started.terminal {
             // Neither the reader nor the pump (stopped, with the channel shut) uses the master
             // any more. Closing it hangs up whatever still has the terminal open.
@@ -318,9 +338,13 @@ public final class GuestServer: @unchecked Sendable {
     /// Host-to-guest frames during exec. When the host goes away (or breaks the protocol),
     /// the process group is hung up, then killed. With a terminal, signals go to its foreground
     /// job (what a key such as Control-C would reach), and resize frames set its size.
-    private static func readHost(channel: FrameChannel, pid: pid_t, terminal: Int32?, stdin: OnceCloser, exited: ExitState) {
+    private static func readHost(channel: FrameChannel, pid: pid_t, terminal: Int32?, stdin: OnceCloser, exited: ExitState,
+                                 gate: CreditGate?, input: InputQueue?) {
         func hangUp() {
             stdin.close()
+            // Nobody takes output or sends input any more: the pumps drain without waiting.
+            gate?.open()
+            input?.close()
             // With job control the foreground job has a group of its own; it is hung up too
             // (the master is still open here: runExec closes it after this thread ends).
             let foreground = terminal.map { tcgetpgrp($0) } ?? -1
@@ -365,6 +389,13 @@ public final class GuestServer: @unchecked Sendable {
             }
             switch frame.type {
             case .stdin:
+                if let input {
+                    // More than the window the host was given is a protocol error.
+                    if !input.add(.bytes(frame.payload)) {
+                        channel.shutdownBoth()
+                    }
+                    continue
+                }
                 // A program that does not read its stdin must not keep the reader from
                 // noticing that the host went away.
                 guard stdin.write(frame.payload, watching: channel.descriptor) else {
@@ -372,7 +403,18 @@ public final class GuestServer: @unchecked Sendable {
                     return
                 }
             case .stdinEnd:
-                stdin.close()
+                if let input {
+                    // After the input queued before it.
+                    _ = input.add(.end)
+                } else {
+                    stdin.close()
+                }
+            case .outputAck:
+                guard let gate, let count = GuestFlow.acknowledged(frame.payload) else {
+                    channel.shutdownBoth()
+                    continue
+                }
+                gate.add(count)
             case .signal:
                 if let signal = Int32(bigEndianBytes: frame.payload), allowedSignals.contains(signal), !exited.isFinished {
                     let foreground = terminal.map { tcgetpgrp($0) } ?? -1
@@ -390,46 +432,142 @@ public final class GuestServer: @unchecked Sendable {
         }
     }
 
-    private static func pump(_ descriptor: Int32, _ type: FrameType, into channel: FrameChannel) {
-        var buffer = [UInt8](repeating: 0, count: 65536)
+    /// The most a pump still delivers once it is `finishing`: more than a pipe or a terminal
+    /// holds of what the program wrote before it ended, and an end to what a background child
+    /// that never stops writing would add.
+    static let finishingLimit = 1024 * 1024
+
+    /// How much a pump reads, and so sends, at once: under a window, a frame the host's window
+    /// takes as a quarter of itself (the host's window, which need not be this build's own).
+    private static func readSize(under gate: CreditGate?) -> Int {
+        return gate.map { min(65536, GuestFlow.chunk(for: $0.window)) } ?? 65536
+    }
+
+    /// Sends `bytes` as one frame, after waiting for room in the host's window when there is
+    /// one. False when the host is gone.
+    private static func deliver(_ bytes: [UInt8], _ type: FrameType, into channel: FrameChannel, gate: CreditGate?) -> Bool {
+        if let gate, !gate.take(GuestFlow.cost(payload: bytes.count)) {
+            return false
+        }
+        do {
+            try channel.send(Frame(type, bytes))
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// A pipe's output until its last writer closes it. Once `finishing` is set (the program
+    /// ended, and something else holds the pipe open), only what can be read without waiting,
+    /// up to `finishingLimit`. `delivered` is called once, when nothing more will be sent;
+    /// after it the pipe is still read to its end and what comes is dropped, so that whatever
+    /// holds it open is not stopped by a full pipe or ended by a closed one.
+    private static func pump(_ descriptor: Int32, _ type: FrameType, into channel: FrameChannel, gate: CreditGate?, finishing: StopFlag,
+                             delivered: () -> Void) {
+        var buffer = [UInt8](repeating: 0, count: readSize(under: gate))
+        var delivering = true
+        var hostGone = false
+        var finished = 0
+        func stopDelivering() {
+            if delivering {
+                delivering = false
+                delivered()
+            }
+        }
         while true {
+            let last = delivering && finishing.isSet
+            // Waited for here, not in read, so that `finishing` is seen; once nothing is
+            // delivered any more there is nothing to look for, and the wait has no limit.
+            var watched = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&watched, 1, !delivering ? -1 : last ? 0 : 200)
+            if ready < 0 && errno == EINTR {
+                continue
+            }
+            if ready == 0 {
+                if last {
+                    stopDelivering()
+                }
+                continue
+            }
             let count = read(descriptor, &buffer, buffer.count)
             if count < 0 && errno == EINTR {
                 continue
             }
             if count <= 0 {
+                stopDelivering()
                 return
             }
-            do {
-                try channel.send(Frame(type, Array(buffer[0..<count])))
-            } catch {
-                // The host is gone; keep draining so the process does not block on a full pipe.
+            guard delivering else {
                 continue
+            }
+            // When the host is gone, keep draining so the process does not block on a full pipe.
+            if !hostGone && !deliver(Array(buffer[0..<count]), type, into: channel, gate: gate) {
+                hostGone = true
+            }
+            if last {
+                finished += count
+                if finished >= finishingLimit || hostGone {
+                    stopDelivering()
+                }
             }
         }
     }
 
     /// A terminal's output (the non-blocking master side) until every descriptor for the
     /// terminal's device is closed, or `stop` is set: a background process may keep the terminal
-    /// open long after the program exited.
-    private static func pumpTerminal(_ master: Int32, into channel: FrameChannel, stop: StopFlag) {
-        var buffer = [UInt8](repeating: 0, count: 65536)
+    /// open long after the program exited. `finishing` is as for `pump`.
+    private static func pumpTerminal(_ master: Int32, into channel: FrameChannel, gate: CreditGate?, finishing: StopFlag, stop: StopFlag) {
+        var buffer = [UInt8](repeating: 0, count: readSize(under: gate))
+        var hostGone = false
+        var finished = 0
         while !stop.isSet {
+            let last = finishing.isSet
             let count = read(master, &buffer, buffer.count)
             if count > 0 {
                 // When the host is gone, keep draining so the program does not block writing.
-                try? channel.send(Frame(.stdout, Array(buffer[0..<count])))
+                if !hostGone && !deliver(Array(buffer[0..<count]), .stdout, into: channel, gate: gate) {
+                    hostGone = true
+                }
+                if last {
+                    finished += count
+                    if finished >= finishingLimit || hostGone {
+                        return
+                    }
+                }
                 continue
             }
             if count < 0 && errno == EINTR {
                 continue
             }
-            guard count < 0 && errno == EAGAIN else {
+            guard count < 0 && errno == EAGAIN, !last else {
                 // End of file or EIO: the terminal's device is closed on the program's side.
+                // Or nothing more can be read at once, and that was all that was still wanted.
                 return
             }
             var watched = pollfd(fd: master, events: Int16(POLLIN), revents: 0)
             _ = poll(&watched, 1, 200)
+        }
+    }
+
+    /// Writes the queued input to the program and acknowledges it to the host, until the queue
+    /// is closed. Input the program does not read is dropped and acknowledged all the same, as
+    /// it is dropped without flow control.
+    private static func writeInput(_ input: InputQueue, to stdin: OnceCloser, channel: FrameChannel) {
+        var tally = AckTally(window: GuestFlow.window)
+        while let item = input.next() {
+            switch item {
+            case .end:
+                stdin.close()
+            case let .bytes(bytes):
+                guard stdin.write(bytes, watching: channel.descriptor) else {
+                    // The host went away; the reader hangs the program up.
+                    return
+                }
+                input.wrote(bytes.count)
+                if let count = tally.took(payload: bytes.count) {
+                    try? channel.send(Frame(.stdinAck, GuestFlow.acknowledgment(count)))
+                }
+            }
         }
     }
 
@@ -1063,6 +1201,88 @@ private final class StopFlag: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return value
+    }
+}
+
+/// Input the host sent and the program has not been given yet (flow control): at most the
+/// window the host was told, so a program that does not read costs the daemon no more memory
+/// than that. One thread adds, one takes.
+private final class InputQueue: @unchecked Sendable {
+    enum Item {
+        case bytes([UInt8])
+        case end
+    }
+
+    private let lock = NSLock()
+    private let wake = DispatchSemaphore(value: 0)
+    private let window: Int
+    private var items: [Item] = []
+    /// Bytes of frames added and not yet written to the program.
+    private var held = 0
+    /// Whether the input's end was added.
+    private var hasEnd = false
+    private var isClosed = false
+
+    init(window: Int) {
+        self.window = window
+    }
+
+    /// False when the host sent more than its window allows.
+    func add(_ item: Item) -> Bool {
+        lock.lock()
+        if case let .bytes(bytes) = item {
+            let cost = GuestFlow.cost(payload: bytes.count)
+            guard held + cost <= window else {
+                lock.unlock()
+                return false
+            }
+            held += cost
+        } else {
+            // One end is all there is to keep: ends cost no window, so a host that repeats
+            // them while the program does not read would otherwise fill the memory.
+            guard !hasEnd else {
+                lock.unlock()
+                return true
+            }
+            hasEnd = true
+        }
+        items.append(item)
+        lock.unlock()
+        wake.signal()
+        return true
+    }
+
+    /// The next item, waiting for one; nil once the queue is closed.
+    func next() -> Item? {
+        while true {
+            lock.lock()
+            if isClosed {
+                lock.unlock()
+                return nil
+            }
+            if !items.isEmpty {
+                let item = items.removeFirst()
+                lock.unlock()
+                return item
+            }
+            lock.unlock()
+            wake.wait()
+        }
+    }
+
+    /// The bytes of the item taken last went to the program (or were dropped).
+    func wrote(_ count: Int) {
+        lock.lock()
+        held -= GuestFlow.cost(payload: count)
+        lock.unlock()
+    }
+
+    func close() {
+        lock.lock()
+        isClosed = true
+        items.removeAll()
+        lock.unlock()
+        wake.signal()
     }
 }
 

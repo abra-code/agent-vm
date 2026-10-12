@@ -40,6 +40,8 @@ public enum FrameType: UInt8, Sendable {
     /// A new terminal size (exec with a terminal only): rows, then columns, 2 bytes each, big-endian;
     /// then, with feature `terminal-pixels`, the width and height in pixels, 2 bytes each.
     case resize = 0x13
+    /// The host took that many bytes of output frames (flow control; see GuestFlow).
+    case outputAck = 0x14
     // Guest to host during exec.
     case stdout = 0x20
     case stderr = 0x21
@@ -47,6 +49,8 @@ public enum FrameType: UInt8, Sendable {
     /// Something the program waits on that nobody in the box may see (feature `prompt-notices`,
     /// sent only when the request asked for notices): JSON, a GuestNotice.
     case notice = 0x23
+    /// The guest took that many bytes of stdin frames (flow control; see GuestFlow).
+    case stdinAck = 0x24
 }
 
 public struct Frame: Equatable, Sendable {
@@ -90,9 +94,14 @@ public struct GuestRequest: Codable, Equatable, Sendable {
     public var notices: Bool?
     /// time-sync: the Mac's time, in seconds since 1970 (with fractions).
     public var epoch: Double?
+    /// exec with flow control (feature `flow-control`): how many bytes of output frames the
+    /// host lets the guest have unacknowledged (GuestFlow). A guest without the feature ignores
+    /// the field, and its answer names no window.
+    public var window: Int?
 
     public init(op: Operation, argv: [String]? = nil, env: [String: String]? = nil, cwd: String? = nil, user: String? = nil, terminal: TerminalSize? = nil,
-                notices: Bool? = nil, epoch: Double? = nil) {
+                notices: Bool? = nil, epoch: Double? = nil, window: Int? = nil) {
+        self.window = window
         self.epoch = epoch
         self.notices = notices
         self.v = AgentVM.guestProtocolVersion
@@ -126,9 +135,13 @@ public struct GuestResponse: Codable, Equatable, Sendable {
     /// time-sync: how far the guest's clock was behind the time it was set to, in seconds
     /// (negative: ahead).
     public var offset: Double?
+    /// exec whose request named a window: flow control is on, and this is how many bytes of
+    /// stdin frames the guest lets the host have unacknowledged.
+    public var window: Int?
 
     public init(ok: Bool, error: String? = nil, v: Int? = nil, version: String? = nil, osBuild: String? = nil, os: String? = nil, pid: Int32? = nil,
-                status: Int32? = nil, features: [String]? = nil, offset: Double? = nil) {
+                status: Int32? = nil, features: [String]? = nil, offset: Double? = nil, window: Int? = nil) {
+        self.window = window
         self.offset = offset
         self.os = os
         self.ok = ok
@@ -164,6 +177,9 @@ public enum GuestFeature {
     /// The terminal's size in pixels too: in the exec request's `terminal`, and in 8-byte
     /// `resize` frames (a guest without it reads only 4-byte ones).
     public static let terminalPixels = "terminal-pixels"
+    /// exec with `window`, and acknowledgment frames (GuestFlow): a reader on the Mac that
+    /// stops reading holds up that one program, not every connection of the box.
+    public static let flowControl = "flow-control"
 
     /// Everything this build's daemon supports, on the system it is built for.
     public static var all: [String] {
@@ -175,9 +191,9 @@ public enum GuestFeature {
     public static func all(for kind: GuestKind) -> [String] {
         switch kind {
         case .macOS:
-            return [terminal, promptNotices, wallpaper, timeSync, userSession, terminalPixels]
+            return [terminal, promptNotices, wallpaper, timeSync, userSession, terminalPixels, flowControl]
         case .linux:
-            return [terminal, timeSync, terminalPixels]
+            return [terminal, timeSync, terminalPixels, flowControl]
         }
     }
 }

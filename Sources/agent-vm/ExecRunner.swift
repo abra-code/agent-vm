@@ -146,7 +146,10 @@ struct ExecRunner {
         do {
             session = try ExecSession(descriptor: guest, request: GuestRequest(
                 op: .exec, argv: argv, env: environment.isEmpty ? nil : environment, cwd: directory, user: user, terminal: size,
-                notices: status.guestFeatures?.contains(GuestFeature.promptNotices) == true ? true : nil))
+                notices: status.guestFeatures?.contains(GuestFeature.promptNotices) == true ? true : nil,
+                // What this command writes to may stop taking it (a pager, a paused terminal):
+                // with a window the program waits then, and the box's connections do not.
+                window: status.guestFeatures?.contains(GuestFeature.flowControl) == true ? GuestFlow.window : nil))
         } catch let refusal as ExecRefusal {
             // Like env(1) and shells: 127 when the program is not found, 126 when it cannot run.
             Stderr.write("agent-vm: \(refusal.message)\n")

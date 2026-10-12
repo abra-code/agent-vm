@@ -960,13 +960,13 @@ public final class ImageBuilder {
                 return (true, restarts)
             }
             let waited = clock.now - asked
-            if waited >= timeout {
-                return (false, restarts)
-            }
-            guard let before = known, requests < retries, waited >= probeAfter else {
-                continue
-            }
-            guard let now = await currentBoot(), now != before else {
+            // The guest is looked at before the wait is given up, also when a slice ended
+            // late enough to use the wait up: a guest that started again is not left there.
+            guard let before = known, requests < retries, waited >= probeAfter,
+                  let now = await currentBoot(), now != before else {
+                if waited >= timeout {
+                    return (false, restarts)
+                }
                 continue
             }
             if counted != now {

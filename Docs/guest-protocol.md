@@ -28,10 +28,12 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 | 0x11 | stdin-end | host to guest | empty; closes the program's standard input |
 | 0x12 | signal | host to guest | 4-byte big-endian signal number |
 | 0x13 | resize | host to guest | rows, then columns, 2 bytes each, big-endian (feature `terminal`; ignored without a terminal); then, with feature `terminal-pixels`, the width and height in pixels, 2 bytes each (8 bytes in all) |
+| 0x14 | output-ack | host to guest | 4-byte big-endian count: bytes of stdout and stderr frames the host has taken (feature `flow-control`, only when the request named a `window`) |
 | 0x20 | stdout | guest to host | bytes the program wrote to standard output |
 | 0x21 | stderr | guest to host | bytes the program wrote to standard error |
 | 0x22 | exit | guest to host | JSON, how the program ended; last frame |
 | 0x23 | notice | guest to host | JSON, something the program waits on that nobody sees (feature `prompt-notices`, only when the request asked for `notices`) |
+| 0x24 | stdin-ack | guest to host | 4-byte big-endian count: bytes of stdin frames the guest has given the program (feature `flow-control`, only when the request named a `window`) |
 
 ## Request and response
 
@@ -44,6 +46,7 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - `argv`, `env`, `cwd`, `user`: exec only; all but `argv` optional.
 - `terminal`: exec only, optional: `{"rows": 24, "columns": 80}` runs the program on a new terminal of that size (feature `terminal`, below). With feature `terminal-pixels`, `xpixels` and `ypixels` may give the window's size in pixels (a guest without it ignores them).
 - `notices`: exec only, optional: `true` asks for notice frames (feature `prompt-notices`, below).
+- `window`: exec only, optional (feature `flow-control`, below): how many bytes of output frames the host lets the guest have sent and not yet acknowledged, 4096 to 1048576. A guest without the feature ignores it; any other number is taken as none.
 
 ```json
 {"ok": true, "v": 1, "version": "0.1.1", "osBuild": "26A428", "pid": 612}
@@ -52,7 +55,8 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - `ok`: false with `error` (a message for a person) when the request is refused; the guest then closes the connection.
 - `version`, `osBuild`: hello only (agent-vm-guest's version, and the guest system's build: macOS's build, or on Linux the `VERSION_ID` of `/etc/os-release`, `13` for Debian 13, `26.04` for Ubuntu 26.04). Each is 1 to 32 ASCII letters, digits, `.`, `+`, `-` and `_`; so is every feature name, of which there are at most 64. A host refuses any other hello (since 0.5.10): it keeps and shows these.
 - `os`: hello only (since 0.7.1), the system the daemon runs on: `macos` or `linux`, under the same rule as `version`. A hello without it comes from an older daemon, on macOS. It is what the guest says, like everything in a hello.
-- `features`: hello only, what the daemon supports beyond this document's base (see Versioning). A macOS daemon today: `terminal`, `prompt-notices`, `wallpaper`, `time-sync`, `user-session` and `terminal-pixels`. A Linux daemon: `terminal`, `time-sync` and `terminal-pixels`; a Linux box has no screen and no login session, which the other three are about.
+- `features`: hello only, what the daemon supports beyond this document's base (see Versioning). A macOS daemon today: `terminal`, `prompt-notices`, `wallpaper`, `time-sync`, `user-session`, `terminal-pixels` and `flow-control`. A Linux daemon: `terminal`, `time-sync`, `terminal-pixels` and `flow-control`; a Linux box has no screen and no login session, which the other three are about.
+- `window`: exec only, and only when the request named one: flow control is on, and this is how many bytes of stdin frames the guest lets the host have sent and not yet acknowledged.
 - `pid`: exec only, the started process: a positive number. A host treats an accepted exec without one as a protocol error (since 0.6.3).
 - `status`: a refused exec only, the status a shell would give: 127 when the program is not found, 126 when it cannot be run (unknown account, missing folder). A host takes anything outside 1 to 255 as 126, and shows `error` as one line of at most 500 characters.
 
@@ -85,8 +89,8 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 
 - **Signals** go to the whole process group. Allowed: HUP, INT, QUIT, TERM, KILL, USR1, USR2, WINCH, CONT, STOP, TSTP; others are ignored.
 - **Host goes away** (the connection closes before `exit`): the process group gets SIGHUP, then SIGKILL 3 seconds later, as when a terminal closes. The same happens to background processes still in the group after the program exits.
-- **Output after exit**: background children may keep the output pipes open. The guest waits at most 2 seconds after the program exits before sending `exit`.
-- **Ordering**: frames travel in order on one connection, so a signal sent after input the program is not reading waits behind that input (the guest keeps delivering stdin while the pipe accepts it). Closing the connection always works: the guest notices the host is gone even while stdin is backed up.
+- **Output after exit**: background children may keep the output pipes open. The guest waits 2 seconds after the program exits for the pipes to close; then it sends what can be read from them at once (at most 1 MiB, however long the host takes to accept it: what the program itself left behind is not cut off since 0.7.46) and `exit`.
+- **Ordering**: frames travel in order on one connection, so without a `window` (below) a signal sent after input the program is not reading waits behind that input (the guest keeps delivering stdin while the pipe accepts it). Closing the connection always works: the guest notices the host is gone even while stdin is backed up.
 - **Refusals** carry a plain message in `error`, meant to be shown as is (for example `"make: command not found"`).
 
 **exec with `terminal`** (feature `terminal`): the program runs on a new pseudo-terminal instead of pipes.
@@ -95,7 +99,15 @@ A frame with an unknown type or an oversized length is a protocol error; the rec
 - **Streams**: `stdin` frames go to the terminal as typed, so Control-C, Control-Z and Control-D act through the terminal's settings (the guest's defaults: canonical mode, echo, signals from keys). Everything the program writes, standard error included, arrives as `stdout` frames with the terminal's line endings. `stdin-end` stops input and leaves output flowing.
 - **Signals** from `signal` frames go to the terminal's foreground process group (what a key would reach), which with job control is not the program's own group.
 - **Host goes away**: the foreground job's group is hung up and killed along with the program's.
-- **After exit**: output is forwarded until every holder of the terminal closes it, at most 2 seconds; then the guest closes the terminal, which hangs up what still has it open.
+- **After exit**: output is forwarded until every holder of the terminal closes it; after 2 seconds, what can still be read at once is forwarded (as for pipes), and the guest closes the terminal, which hangs up what still has it open.
+
+**exec with `window`** (feature `flow-control`, since 0.7.46): each side sends the other no more than a window of data frames ahead of what the other has taken.
+- **Why**: output that waits unread in a connection on the Mac stops every vsock connection of that guest until it is read (measured on macOS 27 with a Linux and a macOS guest: 64 KiB unread is enough). `agent-vm exec` writes the output on to a terminal, a pipe or a file, and any of them can stop taking it (a pager, a paused terminal). So it reads the connection at once, into memory, and the window is what bounds that memory: the program in the guest waits, as it would on a full pipe.
+- **What a window counts**: the bytes of `stdout` and `stderr` frames (toward the host) or `stdin` frames (toward the guest) on the connection: each frame's payload and its 5-byte header. `exit` and `notice` frames are not counted.
+- **Output**: the request's `window` is the host's (agent-vm asks for 65536). The guest sends output frames of at most a quarter of it and stops when a window of them is unacknowledged. The host sends `output-ack` with the bytes it has passed on, at least once per quarter window.
+- **Input**: the response's `window` is the guest's (65536). The host does the same with `stdin` frames, and the guest sends `stdin-ack` for what it has written to the program. The guest keeps reading the connection whatever the program does with its input, and holds at most a window of input in memory; a host that sends more is cut off (the connection is closed and the program hung up). Input a program does not read is dropped and acknowledged, as it is dropped without a window.
+- **Why input too**: the host's acknowledgments arrive between its `stdin` frames. A guest that stopped reading while a program does not read its input would never see them, and a program that copies input to output (`cat`) would then wait for good.
+- **Without a window**, and with a daemon that lacks the feature, an exec is as before: nothing is acknowledged, and a host that reads late leaves output in the connection.
 
 **exec with `notices`** (feature `prompt-notices`): the guest tells the host when the program waits on something nobody in the box can see.
 - **Why**: every program exec runs is started by the daemon, so macOS asks on the daemon's behalf before one opens protected data (the account's Downloads, Documents or Desktop folders, other apps, the camera). The question appears on the guest's screen, and the program waits for an answer.

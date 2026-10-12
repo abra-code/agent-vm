@@ -107,6 +107,17 @@ public final class ExecSession: @unchecked Sendable {
     let channel: FrameChannel
     /// The process id inside the guest.
     public let pid: Int32
+    /// With flow control (the request named a window and the guest answered with its own;
+    /// GuestFlow): how much input may still be sent, and the window output is acknowledged by.
+    /// Then `sendStdin` waits for the guest's acknowledgments, which only `run` reads: input
+    /// must be sent from another thread than the one in `run`, as `forwardStdin` does.
+    private let inputGate: CreditGate?
+    private let inputChunk: Int
+    private let outputWindow: Int?
+    /// Whether this session has flow control.
+    public var hasFlowControl: Bool {
+        return inputGate != nil
+    }
 
     /// Sends the request; throws if the guest refuses it (unknown account, missing program,
     /// bad working directory).
@@ -126,12 +137,25 @@ public final class ExecSession: @unchecked Sendable {
             throw GuestProtocolError.malformed("the guest started a program without saying which process it is")
         }
         self.pid = pid
+        if let asked = GuestFlow.accepted(request.window), let answered = GuestFlow.accepted(response.window) {
+            inputGate = CreditGate(window: answered)
+            inputChunk = GuestFlow.chunk(for: answered)
+            outputWindow = asked
+        } else {
+            inputGate = nil
+            inputChunk = GuestProtocol.maxPayload
+            outputWindow = nil
+        }
     }
 
     public func sendStdin(_ bytes: [UInt8]) throws {
         var offset = 0
         while offset < bytes.count {
-            let end = min(offset + GuestProtocol.maxPayload, bytes.count)
+            let end = min(offset + inputChunk, bytes.count)
+            // Waits while the guest holds a window of input the program has not read.
+            if let inputGate, !inputGate.take(GuestFlow.cost(payload: end - offset)) {
+                throw GuestProtocolError.disconnected
+            }
             try channel.send(Frame(.stdin, Array(bytes[offset..<end])))
             offset = end
         }
@@ -179,7 +203,24 @@ public final class ExecSession: @unchecked Sendable {
                     notice: (GuestNotice) -> Void = { _ in }) throws -> ExitReport {
         var delivered: [GuestNotice] = []
         var windowBegan = ContinuousClock.now
-        while let frame = try channel.receive() {
+        // Whatever ends the run ends a wait for room to send input too.
+        defer { inputGate?.open() }
+        var taken = outputWindow.map { AckTally(window: $0) }
+        /// Output is acknowledged once its handler has returned, which is when the bytes left
+        /// this process: a handler that waits (a full pipe, a paused terminal) holds the
+        /// program in the guest, not the connection. The guest may have closed already.
+        func acknowledge(_ count: Int) {
+            if let total = taken?.took(payload: count) {
+                try? channel.send(Frame(.outputAck, GuestFlow.acknowledgment(total)))
+            }
+        }
+        // With flow control the connection is read on a thread of its own, into memory: what
+        // the guest sent must not wait in the connection while a handler waits (GuestFlow),
+        // and the window is what bounds the memory. The thread is out of the descriptor
+        // before this returns, however it returns.
+        let reader = outputWindow.map { FrameReader(channel: channel, inputGate: inputGate, limit: $0 + Self.readAheadSlack) }
+        defer { reader?.finish() }
+        while let frame = try reader.map({ try $0.next() }) ?? channel.receive() {
             switch frame.type {
             case .notice:
                 // One the host cannot read is dropped: a notice is advice, never the output. So
@@ -199,8 +240,12 @@ public final class ExecSession: @unchecked Sendable {
                 }
             case .stdout:
                 try stdout(frame.payload)
+                acknowledge(frame.payload.count)
             case .stderr:
                 try stderr(frame.payload)
+                acknowledge(frame.payload.count)
+            // An acknowledgment of input is taken on the reader thread and never comes here;
+            // without flow control nobody asked for one.
             case .exit:
                 guard let report = try? JSONDecoder().decode(ExitReport.self, from: Data(frame.payload)), report.isValid else {
                     throw GuestProtocolError.malformed("unreadable exit report")
@@ -212,6 +257,10 @@ public final class ExecSession: @unchecked Sendable {
         }
         throw GuestProtocolError.disconnected
     }
+
+    /// What the reader thread may hold beyond the output window: the exit report, which no
+    /// window counts, and room for a guest that counts a little differently.
+    static let readAheadSlack = 64 * 1024
 
     /// The most notices one program's run delivers in a minute, and the largest notice frame
     /// read as one.
@@ -277,5 +326,130 @@ public struct ExecRefusal: Error, Equatable, CustomStringConvertible {
 
     public var description: String {
         return "the guest refused: \(message)"
+    }
+}
+
+/// Reads a connection's frames into memory as they arrive, on a thread of its own, for
+/// `ExecSession.run` to take one by one. The guest's acknowledgments of input are not queued:
+/// they make room at once, so input is never held up by output nobody takes. A guest that
+/// sends more than `limit` bytes ahead of what was taken broke its window; the run ends then,
+/// and nothing more is read. Notices are no part of a window: a few are kept and the rest
+/// dropped, as `run` drops those it has too many of.
+private final class FrameReader: @unchecked Sendable {
+    private let channel: FrameChannel
+    private let lock = NSLock()
+    private let wake = DispatchSemaphore(value: 0)
+    private let done = DispatchSemaphore(value: 0)
+    private var frames: [Frame] = []
+    private var held = 0
+    private var notices = 0
+    /// Set when nothing more will be read: nil for the connection's end.
+    private var ended = false
+    private var failure: (any Error)?
+
+    init(channel: FrameChannel, inputGate: CreditGate?, limit: Int) {
+        self.channel = channel
+        Thread.detachNewThread { [self] in
+            read(inputGate: inputGate, limit: limit)
+            done.signal()
+        }
+    }
+
+    private func read(inputGate: CreditGate?, limit: Int) {
+        var problem: (any Error)?
+        while true {
+            let frame: Frame?
+            do {
+                frame = try channel.receive()
+            } catch {
+                problem = error
+                break
+            }
+            guard let frame else {
+                break
+            }
+            if frame.type == .stdinAck {
+                guard let inputGate, let count = GuestFlow.acknowledged(frame.payload) else {
+                    problem = GuestProtocolError.malformed("unexpected \(frame.type) frame from the guest")
+                    break
+                }
+                inputGate.add(count)
+                continue
+            }
+            let last = frame.type == .exit
+            lock.lock()
+            if frame.type == .notice {
+                // Advice, which a handler that waits for hours must not turn into a failure.
+                guard notices < ExecSession.maxNotices, frame.payload.count <= ExecSession.maxNoticeBytes else {
+                    lock.unlock()
+                    continue
+                }
+                notices += 1
+            } else {
+                held += GuestFlow.cost(payload: frame.payload.count)
+            }
+            let over = held > limit
+            if !over {
+                frames.append(frame)
+                // With the report, so `finish` knows that nothing is being read any more.
+                ended = last
+            }
+            lock.unlock()
+            if over {
+                problem = GuestProtocolError.malformed("the guest sent more output than the window it was given")
+                break
+            }
+            wake.signal()
+            if last {
+                // The last frame of a run; whatever follows is not read.
+                return
+            }
+        }
+        lock.lock()
+        ended = true
+        failure = problem
+        lock.unlock()
+        wake.signal()
+    }
+
+    /// The next frame, waiting for one; nil when the guest closed the connection. Frames read
+    /// before a failure are given first.
+    func next() throws -> Frame? {
+        while true {
+            lock.lock()
+            if !frames.isEmpty {
+                let frame = frames.removeFirst()
+                if frame.type == .notice {
+                    notices -= 1
+                } else {
+                    held -= GuestFlow.cost(payload: frame.payload.count)
+                }
+                lock.unlock()
+                return frame
+            }
+            if ended {
+                let failure = self.failure
+                lock.unlock()
+                if let failure {
+                    throw failure
+                }
+                return nil
+            }
+            lock.unlock()
+            wake.wait()
+        }
+    }
+
+    /// Ends the reading and waits until the thread has left the descriptor. After the exit
+    /// report or the connection's end it has already; otherwise the connection is shut down,
+    /// which is what a run that ends early leaves behind anyway.
+    func finish() {
+        lock.lock()
+        let reading = !ended
+        lock.unlock()
+        if reading {
+            channel.shutdownBoth()
+        }
+        done.wait()
     }
 }

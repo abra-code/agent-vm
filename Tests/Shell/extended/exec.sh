@@ -219,3 +219,28 @@ test_box_view_shows_the_screen_and_the_box_keeps_working() {
     assert_status 0 || return 1
     assert_eq "$OUT" "still-running" "exec after box view" || return 1
 }
+
+# A reader on the Mac that stops reading (a pager, a paused terminal, a slow pipe) holds up its
+# own program and nothing else (since 0.7.46): output left unread in a connection stopped every
+# connection of the box until the reader read.
+test_a_reader_that_stops_does_not_stop_the_box() {
+    require_box || return $(( $? == 1 ? 0 : 1 ))
+    local _has
+    _has="$("$AGENT_VM" box status "$BOX" --json | /usr/bin/jq -r '(.guestFeatures // []) | index("flow-control") != null')"
+    if [ "$_has" != "true" ]; then
+        skip "the box's agent-vm-guest has no flow control (agent-vm image update <image> --guest)"
+        return 0
+    fi
+    local _count="$SCRATCH/bytes"
+    "$AGENT_VM" exec --box "$BOX" -- /usr/bin/head -c 20000000 /dev/zero | ( /bin/sleep 10; /bin/cat ) | /usr/bin/wc -c > "$_count" &
+    local _writer=$!
+    /bin/sleep 3
+    local _began=$SECONDS
+    run_avm exec --box "$BOX" -- /usr/bin/true
+    local _took=$((SECONDS - _began))
+    wait "$_writer"
+    assert_status 0 || return 1
+    [ "$_took" -le 4 ] || { fail "another exec took $_took s while one reader was stopped"; return 1; }
+    local _bytes="$(/usr/bin/tr -d ' \n' < "$_count")"
+    assert_eq "$_bytes" "20000000" "bytes the stopped reader got in the end" || return 1
+}

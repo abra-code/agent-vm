@@ -13,9 +13,10 @@ import Virtualization
 @Suite struct GuestRecordTests {
     static let debian = LinuxSystem(distribution: "debian", version: "13", name: "Debian GNU/Linux 13 (trixie)", kernel: "6.12.48+deb13-cloud-arm64")
     static let threeFeatures = [GuestFeature.terminal, GuestFeature.timeSync, GuestFeature.terminalPixels]
+    static let linuxFeatures = GuestFeature.all(for: .linux)
 
     /// A ready Linux image's record, as a build would write it.
-    static func linuxRecord(_ name: String = "deb", features: [String]? = threeFeatures) -> ImageRecord {
+    static func linuxRecord(_ name: String = "deb", features: [String]? = linuxFeatures) -> ImageRecord {
         var record = ImageRecord(formatVersion: ImageRecord.formatVersion(passwordID: nil, guest: .linux), name: name, state: .ready, failure: nil,
                                  createdAt: Date(timeIntervalSince1970: 1_800_000_000), createdBy: AgentVM.version,
                                  macOSVersion: nil, macOSBuild: nil, cpuCount: 4, memoryBytes: 4 << 30,
@@ -121,14 +122,14 @@ import Virtualization
     }
 
     @Test func linuxImagesNeedOnlyTheirOwnFeatures() {
-        // Three of the six features are all a Linux daemon has: nothing is missing.
+        // Four of the seven features are all a Linux daemon has: nothing is missing.
         #expect(Self.linuxRecord().needs.isEmpty)
         let older = Self.linuxRecord(features: [GuestFeature.terminal, GuestFeature.timeSync])
-        #expect(older.needs == [ImageNeed(kind: .guestUpdate, missing: [GuestFeature.terminalPixels])])
-        // A macOS image with those three lacks the other three.
+        #expect(older.needs == [ImageNeed(kind: .guestUpdate, missing: [GuestFeature.terminalPixels, GuestFeature.flowControl])])
+        // A macOS image with three of them lacks the other four.
         var mac = ImageStoreTests.record("dev", state: .ready)
         mac.guestFeatures = Self.threeFeatures
-        #expect(mac.needs.first == ImageNeed(kind: .guestUpdate, missing: [GuestFeature.promptNotices, GuestFeature.wallpaper, GuestFeature.userSession]))
+        #expect(mac.needs.first == ImageNeed(kind: .guestUpdate, missing: [GuestFeature.promptNotices, GuestFeature.wallpaper, GuestFeature.userSession, GuestFeature.flowControl]))
     }
 
     @Test func systemDescriptions() {

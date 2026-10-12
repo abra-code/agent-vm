@@ -139,7 +139,7 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
 
     @Test func missingFeaturesAskForAGuestUpdate() {
         let access = ImageRecord.FullDiskAccess(granted: true, guestDigest: "d1", checkedAt: Date())
-        #expect(record(features: ["terminal"], access: access).needs == [ImageNeed(kind: .guestUpdate, missing: ["prompt-notices", "wallpaper", "time-sync", "user-session", "terminal-pixels"])])
+        #expect(record(features: ["terminal"], access: access).needs == [ImageNeed(kind: .guestUpdate, missing: ["prompt-notices", "wallpaper", "time-sync", "user-session", "terminal-pixels", "flow-control"])])
         #expect(record(features: nil, access: access).needs == [ImageNeed(kind: .guestUpdate, missing: GuestFeature.all)])
     }
 

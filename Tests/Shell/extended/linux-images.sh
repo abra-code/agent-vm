@@ -42,7 +42,7 @@ test_linux_image_from_the_cloud_image() {
     assert_eq "$(json_of "$SCRATCH/record.json" .linux.distribution)" "debian" "the distribution" || return 1
     assert_eq "$(json_of "$SCRATCH/record.json" .linux.version)" "13" "the version" || return 1
     assert_eq "$(json_of "$SCRATCH/record.json" .linux.architecture)" "arm64" "the architecture" || return 1
-    assert_eq "$(json_of "$SCRATCH/record.json" '.guestFeatures | join(" ")')" "terminal time-sync terminal-pixels" "the daemon's features" || return 1
+    assert_eq "$(json_of "$SCRATCH/record.json" '.guestFeatures | join(" ")')" "terminal time-sync terminal-pixels flow-control" "the daemon's features" || return 1
     assert_eq "$(json_of "$SCRATCH/record.json" .base.release)" "debian-13" "the base's release" || return 1
     assert_eq "$(json_of "$SCRATCH/record.json" '.base.sha512 | test("^[0-9a-f]{128}$")')" "true" "the base's SHA-512" || return 1
     assert_eq "$(json_of "$SCRATCH/record.json" '.commandLineTools | startswith("build-essential ")')" "true" "the compiler's record" || return 1

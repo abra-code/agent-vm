@@ -243,13 +243,13 @@ import Testing
 }
 
 @Suite struct GuestFeatureTests {
-    @Test func linuxAnnouncesThree() {
-        #expect(GuestFeature.all(for: .linux) == [GuestFeature.terminal, GuestFeature.timeSync, GuestFeature.terminalPixels])
+    @Test func linuxAnnouncesFour() {
+        #expect(GuestFeature.all(for: .linux) == [GuestFeature.terminal, GuestFeature.timeSync, GuestFeature.terminalPixels, GuestFeature.flowControl])
     }
 
-    @Test func macOSAnnouncesSix() {
+    @Test func macOSAnnouncesSeven() {
         #expect(GuestFeature.all(for: .macOS) == [GuestFeature.terminal, GuestFeature.promptNotices, GuestFeature.wallpaper, GuestFeature.timeSync,
-                                                  GuestFeature.userSession, GuestFeature.terminalPixels])
+                                                  GuestFeature.userSession, GuestFeature.terminalPixels, GuestFeature.flowControl])
     }
 
     @Test func allIsTheCurrentSystems() {

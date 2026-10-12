@@ -18,13 +18,20 @@ final class GuestPair {
     /// `helperPath`: an exec-as helper (see `builtHelper`); without one, the server runs programs
     /// only directly, as this test process's account and without a terminal. `checkedHelper`:
     /// every program goes through the helper's checked form, as in a Linux guest.
-    init(helperPath: String? = nil, setClock: (@Sendable (Double) -> Int32)? = nil, checkedHelper: Bool = false, statusDeadline: Double = 10) throws {
+    /// `roomBytes`: how much the connection holds unread toward the client; a socket pair's
+    /// own few kilobytes are far less than a vsock connection's.
+    init(helperPath: String? = nil, setClock: (@Sendable (Double) -> Int32)? = nil, checkedHelper: Bool = false, statusDeadline: Double = 10,
+         roomBytes: Int32? = nil) throws {
         var pair: [Int32] = [-1, -1]
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0 else {
             throw AgentVMError.system(operation: "socketpair", code: errno)
         }
         client = pair[0]
         let server = pair[1]
+        if var room = roomBytes {
+            _ = setsockopt(client, SOL_SOCKET, SO_RCVBUF, &room, socklen_t(MemoryLayout<Int32>.size))
+            _ = setsockopt(server, SOL_SOCKET, SO_SNDBUF, &room, socklen_t(MemoryLayout<Int32>.size))
+        }
         // A test whose program never ends (a lost key, say) fails after this instead of hanging
         // the whole run: no program in these tests runs that long.
         var limit = timeval(tv_sec: 60, tv_usec: 0)
