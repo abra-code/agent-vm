@@ -50,7 +50,13 @@ test_doctor_reports_every_check_as_json() {
 
 test_an_ad_hoc_build_keeps_passwords_in_files() {
     # The binary under test is ad hoc signed: the Keychain would ask about its items after
-    # every rebuild.
+    # every rebuild. A build signed with a Developer ID may use the Keychain.
+    local _signature
+    _signature="$(/usr/bin/codesign -d -v "$AGENT_VM" 2>&1)"
+    case "$_signature" in
+        *"flags="*adhoc*) ;;
+        *) skip "the agent-vm under test is not ad hoc signed"; return 0 ;;
+    esac
     run_avm store secure-passwords
     assert_status 1 || return 1
     assert_err_contains "ad hoc build" || return 1

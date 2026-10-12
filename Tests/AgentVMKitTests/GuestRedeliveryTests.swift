@@ -107,3 +107,96 @@ final class Attempts {
         #expect(ImageBuilder.describe(GuestRequest(op: .exec, argv: ["/bin/echo", "a\tb", "c\r\nd"])) == "/bin/echo 'a\tb' 'c d'")
     }
 }
+
+/// What a guest that was asked to shut down does, one answer per question; the last repeats.
+@MainActor
+final class ShuttingDownGuest {
+    var stops: [Bool]
+    var boots: [String?]
+    var askFails = false
+    private(set) var asked = 0
+    private(set) var probes = 0
+
+    init(stops: [Bool], boots: [String?] = [nil]) {
+        self.stops = stops
+        self.boots = boots
+    }
+
+    func stopped() -> Bool {
+        return stops.count > 1 ? stops.removeFirst() : stops[0]
+    }
+
+    func boot() -> String? {
+        probes += 1
+        return boots.count > 1 ? boots.removeFirst() : boots[0]
+    }
+
+    func askAgain() throws {
+        asked += 1
+        if askFails {
+            throw AgentVMError.guestUnreachable("shutdown")
+        }
+    }
+}
+
+/// ImageBuilder's wait for a power-off: a guest that started again instead is asked again.
+@MainActor
+@Suite struct PowerOffWaitTests {
+    /// A test that expects a power-off passes a long `timeout`: it ends with the guest's answer, and a
+    /// short one would fail it when the sleeps run late in a busy test run.
+    func wait(_ guest: ShuttingDownGuest, boot: String? = "a", timeout: Duration = .milliseconds(300), probeAfter: Duration = .milliseconds(30),
+              retries: Int = 2) async -> (stopped: Bool, restarts: Int) {
+        return await ImageBuilder.awaitPowerOff(timeout: timeout, slice: .milliseconds(10), probeAfter: probeAfter, settle: .milliseconds(10),
+                                                retries: retries, boot: boot,
+                                                stopped: { try? await Task.sleep(for: $0); return guest.stopped() },
+                                                currentBoot: { guest.boot() }, askAgain: { try guest.askAgain() })
+    }
+
+    @Test func aGuestThatPowersOffIsNotAsked() async {
+        // Not asked which boot it is in either: the first question is far off, however late the sleep ends.
+        let guest = ShuttingDownGuest(stops: [false, true])
+        let result = await wait(guest, timeout: .seconds(60), probeAfter: .seconds(30))
+        #expect(result == (true, 0))
+        #expect(guest.asked == 0)
+        #expect(guest.probes == 0)
+    }
+
+    @Test func aGuestThatStartedAgainIsAskedAgain() async {
+        // No answer while it goes down and comes up, then another boot's name.
+        let guest = ShuttingDownGuest(stops: [false, false, false, false, false, false, false, true], boots: [nil, nil, "b"])
+        let result = await wait(guest, timeout: .seconds(60))
+        #expect(result == (true, 1))
+        #expect(guest.asked == 1)
+    }
+
+    @Test func theSameBootIsNotAskedAgain() async {
+        let guest = ShuttingDownGuest(stops: [false], boots: ["a"])
+        let result = await wait(guest)
+        #expect(result == (false, 0))
+        #expect(guest.asked == 0)
+        #expect(guest.probes > 0)
+    }
+
+    @Test func aGuestThatKeepsStartingAgainEndsTheWait() async {
+        let guest = ShuttingDownGuest(stops: [false], boots: ["b", "c", "d", "e"])
+        let result = await wait(guest)
+        #expect(result == (false, 2))
+        #expect(guest.asked == 2)
+    }
+
+    @Test func withoutAKnownBootNothingIsAsked() async {
+        let guest = ShuttingDownGuest(stops: [false], boots: ["b"])
+        let result = await wait(guest, boot: nil)
+        #expect(result == (false, 0))
+        #expect(guest.probes == 0)
+    }
+
+    @Test func aSecondRequestThatFailsCountsAndTheWaitGoesOn() async {
+        let guest = ShuttingDownGuest(stops: [false, false, false, false, false, false, false, false, false, false, true], boots: ["b"])
+        guest.askFails = true
+        let result = await wait(guest, timeout: .seconds(60))
+        // One restart, and both requests spent on it.
+        #expect(result == (true, 1))
+        #expect(guest.asked == 2)
+    }
+}

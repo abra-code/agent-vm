@@ -114,6 +114,13 @@ public final class ImageBuilder {
     static let provisionTimeout: Duration = .seconds(600)
     static let shutdownTimeout: Duration = .seconds(120)
 
+    /// A macOS guest that started again instead of powering off (see awaitPowerOff): how often
+    /// it is asked to shut down again, how long after a request it is first asked which boot
+    /// it is in, and how long it is left to come up before the next request.
+    static let shutdownRetries = 3
+    static let restartProbeDelay: Duration = .seconds(20)
+    static let restartSettle: Duration = .seconds(15)
+
     public init(store: ImageStore, events: @escaping @MainActor (ProgressEvent) -> Void) {
         self.store = store
         self.report = events
@@ -892,14 +899,88 @@ public final class ImageBuilder {
         if guest == .linux, clearing {
             try await prepareForCloning(machine)
         }
+        // Which boot the request is sent in (macOS; nil: not known, so no second request).
+        let boot = guest == .macOS ? await bootSession(machine) : nil
         try await withGuest(machine, "shutdown", cancellable: false) { descriptor in
             try GuestClient.shutdown(descriptor)
         }
-        guard await machine.waitUntilStopped(timeout: Self.shutdownTimeout) else {
-            throw AgentVMError.guestUnreachable("the guest did not shut down within \(Self.shutdownTimeout)")
+        let (stopped, restarts) = await Self.awaitPowerOff(
+            timeout: Self.shutdownTimeout, slice: .seconds(5), probeAfter: Self.restartProbeDelay, settle: Self.restartSettle,
+            retries: Self.shutdownRetries, boot: boot,
+            stopped: { await machine.waitUntilStopped(timeout: $0) },
+            currentBoot: { [self] in await bootSession(machine) },
+            askAgain: { [self] in
+                notice("  note: the guest started again instead of powering off (a macOS 27 guest can fail so at the end of its shutdown); asking it to shut down again")
+                try await withGuest(machine, "shutdown", readTimeout: 10, cancellable: false) { try GuestClient.shutdown($0) }
+            })
+        guard stopped else {
+            let again = restarts == 0 ? "" : " (it started again instead of powering off, \(restarts == 1 ? "once" : "\(restarts) times"))"
+            throw AgentVMError.guestUnreachable("the guest did not shut down within \(Self.shutdownTimeout)\(again)")
         }
         if let failure = machine.failure {
             throw AgentVMError.virtualMachine(operation: "shut down the guest", message: failure)
+        }
+    }
+
+    /// The name macOS gives the guest's current boot; nil when the guest does not answer (it is
+    /// shutting down, or not up yet) or does not say.
+    func bootSession(_ machine: GuestMachine) async -> String? {
+        let request = GuestRequest(op: .exec, argv: ["/usr/sbin/sysctl", "-n", "kern.bootsessionuuid"], cwd: "/", user: "root")
+        let answer = try? await withGuest(machine, "boot session", readTimeout: 5, cancellable: false, redeliver: false) {
+            try GuestClient.capture($0, request)
+        }
+        guard let answer, answer.report == ExitReport(status: 0) else {
+            return nil
+        }
+        let name = answer.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
+    /// Waits for a guest that was asked to shut down to power off: whether it did within
+    /// `timeout` of the last request, and how often it started again instead. A macOS 27 guest
+    /// can panic at the very end of its shutdown, after its disks are put away, and a guest
+    /// that panics starts again; the wait for a power-off then never ends, though nothing is
+    /// wrong with the disk. So from `probeAfter` after a request the guest is asked which boot
+    /// it is in (`currentBoot`; nil: no answer), every `slice`. Another boot than `boot` (the
+    /// one the request was sent in; nil: not known, so nothing is asked) means it started
+    /// again: it is left `settle` to come up, asked again (`askAgain`), and the wait starts
+    /// over, at most `retries` requests. A request that fails counts as one of them, and the
+    /// guest is asked again at the next look, with the wait not started over.
+    static func awaitPowerOff(timeout: Duration, slice: Duration, probeAfter: Duration, settle: Duration, retries: Int, boot: String?,
+                                          stopped: (Duration) async -> Bool, currentBoot: () async -> String?,
+                                          askAgain: () async throws -> Void) async -> (stopped: Bool, restarts: Int) {
+        let clock = ContinuousClock()
+        var known = boot
+        var asked = clock.now
+        var restarts = 0
+        var requests = 0
+        var counted: String?
+        while true {
+            if await stopped(slice) {
+                return (true, restarts)
+            }
+            let waited = clock.now - asked
+            if waited >= timeout {
+                return (false, restarts)
+            }
+            guard let before = known, requests < retries, waited >= probeAfter else {
+                continue
+            }
+            guard let now = await currentBoot(), now != before else {
+                continue
+            }
+            if counted != now {
+                counted = now
+                restarts += 1
+            }
+            if await stopped(settle) {
+                return (true, restarts)
+            }
+            requests += 1
+            if (try? await askAgain()) != nil {
+                known = now
+                asked = clock.now
+            }
         }
     }
 
