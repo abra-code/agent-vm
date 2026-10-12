@@ -207,6 +207,20 @@ test_version_names_the_linux_guest_daemon() {
     assert_contains "$(json_value checks.8.detail)" "$(printf '%s' "$_digest" | /usr/bin/cut -c1-12)" "the doctor line" || return 1
 }
 
+# The Linux daemon is one static program built with FoundationEssentials. One `import Foundation`
+# in what it is built from links the Unicode library and its data again: 54 MB where 11 are enough.
+test_linux_daemon_is_built_without_unicode_data() {
+    local _linux="$(/usr/bin/dirname "$AGENT_VM")/linux/agent-vm-guest"
+    if [ ! -x "$_linux" ]; then
+        skip "this build has no linux/agent-vm-guest"
+        return 0
+    fi
+    local _bytes="$(/usr/bin/stat -f %z "$_linux")"
+    [ "$_bytes" -lt 20000000 ] || { fail "linux/agent-vm-guest is $_bytes bytes; a guest source file imports all of Foundation on Linux"; return 1; }
+    local _data="$(LC_ALL=C /usr/bin/grep -c -a "icudt" "$_linux")"
+    assert_eq "$_data" "0" "lines of linux/agent-vm-guest that name the Unicode library's data" || return 1
+}
+
 # What a new image can be, for a program that offers the choice: the Linux systems --linux takes,
 # in agent-vm's order, and each guest's default and smallest sizes. No store and no network.
 test_version_lists_the_linux_releases_and_sizes() {

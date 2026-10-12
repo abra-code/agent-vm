@@ -11,7 +11,12 @@ import Musl
 #elseif canImport(Glibc)
 import Glibc
 #endif
+#if canImport(Darwin)
 import Foundation
+#else
+import Dispatch
+import FoundationEssentials
+#endif
 
 public enum Splice {
     /// The bytes a running splice has copied so far, readable from any thread, and the way to

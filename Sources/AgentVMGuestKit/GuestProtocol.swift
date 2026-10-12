@@ -15,7 +15,12 @@ import Musl
 #elseif canImport(Glibc)
 import Glibc
 #endif
+#if canImport(Darwin)
 import Foundation
+#else
+import Dispatch
+import FoundationEssentials
+#endif
 
 public enum GuestProtocol {
     /// The vsock port the guest daemon listens on.
@@ -405,7 +410,7 @@ public final class FrameChannel: @unchecked Sendable {
         do {
             return try JSONDecoder().decode(T.self, from: Data(frame.payload))
         } catch {
-            throw GuestProtocolError.malformed("unreadable \(type) message: \(error.localizedDescription)")
+            throw GuestProtocolError.malformed("unreadable \(type) message: \(Platform.describe(error))")
         }
     }
 

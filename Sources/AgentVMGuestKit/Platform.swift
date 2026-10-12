@@ -13,7 +13,12 @@ import Musl
 #elseif canImport(Glibc)
 import Glibc
 #endif
+#if canImport(Darwin)
 import Foundation
+#else
+import Dispatch
+import FoundationEssentials
+#endif
 
 #if !canImport(Darwin)
 /// <linux/vm_sockets.h>, which the C library's module does not carry.
@@ -272,9 +277,20 @@ enum Platform {
     /// (Printable.isToken): a host refuses the whole hello over such a value.
     static func versionID(inOSRelease text: String) -> String? {
         for line in text.split(separator: "\n") where line.hasPrefix("VERSION_ID=") {
-            let value = line.dropFirst("VERSION_ID=".count).trimmingCharacters(in: CharacterSet(charactersIn: "\"' \t\r"))
+            let value = PlainText.trimmed(line.dropFirst("VERSION_ID=".count), of: "\"' \t\r")
             return Printable.isToken(value) ? value : nil
         }
         return nil
+    }
+
+    /// What went wrong, for a message. Without all of Foundation an error has no localized
+    /// description; its own description says more than the one sentence every error shares,
+    /// and for a decoding error far more, so it is cut.
+    static func describe(_ error: any Error) -> String {
+        #if canImport(Darwin)
+        return error.localizedDescription
+        #else
+        return Printable.line("\(error)", limit: 300)
+        #endif
     }
 }

@@ -7,7 +7,12 @@
 // erase and rewrite the lines above it) or forge lines of a log. Every control character and
 // bidirectional override becomes "?".
 
+#if canImport(Darwin)
 import Foundation
+#else
+import Dispatch
+import FoundationEssentials
+#endif
 
 public enum Printable {
     /// One line of text: every control character, a newline and a tab included, is replaced,

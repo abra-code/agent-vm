@@ -26,7 +26,12 @@ import Musl
 #elseif canImport(Glibc)
 import Glibc
 #endif
+#if canImport(Darwin)
 import Foundation
+#else
+import Dispatch
+import FoundationEssentials
+#endif
 
 public final class GuestServer: @unchecked Sendable {
     /// Account used when a request names none (the box user).
@@ -214,7 +219,7 @@ public final class GuestServer: @unchecked Sendable {
             }
             let offset = epoch - before
             if abs(offset) >= 1 {
-                Self.log(String(format: "clock set by the host (it was %.1f s %@)", abs(offset), offset > 0 ? "behind" : "ahead"))
+                Self.log("clock set by the host (it was \(PlainText.tenths(abs(offset))) s \(offset > 0 ? "behind" : "ahead"))")
             }
             try? channel.send(.response, json: GuestResponse(ok: true, v: AgentVM.guestProtocolVersion, offset: offset))
         }
@@ -660,7 +665,7 @@ public final class GuestServer: @unchecked Sendable {
         var waitStatus: Int32 = 0
         while waitpid(pid, &waitStatus, 0) < 0 && errno == EINTR {}
         guard ended else {
-            throw Refusal("the program did not start within \(String(format: "%g", deadline)) s")
+            throw Refusal("the program did not start within \(PlainText.number(deadline)) s")
         }
         throw refusal(said: said)
     }
@@ -677,7 +682,7 @@ public final class GuestServer: @unchecked Sendable {
             status = number == 127 ? 127 : 126
             message = parts.count > 1 ? String(parts[1]) : ""
         }
-        if message.trimmingCharacters(in: .whitespaces).isEmpty {
+        if PlainText.trimmed(message, of: " \t").isEmpty {
             message = "the program could not be started"
         }
         return Refusal(message, status: status)
@@ -848,7 +853,7 @@ public final class GuestServer: @unchecked Sendable {
             guard checked else {
                 fail(message)
             }
-            let line = Array("\(status) \(message.replacingOccurrences(of: "\n", with: " "))".utf8.prefix(statusLimit - 1)) + [0x0a]
+            let line = "\(status) \(message)".utf8.prefix(statusLimit - 1).map { $0 == 0x0a ? 0x20 : $0 } + [0x0a]
             var done = 0
             while done < line.count {
                 let written = line.withUnsafeBytes { Platform.write(3, $0.baseAddress! + done, line.count - done) }

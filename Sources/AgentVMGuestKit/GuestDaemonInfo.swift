@@ -3,7 +3,12 @@
 // What an agent-vm-guest executable says it is with `--version --json`: its version, protocol
 // and features. The daemon prints it; the host reads it from a daemon on the Mac without a box.
 
+#if canImport(Darwin)
 import Foundation
+#else
+import Dispatch
+import FoundationEssentials
+#endif
 
 /// A daemon's description of itself (`agent-vm-guest --version --json`).
 public struct GuestDaemonInfo: Codable, Equatable, Sendable {
@@ -24,7 +29,7 @@ public struct GuestDaemonInfo: Codable, Equatable, Sendable {
     /// Reads what `--version --json` printed: JSON, or the text line of older daemons,
     /// "agent-vm-guest 0.1.5 (protocol 1)", which ignore `--json`.
     public static func parse(_ output: String) -> GuestDaemonInfo? {
-        let text = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = PlainText.trimmed(output)
         if text.hasPrefix("{") {
             return try? JSONDecoder().decode(GuestDaemonInfo.self, from: Data(text.utf8))
         }

@@ -21,7 +21,12 @@ import Musl
 #elseif canImport(Glibc)
 import Glibc
 #endif
+#if canImport(Darwin)
 import Foundation
+#else
+import Dispatch
+import FoundationEssentials
+#endif
 
 // Before anything is opened: a closed standard stream must not lend its number to a file.
 StandardStream.openMissing()
@@ -92,7 +97,17 @@ case "serve":
         }
         index += 2
     }
-    guard let helper = Bundle.main.executableURL?.resolvingSymlinksInPath().path else {
+    #if canImport(Darwin)
+    let executable = Bundle.main.executableURL?.resolvingSymlinksInPath().path
+    #else
+    // The link names no file once the executable was replaced under the running daemon;
+    // then the path it was started by, when that is a whole one.
+    let resolved = realpath("/proc/self/exe", nil)
+    let started = CommandLine.arguments.first.flatMap { $0.hasPrefix("/") ? $0 : nil }
+    let executable = resolved.map { String(cString: $0) } ?? started
+    free(resolved)
+    #endif
+    guard let helper = executable else {
         StandardStream.write("agent-vm-guest: cannot find its own executable\n", to: STDERR_FILENO)
         exit(1)
     }

@@ -10,7 +10,12 @@ import Musl
 #elseif canImport(Glibc)
 import Glibc
 #endif
+#if canImport(Darwin)
 import Foundation
+#else
+import Dispatch
+import FoundationEssentials
+#endif
 
 package struct GuestSystemError: Error, Equatable, CustomStringConvertible {
     package var operation: String
