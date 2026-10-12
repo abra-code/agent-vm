@@ -495,7 +495,8 @@ enum PickerView {
 
     /// The shown items that fit `height` lines around the selection, with lines saying how many
     /// more there are above and below.
-    static func listLines(_ model: PickerModel, height: Int, colors: Bool) -> [Styled] {
+    /// With `marks` (a checklist), each row that can be chosen starts with a box, marked or not.
+    static func listLines(_ model: PickerModel, height: Int, colors: Bool, marks: Set<String>? = nil) -> [Styled] {
         let columnWidths = columnWidths(model.allRows)
         let window = PickerModel.window(total: model.shown.count, height: height, selected: model.selectedIndex,
                                         offset: model.offset, shown: model.shown)
@@ -508,7 +509,8 @@ enum PickerView {
             case .title(let title):
                 lines.append(Styled("  " + TextWidth.printable(title), bold: true))
             case .row(let row):
-                lines.append(rowLine(row, selected: row.id == model.selectedID, columnWidths: columnWidths, colors: colors))
+                lines.append(rowLine(row, selected: row.id == model.selectedID, columnWidths: columnWidths, colors: colors,
+                                     mark: marks.map { $0.contains(row.id) }))
             }
         }
         if window.below {
@@ -518,8 +520,13 @@ enum PickerView {
         return lines
     }
 
-    static func rowLine(_ row: PickerRow, selected: Bool, columnWidths: [Int], colors: Bool) -> Styled {
+    /// `mark` not nil: the row is in a checklist, and starts with "[x] " or "[ ] " (spaces for
+    /// a row that cannot be marked).
+    static func rowLine(_ row: PickerRow, selected: Bool, columnWidths: [Int], colors: Bool, mark: Bool? = nil) -> Styled {
         var line = Styled(selected ? "  > " : "    ")
+        if let mark {
+            line.append(!row.enabled ? "    " : mark ? "[x] " : "[ ] ", bold: mark && row.enabled)
+        }
         var text = ""
         for (index, column) in row.columns.enumerated() {
             let value = TextWidth.printable(column)

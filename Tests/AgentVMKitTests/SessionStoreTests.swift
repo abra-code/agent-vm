@@ -156,6 +156,38 @@ import Testing
         #expect(try scratch.store.report(id: session.id).changes.isEmpty)
     }
 
+    /// A list where each change is chosen on its own (avm's): a folder marked for its own
+    /// permissions is put back without the changes under it, which stay undoable.
+    @Test func undoOfExactPathsLeavesWhatIsUnderAMarkedFolder() throws {
+        let scratch = try Scratch()
+        try scratch.populate()
+        let session = try scratch.store.start(project: scratch.project.path)
+        #expect(chmod(scratch.path("Sources"), 0o700) == 0)
+        try scratch.write("Sources/App/main.swift", "changed\n")
+        try scratch.write("new/file.txt", "added\n")
+        let report = try scratch.store.report(id: session.id)
+        #expect(report.changes.contains { $0.path == "Sources" && $0.kind == .metadata })
+
+        let folder = try scratch.store.undo(id: session.id, paths: ["Sources"], exactPaths: true)
+        #expect(folder.isComplete)
+        #expect(folder.restore?.restored == ["Sources"])
+        #expect(folder.restore?.remaining == 0)
+        #expect(folder.session.record.state == .active)
+        #expect(try scratch.read("Sources/App/main.swift") == "changed\n")
+        // Without it, as `session undo --path`: the folder and what is under it.
+        #expect(chmod(scratch.path("Sources"), 0o700) == 0)
+        let under = try scratch.store.undo(id: session.id, paths: ["Sources"])
+        #expect(under.restore?.restored == ["Sources", "Sources/App/main.swift"])
+        #expect(try scratch.read("Sources/App/main.swift") == "print(\"hi\")\n")
+        // A path that is no change is refused, also exactly.
+        #expect(throws: AgentVMError.self) { try scratch.store.undo(id: session.id, paths: ["Sources/App"], exactPaths: true) }
+        // A folder added as a whole is one change, taken with what is in it either way.
+        let added = try scratch.store.undo(id: session.id, paths: ["new"], exactPaths: true)
+        #expect(added.isComplete)
+        #expect(!FileManager.default.fileExists(atPath: scratch.path("new")))
+        #expect(added.session.record.state == .undone)
+    }
+
     @Test func undoByPathMovesANestedListedFolderAsOne() throws {
         let scratch = try Scratch()
         try scratch.populate()

@@ -213,15 +213,9 @@ struct SessionCommand: ParsableCommand {
             let session = outcome.session
             if options.json {
                 try Output.json(UndoJSON(session: SessionOutput(session), restore: outcome.restore))
-            } else if !path.isEmpty, outcome.isComplete, let restore = outcome.restore {
-                print("Restored \(restore.restored.count) changed entries of \(Self.subject(session)) to their state at \(Output.time(session.record.startedAt)).")
-                if let replaced = session.replacedTreePath {
-                    print("  what the agent left there is kept at: \(replaced)")
-                }
-                if session.record.state == .undone {
-                    print("  nothing else changed; delete the snapshot and kept files with: agent-vm session discard \(session.id)")
-                } else {
-                    print("  the rest of the session can still be undone: agent-vm session undo \(session.id)")
+            } else if !path.isEmpty, outcome.isComplete {
+                for line in Self.selectionLines(outcome) {
+                    print(line)
                 }
             } else {
                 for line in Self.lines(outcome) {
@@ -231,6 +225,22 @@ struct SessionCommand: ParsableCommand {
             if !outcome.isComplete {
                 throw ExitCode(1)
             }
+        }
+
+        /// What a complete undo of chosen entries did, for a person (connect prints the same).
+        static func selectionLines(_ outcome: SessionStore.UndoOutcome) -> [String] {
+            let session = outcome.session
+            let count = outcome.restore?.restored.count ?? 0
+            var lines = ["Restored \(count) changed \(count == 1 ? "entry" : "entries") of \(subject(session)) to \(count == 1 ? "its" : "their") state at \(Output.time(session.record.startedAt))."]
+            if let replaced = session.replacedTreePath {
+                lines.append("  what the agent left there is kept at: \(replaced)")
+            }
+            if session.record.state == .undone {
+                lines.append("  nothing else changed; delete the snapshot and kept files with: agent-vm session discard \(session.id)")
+            } else {
+                lines.append("  the rest of the session can still be undone: agent-vm session undo \(session.id)")
+            }
+            return lines
         }
 
         /// What an undo of the whole session did, for a person (connect prints the same).
@@ -254,7 +264,7 @@ struct SessionCommand: ParsableCommand {
             } else if let restore = outcome.restore {
                 lines.append("Could not restore everything in \(session.record.project):")
                 for (path, reason) in restore.failed.sorted(by: { $0.key < $1.key }) {
-                    lines.append("  \(path): \(reason)")
+                    lines.append("  \(Printable.line(path)): \(Printable.line(reason))")
                 }
                 lines.append("  \(restore.remaining) changes remain; the session can still be undone.")
                 if session.record.scope == nil {

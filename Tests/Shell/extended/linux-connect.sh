@@ -101,6 +101,31 @@ test_avm_runs_in_the_folder_with_the_safety_net() {
     assert_eq "$_state" "undone" "the undone session" || return 1
 }
 
+# The report as a list: the entry under the cursor (the flagged one, which comes first) is
+# marked with Space and undone with Enter, and the other changes stay, still undoable.
+test_avm_undoes_one_marked_entry() {
+    require_linux_image || return $(( $? == 1 ? 0 : 1 ))
+    avm_link || return 1
+    changing_project "$SCRATCH/project"
+    local _project
+    _project="$(cd "$SCRATCH/project" && /bin/pwd -P)"
+    # The list needs cursor control, whatever terminal the tests were started on.
+    on_terminal "$(answer_when_done "$_project/.done" ' \n')" /usr/bin/env TERM=xterm-256color "$SCRATCH/avm" new "$LINUX_TEST_IMAGE" --project "$_project" -- /bin/sh "$_project/work.sh"
+    local _id
+    _id="$(session_id)"
+    local _state
+    _state="$(session_state "$_id")"
+    "$AGENT_VM" session discard "$_id" > /dev/null 2>&1
+    assert_status 0 || return 1
+    # The list's title (its end is cut in a narrow window).
+    assert_out_contains "what changed in " || return 1
+    assert_out_contains "Restored 1 changed entry of $_project to its state at" || return 1
+    assert_out_contains "the rest of the session can still be undone: agent-vm session undo $_id" || return 1
+    assert_missing "$_project/hook1" || return 1
+    assert_exists "$_project/new.txt" || return 1
+    assert_eq "$_state" "ended" "the session after an undo of one entry" || return 1
+}
+
 # A kept box: after the session avm asks whether to stop it, and the answer is the default the
 # next time, so Enter alone repeats it; --no-stop leaves it running without a question.
 test_avm_asks_whether_to_stop_a_kept_box() {

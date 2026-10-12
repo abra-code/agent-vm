@@ -468,6 +468,34 @@ func sameTerminalSettings(_ a: termios, _ b: termios) -> Bool {
         #expect(!none.text.contains("  snapshot "), "\(none.text)")
     }
 
+    /// A named box skips the box list, so the list of what to run has the setting.
+    @Test func tabInTheLaunchListOfANamedBoxChangesTheSnapshot() throws {
+        let store = try ConnectScratch()
+        let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        var environment = store.environment
+        environment["AGENT_VM_AGENTS_FILE"] = repository.appendingPathComponent("Resources/agents.json").path
+        let program = try connect(store, ["b1", "--dry-run"], environment: environment)
+        #expect(program.waitFor("Run in box b1"))
+        #expect(program.waitFor("[whole folder]"))
+        program.type("\t")
+        #expect(program.waitFor("[git folders only]"))
+        program.type("Login\r")
+        #expect(program.exitStatus() == 0)
+        #expect(program.text.contains("Snapshot: git folders only"), "\(program.text)")
+        #expect(!program.text.contains("as remembered for this folder"))
+        #expect(program.text.contains("snapshot the git folders of"), "\(program.text)")
+
+        // After the box list, which has the setting, the list of what to run has none.
+        let listed = try connect(store, ["--dry-run"], environment: environment)
+        #expect(listed.waitFor("Choose a box"))
+        listed.type("\r")
+        #expect(listed.waitFor("Run in box"))
+        let launchList = listed.text.components(separatedBy: "Run in box").last ?? ""
+        #expect(!launchList.contains("Tab changes"), "\(launchList)")
+        listed.type("\u{1B}")
+        #expect(listed.exitStatus() == 130)
+    }
+
     /// What the command line says is shown and cannot be changed in the list.
     @Test func aNamedSnapshotIsOnlyShownInTheBoxList() throws {
         let store = try ConnectScratch()

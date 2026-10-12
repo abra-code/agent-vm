@@ -302,10 +302,17 @@ struct ConnectRunner {
                     boxName = name ?? temporaryName ?? ""
                     temporary = name == nil
                 }
+                // A named box skipped the list of boxes, so the list of what to run has the
+                // snapshot setting.
+                var shown: SnapshotChoice? = chosenInPicker || project == nil ? nil : snapshot
                 let (launch, launchChosenInPicker) = try chooseLaunch(boxName: boxName, temporary: temporary, runningBox: runningBox,
                                                                       catalog: catalog, namedAgent: namedAgent,
                                                                       remembered: remembered?.launch, probed: &probed, project: project,
-                                                                      terminal: terminal)
+                                                                      snapshot: &shown, terminal: terminal)
+                if let shown, launchChosenInPicker {
+                    snapshot = shown
+                    snapshotSeen = true
+                }
                 if !options.dryRun && !terminal.isInteractive {
                     throw ConnectError.sessionNeedsTerminal
                 }
@@ -399,15 +406,7 @@ struct ConnectRunner {
         }
         let (id, settingIndex) = try ConnectScreen.picker("Choose a box", plainTitle: "AgentVM - " + context, context: context, sections: sections,
                                                           selected: selected, setting: setting, terminal: terminal).choose(on: terminal)
-        if let settingIndex, let setting, setting.values.count > 1 {
-            let chosen = SnapshotChoice.allCases[settingIndex]
-            // The list is erased: what is left says a change, and anything less than the
-            // whole folder.
-            if chosen != snapshot || chosen != .whole {
-                print("Snapshot: \(chosen.words)")
-            }
-            snapshot = chosen
-        }
+        snapshot = chosenSnapshot(settingIndex, of: setting, current: snapshot)
         switch id {
         case ConnectPickers.newTemporaryID, ConnectPickers.newKeptID:
             // Escape in the image list or at the name goes back to the box list.
@@ -424,6 +423,20 @@ struct ConnectRunner {
             print("Box \(offer.box.name)")
             return .existing(offer.box, offer.status)
         }
+    }
+
+    /// What a list's snapshot setting was left at (`current` when the list had none, or one
+    /// that could not be changed). The list is erased: what is left says a change, and anything
+    /// less than the whole folder.
+    func chosenSnapshot(_ index: Int?, of setting: PickerSetting?, current: SnapshotChoice) -> SnapshotChoice {
+        guard let index, let setting, setting.values.count > 1 else {
+            return current
+        }
+        let chosen = SnapshotChoice.allCases[index]
+        if chosen != current || chosen != .whole {
+            print("Snapshot: \(chosen.words)")
+        }
+        return chosen
     }
 
     /// The image list, and for a kept box its name. Nil: choose again.

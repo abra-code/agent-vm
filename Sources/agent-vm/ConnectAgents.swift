@@ -22,9 +22,11 @@ extension ConnectRunner {
     /// picker). The picker is skipped when the catalog has no agent. For a running box
     /// (`runningBox`) the agents it lacks are found first (`probed`, kept between rounds) and
     /// cannot be chosen; for a stopped or new box nothing is known yet; a dry run asks nothing
-    /// of the box.
+    /// of the box. With `snapshot` (the box was named, so no list of boxes showed it) the
+    /// picker has the snapshot setting, and what Tab chose there is in `snapshot` afterwards.
     func chooseLaunch(boxName: String, temporary: Bool, runningBox: Box?, catalog: AgentCatalog, namedAgent: AgentEntry?,
-                      remembered: String?, probed: inout Set<String>?, project: String?, terminal: Terminal) throws -> (ConnectLaunch, Bool) {
+                      remembered: String?, probed: inout Set<String>?, project: String?, snapshot: inout SnapshotChoice?,
+                      terminal: Terminal) throws -> (ConnectLaunch, Bool) {
         if let launch = options.namedLaunch {
             return (launch, false)
         }
@@ -48,8 +50,13 @@ extension ConnectRunner {
         let (sections, selected) = ConnectPickers.launchSections(catalog.entries, setSecrets: setSecrets, installed: probed,
                                                                  remembered: remembered)
         let kind = temporary ? "temporary: deleted when you leave" : "kept"
-        let id = try ConnectScreen.picker("Run in box \(boxName) (\(kind))", context: ConnectScreen.context(project: project),
-                                          sections: sections, selected: selected, terminal: terminal).run(on: terminal)
+        let setting = snapshot.map { ConnectPickers.snapshotSetting(named: options.namedSnapshot, readOnly: options.readOnly, current: $0) }
+        let (id, settingIndex) = try ConnectScreen.picker("Run in box \(boxName) (\(kind))", context: ConnectScreen.context(project: project),
+                                                          sections: sections, selected: selected, setting: setting,
+                                                          terminal: terminal).choose(on: terminal)
+        if let current = snapshot {
+            snapshot = chosenSnapshot(settingIndex, of: setting, current: current)
+        }
         guard id != AgentCatalog.shellID, let agent = catalog.entry(id: id) else {
             print("Login shell")
             return (.shell, true)

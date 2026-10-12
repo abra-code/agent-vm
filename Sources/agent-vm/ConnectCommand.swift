@@ -68,15 +68,16 @@ enum ConnectHelp {
             set one in the Keychain; when the box does not allow the agent's hosts, it asks \
             to allow them.
 
-            A folder shared read-write is snapshotted first. Afterwards \(name) reports what \
-            changed, flagging files that run code later on this Mac, and asks: keep the \
-            changes, show every change, or undo them all. --read-only shares the folder read \
+            A folder shared read-write is snapshotted first. Afterwards \(name) lists what \
+            changed, the files that run code later on this Mac first: Space marks an entry \
+            to undo (a marks all), Enter undoes the marked ones and keeps the rest, and \
+            with none marked keeps them all. --read-only shares the folder read \
             only (nothing can change, so no snapshot); --no-snapshot shares it read-write \
             without one (nothing to undo then). --git-snapshot snapshots only the git folders \
             (every .git under the folder), which takes seconds for a huge folder of many \
             repositories: the report and the undo are then of those folders alone, and \
             working files are not covered. What was snapshotted is remembered for the folder \
-            and used the next time; the list of boxes shows it and Tab changes it there, and \
+            and used the next time; the list of boxes (or of what to run, for a named box) shows it and Tab changes it there, and \
             --whole-snapshot goes back to the whole folder.
 
             Text the program copies (what you select in an agent's interface) is put on this \

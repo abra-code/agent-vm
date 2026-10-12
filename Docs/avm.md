@@ -168,23 +168,34 @@ A secret's state is `set`, `missing`, or `asks`: stored by another build of agen
 
 Before the session, avm snapshots a folder it shares read-write: an instant copy-on-write copy in the agent-vm store, recorded as a session (see the README's Sessions section; `agent-vm session list` shows them). The folder must be on the same volume as the store. The copy takes no space, but every file and folder is visited, so a very large folder takes minutes: after 3 seconds, and then every 10, a line says how far it is (`still copying ~/src: 412160 files and folders so far (Control-C stops; --no-snapshot runs without a snapshot; --git-snapshot copies only the git folders; either is then remembered for this folder)`), since 0.7.29.
 
-After the session, avm reports what changed since the snapshot:
+After the session, avm lists what changed since the snapshot, on the whole window (since 0.7.43; before, a short report and a question, keep or undo it all):
 
 ```
-Session 20260926-101500-7c1e: 13 added in ~/src/app; review first: 1 high, 12 medium
-HIGH   A .git/hooks/pre-commit
-         git hook: runs automatically on the next git operation
-medium A hook1
-         executable file added or changed: ...
-... and 3 more flagged; r shows every change
-k) keep the changes  r) show every change  u) undo them all [K/r/u]
+  AgentVM  what changed in ~/src/app
+  Session 20260926-101500-7c1e: 3 added, 1 modified in ~/src/app; review first: 1 high, 1 medium
+    1 program in box dev1; 2 hosts, 48.1 kB sent, 0 refused
+
+  > [ ] HIGH    added     .git/hooks/pre-commit
+        medium  added     tools/run              goes with tools/
+    [x]         modified  README.md
+    [ ]         added     notes.txt
+    [ ]         added     tools/                 2 entries inside
+
+  .git/hooks/pre-commit
+  git hook: runs automatically on the next git operation
+
+  Space mark to undo   a all   n none   Enter undo 1, keep 3   Esc keep all
 ```
 
-- **Flagged** changes are the ones that run code later on this Mac (git hooks and configuration, agent configuration, build scripts, package manifests, executables, links leaving the folder). The first 10 are listed; `r` lists every change.
-- **`k`** (or Enter, or Escape) keeps the changes. The session is ended and its snapshot kept, so the run can still be undone later: `Kept. Undo later with: agent-vm session undo <id>`.
-- **`u`** undoes them all: what changed is put back from the snapshot, and what the agent left is kept in the session's folder, never deleted (`agent-vm session undo` without options). If something cannot be put back, avm lists it and says how to retry.
+- **One row for each change:** added, deleted, modified, new type (a file became a folder, say) or permissions. The **flagged** ones come first: those that run code later on this Mac (git hooks and configuration, agent configuration, build scripts, package manifests, executables, links leaving the folder), `HIGH` before `medium`. Under the rows are the whole path of the row under the cursor and why it is flagged.
+- **Space** marks the row under the cursor to undo, or takes the mark off; **`a`** (or `u`) marks every row and **`n`** none. Arrows, Page Up and Down, Home and End move.
+- **Enter** undoes the marked entries and keeps the rest; the last line says what it would do now (`Enter undo 1, keep 3`). What is undone is put back from the snapshot, and what the agent left there is kept in the session's folder, never deleted. With every row marked it is an undo of the session (`agent-vm session undo` without options); with some, `agent-vm session undo <id> --path ...`, and the rest can still be undone later. If something cannot be put back, avm lists it and says how to retry.
+- **With nothing marked, Enter keeps everything,** and so do Escape and Control-C: nothing is undone without a mark. The session is ended and its snapshot kept, so the run can still be undone later: `Kept. Undo later with: agent-vm session undo <id>`.
+- **A folder that was added, deleted or replaced as a whole is one row** (`2 entries inside`), undone as a whole. An entry inside it is listed only when it is flagged, without a box: it goes with its folder.
+- **Afterwards** the summary line stays on the terminal, with what was done.
+- **Without cursor control** (`TERM=dumb`) there is no list: avm prints the summary and the first 10 flagged changes, and asks `k) keep the changes  r) show every change  u) undo them all [K/r/u]`. Single entries are then undone with `agent-vm session undo <id> --path <entry>`.
 - **No changes:** `No changes in ~/src/app.`, and the snapshot is discarded. When something in the folder could not be examined, the report says so and the snapshot is kept, since a change may have been missed.
-- **The box keeps running** with the folder shared. A program the agent started in the background can still change files, and avm cannot see it: stop it before you undo. What avm can see is other programs that run in the box through `agent-vm exec` (another terminal or an application); when there are any, it asks before undoing.
+- **A box left running** still has the folder shared. A program the agent started in the background can still change files, and avm cannot see it: stop it before you undo, or have avm stop the box ([Stopping the box](#stopping-the-box)), which comes before this list. What avm can see is other programs that run in the box through `agent-vm exec` (another terminal or an application); when there are any, it asks before undoing.
 - **When no snapshot can be taken**, avm says why and asks:
   - another session is already active for the folder (another avm, or an application): its snapshot covers this run too, so going on is the default;
   - the folder is on another volume than the store, or the snapshot failed: going on means nothing can be undone, so stopping is the default.
@@ -203,9 +214,10 @@ avm does not ask what to snapshot. It uses what the folder was last run with, sh
      whole folder   [git folders only]   none    Tab changes
     every .git folder only: fast for a huge folder; working files are not covered
   ```
+- **When the box is named** (`avm dev1`, `avm --box dev1`, `avm new <image>`) there is no list of boxes, so the list of what to run has the same section and Tab works there.
 - **`--whole-snapshot`, `--git-snapshot` and `--no-snapshot`** say it on the command line. The list then only shows it (`none (--no-snapshot)`), as it does for `--read-only`.
 - **It is remembered when the session starts,** with the box and what ran (see [Remembered choices](#remembered-choices)), for exactly that folder: a folder inside it or above it has its own. A read-only run takes no snapshot and leaves what is remembered as it was.
-- **When no list is shown** (`avm dev1`) and the folder's choice is not the whole folder, one line says so before anything is done: `Snapshot of ~/src: none, as remembered for this folder (--whole-snapshot, --git-snapshot or Tab in the list of boxes changes it)`. A run without a snapshot is never silent.
+- **When no list is shown** (`avm dev1 --shell`) and the folder's choice is not the whole folder, one line says so before anything is done: `Snapshot of ~/src: none, as remembered for this folder (--whole-snapshot, --git-snapshot or Tab in the list of boxes changes it)`. A run without a snapshot is never silent.
 - **A folder set to the git folders that has none:** avm says so and asks whether to go on without a snapshot, each time.
 - `avm list` shows the choice after the remembered box, and `avm list --json` has it as `remembered.snapshot`: `whole`, `git` or `none`; absent means the whole folder.
 
@@ -264,7 +276,7 @@ avm does not ask what to snapshot. It uses what the folder was last run with, sh
   | typing | filters: every word must appear in the row, in any case |
   | Backspace, Control-U, Control-W | edit the filter |
   | Enter | choose |
-  | Tab | the next snapshot choice, in the list of boxes (see [What is snapshotted, per folder](#what-is-snapshotted-per-folder)) |
+  | Tab | the next snapshot choice, in the list of boxes, or of what to run when the box was named (see [What is snapshotted, per folder](#what-is-snapshotted-per-folder)) |
   | Escape | clear the filter; with no filter, quit (status 130) |
   | Control-C | quit (status 130) |
   | Control-D | quit, when the filter is empty |
@@ -316,7 +328,7 @@ Errors go to stderr, prefixed with the name avm was started as (`avm:` or `agent
   - a number chooses that row;
   - Enter chooses the preselected row;
   - other text filters the rows, which keep their numbers;
-  - a Tab, then Enter, goes to the next snapshot choice in the list of boxes;
+  - a Tab, then Enter, goes to the next snapshot choice in the list of boxes (or of what to run, when the box was named);
   - `q` or the end of input quits.
 - **A window closed without ending its programs:** a terminal can close a window and keep its programs running (seen once with Ghostty 1.3.1, until the application quit). The session then goes on unseen and the box keeps its folder, so avm refuses another folder there and points to the exec log: `agent-vm box execlog <box> --json` gives the session's `hostPid`; `kill` on that process id ends it.
 - **If avm is killed** with SIGKILL while its list is showing, nothing can put the terminal back; type `reset` (the list's screen stays as well; `reset` leaves it in most terminals, and `printf '\033[?1049l'` does in the others). The same goes for a killed session (`kill -9` on avm): the program in the box keeps running, and its `agent-vm exec` is left without a terminal. `agent-vm box execlog <box> --json` gives that exec's process id (`hostPid`).

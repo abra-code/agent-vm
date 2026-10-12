@@ -287,8 +287,12 @@ public struct SessionStore: Sendable {
     /// refused for it, since the swap would replace the project with the git folders alone.
     ///
     /// Stop the agent first either way.
+    ///
+    /// `exactPaths` (with `paths`): each path is one listed change, restored as the report
+    /// lists it and no more. A folder whose own permissions changed is then put back without
+    /// the changes under it, which have entries of their own (a list where each is chosen).
     @discardableResult
-    public func undo(id: String, mode: UndoMode = .changedFiles, paths: [String]? = nil) throws -> UndoOutcome {
+    public func undo(id: String, mode: UndoMode = .changedFiles, paths: [String]? = nil, exactPaths: Bool = false) throws -> UndoOutcome {
         return try withLock {
             let current = try session(id: id)
             let state = current.record.state
@@ -312,7 +316,7 @@ public struct SessionStore: Sendable {
             }
             let report = mode == .changedFiles ? try ChangeScanner.report(session: current) : nil
             // Paths are checked before anything moves.
-            let selected = try paths.map { try Self.undoSelection($0.map { try relativeUndoPath($0, project: current.record.project) }, in: report?.changes ?? []) }
+            let selected = try paths.map { try Self.undoSelection($0.map { try relativeUndoPath($0, project: current.record.project) }, in: report?.changes ?? [], exact: exactPaths) }
             // A session undone while active (as avm undoes one) never ended, so no report was
             // saved: this is the last look at what the run changed, before it is put back.
             if savedReport(of: current) == nil {
@@ -364,8 +368,14 @@ public struct SessionStore: Sendable {
         let paths: [String]
         /// The changes to restore, none inside another one of them that covers it.
         let changes: [Change]
+        /// Each path is one change, not that and what is under it.
+        var exact = false
 
         func includes(_ path: String) -> Bool {
+            if exact {
+                // What a restored folder covered went with it and is not listed afterwards.
+                return paths.contains(path)
+            }
             return paths.contains { RelativePath.isWithin(path, $0) }
         }
     }
@@ -374,10 +384,14 @@ public struct SessionStore: Sendable {
     /// entry inside a folder the agent deleted or replaced cannot come back without that
     /// folder, so it is refused, naming the folder; inside a folder the agent added, an entry
     /// the report lists (it carries a flag) is moved aside on its own.
-    static func undoSelection(_ paths: [String], in changes: [Change]) throws -> UndoSelection {
+    ///
+    /// `exact`: a path stands for the change listed at it alone. Changes under a folder that
+    /// are entries of their own in the report (the folder's own permissions changed, and so
+    /// did a file in it) are not taken with it.
+    static func undoSelection(_ paths: [String], in changes: [Change], exact: Bool = false) throws -> UndoSelection {
         var chosen: [Change] = []
         for path in paths {
-            let under = changes.filter { RelativePath.isWithin($0.path, path) }
+            let under = changes.filter { exact ? $0.path == path : RelativePath.isWithin($0.path, path) }
             // The nearest change that covers `path` as a whole: an added, deleted or retyped folder.
             let enclosing = changes.filter { $0.path != path && RelativePath.isWithin(path, $0.path) && !$0.coveredByAncestor && $0.entriesInside != nil }
                 .max { RelativePath.depth($0.path) < RelativePath.depth($1.path) }
@@ -401,7 +415,7 @@ public struct SessionStore: Sendable {
         let changes = chosen.filter { change in
             !change.coveredByAncestor || !covering.contains { $0.path != change.path && RelativePath.isWithin(change.path, $0.path) }
         }
-        return UndoSelection(paths: paths, changes: changes.sorted { $0.path < $1.path })
+        return UndoSelection(paths: paths, changes: changes.sorted { $0.path < $1.path }, exact: exact)
     }
 
     /// `path` relative to the project: given relative, or absolute inside the project. No "."

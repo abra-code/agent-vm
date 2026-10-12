@@ -1,7 +1,9 @@
 // Sources/agent-vm/ConnectReport.swift
 //
-// After a session whose folder was snapshotted: what changed, in short, then keep the changes,
-// show every change, or undo them all. No changes: the session is discarded, since there is
+// After a session whose folder was snapshotted: what changed, as a list on the whole window
+// in which the entries to undo are marked (ConnectReview); Enter undoes the marked ones and
+// keeps the rest, and with none marked keeps them all. Without cursor control (TERM=dumb): what
+// changed in short, then keep the changes, show every change, or undo them all. No changes: the session is discarded, since there is
 // nothing to undo (unless something could not be examined; the snapshot then stays). The report, the undo and ending the session run
 // with signals held (SignalHold), so none of them stops halfway; a signal that arrived
 // meanwhile ends connect afterwards, with the session ended and kept for undo.
@@ -12,8 +14,8 @@ import Foundation
 import TerminalUI
 
 enum ConnectReport {
-    /// The summary, the flagged changes (at most `flaggedLimit`), and the report's warnings.
-    static func shortLines(_ report: ChangeReport, flaggedLimit: Int = 10) -> [String] {
+    /// The summary and the report's warnings.
+    static func summaryLines(_ report: ChangeReport) -> [String] {
         let summary = report.summary
         var counts: [String] = []
         for (count, words) in [(summary.added, "added"), (summary.deleted, "deleted"), (summary.modified, "modified"),
@@ -36,6 +38,12 @@ enum ConnectReport {
         for warning in report.warnings {
             lines.append("  warning: \(Printable.line(warning))")
         }
+        return lines
+    }
+
+    /// The summary, the report's warnings, and the flagged changes (at most `flaggedLimit`).
+    static func shortLines(_ report: ChangeReport, flaggedLimit: Int = 10) -> [String] {
+        var lines = summaryLines(report)
         let flagged = report.changes.filter { $0.highestSeverity == .high || $0.highestSeverity == .medium }
         for change in flagged.prefix(flaggedLimit) {
             lines += Output.changeLines(change)
@@ -87,6 +95,33 @@ enum ConnectReport {
             }
             return keep(session, store: store, warn: warn)
         }
+        if terminal.style.cursorControl {
+            // The list, then its summary again: the list leaves nothing on the terminal.
+            let summary = summaryLines(report) + (activity.map { ["  \($0)"] } ?? [])
+            var marked = Set<String>()
+            var shown = true
+            do {
+                marked = try ConnectReview.list(report, summary: summary).run(on: terminal)
+            } catch TerminalUIError.interrupted(let signal) {
+                end(session, store: store, warn: warn)
+                return signal
+            } catch TerminalUIError.canceled {
+                // Escape or Control-C: nothing is undone without a yes.
+            } catch {
+                // The list could not be shown: the flagged changes are printed with the summary.
+                shown = false
+            }
+            for line in shown ? summary : shortLines(report) + (activity.map { ["  \($0)"] } ?? []) {
+                print(line)
+            }
+            if marked.isEmpty {
+                return keep(session, store: store, warn: warn)
+            }
+            // Every entry that can be undone on its own: the whole session.
+            let all = report.changes.filter { !$0.coveredByAncestor }.count
+            return undo(session, store: store, box: box, project: project, paths: marked.count == all ? nil : marked.sorted(),
+                        terminal: terminal, warn: warn)
+        }
         for line in shortLines(report) {
             print(line)
         }
@@ -118,7 +153,7 @@ enum ConnectReport {
                 }
                 continue
             case "u":
-                return undo(session, store: store, box: box, project: project, terminal: terminal, warn: warn)
+                return undo(session, store: store, box: box, project: project, paths: nil, terminal: terminal, warn: warn)
             default:
                 return keep(session, store: store, warn: warn)
             }
@@ -132,7 +167,9 @@ enum ConnectReport {
         return signal
     }
 
-    private static func undo(_ session: Session, store: SessionStore, box: Box, project: String, terminal: Terminal,
+    /// Undoes the session, or only the changes at `paths` (as the report lists them). After
+    /// an undo of some, the session is ended and the rest stays undoable.
+    private static func undo(_ session: Session, store: SessionStore, box: Box, project: String, paths: [String]?, terminal: Terminal,
                              warn: (String) -> Void) -> Int32? {
         // A box left running still has the folder shared: what connect can see using it is other
         // clients' programs (exec counts them). Programs the agent left running in the
@@ -158,20 +195,24 @@ enum ConnectReport {
                 return keep(session, store: store, warn: warn)
             }
         }
-        let (result, signal) = SignalHold.around { try store.undo(id: session.id) }
+        // Each marked entry alone: a folder marked for its permissions does not take the
+        // unmarked changes under it.
+        let (result, signal) = SignalHold.around { try store.undo(id: session.id, paths: paths, exactPaths: true) }
         switch result {
         case .success(let outcome):
-            for line in SessionCommand.Undo.lines(outcome) {
+            for line in paths != nil && outcome.isComplete ? SessionCommand.Undo.selectionLines(outcome) : SessionCommand.Undo.lines(outcome) {
                 print(line)
             }
-            if !outcome.isComplete {
-                // An incomplete undo leaves the session active; ended, a later session on the
-                // folder is not refused, and `session undo` still works on it.
+            if outcome.session.record.state != .undone {
+                // An incomplete undo, or one of some entries, leaves the session active; ended,
+                // a later session on the folder is not refused, and `session undo` still works
+                // on it.
                 return end(session, store: store, warn: warn) ?? signal
             }
             return signal
         case .failure(let error):
-            warn("could not undo session \(session.id): \(error); retry with: agent-vm session undo \(session.id)")
+            // The error can name an entry (one marked that is no longer a change): the agent's text.
+            warn("could not undo session \(session.id): \(Printable.line("\(error)")); retry with: agent-vm session undo \(session.id)")
             return end(session, store: store, warn: warn) ?? signal
         }
     }
