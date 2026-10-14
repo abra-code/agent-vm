@@ -153,6 +153,16 @@ import Testing
         #expect(filtered("\u{1b}Ptmux;\u{1b}\u{1b}]52;c;eA==\u{07}after") == "after")
     }
 
+    /// Clearing the window scrolls it away from the cursor down, one line feed per row, and
+    /// ends at the top of an empty window.
+    @Test func theClearScrollsTheWindowAway() {
+        let clear = String(decoding: TerminalOutputFilter.clearSequence(rows: 3), as: UTF8.self)
+        #expect(clear == "\u{1b}7\u{1b}[r\u{1b}8\n\n\n\u{1b}[H\u{1b}[J")
+        // A size nobody could have: bounded either way.
+        #expect(TerminalOutputFilter.clearSequence(rows: 0).filter { $0 == 0x0A }.count == 1)
+        #expect(TerminalOutputFilter.clearSequence(rows: 100_000).filter { $0 == 0x0A }.count == 500)
+    }
+
     /// The end of the session turns off what the program left on, and only that.
     @Test func theResetTurnsOffWhatWasLeftOn() {
         let filter = TerminalOutputFilter()

@@ -70,6 +70,9 @@ struct ExecCommand: ParsableCommand {
     @Flag(name: .long, help: "With --tty: let the program put text on this Mac's clipboard while you are using the session (a key or the mouse within the last 2 seconds). Text only; the clipboard is never read.")
     var clipboard = false
 
+    @Flag(name: .customLong("clear-after"), help: "With --tty: when the program ends, move what is on the window up into the terminal's history and go on from the top of an empty window.")
+    var clearAfter = false
+
     @Option(name: .long, help: "When a program waits on a permission prompt nobody sees: wait (for an answer in `box view --interactive`) or stop that program. Default: stop when stdin is not a terminal, else wait.")
     var prompts: PromptPolicy?
 
@@ -87,6 +90,9 @@ struct ExecCommand: ParsableCommand {
         }
         if clipboard && !tty {
             throw ValidationError("--clipboard applies to --tty")
+        }
+        if clearAfter && !tty {
+            throw ValidationError("--clear-after applies to --tty")
         }
         if tty && isatty(STDIN_FILENO) != 1 {
             throw ValidationError("--tty needs a terminal on stdin")
@@ -110,7 +116,7 @@ struct ExecCommand: ParsableCommand {
             throw ValidationError("give the program to run after --")
         }
         ExecRunner(store: options.boxStore, box: box, user: user, cwd: cwd, project: project, readOnly: readOnly,
-                   added: added, secretNames: SecretOptions.names(secrets), argv: argv, terminal: tty, prompts: prompts ?? .default, clipboard: clipboard).run()
+                   added: added, secretNames: SecretOptions.names(secrets), argv: argv, terminal: tty, prompts: prompts ?? .default, clipboard: clipboard, clearAfter: clearAfter).run()
     }
 }
 

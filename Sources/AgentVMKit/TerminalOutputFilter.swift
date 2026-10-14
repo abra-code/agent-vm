@@ -155,6 +155,17 @@ public final class TerminalOutputFilter: @unchecked Sendable {
         return Array(reset.utf8)
     }
 
+    /// What moves everything on a window of `rows` rows up into the terminal's history and
+    /// leaves the cursor at the top of an empty window, for after `resetSequence` (so on the
+    /// main screen). The line feeds start at the cursor, wherever the program left it: the
+    /// lines down to it scroll away and are kept, and nothing is added to the history for the
+    /// empty rows under it; what little may be under it is erased. The scrolling region is
+    /// the whole window first (setting it moves the cursor, hence the save and restore).
+    public static func clearSequence(rows: Int) -> [UInt8] {
+        let rows = min(max(rows, 1), 500)
+        return Array(("\u{1b}7\u{1b}[r\u{1b}8" + String(repeating: "\n", count: rows) + "\u{1b}[H\u{1b}[J").utf8)
+    }
+
     private func forgetModes() {
         modes.removeAll()
         cursorHidden = false

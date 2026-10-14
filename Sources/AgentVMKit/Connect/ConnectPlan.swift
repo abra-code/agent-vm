@@ -284,7 +284,7 @@ public enum ConnectPlanner {
         }
         steps.append(.run(arguments: childArguments(box: name, project: request.project, readOnly: request.readOnly,
                                                     secrets: secrets, env: env, argv: launchArgv(request.launch),
-                                                    clipboard: request.clipboard)))
+                                                    clipboard: request.clipboard, clearAfter: clearsAfter(request.launch))))
         // Stopped before the report: nothing in the box can change the folder during an undo,
         // and the report is final.
         if temporary {
@@ -340,7 +340,7 @@ public enum ConnectPlanner {
 
     /// agent-vm's arguments for the session child.
     public static func childArguments(box: String, project: String?, readOnly: Bool, secrets: [String], env: [String],
-                                      argv: [String], clipboard: Bool = true) -> [String] {
+                                      argv: [String], clipboard: Bool = true, clearAfter: Bool = false) -> [String] {
         var arguments = ["exec", "--tty", "--box", box]
         if let project {
             arguments += ["--project", project]
@@ -359,7 +359,24 @@ public enum ConnectPlanner {
         if clipboard {
             arguments.append("--clipboard")
         }
+        if clearAfter {
+            arguments.append("--clear-after")
+        }
         return arguments + ["--"] + argv
+    }
+
+    /// An agent or a shell leaves a window full of its own interface, often with the lines
+    /// from before the session back under it (a full-screen program gives the terminal's
+    /// earlier screen back when it ends): what connect says and asks next would be lost in
+    /// it, so the window is cleared when such a session ends. A command's output is what was
+    /// asked for, and stays.
+    public static func clearsAfter(_ launch: ConnectLaunch) -> Bool {
+        switch launch {
+        case .shell, .agent:
+            return true
+        case .command:
+            return false
+        }
     }
 
     /// The program run in the box: the login shell, exactly as `box shell` runs it, or a

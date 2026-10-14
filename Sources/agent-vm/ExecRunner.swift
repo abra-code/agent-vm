@@ -42,6 +42,9 @@ struct ExecRunner {
     /// On a terminal: text the program asks to put on the Mac's clipboard is put there while
     /// the person is using the session (ClipboardGate).
     var clipboard = false
+    /// On a terminal: when the session ends, what is on the window goes up into the terminal's
+    /// history, and what is printed next starts at the top of an empty window.
+    var clearAfter = false
 
     /// agent-vm's own failures (box not running, connection lost), as docker exec uses it:
     /// distinct from any status the program itself returns.
@@ -227,7 +230,7 @@ struct ExecRunner {
         }
         let filter = terminal ? TerminalOutputFilter(clipboard: taker) : nil
         if let filter {
-            ExecExit.shared.filter(filter)
+            ExecExit.shared.filter(filter, clearAfter: clearAfter)
         }
         let report: ExitReport
         do {
@@ -418,6 +421,7 @@ final class ExecExit: @unchecked Sendable {
     private var prompts: [String] = []
     private var box: String?
     private var outputFilter: TerminalOutputFilter?
+    private var clearAfter = false
     private var clipboardGate: ClipboardGate?
     private let began = ContinuousClock.now
 
@@ -429,11 +433,13 @@ final class ExecExit: @unchecked Sendable {
         self.box = box
     }
 
-    /// The terminal session's output filter: its reset is written when the session ends.
-    func filter(_ filter: TerminalOutputFilter) {
+    /// The terminal session's output filter: its reset is written when the session ends, and
+    /// with `clearAfter` the window is cleared after it.
+    func filter(_ filter: TerminalOutputFilter, clearAfter: Bool = false) {
         lock.lock()
         defer { lock.unlock() }
         outputFilter = filter
+        self.clearAfter = clearAfter
     }
 
     /// The session's clipboard gate: the end line says how many requests it took and refused.
@@ -486,11 +492,16 @@ final class ExecExit: @unchecked Sendable {
     }
 
     /// Turns off what the program left on in the Mac's terminal (mouse reports, the alternate
-    /// screen, a hidden cursor), then gives the terminal its settings back. TCSAFLUSH: input not
-    /// read yet is discarded, so an answer the terminal typed to a query the program sent just
-    /// before it ended does not land in the Mac's shell.
+    /// screen, a hidden cursor), clears the window when asked to (after the reset, so on the
+    /// main screen, and before anything is said about the session: an error or the notices of
+    /// `exit` are the first lines of the empty window), then gives the terminal its settings
+    /// back. TCSAFLUSH: input not read yet is discarded, so an answer the terminal typed to a
+    /// query the program sent just before it ended does not land in the Mac's shell.
     private func restoreLocked() {
-        if let reset = outputFilter?.resetSequence(), isatty(STDOUT_FILENO) == 1 {
+        if var reset = outputFilter?.resetSequence(), isatty(STDOUT_FILENO) == 1 {
+            if clearAfter {
+                reset += TerminalOutputFilter.clearSequence(rows: Int(ExecRunner.localTerminalSize().rows))
+            }
             // One plain write, errors ignored: writeAll comes back to `exit` on EPIPE.
             _ = reset.withUnsafeBytes { write(STDOUT_FILENO, $0.baseAddress!, $0.count) }
         }

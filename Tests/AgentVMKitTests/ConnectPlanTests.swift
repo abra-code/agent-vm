@@ -21,7 +21,7 @@ import Testing
             Issue.record("the last step is not the run: \(steps)")
             return
         }
-        #expect(arguments.starts(with: ["exec", "--tty", "--box", "b1", "--project", "/p", "--clipboard", "--"]))
+        #expect(arguments.starts(with: ["exec", "--tty", "--box", "b1", "--project", "/p", "--clipboard", "--clear-after", "--"]))
     }
 
     @Test func aRunningBoxIsNotStarted() {
@@ -64,7 +64,7 @@ import Testing
             Issue.record("not a run: \(steps)")
             return
         }
-        #expect(arguments.starts(with: ["exec", "--tty", "--box", "b1", "--project", "/p", "--read-only", "--clipboard", "--"]))
+        #expect(arguments.starts(with: ["exec", "--tty", "--box", "b1", "--project", "/p", "--read-only", "--clipboard", "--clear-after", "--"]))
     }
 
     @Test func aGitSnapshotIsAStepOfItsOwnKind() {
@@ -123,7 +123,7 @@ import Testing
         #expect(steps[0] == .share(box: "b1", project: "/p", readOnly: false))
         #expect(steps[1] == .run(arguments: ["exec", "--tty", "--box", "b1", "--project", "/p",
                                              "--secret", "ANTHROPIC_API_KEY", "--secret", "MINE",
-                                             "--env", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "--env", "X=1", "--clipboard", "--"]
+                                             "--env", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "--env", "X=1", "--clipboard", "--clear-after", "--"]
                                     + ConnectPlanner.loginWrapper + ["claude"]))
     }
 
@@ -324,6 +324,10 @@ import Testing
         #expect(arguments == ["exec", "--tty", "--box", "b", "--project", "/p", "--secret", "A", "--env", "X=1", "--clipboard", "--", "/bin/echo", "hi"])
         let readOnly = ConnectPlanner.childArguments(box: "b", project: "/p", readOnly: true, secrets: [], env: [], argv: ["x"])
         #expect(readOnly == ["exec", "--tty", "--box", "b", "--project", "/p", "--read-only", "--clipboard", "--", "x"])
+        // After an agent or a shell the window is cleared; a command's output stays (the steps below).
+        let cleared = ConnectPlanner.childArguments(box: "b", project: nil, readOnly: false, secrets: [], env: [], argv: ["x"], clearAfter: true)
+        #expect(cleared == ["exec", "--tty", "--box", "b", "--clipboard", "--clear-after", "--", "x"])
+        #expect(ConnectPlanner.clearsAfter(.shell) && !ConnectPlanner.clearsAfter(.command(["make"])))
         // --no-clipboard: the session child is not told to take clipboard requests.
         let closed = ConnectPlanner.steps(for: ConnectRequest(target: .box("b"), launch: .command(["make"]), project: nil, clipboard: false, stop: false),
                                           facts: ConnectFacts(boxRunning: true, ownPid: pid))

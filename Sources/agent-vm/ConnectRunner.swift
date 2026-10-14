@@ -711,6 +711,11 @@ struct ConnectRunner {
                         }
                         return 128 + signal
                     }
+                    if case .agent(let agent) = request.launch, ended.status != 0, ended.status != ExecRunner.ownFailureStatus {
+                        // The window was cleared (exec --clear-after), and with it whatever the
+                        // agent said as it failed. exec's own failures are said after the clear.
+                        print("\(agent.name) ended with status \(ended.status); what it printed last is in the terminal's history, above this window")
+                    }
                     outcome = ended
                 case .stopAndDelete:
                     guard let current = temporary else {
