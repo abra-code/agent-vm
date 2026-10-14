@@ -27,6 +27,45 @@ public enum MachineSize {
         return nil
     }
 
+    /// The least memory a box of the system starts with. A macOS box of 3 GB boots in the usual
+    /// time and works, swapping from the start; at 2 GB and 1 GB its daemon never answers
+    /// (measured 2026-10-03). A Linux box starts with 1 GB, the least `--memory-gb` takes (about
+    /// 570 MB free, measured 2026-10-14 on Debian 13 with 16 KiB pages).
+    public static func smallestMemory(for guest: GuestKind) -> UInt64 {
+        return guest == .linux ? 1 << 30 : 3 << 30
+    }
+
+    /// Below this a box works, but too slowly or too tightly to recommend: 4 GB is what macOS
+    /// itself asks for (it uses about 3 GB idle); a Linux box has no swap, so a program that
+    /// needs more than is free is ended by the system, and an agent takes 0.3 to 1 GB.
+    public static func comfortableMemory(for guest: GuestKind) -> UInt64 {
+        return guest == .linux ? 2 << 30 : 4 << 30
+    }
+
+    /// Why a box of `memoryBytes` cannot start, or nil.
+    public static func memoryRefusal(memoryBytes: UInt64, guest: GuestKind) -> String? {
+        let smallest = smallestMemory(for: guest)
+        guard memoryBytes < smallest else {
+            return nil
+        }
+        let system = guest == .linux ? "Linux" : "macOS"
+        return "a \(system) box needs at least \(gigabytes(smallest)) GB of memory: with \(gigabytesText(memoryBytes)) GB, \(system) does not finish starting"
+    }
+
+    /// What to say about a box of `memoryBytes` that starts but is small for its system, or nil.
+    public static func smallMemoryNote(memoryBytes: UInt64, guest: GuestKind) -> String? {
+        let comfortable = comfortableMemory(for: guest)
+        guard memoryBytes < comfortable else {
+            return nil
+        }
+        switch guest {
+        case .macOS:
+            return "a macOS box of \(gigabytesText(memoryBytes)) GB starts, but macOS itself uses about 3 GB, so the box swaps from the start and builds are slow; \(gigabytes(comfortable)) GB is the least macOS asks for, and 8 GB suits an agent"
+        case .linux:
+            return "a Linux box of \(gigabytesText(memoryBytes)) GB has only about half of it free and no swap, so a program that needs more, such as an agent session or a build, is ended by the system; \(gigabytes(comfortable)) GB or more suits an agent"
+        }
+    }
+
     /// What to say when a box of `starting` bytes starts beside boxes of `running` bytes on a
     /// Mac with `hostBytes`, or nil when the Mac keeps its reserve.
     public static func memoryWarning(starting: UInt64, running: [UInt64], hostBytes: UInt64 = ProcessInfo.processInfo.physicalMemory) -> String? {
@@ -45,5 +84,15 @@ public enum MachineSize {
     /// Whole GB, rounded up, so 3.5 GB is not shown as 3.
     static func gigabytes(_ bytes: UInt64) -> UInt64 {
         return (bytes >> 30) + (bytes & ((1 << 30) - 1) == 0 ? 0 : 1)
+    }
+
+    /// GB for a size said beside a whole limit: whole GB as is, else to a tenth, rounded down, so
+    /// a box under 3 GB never reads as 3 (rounded up, 2.5 GB would read "at least 3 GB: with 3 GB").
+    static func gigabytesText(_ bytes: UInt64) -> String {
+        guard bytes & ((1 << 30) - 1) != 0 else {
+            return String(bytes >> 30)
+        }
+        let tenths = ((bytes >> 20) * 10) >> 10
+        return "\(tenths / 10).\(tenths % 10)"
     }
 }

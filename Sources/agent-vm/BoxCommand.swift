@@ -28,6 +28,20 @@ struct BoxCommand: ParsableCommand {
                       Packs.self, Serve.self]
     )
 
+    /// After a box got its memory (created, or resized): a note when the size starts but is
+    /// small for its system (`MachineSize.smallMemoryNote`). On stderr, with how to change it
+    /// unless the person just did (`box set`), or as a JSON notice.
+    static func noteSmallMemory(_ box: Box, json: Bool, sayHowToChange: Bool = true) {
+        guard let note = MachineSize.smallMemoryNote(memoryBytes: box.record.memoryBytes, guest: box.record.effectiveGuest) else {
+            return
+        }
+        if json {
+            Events.emit(ProgressEvent(.notice, note, box: box.name), json: true)
+        } else {
+            Stderr.write("note: \(note)\(sayHowToChange ? "; `agent-vm box set \(box.name) --memory-gb N` changes it while the box is stopped" : "")\n")
+        }
+    }
+
     struct Create: ParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Clone a ready image into a new box.")
 
@@ -40,7 +54,7 @@ struct BoxCommand: ParsableCommand {
         @Option(name: .long, help: "Virtual CPUs (default: the image's).")
         var cpus: Int?
 
-        @Option(name: .customLong("memory-gb"), help: "Memory in GB (default: the image's).")
+        @Option(name: .customLong("memory-gb"), help: "Memory in GB (default: the image's; a macOS box needs at least 3).")
         var memoryGB: Int?
 
         @Option(name: .long, help: "Network mode: allowlist (default), off or open (NAT, reaches your local network).")
@@ -72,6 +86,7 @@ struct BoxCommand: ParsableCommand {
             let box = try options.boxStore.create(name: name, from: image, imageStore: options.imageStore,
                                                   cpuCount: cpus, memoryBytes: memoryGB.map { UInt64($0) << 30 },
                                                   network: BoxNetwork(mode: net, allow: allow), disposable: disposable)
+            BoxCommand.noteSmallMemory(box, json: options.json)
             if options.json {
                 try Output.json(box.record)
                 return
@@ -358,7 +373,7 @@ struct BoxCommand: ParsableCommand {
         @Option(name: .long, help: "Virtual CPUs.")
         var cpus: Int?
 
-        @Option(name: .customLong("memory-gb"), help: "Memory in GB.")
+        @Option(name: .customLong("memory-gb"), help: "Memory in GB (a macOS box needs at least 3).")
         var memoryGB: Int?
 
         @OptionGroup var options: StoreOptions
@@ -376,6 +391,9 @@ struct BoxCommand: ParsableCommand {
             var box = try options.boxStore.box(named: name)
             if cpus != nil || memoryGB != nil {
                 box = try options.boxStore.resize(named: name, cpuCount: cpus, memoryBytes: memoryGB.map { UInt64($0) << 30 })
+                if memoryGB != nil {
+                    BoxCommand.noteSmallMemory(box, json: options.json, sayHowToChange: false)
+                }
             }
             if options.json {
                 try Output.json(box.record)

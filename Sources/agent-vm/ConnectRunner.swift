@@ -607,6 +607,9 @@ struct ConnectRunner {
                     if isTemporary {
                         temporary = created
                     }
+                    if memoryBytes != nil, let note = MachineSize.smallMemoryNote(memoryBytes: created.record.memoryBytes, guest: created.record.effectiveGuest) {
+                        warn(note)
+                    }
                 case let .start(name, ownerPid):
                     guard let current = box else {
                         continue

@@ -324,7 +324,10 @@ public final class BoxSupervisor {
             log("The guest daemon did not answer within \(bootLimit); stopping")
             noteStop("the guest daemon did not answer within \(bootLimit)")
             try? await machine.forceStop()
-            throw AgentVMError.guestUnreachable("the guest daemon did not answer within \(bootLimit)\(consoleTail())")
+            // A small box is the likely reason; with the comfortable size, say nothing of it.
+            let small = MachineSize.smallMemoryNote(memoryBytes: box.record.memoryBytes, guest: guest) == nil ? ""
+                : "; a box of \(MachineSize.gigabytesText(box.record.memoryBytes)) GB may be too small: `agent-vm box set \(box.name) --memory-gb \(MachineSize.gigabytes(MachineSize.comfortableMemory(for: guest)))` gives it more"
+            throw AgentVMError.guestUnreachable("the guest daemon did not answer within \(bootLimit)\(small)\(consoleTail())")
         }
         do {
             try await configureNetwork(machine, mode: network.mode)
@@ -1384,6 +1387,13 @@ public enum BoxLauncher {
             guard FileSystem.exists(box.directory.appendingPathComponent(BoxStore.recordName).path) else {
                 throw box.record.disposable == true ? AgentVMError.boxDisposed(box.name) : AgentVMError.boxNotFound(box.name)
             }
+        }
+        // A box made before the smallest size was checked (0.7.51) would only time out, after
+        // 180 s of a guest that never answers.
+        let guest = box.record.effectiveGuest
+        if let refusal = MachineSize.memoryRefusal(memoryBytes: box.record.memoryBytes, guest: guest) {
+            throw AgentVMError.virtualMachine(operation: "start \(box.name)",
+                                              message: "\(refusal); `agent-vm box set \(box.name) --memory-gb \(MachineSize.gigabytes(MachineSize.comfortableMemory(for: guest)))` gives it more")
         }
         let logDescriptor = open(box.logURL.path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard logDescriptor >= 0 else {

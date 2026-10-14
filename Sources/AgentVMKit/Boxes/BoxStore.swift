@@ -243,6 +243,10 @@ public struct BoxStore: Sendable {
         if let problem = MachineSize.problem(cpuCount: cpuCount, memoryBytes: memoryBytes) {
             throw AgentVMError.virtualMachine(operation: "configure \(name)", message: problem)
         }
+        // The image's own size too: a box too small to start is refused now, not at its start.
+        if let refusal = MachineSize.memoryRefusal(memoryBytes: memoryBytes ?? image.record.memoryBytes, guest: image.record.effectiveGuest) {
+            throw AgentVMError.virtualMachine(operation: "configure \(name)", message: refusal)
+        }
         // Reject bad rules and unknown packs before anything is created.
         _ = try CompiledPolicy(network, packs: try NetworkPacks.needed(for: network, store: root, builtIn: builtInPacks))
         guard image.record.state == .ready else {
@@ -450,6 +454,9 @@ public struct BoxStore: Sendable {
         if let problem = RecordNumbers.problem(cpuCount: record.cpuCount, memoryBytes: record.memoryBytes, diskBytes: nil) {
             throw AgentVMError.virtualMachine(operation: "configure \(name)", message: problem)
         }
+        if memoryBytes != nil, let refusal = MachineSize.memoryRefusal(memoryBytes: record.memoryBytes, guest: record.effectiveGuest) {
+            throw AgentVMError.virtualMachine(operation: "configure \(name)", message: refusal)
+        }
         let updated = Box(record: record, directory: current.directory)
         try save(updated)
         return updated
@@ -465,7 +472,7 @@ public struct BoxStore: Sendable {
 
     /// Deletes box `name` and creates it again from `image` with the same CPUs, memory,
     /// network rules and disposable flag: a fresh clone of the image, with a new identity and
-    /// empty logs (the old box's are kept, and `deleted` is told where). It checks first what it can (the box stopped, the image ready and free, the
+    /// empty logs (the old box's are kept, and `deleted` is told where). It checks first what it can (the box stopped, its memory enough to start, the image ready and free, the
     /// rules and packs usable), so a refusal leaves the box as it was; a create that still fails
     /// after the delete says how to create the box by hand.
     public func recreate(name: String, from image: GoldenImage, imageStore: ImageStore, collectionPatience: Duration = .seconds(30),
@@ -477,6 +484,13 @@ public struct BoxStore: Sendable {
         let network = old.record.network ?? .legacy
         let disposable = old.record.disposable == true
         _ = try CompiledPolicy(network, packs: try NetworkPacks.needed(for: network, store: root, builtIn: builtInPacks))
+        // A box made before the smallest size was checked (0.7.51): `create` would refuse its
+        // size only after the delete.
+        let guest = image.record.effectiveGuest
+        if let refusal = MachineSize.memoryRefusal(memoryBytes: old.record.memoryBytes, guest: guest) {
+            throw AgentVMError.virtualMachine(operation: "configure \(name)",
+                                              message: "\(refusal); `agent-vm box set \(name) --memory-gb \(MachineSize.gigabytes(MachineSize.comfortableMemory(for: guest)))` gives it more")
+        }
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "create a box from")
         }

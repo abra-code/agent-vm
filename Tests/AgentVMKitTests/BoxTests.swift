@@ -242,12 +242,55 @@ final class BoxScratch {
         // What a start adds to: the boxes whose lock is held, without the one that starts.
         let fixture = try BoxScratch()
         let first = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images, memoryBytes: 3 << 30)
-        _ = try fixture.boxes.create(name: "b2", from: fixture.image, imageStore: fixture.images, memoryBytes: 2 << 30)
+        _ = try fixture.boxes.create(name: "b2", from: fixture.image, imageStore: fixture.images, memoryBytes: 4 << 30)
         #expect(fixture.boxes.runningMemory(except: "b2").isEmpty)
         let lock = try #require(try FolderLock.tryAcquire(first.lockPath))
         #expect(fixture.boxes.runningMemory(except: "b2") == [3 << 30])
         #expect(fixture.boxes.runningMemory(except: "b1").isEmpty)
         lock.release()
+    }
+
+    /// The least memory a box starts with: a macOS box under 3 GB is refused by create, set and
+    /// start; one that starts but is small for its system gets a note, a Linux box from 1 GB.
+    @Test func aBoxTooSmallToStartIsRefused() throws {
+        #expect(MachineSize.memoryRefusal(memoryBytes: 3 << 30, guest: .macOS) == nil)
+        #expect(MachineSize.memoryRefusal(memoryBytes: 2 << 30, guest: .macOS) == "a macOS box needs at least 3 GB of memory: with 2 GB, macOS does not finish starting")
+        #expect(MachineSize.memoryRefusal(memoryBytes: 1 << 30, guest: .linux) == nil)
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 4 << 30, guest: .macOS) == nil)
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 3 << 30, guest: .macOS)?.hasPrefix("a macOS box of 3 GB starts, but macOS itself uses about 3 GB") == true)
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 2 << 30, guest: .linux) == nil)
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 1 << 30, guest: .linux)?.hasPrefix("a Linux box of 1 GB has only about half of it free and no swap") == true)
+        // A size between whole GB is not rounded up to the limit it is under.
+        #expect(MachineSize.memoryRefusal(memoryBytes: (3 << 30) - 1, guest: .macOS)?.contains("with 2.9 GB") == true)
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 7 << 29, guest: .macOS)?.hasPrefix("a macOS box of 3.5 GB starts") == true)
+
+        let fixture = try BoxScratch()
+        #expect(throws: AgentVMError.self) {
+            _ = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images, memoryBytes: 2 << 30)
+        }
+        #expect(throws: AgentVMError.boxNotFound("b1")) {
+            _ = try fixture.boxes.box(named: "b1")
+        }
+        let box = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images, memoryBytes: 3 << 30)
+        #expect(throws: AgentVMError.self) {
+            _ = try fixture.boxes.resize(named: "b1", memoryBytes: 2 << 30)
+        }
+        #expect(try fixture.boxes.box(named: "b1").record == box.record)
+        // A box too small from before the check: its start is refused before anything runs.
+        var small = box.record
+        small.memoryBytes = 2 << 30
+        do {
+            _ = try BoxLauncher.start(Box(record: small, directory: box.directory), executable: "/usr/bin/false") { _ in }
+            Issue.record("a box of 2 GB was started")
+        } catch {
+            #expect("\(error)".contains("a macOS box needs at least 3 GB") && "\(error)".contains("agent-vm box set b1 --memory-gb 4"), "\(error)")
+        }
+        // Nor is it recreated: the refusal comes before the delete.
+        try SessionStore.encoder.encode(small).write(to: box.directory.appendingPathComponent(BoxStore.recordName))
+        #expect(throws: AgentVMError.self) {
+            _ = try fixture.boxes.recreate(name: "b1", from: fixture.image, imageStore: fixture.images)
+        }
+        #expect(try fixture.boxes.box(named: "b1").record == small)
     }
 
     /// Refusals come before the delete and leave the box as it was.

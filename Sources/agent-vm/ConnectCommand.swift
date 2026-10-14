@@ -238,7 +238,7 @@ enum Connect {
         @Option(name: .long, help: "Virtual CPUs (default: the image's).")
         var cpus: Int?
 
-        @Option(name: .customLong("memory-gb"), help: "Memory in GB (default: the image's).")
+        @Option(name: .customLong("memory-gb"), help: "Memory in GB (default: the image's; a macOS box needs at least 3).")
         var memoryGB: Int?
 
         @Flag(name: .long, help: "Update the image's tools first (agent-vm image update <image> --tools: the newest agents; a minute or two), then make the box from it.")
