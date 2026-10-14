@@ -246,6 +246,9 @@ import Testing
         var deb = linux("deb")
         deb.base = ImageRecord.BaseSource(release: "debian-13", file: "debian-13.tar.xz", url: nil, sha512: String(repeating: "a", count: 128), build: nil)
         try make(deb)
+        var ubuntu = linux("ubu")
+        ubuntu.base = ImageRecord.BaseSource(release: "ubuntu-26.04", file: "resolute-server-cloudimg-arm64.img", url: nil, sha512: "", sha256: String(repeating: "a", count: 64), build: nil)
+        try make(ubuntu)
         var tools = linux("debtools")
         tools.derivedFrom = ImageRecord.DerivedFrom(image: "deb", recipeDigest: nil)
         tools.recipes = [tool]
@@ -268,6 +271,10 @@ import Testing
         }
         // Made from a cloud image: it says which release, and what to give.
         #expect(reason(options("deb"))?.contains("deb was made from a cloud image (debian-13): give --linux (a release to start from again) or --from (a ready image)") == true)
+        // A release this agent-vm does not offer (Ubuntu) is not suggested to start from again.
+        if ProcessInfo.processInfo.environment[LinuxBase.withheldVariable] != "1" {
+            #expect(reason(options("ubu"))?.contains("ubu was made from a cloud image (ubuntu-26.04), which this agent-vm does not offer: give --from (a ready image to start from)") == true)
+        }
         // From its release again: every recipe runs, on no base.
         var plan = try builder.rebuildPlan(options("debtools", linux: true))
         #expect(plan.base == nil && plan.recipes.map(\.name) == ["tool"] && plan.commandLineTools)

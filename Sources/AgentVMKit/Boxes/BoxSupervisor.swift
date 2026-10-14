@@ -1019,6 +1019,14 @@ final class SupervisorState: @unchecked Sendable {
 
 /// Answers the control socket for a running supervisor.
 final class SupervisorControl: ControlHandler, @unchecked Sendable {
+    /// How long a control thread waits for a share, in seconds: up to four guest commands of at
+    /// most 60 s each, after the requests ahead of it (`ControlClient.shareTimeout` is a little
+    /// longer).
+    static let shareLimit = 300
+    /// The same for an unshare, which takes up to three guest commands for each folder; the
+    /// unshare of all 8 folders of a slow guest goes on past it.
+    static let unshareLimit = 300
+
     private let state: SupervisorState
     /// Main-actor isolated; used only from the MainActor task below.
     private let machine: GuestMachine
@@ -1051,7 +1059,7 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
     }
 
     /// Takes the project at `path` (nil: every one) away on the main actor; blocks this control
-    /// thread for at most 60 s.
+    /// thread for at most `unshareLimit`.
     func controlUnshare(path: String?) throws {
         let result = ShareResult()
         let done = DispatchSemaphore(value: 0)
@@ -1065,16 +1073,16 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
             }
             done.signal()
         }
-        guard done.wait(timeout: .now() + 60) == .success else {
-            throw AgentVMError.guestUnreachable("unsharing the project of box \(box.name) timed out")
+        guard done.wait(timeout: .now() + .seconds(Self.unshareLimit)) == .success else {
+            let what = path ?? "the folders of box \(box.name)"
+            throw AgentVMError.supervisorRefused("unsharing \(what) did not finish within \(Self.unshareLimit) s and goes on in the box; agent-vm box status \(box.name) shows what is still shared")
         }
         if let error = result.error {
             throw error
         }
     }
 
-    /// Shares a project on the main actor; blocks this control thread (at most 5 minutes:
-    /// up to four guest commands of at most 60 s each).
+    /// Shares a project on the main actor; blocks this control thread for at most `shareLimit`.
     func controlShare(path: String, readOnly: Bool) throws {
         try shareBlocking(path: path, readOnly: readOnly, claim: false)
     }
@@ -1148,17 +1156,25 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         let result = ShareResult()
         let done = DispatchSemaphore(value: 0)
         let share = self.share
+        let state = self.state
+        let unshare = self.unshare
         Task { @MainActor in
             do {
-                result.set(path: try await share(path, readOnly, claim))
-                result.set(nil)
+                let shared = try await share(path, readOnly, claim)
+                if !result.finish(path: shared), claim {
+                    // The caller was told the share timed out and runs nothing on it: the claim
+                    // is released as a connection's end releases it, or it would hold the
+                    // folder (and its device) for as long as the box runs.
+                    state.releaseProject(at: shared)
+                    try? await unshare(shared, false)
+                }
             } catch {
                 result.set(error)
             }
             done.signal()
         }
-        guard done.wait(timeout: .now() + 300) == .success else {
-            throw AgentVMError.guestUnreachable("sharing \(path) timed out")
+        guard done.wait(timeout: .now() + .seconds(Self.shareLimit)) == .success || !result.abandon() else {
+            throw AgentVMError.supervisorRefused("sharing \(path) did not finish within \(Self.shareLimit) s and goes on in the box\(claim ? "; nothing is run on it, and it is unshared again 5 s after it is shared" : "")")
         }
         if let error = result.error {
             throw error
@@ -1256,11 +1272,25 @@ private final class ShareResult: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: Error?
     private var sharedPath: String?
+    private var finished = false
+    private var abandoned = false
 
-    func set(path: String) {
+    /// The share succeeded. False when its waiter gave up first (`abandon`): the share is then
+    /// nobody's.
+    func finish(path: String) -> Bool {
         lock.lock()
+        defer { lock.unlock() }
         sharedPath = path
-        lock.unlock()
+        finished = true
+        return !abandoned
+    }
+
+    /// The waiter gives up. False when the outcome came first, and it stands.
+    func abandon() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        abandoned = !finished
+        return abandoned
     }
 
     var path: String? {
@@ -1272,6 +1302,7 @@ private final class ShareResult: @unchecked Sendable {
     func set(_ error: Error?) {
         lock.lock()
         stored = error
+        finished = true
         lock.unlock()
     }
 

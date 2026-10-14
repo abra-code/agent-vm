@@ -73,7 +73,7 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 | `grow-disk` | With a larger `--disk-gb`: moving the recovery container (a Linux image: making the disk file longer). |
 | `boot` | Booting the clone. |
 | `linux-setup` | A Linux image: waiting for the network, and the compiler and make when asked for and missing, each with `index` and `count`. |
-| `command-line-tools`, `recipe`, `recipe-input`, `recipe-step` | As above. |
+| `command-line-tools`, `recipe`, `recipe-input`, `recipe-step`, `recipe-check` | As above. |
 | `replace-guest-daemon` | Putting this agent-vm's `agent-vm-guest` into the image, when it differs. |
 | `shutdown` | Shutting the guest down. |
 | `check-guest-daemon` | Booting again to check the new `agent-vm-guest` (only when it was replaced), then `shutdown`. |

@@ -1188,7 +1188,7 @@ struct BoxCommand: ParsableCommand {
                 }
                 return
             }
-            let response = try ControlClient.request(ControlRequest(op: .unshare, path: path), path: box.controlSocketPath, timeout: 70)
+            let response = try ControlClient.request(ControlRequest(op: .unshare, path: path), path: box.controlSocketPath, timeout: ControlClient.shareTimeout)
             guard response.ok else {
                 throw AgentVMError.supervisorRefused(response.error ?? "box \(box.name) did not unshare \(taken.joined(separator: ", "))")
             }

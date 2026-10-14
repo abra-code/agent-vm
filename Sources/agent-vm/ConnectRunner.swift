@@ -909,7 +909,8 @@ struct ConnectRunner {
             let question: Confirm
             switch error {
             case AgentVMError.sessionAlreadyActive(_, let id):
-                print("Session \(id) is already active for \(Self.tilde(project)) (another avm, or an application using agent-vm); its snapshot covers this run too.")
+                print("Session \(id) is already active for \(Self.tilde(project)) (another avm, or an application using agent-vm), so this run gets no snapshot or report of its own: "
+                    + "what it changes shows in session \(id)'s report, and an undo of that session takes it back too.")
                 question = Confirm("Go on without a new snapshot?", defaultAnswer: true)
             case AgentVMError.differentVolume:
                 print("\(Self.tilde(project)) is on another volume than the agent-vm store, so no snapshot can be taken and nothing can be undone.")

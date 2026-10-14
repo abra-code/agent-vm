@@ -526,7 +526,7 @@ public enum ControlClient {
     /// How long a client waits for the supervisor's answer; a wedged supervisor must not hang
     /// `box stop` or `exec`.
     public static let answerTimeout = 30
-    /// Sharing a project takes up to four guest commands of at most 60 s each.
+    /// Sharing or unsharing: the supervisor waits up to 300 s for either (`SupervisorControl.shareLimit`, `unshareLimit`).
     public static let shareTimeout = 310
 
     /// One request on a fresh connection; the connection is closed afterwards.
