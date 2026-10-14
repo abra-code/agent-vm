@@ -252,13 +252,14 @@ import Testing
             #expect(report.error == nil, "\(report.path)")
             #expect(report.warnings.isEmpty, "\(report.path): \(report.warnings)")
         }
-        // Each says which guest it is for: the Linux ones by their names, the two that are npm
-        // commands for both, the rest (which say nothing) for macOS.
+        // Each says which guest it is for: the Linux ones by their names, the agent recipes (npm
+        // commands, or installers that pick the system themselves) for both, the rest (which say
+        // nothing) for macOS.
         var guests: [String: String] = [:]
         for report in result.recipes {
             guests[report.name ?? ""] = report.guest
         }
-        #expect(guests == ["acp-agents": "any", "agent-clis": "any", "homebrew": "macos", "linux-node": "linux", "linux-python": "linux",
+        #expect(guests == ["acp-agents": "any", "agent-clis": "any", "agent-clis-china": "any", "agent-clis-native": "any", "homebrew": "macos", "linux-node": "linux", "linux-python": "linux",
                            "linux-sudo": "linux", "node": "macos", "python": "macos", "xcode": "macos", "xcode-platforms": "macos"])
     }
 

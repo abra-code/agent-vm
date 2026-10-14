@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "guest": "any",
+  "description": "Agent CLIs of Chinese model makers, from their own installers: Kimi Code (Moonshot, kimi), Qwen Code (Alibaba, qwen) and MiniMax Code (MiniMax, mcode); no Node recipe needed",
+  "steps": [
+    {
+      "name": "Kimi Code from Moonshot's installer",
+      "run": "f=$(mktemp) && curl -fsSL --retry 3 --retry-all-errors https://code.kimi.com/kimi-code/install.sh -o \"$f\" && bash \"$f\" < /dev/null; status=$?; rm -f \"$f\"; exit $status",
+      "env": {"KIMI_NO_MODIFY_PATH": "1"},
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "Qwen Code from Alibaba's installer",
+      "run": "version=$(curl -fsSL --retry 3 --retry-all-errors https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/releases/qwen-code/latest/VERSION) && version=\"v${version#v}\" && case \"$(uname -s)\" in Darwin) target=darwin-arm64;; *) target=linux-arm64;; esac && d=$(mktemp -d) && base=\"https://github.com/QwenLM/qwen-code/releases/download/$version\" && curl -fSL --retry 3 --retry-all-errors \"$base/SHA256SUMS\" -o \"$d/SHA256SUMS\" && curl -fSL --retry 3 --retry-all-errors \"$base/qwen-code-$target.tar.gz\" -o \"$d/qwen-code-$target.tar.gz\" && curl -fsSL --retry 3 --retry-all-errors https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh -o \"$d/install.sh\" && QWEN_INSTALL_ARCHIVE=\"$d/qwen-code-$target.tar.gz\" QWEN_INSTALL_VERSION=\"$version\" bash \"$d/install.sh\" < /dev/null; status=$?; rm -rf \"$d\"; exit $status",
+      "env": {"QWEN_NO_MODIFY_PATH": "1"},
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "Build tools for MiniMax Code's SQLite module, when its prebuilt one cannot be had (Linux)",
+      "user": "root",
+      "run": "[ \"$(uname -s)\" = Linux ] || exit 0; command -v make > /dev/null && command -v g++ > /dev/null && exit 0; apt-get -q -y update && apt-get -q -y install build-essential",
+      "env": {"DEBIAN_FRONTEND": "noninteractive"},
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "MiniMax Code from MiniMax's installer",
+      "run": "f=$(mktemp) && curl -fsSL --retry 3 --retry-all-errors https://filecdn.minimax.chat/public/install.sh -o \"$f\" && bash \"$f\" < /dev/null; status=$?; rm -f \"$f\"; exit $status",
+      "env": {"MCODE_NO_MODIFY_PATH": "1"},
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "kimi, qwen and mcode on every program's path",
+      "user": "root",
+      "run": "home=$(eval echo \"~$AGENT_VM_BOX_USER\") && mkdir -p /usr/local/bin && ln -sfn \"$home/.kimi-code/bin/kimi\" /usr/local/bin/kimi && ln -sfn \"$home/.local/bin/qwen\" /usr/local/bin/qwen && rm -f /usr/local/bin/mcode && printf '#!/bin/sh\\nexec \"%s/.minimax-code/bin/mcode\" \"$@\"\\n' \"$home\" > /usr/local/bin/mcode && chmod 755 /usr/local/bin/mcode"
+    }
+  ],
+  "update": [
+    {
+      "name": "Kimi Code, the newest",
+      "run": "latest=$(curl -fsSL --retry 3 --retry-all-errors https://code.kimi.com/kimi-code/latest) && current=$(~/.kimi-code/bin/kimi --version 2>/dev/null) && [ -n \"$latest\" ] && [ \"$latest\" = \"$current\" ] && { echo \"Kimi Code $current is the newest\"; exit 0; }; f=$(mktemp) && curl -fsSL --retry 3 --retry-all-errors https://code.kimi.com/kimi-code/install.sh -o \"$f\" && bash \"$f\" < /dev/null; status=$?; rm -f \"$f\"; exit $status",
+      "env": {"KIMI_NO_MODIFY_PATH": "1"},
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "Qwen Code, the newest",
+      "run": "version=$(curl -fsSL --retry 3 --retry-all-errors https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/releases/qwen-code/latest/VERSION) && version=\"v${version#v}\" && { [ \"${version#v}\" != \"$(~/.local/bin/qwen --version 2>/dev/null)\" ] || { echo \"Qwen Code ${version#v} is the newest\"; exit 0; }; } && case \"$(uname -s)\" in Darwin) target=darwin-arm64;; *) target=linux-arm64;; esac && d=$(mktemp -d) && base=\"https://github.com/QwenLM/qwen-code/releases/download/$version\" && curl -fSL --retry 3 --retry-all-errors \"$base/SHA256SUMS\" -o \"$d/SHA256SUMS\" && curl -fSL --retry 3 --retry-all-errors \"$base/qwen-code-$target.tar.gz\" -o \"$d/qwen-code-$target.tar.gz\" && curl -fsSL --retry 3 --retry-all-errors https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh -o \"$d/install.sh\" && QWEN_INSTALL_ARCHIVE=\"$d/qwen-code-$target.tar.gz\" QWEN_INSTALL_VERSION=\"$version\" bash \"$d/install.sh\" < /dev/null; status=$?; rm -rf \"$d\"; exit $status",
+      "env": {"QWEN_NO_MODIFY_PATH": "1"},
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "Build tools for MiniMax Code's SQLite module, when its prebuilt one cannot be had (Linux)",
+      "user": "root",
+      "run": "[ \"$(uname -s)\" = Linux ] || exit 0; command -v make > /dev/null && command -v g++ > /dev/null && exit 0; apt-get -q -y update && apt-get -q -y install build-essential",
+      "env": {"DEBIAN_FRONTEND": "noninteractive"},
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "MiniMax Code, the newest",
+      "run": "f=$(mktemp) && curl -fsSL --retry 3 --retry-all-errors https://filecdn.minimax.chat/public/install.sh -o \"$f\" && bash \"$f\" < /dev/null; status=$?; rm -f \"$f\"; exit $status",
+      "env": {"MCODE_NO_MODIFY_PATH": "1"},
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "kimi, qwen and mcode on every program's path",
+      "user": "root",
+      "run": "home=$(eval echo \"~$AGENT_VM_BOX_USER\") && mkdir -p /usr/local/bin && ln -sfn \"$home/.kimi-code/bin/kimi\" /usr/local/bin/kimi && ln -sfn \"$home/.local/bin/qwen\" /usr/local/bin/qwen && rm -f /usr/local/bin/mcode && printf '#!/bin/sh\\nexec \"%s/.minimax-code/bin/mcode\" \"$@\"\\n' \"$home\" > /usr/local/bin/mcode && chmod 755 /usr/local/bin/mcode"
+    }
+  ],
+  "checks": ["kimi --version", "qwen --version", "mcode --version"]
+}

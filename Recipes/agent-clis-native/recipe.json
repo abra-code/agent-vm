@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "guest": "any",
+  "description": "Agent CLIs that install as native programs from their makers' installers: Grok Build (xAI, grok), Muse Code (Meta, muse; a 350 MB download) and Antigravity CLI (Google, agy); no Node needed",
+  "steps": [
+    {
+      "name": "Grok Build from xAI's installer",
+      "run": "f=$(mktemp) && curl -fsSL --retry 3 --retry-all-errors https://x.ai/cli/install.sh -o \"$f\" && bash \"$f\" < /dev/null; status=$?; rm -f \"$f\"; exit $status",
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "Muse Code from Meta's installer",
+      "run": "f=$(mktemp) && curl -fsSL --retry 3 --retry-all-errors https://dev.meta.ai/install.sh -o \"$f\" && bash \"$f\" < /dev/null; status=$?; rm -f \"$f\"; exit $status",
+      "env": {"MUSE_NO_MODIFY_PATH": "1", "MUSE_LOGIN": "0"},
+      "timeoutSeconds": 5400
+    },
+    {
+      "name": "Antigravity CLI from Google's installer",
+      "run": "f=$(mktemp) && curl -fsSL --retry 3 --retry-all-errors https://antigravity.google/cli/install.sh -o \"$f\" && bash \"$f\" < /dev/null; status=$?; rm -f \"$f\"; exit $status",
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "grok, muse and agy on every program's path",
+      "user": "root",
+      "run": "home=$(eval echo \"~$AGENT_VM_BOX_USER\") && mkdir -p /usr/local/bin && ln -sfn \"$home/.grok/bin/grok\" /usr/local/bin/grok && ln -sfn \"$home/.local/bin/muse\" /usr/local/bin/muse && ln -sfn \"$home/.local/bin/agy\" /usr/local/bin/agy"
+    }
+  ],
+  "update": [
+    {
+      "name": "Grok Build, the newest",
+      "run": "latest=$(curl -fsSL --retry 3 --retry-all-errors https://x.ai/cli/stable) && current=$(~/.grok/bin/grok --version 2>/dev/null | cut -d ' ' -f 2) && [ -n \"$latest\" ] && [ \"$latest\" = \"$current\" ] && { echo \"Grok $current is the newest\"; exit 0; }; f=$(mktemp) && curl -fsSL --retry 3 --retry-all-errors https://x.ai/cli/install.sh -o \"$f\" && bash \"$f\" < /dev/null; status=$?; rm -f \"$f\"; exit $status",
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "Muse Code, the newest",
+      "run": "f=$(mktemp) && curl -fsSL --retry 3 --retry-all-errors https://dev.meta.ai/install.sh -o \"$f\" && bash \"$f\" < /dev/null; status=$?; rm -f \"$f\"; exit $status",
+      "env": {"MUSE_NO_MODIFY_PATH": "1", "MUSE_LOGIN": "0"},
+      "timeoutSeconds": 5400
+    },
+    {
+      "name": "Antigravity CLI, the newest",
+      "run": "for attempt in 1 2 3; do ~/.local/bin/agy update < /dev/null && exit 0; sleep 15; done; exit 1",
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "grok, muse and agy on every program's path",
+      "user": "root",
+      "run": "home=$(eval echo \"~$AGENT_VM_BOX_USER\") && mkdir -p /usr/local/bin && ln -sfn \"$home/.grok/bin/grok\" /usr/local/bin/grok && ln -sfn \"$home/.local/bin/muse\" /usr/local/bin/muse && ln -sfn \"$home/.local/bin/agy\" /usr/local/bin/agy"
+    }
+  ],
+  "checks": ["grok --version", "muse --version", "agy --version"]
+}
