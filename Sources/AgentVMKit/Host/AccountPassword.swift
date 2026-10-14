@@ -127,6 +127,23 @@ public struct AccountPasswordStore: Sendable {
         return SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess
     }
 
+    /// Whether reading the item under `id` may make macOS ask the person first: another build
+    /// stored it (its marker names another signer, or none). Reads attributes only: never a
+    /// value, never a question. False when there is no such item.
+    public func mayAskBeforeReading(_ id: String) -> Bool {
+        if memory != nil {
+            return false
+        }
+        var query = query(id)
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let attributes = result as? [String: Any] else {
+            return false
+        }
+        return attributes[kSecAttrGeneric as String] as? Data != Self.marker
+    }
+
     /// Removes the item; none is not an error.
     public func delete(id: String) throws {
         if let memory {

@@ -54,7 +54,7 @@ extension ImageBuilder {
         // `updating`: this command holds the update lock itself, so an `Update/` folder is a killed
         // update's leftover.
         image = try store.settle(image, updating: true)
-        let password = try image.accountPassword(keychain: store.passwords)
+        let password = try await accountPassword(of: image)
 
         let machine = try makeMachine(for: image)
         // Control-C (or SIGTERM) at any point ends the setup at the next step, with a clean

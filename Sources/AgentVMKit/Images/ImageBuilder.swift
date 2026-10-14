@@ -177,6 +177,36 @@ public final class ImageBuilder {
         return error
     }
 
+    /// The image's account password, read on a thread of its own. From the Keychain, macOS may
+    /// first ask the person whether this agent-vm may read it (another build stored it), and
+    /// the read waits for the answer however long it takes: a notice says so, and a cancel
+    /// (SIGINT, SIGTERM) still ends the build meanwhile. Read on the main thread, it would hold
+    /// off the signal handlers until the question was answered.
+    func accountPassword(of image: GoldenImage) async throws -> String {
+        let keychain = store.passwords
+        let read = PasswordRead()
+        let cancellation = self.cancellation
+        let key = cancellation?.whenCanceled {
+            read.finish(.failure(AgentVMError.canceled(signal: cancellation?.signal ?? SIGINT)))
+        }
+        defer {
+            if let key {
+                cancellation?.remove(key)
+            }
+        }
+        // Not once canceled (the cancel has answered already): the read could still put a
+        // question on the screen that nobody needs answered.
+        if cancellation?.isCanceled != true {
+            if let id = image.record.passwordID, keychain.mayAskBeforeReading(id) {
+                notice("  macOS may be asking on this Mac's screen whether agent-vm may read the account password of image \(image.name) from the login Keychain (another agent-vm build stored it); agent-vm waits for the answer, and Control-C stops it")
+            }
+            Thread.detachNewThread {
+                read.finish(Result { try image.accountPassword(keychain: keychain) })
+            }
+        }
+        return try await read.value()
+    }
+
     /// Stops a guest that is still running after a failure. After a cancel, it is shut down
     /// through its daemon: a guest still booting is given `cancelShutdownTimeout` for its
     /// daemon to answer (`waitForDaemon`; not on the first boot, before the daemon is
@@ -742,7 +772,7 @@ public final class ImageBuilder {
         let began = clock.now
         try checkCanceled()
         var current = try store.update(image) { $0.state = .provisioning }
-        let password = try image.accountPassword(keychain: store.passwords)
+        let password = try await accountPassword(of: image)
 
         let provisioning = VZMacGuestProvisioningOptions()
         provisioning.fullName = "Agent"
@@ -843,7 +873,7 @@ public final class ImageBuilder {
         }
         // A window on a box (box view) must never meet a lock screen that asks for the password.
         try await keepDesktopUnlocked(machine, user: current.record.userName,
-                                      password: try current.accountPassword(keychain: store.passwords))
+                                      password: try await accountPassword(of: current))
         await prepareDesktop(current, machine: machine, features: current.record.guestFeatures)
 
         if commandLineTools {
@@ -1629,6 +1659,40 @@ public final class ImageBuilder {
     nonisolated static func seconds(_ duration: Duration) -> Double {
         let parts = duration.components
         return Double(parts.seconds) + Double(parts.attoseconds) / 1e18
+    }
+}
+
+/// The outcome of one password read (`ImageBuilder.accountPassword(of:)`): the read's or a
+/// cancel's, whichever comes first, handed once to the one waiter.
+private final class PasswordRead: @unchecked Sendable {
+    private let lock = NSLock()
+    private var outcome: Result<String, Error>?
+    private var waiter: CheckedContinuation<String, Error>?
+
+    func finish(_ result: Result<String, Error>) {
+        lock.lock()
+        guard outcome == nil else {
+            lock.unlock()
+            return
+        }
+        outcome = result
+        let waiter = self.waiter
+        self.waiter = nil
+        lock.unlock()
+        waiter?.resume(with: result)
+    }
+
+    func value() async throws -> String {
+        return try await withCheckedThrowingContinuation { continuation in
+            lock.lock()
+            if let outcome {
+                lock.unlock()
+                continuation.resume(with: outcome)
+                return
+            }
+            waiter = continuation
+            lock.unlock()
+        }
     }
 }
 

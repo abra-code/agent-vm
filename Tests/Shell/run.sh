@@ -17,7 +17,8 @@
 # Each test_<name> function in fast/*.sh or extended/*.sh runs in its own subshell. A file may
 # define file_setup and file_teardown, run once around its tests (extended tests share one box
 # per file that way). A test that runs longer than 60 s (fast) or 15 minutes (extended) is
-# stopped with its whole process group and fails. Exit status: 0 when nothing failed.
+# stopped with its whole process group and fails; a file_setup gets twice that, and when it runs
+# out every test of the file fails. Exit status: 0 when nothing failed.
 
 REPO_ROOT="$(cd "$(/usr/bin/dirname "$0")/../.." && /bin/pwd -P)"
 TESTS_DIR="$REPO_ROOT/Tests/Shell"
@@ -87,7 +88,12 @@ interrupted() {
     trap '' INT TERM
     if [ -n "$TEST_PGID" ]; then
         kill -TERM -- "-$TEST_PGID" 2>/dev/null
-        /bin/sleep 2
+        # Up to 30 s, as at a timeout: an image build being set up shuts its guest down.
+        local _grace=0
+        while kill -0 "$TEST_PGID" 2>/dev/null && [ "$_grace" -lt 150 ]; do
+            /bin/sleep 0.2
+            _grace=$((_grace + 1))
+        done
         kill -KILL -- "-$TEST_PGID" 2>/dev/null
         wait "$TEST_PGID" 2>/dev/null
     fi
@@ -97,6 +103,57 @@ interrupted() {
         file_teardown >> "$FILE_SCRATCH/setup.log" 2>&1
     fi
     exit 130
+}
+
+# run_watched <limit> <log> <command...>: runs the command in $SCRATCH as its own process group
+# (job control on), stdin /dev/null and output to <log>, and stops that group, and everything
+# the command started, when it runs longer than <limit> seconds. stdin is /dev/null: a
+# background process group that reads a terminal is stopped (SIGTTIN), and agent-vm exec always
+# reads stdin. Sets WATCHED_STATUS, and WATCHED_TIMED_OUT to 1 when the command was stopped.
+run_watched() {
+    local _limit="$1"
+    local _log="$2"
+    shift 2
+    local _began
+    _began="$(now)"
+    set -m
+    (
+        cd "$SCRATCH" || exit 1
+        "$@"
+    ) < /dev/null > "$_log" 2>&1 &
+    local _pid=$!
+    TEST_PGID="$_pid"
+    set +m
+    WATCHED_TIMED_OUT=0
+    while kill -0 "$_pid" 2>/dev/null; do
+        if [ $(( $(now) - _began )) -ge "$_limit" ]; then
+            WATCHED_TIMED_OUT=1
+            kill -TERM -- "-$_pid" 2>/dev/null
+            # Up to 30 s for the command's EXIT trap (cleanup_on_exit) to stop its boxes.
+            local _grace=0
+            while kill -0 "$_pid" 2>/dev/null && [ "$_grace" -lt 150 ]; do
+                /bin/sleep 0.2
+                _grace=$((_grace + 1))
+            done
+            kill -KILL -- "-$_pid" 2>/dev/null
+            break
+        fi
+        /bin/sleep 0.2
+    done
+    wait "$_pid"
+    WATCHED_STATUS=$?
+    # Anything the command left running in the background (its group outlives it).
+    kill -KILL -- "-$_pid" 2>/dev/null
+    TEST_PGID=""
+}
+
+# run_test <tier> <function>: one test; a fast test gets a store of its own.
+run_test() {
+    if [ "$1" = "fast" ]; then
+        export AGENT_VM_HOME="$SCRATCH/home"
+        /bin/mkdir -p "$AGENT_VM_HOME"
+    fi
+    "$2"
 }
 
 # run_file <tier> <file>: runs every test function of one file, appending to $RESULTS.
@@ -139,11 +196,19 @@ run_file() {
         TEARDOWN=""
         declare -F file_teardown > /dev/null && TEARDOWN=1
         trap interrupted INT TERM
+        local _limit=60
+        [ "$_tier" = "extended" ] && _limit=900
         local _setup_failed=""
         if declare -F file_setup > /dev/null; then
             SCRATCH="$FILE_SCRATCH"
-            file_setup > "$FILE_SCRATCH/setup.log" 2>&1
-            if [ $? -ne 0 ]; then
+            # Watched as a test is, with twice its time: a setup can build an image and start
+            # a box, and one that hangs (an image build waiting on a Keychain dialog nobody
+            # answers) must not hold the run.
+            run_watched $(( _limit * 2 )) "$FILE_SCRATCH/setup.log" file_setup
+            if [ "$WATCHED_TIMED_OUT" -eq 1 ]; then
+                printf 'FAIL: timed out after %ss\n' "$(( _limit * 2 ))" >> "$FILE_SCRATCH/setup.log"
+                _setup_failed="file_setup timed out after $(( _limit * 2 ))s (see $FILE_SCRATCH/setup.log)"
+            elif [ "$WATCHED_STATUS" -ne 0 ]; then
                 _setup_failed="file_setup failed (see $FILE_SCRATCH/setup.log)"
             fi
         fi
@@ -159,49 +224,11 @@ run_file() {
                 printf '%s\n' "$_setup_failed" > "$_log"
                 _result="FAIL"
             else
-                # Each test runs as its own process group (job control on), so a watchdog can
-                # stop it, and everything it started, by that group's ID.
-                set -m
-                (
-                    if [ "$_tier" = "fast" ]; then
-                        export AGENT_VM_HOME="$SCRATCH/home"
-                        /bin/mkdir -p "$AGENT_VM_HOME"
-                    fi
-                    cd "$SCRATCH" || exit 1
-                    "$_name"
-                ) < /dev/null > "$_log" 2>&1 &
-                # stdin is /dev/null: a background process group that reads a terminal is
-                # stopped (SIGTTIN), and agent-vm exec always reads stdin.
-                local _pid=$!
-                TEST_PGID="$_pid"
-                set +m
-                local _limit=60
-                [ "$_tier" = "extended" ] && _limit=900
-                local _timed_out=0
-                while kill -0 "$_pid" 2>/dev/null; do
-                    if [ $(( $(now) - _began )) -ge "$_limit" ]; then
-                        _timed_out=1
-                        kill -TERM -- "-$_pid" 2>/dev/null
-                        # Up to 30 s for the test's EXIT trap (cleanup_on_exit) to stop its boxes.
-                        local _grace=0
-                        while kill -0 "$_pid" 2>/dev/null && [ "$_grace" -lt 150 ]; do
-                            /bin/sleep 0.2
-                            _grace=$((_grace + 1))
-                        done
-                        kill -KILL -- "-$_pid" 2>/dev/null
-                        break
-                    fi
-                    /bin/sleep 0.2
-                done
-                wait "$_pid"
-                local _status=$?
-                # Anything the test left running in the background (its group outlives it).
-                kill -KILL -- "-$_pid" 2>/dev/null
-                TEST_PGID=""
-                if [ "$_timed_out" -eq 1 ]; then
+                run_watched "$_limit" "$_log" run_test "$_tier" "$_name"
+                if [ "$WATCHED_TIMED_OUT" -eq 1 ]; then
                     printf 'FAIL: timed out after %ss\n' "$_limit" >> "$_log"
                     _result="FAIL"
-                elif [ "$_status" -ne 0 ] || [ -f "$SCRATCH/.failed" ]; then
+                elif [ "$WATCHED_STATUS" -ne 0 ] || [ -f "$SCRATCH/.failed" ]; then
                     _result="FAIL"
                 elif [ -f "$SCRATCH/.skipped" ]; then
                     _result="SKIP"

@@ -896,7 +896,7 @@ extension ImageBuilder {
             return nil
         }
         progress("macos-download", "Updating macOS \(before.version) (\(before.build)) to \(update.version) (\(update.build)): downloading and preparing")
-        let password = try image.accountPassword(keychain: store.passwords)
+        let password = try await accountPassword(of: image)
         let label = "softwareupdate --install \(update.label)"
         let emit = LineEmitter(report: report, image: subject)
         let percent = DownloadPercent()

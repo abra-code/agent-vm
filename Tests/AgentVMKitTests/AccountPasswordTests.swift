@@ -54,6 +54,23 @@ import Testing
         #expect(throws: AgentVMError.self) { try filed.image.requireAccountPassword(keychain: passwords) }
     }
 
+    /// A build reads the password on a thread of its own, so a cancel ends the wait on a
+    /// question macOS may be asking; here the cancel comes first and wins over the read.
+    @MainActor @Test func aBuildReadsThePasswordAndACancelEndsTheWait() async throws {
+        let (fixture, _) = try fixture()
+        let builder = ImageBuilder(store: fixture.images) { _ in }
+        #expect(try await builder.accountPassword(of: fixture.image) == "s3cret")
+        let cancellation = BuildCancellation()
+        cancellation.cancel(signal: SIGTERM)
+        builder.cancellation = cancellation
+        do {
+            _ = try await builder.accountPassword(of: fixture.image)
+            Issue.record("a canceled build read the password")
+        } catch let AgentVMError.canceled(signal) {
+            #expect(signal == SIGTERM)
+        }
+    }
+
     @Test func aRecordWithoutAnIdentifierKeepsItsFile() throws {
         let fixture = try BoxScratch()
         let passwords = AccountPasswordStore(memory: AccountPasswordStore.Memory())

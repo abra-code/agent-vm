@@ -31,6 +31,20 @@ file_teardown() {
     "$AGENT_VM" image delete "$(/bin/cat "$FILE_SCRATCH/image")"
 }
 
+# without_full_disk_access: in a test that needs a permission prompt in the box. The derived image
+# has Full Disk Access when this build is signed with the Developer ID that the base image's grant
+# names, and then no program waits on a prompt: the grant is taken back in the file's box (a clone,
+# deleted afterwards), as `tccutil reset` takes it from every program. Returns 1 when it cannot be.
+without_full_disk_access() {
+    local _image
+    _image="$(/bin/cat "$FILE_SCRATCH/image")"
+    local _granted
+    _granted="$(image_value "$_image" fullDiskAccess.granted)"
+    [ "$_granted" = "true" ] || return 0
+    run_avm exec --box "$BOX" --user root -- /usr/bin/tccutil reset SystemPolicyAllFiles
+    assert_status 0 || return 1
+}
+
 test_the_program_gets_a_terminal_of_this_size() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     on_terminal ':' /bin/sh -c "stty rows 30 cols 100; \"$AGENT_VM\" exec -t --box $BOX -- /bin/sh -c 'tty; stty size; echo TERM=\$TERM'"
@@ -148,11 +162,22 @@ test_the_desktop_never_locks() {
     assert_out_contains "displaysleep         0" || return 1
 }
 
-# Full Disk Access is probed while building and recorded; the derived image has none yet.
+# Full Disk Access is probed while building and recorded. An image derived by an ad hoc build has
+# none yet; one derived by a build signed with a Developer ID keeps its base image's grant, which
+# names the signer, not the build.
 test_images_record_full_disk_access() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     local _image
     _image="$(/bin/cat "$FILE_SCRATCH/image")"
+    local _granted
+    _granted="$(image_value "$_image" fullDiskAccess.granted)"
+    if [ "$_granted" = "true" ]; then
+        local _digest
+        _digest="$(image_value "$_image" fullDiskAccess.guestDigest)"
+        assert_eq "${#_digest}" "64" "the length of the guest daemon's recorded digest" || return 1
+        assert_contains "$(image_value "$_image" fullDiskAccess.checkedAt)" "T" "when it was checked" || return 1
+        return 0
+    fi
     run_avm image list
     assert_out_contains "agent-vm-guest has no Full Disk Access" || return 1
     assert_out_contains "\`agent-vm image setup $_image\`" || return 1
@@ -232,12 +257,13 @@ test_the_guest_clock_follows_the_mac() {
     assert_out_contains "Set the clock of box $BOX (it was" || return 1
 }
 
-# A program waiting on a permission prompt nobody sees (the derived image has no Full Disk
-# Access) is reported by exec and, at once, in the exec log; with --prompts wait it keeps
-# waiting. Named to run near the end of this file: the prompt stays on the guest's screen,
-# where it could take the focus the typing test needs.
+# A program waiting on a permission prompt nobody sees (without Full Disk Access) is reported by
+# exec and, at once, in the exec log; with --prompts wait it keeps waiting. Named to run near the
+# end of this file: the prompt stays on the guest's screen, where it could take the focus the
+# typing test needs; and the grant taken back here stays so for the tests after it.
 test_waiting_on_a_permission_prompt_is_reported() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
+    without_full_disk_access || return 1
     "$AGENT_VM" exec --box "$BOX" --prompts wait -- /bin/sh -c 'ls ~/Downloads' < /dev/null > "$SCRATCH/prompt.out" 2> "$SCRATCH/prompt.err" &
     local _client=$!
     local _waited=0
@@ -273,6 +299,7 @@ test_waiting_on_a_permission_prompt_is_reported() {
 # around it carries on, and sees it killed.
 test_waiting_programs_are_stopped_by_default() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
+    without_full_disk_access || return 1
     "$AGENT_VM" exec --box "$BOX" -- /bin/sh -c 'ls ~/Documents; echo "after ls: $?"' < /dev/null > "$SCRATCH/stop.out" 2> "$SCRATCH/stop.err" &
     local _client=$!
     local _waited=0
