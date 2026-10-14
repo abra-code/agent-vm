@@ -174,12 +174,12 @@ struct StatusCommand: AsyncParsableCommand {
                 if let owner = status.ownerPid {
                     line += "  owner \(owner)"
                 }
-                if let project = status.project {
-                    line += "  project \(project)\(status.projectReadOnly == true ? " (read only)" : "")"
+                for folder in status.sharedFolders {
+                    line += "  project \(folder.path)\(folder.readOnly ? " (read only)" : "")"
                     // A project is unshared soon after its last program ended; one that stays
                     // is held by something left running in the box.
-                    if status.activeExecs == 0 {
-                        line += " (no program of yours runs on it; agent-vm box unshare \(entry.box.name))"
+                    if folder.programs == 0 {
+                        line += " (no program of yours runs on it; agent-vm box unshare \(ConnectPlanner.shellQuoted([entry.box.name, folder.path])))"
                     }
                 }
                 if let execs = status.activeExecs, execs > 0 {

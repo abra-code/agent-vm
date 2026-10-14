@@ -33,7 +33,7 @@ avm agents [--json]
 4. **Questions, for an agent:** when none of its secrets is set, avm offers to set one; when the box does not allow its hosts, avm asks to add them. See [Agents](#agents).
 5. **Create and start:** a new box is created first (`Creating box avm-dev-agents-3f2a91 from dev-agents (temporary: deleted when you leave)`), and the next line says what it may reach (`it allows: pack:anthropic`, since 0.5.13): a new box takes the agent's hosts and your `--allow` rules without a question, so they are always shown. A stopped box is started (`Starting box dev1`, then `Box dev1 is running (14 s)`). A box that is stopping is waited for, then started again. avm makes itself the owner of a temporary box it created only: that box stops when avm exits, however it exits. Any other box has no owner: it runs on after avm exits, unless you have it stopped after the session. While it starts, the line shows the seconds passing and how long the box took the last time (`Starting box dev1  12 s (usually about 29 s)`); without cursor control (`TERM=dumb`), a line every 10 seconds.
 6. **Installed?** For an agent not checked in the list (named with `--agent`, or a box that was stopped), avm checks that its command is in the box. When it is not, avm says how to get it and stops (or, when you chose the agent in the list, shows the list again).
-7. **Share:** the folder is shared into the box at the same path (`Sharing ~/src/app (read-write)`). A box shares one folder at a time. When programs in the box still use another folder, the box refuses: avm says so and, when you chose the box in the list, shows the list again.
+7. **Share:** the folder is shared into the box at the same path (`Sharing ~/src/app (read-write)`). A Linux box shares up to 8 folders at once, a macOS box one at a time. When the folder cannot be shared now (programs in a macOS box still use another folder; in a Linux box, programs use a folder around or inside it, or all 8), the box refuses: avm says so and, when you chose the box in the list, shows the list again. When the box already shares another folder, avm says that the sessions in it are not kept apart (`Note: box dev1 also shares ~/src/lib; ...`): every program in the box can read all its folders and change those shared for writing, and what one session changes in another's folder shows in that session's report and is taken back by its undo. A box of its own keeps a project apart ([README](../README.md#several-projects-in-one-linux-box)).
 8. **Snapshot:** a folder shared read-write is snapshotted (`Snapshot of ~/src/app taken (session 20260926-101500-7c1e)`), unless `--no-snapshot`; see [Snapshot and report](#snapshot-and-report).
 9. **Remember:** the choices are recorded for the folder (below).
 10. **The session:** `agent-vm exec --tty` runs as avm's child on your terminal. Your terminal is in raw mode, so keys such as Control-C go to the program, and the window size follows. Exit the agent or the shell (or let the command end) to come back.
@@ -296,7 +296,9 @@ The box (or, for a temporary box, its image) and what ran, chosen for each folde
 {
   "boxes" : [
     {"activeExecs" : 0, "image" : "dev-agents", "name" : "dev1", "offered" : true, "ownerPid" : null,
-     "project" : "/Users/me/src/app", "projectReadOnly" : false, "reason" : null, "state" : "running", "temporary" : false}
+     "project" : "/Users/me/src/app", "projectReadOnly" : false,
+     "projects" : [{"path" : "/Users/me/src/app", "programs" : 1, "readOnly" : false}],
+     "reason" : null, "state" : "running", "temporary" : false}
   ],
   "project" : "/Users/me/src/app",
   "projectProblem" : null,
@@ -304,7 +306,7 @@ The box (or, for a temporary box, its image) and what ran, chosen for each folde
 }
 ```
 
-`offered` is false, with a `reason`, for the rows the list shows but does not let you choose. `projectProblem` says why the folder cannot be shared; `project` is then null.
+`offered` is false, with a `reason`, for the rows the list shows but does not let you choose. A running box's `projects` lists every folder it shares, with the programs started on each that still run (since 0.7.48; a Linux box shares several); `project` and `projectReadOnly` name the first. `projectProblem` says why the folder cannot be shared; `project` is then null.
 
 ## Exit status
 

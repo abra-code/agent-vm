@@ -81,12 +81,14 @@ import Virtualization
         #expect(configuration.serialPorts.first is VZVirtioConsoleDeviceSerialPortConfiguration)
     }
 
-    @Test func theShareTagIsTheLinuxOne() throws {
+    @Test func theShareTagsAreTheLinuxOnes() throws {
         let scratch = try Scratch()
         let shape = MachineShape(guest: .linux, cpuCount: 2, memoryBytes: 2 << 30, macAddress: "da:51:72:d4:e5:73")
         let shared = try MachineBuilder.configuration(shape, files: try Self.files(in: scratch), network: .none, share: true, validate: false)
         let devices = shared.directorySharingDevices.compactMap { $0 as? VZVirtioFileSystemDeviceConfiguration }
-        #expect(devices.map(\.tag) == ["agent-vm-project"])
+        // One device per folder the box can share at once.
+        #expect(devices.map(\.tag) == ProjectShare.tags(for: .linux))
+        #expect(devices.first?.tag == "agent-vm-project")
         #expect(ProjectShare.tag(for: .linux) == "agent-vm-project")
         // A macOS guest keeps Apple's automount tag: any other is a network volume to it.
         #expect(ProjectShare.tag(for: .macOS) == VZVirtioFileSystemDeviceConfiguration.macOSGuestAutomountTag)

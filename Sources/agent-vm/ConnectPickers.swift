@@ -72,8 +72,8 @@ enum ConnectPickers {
         }
         if offer.running {
             let status = offer.status
-            if let project = status.project {
-                parts.append("project \(ConnectRunner.tilde(project))\(status.projectReadOnly == true ? " (read only)" : "")")
+            for folder in status.sharedFolders {
+                parts.append("project \(ConnectRunner.tilde(folder.path))\(folder.readOnly ? " (read only)" : "")")
             }
             if let execs = status.activeExecs, execs > 0 {
                 parts.append("\(execs) program\(execs == 1 ? "" : "s") running")
@@ -113,7 +113,7 @@ enum ConnectPickers {
         } else if remembered?.target == .temporary && newBoxes {
             selected = newTemporaryID
         } else if let project {
-            selected = running.first { $0.reason == nil && $0.status.project == project }?.box.name
+            selected = running.first { $0.reason == nil && $0.status.sharedFolders.contains { $0.path == project } }?.box.name
         }
         return (sections, selected)
     }
@@ -327,6 +327,7 @@ enum ConnectPickers {
         var temporary: Bool
         var project: String?
         var projectReadOnly: Bool?
+        var projects: [SharedFolder]?
         var activeExecs: Int?
         var ownerPid: Int32?
         var offered: Bool
@@ -341,6 +342,7 @@ enum ConnectPickers {
             temporary = offer.temporary
             project = offer.status.project
             projectReadOnly = offer.status.project == nil ? nil : offer.status.projectReadOnly == true
+            projects = offer.running ? offer.status.sharedFolders : nil
             activeExecs = offer.running ? offer.status.activeExecs : nil
             ownerPid = offer.status.ownerPid
             offered = offer.reason == nil
@@ -348,7 +350,7 @@ enum ConnectPickers {
         }
 
         private enum Keys: String, CodingKey {
-            case name, image, guest, system, state, temporary, project, projectReadOnly, activeExecs, ownerPid, offered, reason
+            case name, image, guest, system, state, temporary, project, projectReadOnly, projects, activeExecs, ownerPid, offered, reason
         }
 
         func encode(to encoder: Encoder) throws {
@@ -361,6 +363,7 @@ enum ConnectPickers {
             try container.encode(temporary, forKey: .temporary)
             try container.encode(project, forKey: .project)
             try container.encode(projectReadOnly, forKey: .projectReadOnly)
+            try container.encode(projects, forKey: .projects)
             try container.encode(activeExecs, forKey: .activeExecs)
             try container.encode(ownerPid, forKey: .ownerPid)
             try container.encode(offered, forKey: .offered)

@@ -17,7 +17,7 @@ avm new deb-tools                                    # or a temporary box with y
 
 - **The system** is Debian 13 for ARM, built from Debian's own cloud image. Ubuntu 26.04 is built by the same code and withheld for now: [Debian or Ubuntu](#debian-or-ubuntu) says why and what differs.
 - **No screen, no password, no ssh.** A Linux box is reached through `exec`, `box shell` and `avm`, and nothing else listens in it.
-- **The same protections as a macOS box:** one shared folder, the allowlist network through the proxy on your Mac, a snapshot and a report around every `avm` session, disposable boxes.
+- **The same protections as a macOS box:** only the folders you share, the allowlist network through the proxy on your Mac, a snapshot and a report around every `avm` session, disposable boxes.
 
 ## Sizes and times
 
@@ -115,9 +115,10 @@ A kernel manages memory in pages of one size, fixed when the kernel is built: 4 
 
 ## The shared folder
 
-The folder is mounted at the path it has on your Mac, read-write or read-only, and `git` works in it at once. These things differ from a folder on a Linux disk:
+The folder is mounted at the path it has on your Mac, read-write or read-only, and `git` works in it at once. A Linux box shares up to 8 folders at once (since 0.7.48), so sessions on different projects can share one box; they are not kept apart from each other (below). These things differ from a folder on a Linux disk:
 
 - **Every user in the box sees every file as its own**, and a file made in the box belongs to you on the Mac. Inside the box the share has no access control between users.
+- **Several folders in one box are one trust zone.** Every program in the box runs as the same account and reaches every folder the box shares at that moment: a session's agent can read the other folders and change those shared for writing, and what it changes in another session's folder shows in that session's report and is taken back by its undo. avm and `exec` say so when the box already shares another folder. A box of its own keeps a project apart, at the cost of its memory and processors.
 - **It is as case-insensitive as your Mac's disk:** `Foo` and `foo` are one file.
 - **File watchers in the box do not see edits made on the Mac.** The content is current when it is read; the events are missing. A build tool that waits for changes needs polling (`CHOKIDAR_USEPOLLING=1`, `--poll`), or run it on the Mac.
 - **Many small files are slow:** 6 to 15 times slower than on the box's own disk. Keep build products and `node_modules` on the box's disk when a project allows it.

@@ -59,12 +59,12 @@ public struct LinuxMachineSpec: Sendable {
         }
     }
 
-    /// Builds the configuration for the machine in `files`. `shareTag` adds one virtio file
-    /// system device with that tag and nothing shared yet (`GuestMachine.share` fills it on the
+    /// Builds the configuration for the machine in `files`. `shareTags` adds one virtio file
+    /// system device per tag, with nothing shared yet (`GuestMachine.share` fills it on the
     /// running machine; the device set itself is fixed at start). Validating asks Virtualization,
     /// which answers only a process that may run virtual machines: a unit test passes false
     /// and looks at the devices.
-    func configuration(for files: MachineFiles, network: MachineNetwork = .nat, shareTag: String? = nil,
+    func configuration(for files: MachineFiles, network: MachineNetwork = .nat, shareTags: [String] = [],
                        extras: LinuxMachineExtras = LinuxMachineExtras(), validate: Bool = true) throws -> VZVirtualMachineConfiguration {
         guard case let .linux(variableStoreURL, machineIdentifierURL) = files.platform else {
             throw AgentVMError.corruptImageRecord(path: files.directory.path, reason: "its machine files are not a Linux guest's")
@@ -138,9 +138,7 @@ public struct LinuxMachineSpec: Sendable {
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
-        if let shareTag {
-            configuration.directorySharingDevices = [VZVirtioFileSystemDeviceConfiguration(tag: shareTag)]
-        }
+        configuration.directorySharingDevices = shareTags.map { VZVirtioFileSystemDeviceConfiguration(tag: $0) }
 
         guard validate else {
             return configuration

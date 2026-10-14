@@ -32,9 +32,11 @@ public struct BoxStatus: Encodable, Equatable, Sendable {
     public var supervisorVersion: String?
     public var supervisorPath: String?
     public var startedAt: Date?
-    /// The project shared into the box, if any.
+    /// The first project shared into the box, if any (see ControlResponse.project).
     public var project: String?
     public var projectReadOnly: Bool?
+    /// Every folder shared into the box (supervisors from 0.7.48).
+    public var projects: [SharedFolder]?
     /// Programs run by exec or box shell right now, from any client (supervisors from 0.1.6).
     public var activeExecs: Int?
     /// The guest daemon of the running box, once it answered.
@@ -48,7 +50,7 @@ public struct BoxStatus: Encodable, Equatable, Sendable {
     public var ownerPid: Int32?
 
     public init(state: State, pid: Int32? = nil, supervisorVersion: String? = nil, supervisorPath: String? = nil,
-                startedAt: Date? = nil, project: String? = nil, projectReadOnly: Bool? = nil, activeExecs: Int? = nil,
+                startedAt: Date? = nil, project: String? = nil, projectReadOnly: Bool? = nil, projects: [SharedFolder]? = nil, activeExecs: Int? = nil,
                 guestVersion: String? = nil, guestFeatures: [String]? = nil, statusError: String? = nil,
                 disposable: Bool? = nil, ownerPid: Int32? = nil) {
         self.disposable = disposable
@@ -60,10 +62,20 @@ public struct BoxStatus: Encodable, Equatable, Sendable {
         self.startedAt = startedAt
         self.project = project
         self.projectReadOnly = projectReadOnly
+        self.projects = projects
         self.activeExecs = activeExecs
         self.guestVersion = guestVersion
         self.guestFeatures = guestFeatures
         self.statusError = statusError
+    }
+
+    /// The folders shared into the box. A supervisor before 0.7.48 names one, without the
+    /// programs on it: those are taken to be every program it runs (`activeExecs`).
+    public var sharedFolders: [SharedFolder] {
+        if let projects {
+            return projects
+        }
+        return project.map { [SharedFolder(path: $0, readOnly: projectReadOnly == true, programs: activeExecs ?? 1)] } ?? []
     }
 
     public static let stopped = BoxStatus(state: .stopped)
@@ -118,7 +130,7 @@ public struct BoxStatus: Encodable, Equatable, Sendable {
         case .stopping: mapped = .stopping
         }
         return BoxStatus(state: mapped, pid: response.pid, supervisorVersion: response.supervisorVersion, supervisorPath: response.supervisorPath,
-                         startedAt: response.startedAt, project: response.project, projectReadOnly: response.projectReadOnly,
+                         startedAt: response.startedAt, project: response.project, projectReadOnly: response.projectReadOnly, projects: response.projects,
                          activeExecs: response.activeExecs, guestVersion: response.guestVersion,
                          guestFeatures: mapped == .running ? response.guestFeatures : nil, ownerPid: response.ownerPid)
     }

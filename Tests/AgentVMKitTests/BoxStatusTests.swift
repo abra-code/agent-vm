@@ -21,7 +21,7 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
     func controlStop() {}
     func controlReload() throws {}
     func controlShare(path: String, readOnly: Bool) throws {}
-    func controlUnshare() throws {}
+    func controlUnshare(path: String?) throws {}
     func controlView(interactive: Bool) throws {}
     func controlType(text: String?) throws {}
     func controlSyncClock() throws -> Double { throw AgentVMError.guestRefused("not in tests") }
@@ -62,6 +62,29 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
         #expect(BoxStatus.of(box) == BoxStatus(state: .running, pid: 4242, supervisorVersion: "0.1.6", supervisorPath: "/opt/agent-vm",
                                                startedAt: started, project: "/Users/me/src/app", projectReadOnly: true, activeExecs: 2,
                                                guestVersion: "0.1.6", guestFeatures: ["terminal"]))
+    }
+
+    @Test func everySharedFolderIsReported() throws {
+        let folder = try ShortFolder()
+        let (box, _) = try shortBox(folder)
+        let lock = try #require(try FolderLock.tryAcquire(box.lockPath))
+        defer { lock.release() }
+        let folders = [SharedFolder(path: "/Users/me/src/app", readOnly: false, programs: 1), SharedFolder(path: "/Users/me/src/doc", readOnly: true, programs: 0)]
+        let server = try ControlServer(path: box.controlSocketPath, handler: StatusHandler(ControlResponse(
+            ok: true, state: .ready, pid: 4242, project: "/Users/me/src/app", projectReadOnly: false, projects: folders, supervisorVersion: "0.7.48", activeExecs: 1)))
+        defer { server.close() }
+        let status = BoxStatus.of(box)
+        #expect(status.projects == folders && status.sharedFolders == folders)
+        // The first is also where readers of one folder look.
+        #expect(status.project == "/Users/me/src/app" && status.projectReadOnly == false)
+    }
+
+    /// A supervisor before 0.7.48 names one folder; the programs on it are all it runs.
+    @Test func anOlderSupervisorsFolderIsTheOnlyOne() {
+        let status = BoxStatus(state: .running, project: "/Users/me/src/app", projectReadOnly: true, activeExecs: 0)
+        #expect(status.sharedFolders == [SharedFolder(path: "/Users/me/src/app", readOnly: true, programs: 0)])
+        #expect(BoxStatus(state: .running, project: "/a").sharedFolders.first?.programs == 1)
+        #expect(BoxStatus(state: .running).sharedFolders.isEmpty)
     }
 
     /// Supervisors before 0.1.6 answer without the new fields; they stay empty.

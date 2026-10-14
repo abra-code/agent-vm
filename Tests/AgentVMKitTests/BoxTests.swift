@@ -467,7 +467,13 @@ final class FakeHandler: ControlHandler, @unchecked Sendable {
 
     private(set) var sharedPaths: [String] = []
 
-    func controlUnshare() throws {}
+    private(set) var unsharedPaths: [String?] = []
+
+    func controlUnshare(path: String?) throws {
+        lock.lock()
+        unsharedPaths.append(path)
+        lock.unlock()
+    }
 
     func controlShare(path: String, readOnly: Bool) throws {
         lock.lock()
@@ -814,10 +820,71 @@ final class ShortFolder {
         #expect(ProjectShare.tag(for: .linux) != ProjectShare.tag(for: .macOS))
     }
 
+    @Test func aLinuxBoxHasADeviceForEachFolder() {
+        let tags = ProjectShare.tags(for: .linux)
+        #expect(tags.count == ProjectShare.slots(for: .linux) && tags.count > 1)
+        // The first keeps the tag of one-folder boxes; every tag is its own.
+        #expect(tags.first == "agent-vm-project" && tags[1] == "agent-vm-project-2")
+        #expect(Set(tags).count == tags.count)
+        // A macOS box has one device, with Apple's automount tag.
+        #expect(ProjectShare.tags(for: .macOS) == [ProjectShare.tag] && ProjectShare.slots(for: .macOS) == 1)
+        let mount = ProjectShare.mountRequests("/Users/me/src/app", guest: .linux, readOnly: false, tag: tags[3])
+        #expect(mount[1].argv?[5] == tags[3])
+    }
+
+    @Test func foldersOverlapWhenOneIsInsideTheOther() {
+        #expect(ProjectShare.overlaps("/Users/me/src", "/Users/me/src"))
+        #expect(ProjectShare.overlaps("/Users/me/src", "/Users/me/src/app"))
+        #expect(ProjectShare.overlaps("/Users/me/src/app", "/Users/me/src"))
+        // A shared start of the name is not a folder inside the other.
+        #expect(!ProjectShare.overlaps("/Users/me/src/app", "/Users/me/src/app2"))
+        #expect(!ProjectShare.overlaps("/Users/me/a", "/Users/me/b"))
+    }
+
+    @Test func aNewFolderGoesBesideTheOthers() {
+        let a = SharedProject(path: "/p/a", readOnly: false, tag: "t1", programs: 1)
+        let b = SharedProject(path: "/p/b", readOnly: true, tag: "t2", programs: 0)
+        #expect(ProjectShare.room(for: "/p/c", readOnly: false, among: [a, b], slots: 8) == .remove([]))
+        #expect(ProjectShare.room(for: "/p/a", readOnly: false, among: [a, b], slots: 8) == .shared)
+        #expect(ProjectShare.room(for: "/p/b", readOnly: true, among: [a, b], slots: 8) == .shared)
+    }
+
+    @Test func whatIsInTheWayGoesUnlessProgramsRunOnIt() {
+        let busy = SharedProject(path: "/p/a", readOnly: false, tag: "t1", programs: 2)
+        let idle = SharedProject(path: "/p/b", readOnly: false, tag: "t2", programs: 0)
+        // The same folder in the other mode.
+        #expect(ProjectShare.room(for: "/p/a", readOnly: true, among: [busy, idle], slots: 8) == .blocked(by: busy))
+        #expect(ProjectShare.room(for: "/p/b", readOnly: true, among: [busy, idle], slots: 8) == .remove([idle]))
+        // A folder inside a shared one, and one around it.
+        #expect(ProjectShare.room(for: "/p/a/sub", readOnly: false, among: [busy, idle], slots: 8) == .blocked(by: busy))
+        #expect(ProjectShare.room(for: "/p/b/sub", readOnly: false, among: [busy, idle], slots: 8) == .remove([idle]))
+        #expect(ProjectShare.room(for: "/p", readOnly: false, among: [idle], slots: 8) == .remove([idle]))
+        #expect(ProjectShare.room(for: "/p", readOnly: false, among: [busy, idle], slots: 8) == .blocked(by: busy))
+    }
+
+    @Test func aFullBoxMakesRoomFromTheOldestIdleFolder() {
+        let busy = SharedProject(path: "/p/a", readOnly: false, tag: "t1", programs: 1)
+        let idle1 = SharedProject(path: "/p/b", readOnly: false, tag: "t2", programs: 0)
+        let idle2 = SharedProject(path: "/p/c", readOnly: false, tag: "t3", programs: 0)
+        #expect(ProjectShare.room(for: "/p/d", readOnly: false, among: [busy, idle1, idle2], slots: 3) == .remove([idle1]))
+        // Every device holds a folder with programs on it.
+        #expect(ProjectShare.room(for: "/p/d", readOnly: false, among: [busy], slots: 1) == .blocked(by: busy))
+        // A folder in its way already makes the room it needs.
+        #expect(ProjectShare.room(for: "/p/b", readOnly: true, among: [busy, idle1, idle2], slots: 3) == .remove([idle1]))
+    }
+
+    @Test func aMacOSBoxStillReplacesAnIdleFolder() {
+        let idle = SharedProject(path: "/p/a", readOnly: false, tag: ProjectShare.tag, programs: 0)
+        let busy = SharedProject(path: "/p/a", readOnly: false, tag: ProjectShare.tag, programs: 1)
+        let slots = ProjectShare.slots(for: .macOS)
+        #expect(ProjectShare.room(for: "/p/b", readOnly: false, among: [idle], slots: slots) == .remove([idle]))
+        #expect(ProjectShare.room(for: "/p/b", readOnly: false, among: [busy], slots: slots) == .blocked(by: busy))
+    }
+
     @Test func thePathIsAnArgumentNeverScriptText() {
         let odd = "/Users/me/my app/it's $(x) `y`; z"
         let requests = ProjectShare.mountRequests(odd, guest: .linux, readOnly: false)
-            + [ProjectShare.hiddenContentsRequest(odd, guest: .linux), ProjectShare.unmountRequest(odd, guest: .linux), ProjectShare.safeDirectoryRequest(odd)]
+            + [ProjectShare.hiddenContentsRequest(odd, guest: .linux), ProjectShare.unmountRequest(odd, guest: .linux), ProjectShare.safeDirectoryRequest([odd])]
         for request in requests {
             let argv = request.argv ?? []
             // Whole, as one argument; and where a shell runs, never inside its script.
@@ -842,15 +909,16 @@ final class ShortFolder {
         #expect(request.user == "root" && request.argv?.last == "/Users/me/src/app")
     }
 
-    @Test func gitIsToldTheProjectIsSafeAndNothingElse() {
-        let told = ProjectShare.safeDirectoryRequest("/Users/me/src/app")
+    @Test func gitIsToldTheProjectsAreSafeAndNothingElse() {
+        let told = ProjectShare.safeDirectoryRequest(["/Users/me/src/app", "/Users/me/src/other"])
         let script = told.argv?[2] ?? ""
-        // The old values go first, so only the project that is shared now is named.
+        // The old values go first, so only the projects that are shared now are named.
         #expect(script.contains("--file /etc/agent-vm/gitconfig --unset-all safe.directory; "))
-        #expect(script.contains(#"--add safe.directory "$1" && "#) && script.hasSuffix(#"--add safe.directory "$1/*""#))
-        #expect(told.argv?.last == "/Users/me/src/app" && told.user == "root")
+        #expect(script.contains(#"for p in "$@"; do "#))
+        #expect(script.contains(#"--add safe.directory "$p" && "#) && script.contains(#"--add safe.directory "$p/*" || exit 1; done"#))
+        #expect(Array(told.argv?.suffix(2) ?? []) == ["/Users/me/src/app", "/Users/me/src/other"] && told.user == "root")
         // With no project, the file names none.
-        let cleared = ProjectShare.safeDirectoryRequest(nil)
+        let cleared = ProjectShare.safeDirectoryRequest([])
         #expect(cleared.argv?.count == 4 && cleared.argv?[2].contains("--add") == false)
         #expect(BoxNetworkTests.isValidShell(script) && BoxNetworkTests.isValidShell(cleared.argv?[2] ?? "("))
     }
@@ -904,6 +972,11 @@ final class ShortFolder {
         #expect(handler.sharedPaths == ["/Users/me/src/app", "/Users/me/src/other"])
         close(guest)
         close(control)
+
+        // An unshare names its folder, or none for every one.
+        #expect(try ControlClient.request(ControlRequest(op: .unshare, path: "/Users/me/src/app"), path: folder.path + "/control.sock").ok)
+        #expect(try ControlClient.request(ControlRequest(op: .unshare), path: folder.path + "/control.sock").ok)
+        #expect(handler.unsharedPaths == ["/Users/me/src/app", nil])
     }
 }
 

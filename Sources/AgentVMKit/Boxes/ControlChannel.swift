@@ -24,7 +24,8 @@ public struct ControlRequest: Codable, Equatable, Sendable {
         case reload
         /// Share a project folder into the box at the same path (`path`, `readOnly`).
         case share
-        /// Take the shared project folder away from the box; refused while programs run on it.
+        /// Take the shared project folder at `path` (none: every one) away from the box; refused
+        /// while programs run on it.
         case unshare
         /// Show the box's screen in a window on this Mac (`interactive`: keyboard and mouse too).
         case view
@@ -66,9 +67,13 @@ public struct ControlResponse: Codable, Equatable, Sendable {
     public var state: State?
     public var guestVersion: String?
     public var pid: Int32?
-    /// The project folder shared into the box, if any, and whether read only.
+    /// The first project folder shared into the box, if any, and whether read only: for readers
+    /// that know of one folder per box.
     public var project: String?
     public var projectReadOnly: Bool?
+    /// Every folder shared into the box, in the order they were shared (from 0.7.48; a Linux box
+    /// shares several, a macOS box one).
+    public var projects: [SharedFolder]?
     /// What the guest daemon announced beyond protocol 1 (GuestFeature), once ready.
     public var guestFeatures: [String]?
     /// The supervisor's agent-vm version and executable, and when it started; nil from
@@ -85,7 +90,7 @@ public struct ControlResponse: Codable, Equatable, Sendable {
     public var clockOffset: Double?
 
     public init(ok: Bool, error: String? = nil, state: State? = nil, guestVersion: String? = nil, pid: Int32? = nil,
-                project: String? = nil, projectReadOnly: Bool? = nil, guestFeatures: [String]? = nil,
+                project: String? = nil, projectReadOnly: Bool? = nil, projects: [SharedFolder]? = nil, guestFeatures: [String]? = nil,
                 supervisorVersion: String? = nil, supervisorPath: String? = nil, startedAt: Date? = nil, activeExecs: Int? = nil,
                 ownerPid: Int32? = nil) {
         self.ownerPid = ownerPid
@@ -100,7 +105,22 @@ public struct ControlResponse: Codable, Equatable, Sendable {
         self.pid = pid
         self.project = project
         self.projectReadOnly = projectReadOnly
+        self.projects = projects
         self.guestFeatures = guestFeatures
+    }
+}
+
+/// A folder shared into a running box.
+public struct SharedFolder: Codable, Equatable, Sendable {
+    public var path: String
+    public var readOnly: Bool
+    /// Programs started on it (exec --project, box shell --project, avm) that still run.
+    public var programs: Int
+
+    public init(path: String, readOnly: Bool, programs: Int) {
+        self.path = path
+        self.readOnly = readOnly
+        self.programs = programs
     }
 }
 
@@ -122,7 +142,7 @@ public protocol ControlHandler: AnyObject, Sendable {
     func controlStop()
     func controlReload() throws
     func controlShare(path: String, readOnly: Bool) throws
-    func controlUnshare() throws
+    func controlUnshare(path: String?) throws
     func controlView(interactive: Bool) throws
     func controlType(text: String?) throws
     /// Sets the guest's clock; returns how far it was behind.
@@ -468,7 +488,7 @@ public final class ControlServer: @unchecked Sendable {
                 }
             case .unshare:
                 do {
-                    try handler.controlUnshare()
+                    try handler.controlUnshare(path: request.path)
                     try? ControlChannel.send(handler.controlStatus(), over: connection)
                 } catch {
                     try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)

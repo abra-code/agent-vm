@@ -226,8 +226,8 @@ struct BoxCommand: ParsableCommand {
                         let features = status.guestFeatures ?? []
                         lines.append("    agent-vm-guest \(version)\(features.isEmpty ? "" : " (\(features.joined(separator: ", ")))")")
                     }
-                    if let project = status.project {
-                        lines.append("    project \(project)\(status.projectReadOnly == true ? " (read only)" : "")")
+                    for folder in status.sharedFolders {
+                        lines.append("    project \(folder.path)\(folder.readOnly ? " (read only)" : "")\(folder.programs > 0 ? ", \(folder.programs) program\(folder.programs == 1 ? "" : "s") on it" : "")")
                     }
                     if let owner = status.ownerPid {
                         lines.append("    stops when process \(owner) exits")
@@ -1143,19 +1143,23 @@ struct BoxCommand: ParsableCommand {
     struct Unshare: ParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "unshare",
-            abstract: "Take the shared project folder away from a running box.",
+            abstract: "Take shared project folders away from a running box.",
             discussion: """
                 A box has your project folder only while a program started on it runs \
                 (`exec --project`, `box shell --project`, avm): a few seconds after the last one \
                 ends, the supervisor unmounts the folder in the box and stops sharing it, so a \
                 box that goes on running cannot change your files with whatever was left running \
                 in it; a program left behind that still works in the folder loses it. This command \
-                does the same at once, for a folder that was shared without a program. Refused \
-                while programs started on the project run.
+                does the same at once, for a folder that was shared without a program: the one \
+                named, or every folder the box shares. Refused while programs started on a folder \
+                it would take run.
                 """)
 
         @Argument(help: "The running box.")
         var name: String
+
+        @Argument(help: "The shared folder to take away (default: every one).")
+        var folder: String?
 
         @OptionGroup var options: StoreOptions
 
@@ -1169,23 +1173,32 @@ struct BoxCommand: ParsableCommand {
             guard let version = status.supervisorVersion, version.compare("0.7.27", options: .numeric) != .orderedAscending else {
                 throw AgentVMError.supervisorRefused("box \(box.name) was started by an agent-vm older than 0.7.27; restart it (`agent-vm box stop \(box.name)`, then `box start`), which unshares too")
             }
-            guard let project = status.project else {
+            // A supervisor before 0.7.48 shares one folder and names it in `project` alone.
+            let shared = status.projects?.map(\.path) ?? status.project.map { [$0] } ?? []
+            // As the supervisor records it; a folder deleted on the Mac is taken by its path.
+            let path = folder.map { (try? ProjectShare.validated($0, storeRoot: options.store.root)) ?? URL(fileURLWithPath: $0).standardizedFileURL.path }
+            let taken = path.map { shared.contains($0) ? [$0] : [] } ?? shared
+            guard !taken.isEmpty else {
                 if options.json {
                     try Output.json(status)
+                } else if let path {
+                    print("Box \(box.name) does not share \(path)")
                 } else {
                     print("Box \(box.name) has no project shared")
                 }
                 return
             }
-            let response = try ControlClient.request(ControlRequest(op: .unshare), path: box.controlSocketPath, timeout: 70)
+            let response = try ControlClient.request(ControlRequest(op: .unshare, path: path), path: box.controlSocketPath, timeout: 70)
             guard response.ok else {
-                throw AgentVMError.supervisorRefused(response.error ?? "box \(box.name) did not unshare \(project)")
+                throw AgentVMError.supervisorRefused(response.error ?? "box \(box.name) did not unshare \(taken.joined(separator: ", "))")
             }
             if options.json {
                 try Output.json(response)
                 return
             }
-            print("Unshared \(project) from box \(box.name)")
+            for project in taken {
+                print("Unshared \(project) from box \(box.name)")
+            }
         }
     }
 

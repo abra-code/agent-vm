@@ -76,11 +76,12 @@ test_git_status_is_the_first_command() {
     run_avm exec --box "$BOX" --project "$_project" -- /usr/bin/git log --oneline
     assert_status 0 || return 1
     assert_out_contains "one" || return 1
-    # Only the project is a safe place for git, not the whole disk.
+    # Only shared projects are safe places for git, not the whole disk: this one, and those of
+    # earlier tests in this box that stay shared for a few seconds after their programs.
     run_avm exec --box "$BOX" --user root -- /usr/bin/cat /etc/agent-vm/gitconfig
     assert_out_contains "directory = $_project" || return 1
     assert_out_contains "directory = $_project/*" || return 1
-    assert_eq "$(printf '%s\n' "$OUT" | /usr/bin/grep -c 'directory = ')" "2" "safe places named to git" || return 1
+    assert_eq "$(printf '%s\n' "$OUT" | /usr/bin/grep 'directory = ' | /usr/bin/grep -c -v -F -e "directory = ${SCRATCH%/*}/" -e "directory = \"${SCRATCH%/*}/")" "0" "safe places outside the shared projects" || return 1
 }
 
 # The same folder unmounted and mounted again within a second, read-only and back: git and
@@ -134,7 +135,7 @@ test_read_only() {
     assert_out_contains "ro," || return 1
 }
 
-test_switching_projects_and_a_busy_one() {
+test_two_projects_at_once_and_a_busy_one() {
     require_box || return $(( $? == 1 ? 0 : 1 ))
     local _first="$SCRATCH/first"
     local _second="$SCRATCH/second"
@@ -143,19 +144,31 @@ test_switching_projects_and_a_busy_one() {
     "$AGENT_VM" exec --box "$BOX" --project "$_first" -- /usr/bin/sleep 20 &
     local _pid=$!
     /bin/sleep 4
-    run_avm exec --box "$BOX" --project "$_second" -- /usr/bin/true
+    # A second folder goes beside the first, on a device of its own, and says it is not apart.
+    run_avm exec --box "$BOX" --project "$_second" -- /bin/sh -c 'pwd -P; cat ../first/README.md; grep -c -e " $1 " -e " $2 " /proc/mounts' sh "$_first" "$_second"
+    assert_status 0 || return 1
+    assert_eq "$OUT" "$_second
+hello
+2" "the second project beside the first" || return 1
+    assert_err_contains "box $BOX also shares" || return 1
+    run_avm exec --box "$BOX" --user root -- /usr/bin/cat /etc/agent-vm/gitconfig
+    assert_contains "$OUT" "$_first" "git's safe places with two projects" || return 1
+    assert_contains "$OUT" "$_second" "git's safe places with two projects" || return 1
+    # A folder inside the busy one would be mounted inside the Mac's copy of it: refused.
+    run_avm exec --box "$BOX" --project "$_first/Sources" -- /usr/bin/true
     assert_status 125 || return 1
-    assert_err_contains "is running programs on $_first" || return 1
+    assert_err_contains "is running programs on $_first, and $_first/Sources is inside it" || return 1
     kill -INT "$_pid"
     wait "$_pid" 2>/dev/null
-    run_avm exec --box "$BOX" --project "$_second" -- /usr/bin/pwd -P
+    # Once the first is free, a folder inside it replaces it.
+    run_avm exec --box "$BOX" --project "$_first/Sources" -- /usr/bin/pwd -P
     assert_status 0 || return 1
-    assert_eq "$OUT" "$_second" "switched project" || return 1
-    # The first project is no longer there: its path is an empty folder of the box's own.
+    assert_eq "$OUT" "$_first/Sources" "a folder inside the first" || return 1
+    # The first project is no longer there: its path holds only the folder mounted inside it.
     run_avm exec --box "$BOX" -- /usr/bin/ls -A "$_first"
-    assert_eq "$OUT" "" "the first project's path after the switch" || return 1
+    assert_eq "$OUT" "Sources" "the first project's path after the switch" || return 1
     run_avm exec --box "$BOX" --user root -- /usr/bin/cat /etc/agent-vm/gitconfig
-    assert_not_contains "$OUT" "$_first" "git's safe places after the switch" || return 1
+    assert_not_contains "$OUT" "$_first/*" "git's safe places after the switch" || return 1
 }
 
 test_a_path_that_holds_something_is_refused() {

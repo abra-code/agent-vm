@@ -670,6 +670,11 @@ struct ConnectRunner {
                     guard response.ok else {
                         throw ConnectError.shareRefused(message: response.error ?? "box \(name) did not share \(project)", box: name)
                     }
+                    if let notice = ExecRunner.otherFoldersNotice(box: name, project: project, folders: BoxStatus.from(response).sharedFolders) {
+                        print("Note: \(notice)")
+                        // The session's exec need not say it again.
+                        setenv(ExecRunner.foldersNotedVariable, "1", 1)
+                    }
                 case let .snapshot(project, gitOnly):
                     let (taken, signal) = try snapshot(project, gitOnly: gitOnly, store: sessions, terminal: terminal)
                     session = taken

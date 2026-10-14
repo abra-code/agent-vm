@@ -224,15 +224,15 @@ public final class BoxSupervisor {
             guard let self else {
                 throw AgentVMError.boxNotRunning(name)
             }
-            try await self.shareProject(path, readOnly: readOnly, claim: claim)
-        } unshare: { [weak self] asked in
+            return try await self.shareProject(path, readOnly: readOnly, claim: claim)
+        } unshare: { [weak self] path, asked in
             guard let self else {
                 throw AgentVMError.boxNotRunning(name)
             }
             if asked {
-                try await self.unshareProject(asked: true)
-            } else {
-                self.projectReleased()
+                try await self.unshareProject(path, asked: true)
+            } else if let path {
+                self.projectReleased(path)
             }
         } view: { [weak self] interactive in
             guard let self else {
@@ -336,7 +336,7 @@ public final class BoxSupervisor {
         if guest == .linux {
             // The box's disk remembers the project its last run shared; nothing is shared now.
             // Before the box is ready, so that no share's own writing can come first.
-            _ = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest(nil))
+            _ = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest([]))
             // For images made before this was a file in the image (LinuxSetup.stopOnKernelFault).
             let told = try? await guestCapture(machine, LinuxSetup.stopOnKernelFaultRequest)
             if told?.report != ExitReport(status: 0) {
@@ -538,23 +538,31 @@ public final class BoxSupervisor {
     /// The share request running now, if any; the next one waits for it.
     private var shareQueue: Task<Void, Error>?
 
-    /// Shares `path` into the box at the same path, replacing the previous project. Called
-    /// from control threads through the main actor. The awaits inside let other requests run
-    /// on the main actor meanwhile, so requests are chained to change the guest's mounts and
-    /// the device's share one at a time.
+    /// The store the box is in (Boxes/<name> under it).
+    private var storeRoot: URL {
+        return box.directory.deletingLastPathComponent().deletingLastPathComponent()
+    }
+
+    /// Shares `path` into the box at the same path, beside the folders it shares already: a
+    /// Linux box shares up to `ProjectShare.slots(for:)` at once, a macOS box one, so there a
+    /// new folder replaces the previous one. Called from control threads through the main
+    /// actor. The awaits inside let other requests run on the main actor meanwhile, so requests
+    /// are chained to change the guest's mounts and the devices' shares one at a time.
     /// `claim`: the caller runs a program on the project (an exec); the share then stays as
     /// it is until the claim is released (`SupervisorState.releaseProject`).
-    func shareProject(_ path: String, readOnly: Bool, claim: Bool) async throws {
-        // Someone wants a project now: a pending unshare of an unused one is off.
-        unshareGeneration += 1
-        let calledOff = unsharePending
-        unsharePending = false
+    /// Returns the folder as shared (its canonical path), which a claim is released by.
+    @discardableResult
+    func shareProject(_ path: String, readOnly: Bool, claim: Bool) async throws -> String {
+        let project = try ProjectShare.validated(path, storeRoot: storeRoot)
+        // Someone wants this project now: a pending unshare of it is off.
+        unshareGenerations[project, default: 0] += 1
+        let calledOff = pendingUnshares.remove(project) != nil
         let previous = shareQueue
         let task = Task { @MainActor in
             _ = await previous?.result
-            try await self.replaceProject(path, readOnly: readOnly)
+            try await self.addProject(project, readOnly: readOnly)
             if claim {
-                self.state.claimProject()
+                self.state.claimProject(at: project)
             }
         }
         shareQueue = task
@@ -564,51 +572,53 @@ public final class BoxSupervisor {
             // A request that failed runs nothing on the project: the unshare it called off
             // is due again, or the project would stay shared with no program on it.
             if calledOff {
-                projectReleased()
+                projectReleased(project)
             }
             throw error
         }
+        return project
     }
 
     /// How long after its last program ended a project stays shared: a script that runs one
     /// program after another on it does not mount and unmount each time.
     static let unshareDelay: Duration = .seconds(5)
 
-    /// Counts the share requests and the releases, so that an unshare that waited
-    /// `unshareDelay` knows whether anything happened meanwhile.
-    private var unshareGeneration = 0
+    /// Counts, per project, the share requests and the releases, so that an unshare that
+    /// waited `unshareDelay` knows whether anything happened to its project meanwhile.
+    private var unshareGenerations: [String: Int] = [:]
 
-    /// An unshare is waiting out `unshareDelay`.
-    private var unsharePending = false
+    /// The projects whose unshare is waiting out `unshareDelay`.
+    private var pendingUnshares: Set<String> = []
 
-    /// A program on the project ended. When it was the last, the project is taken away from
-    /// the box after `unshareDelay`, unless one is asked for again by then: a box that goes on
-    /// running after its session must not keep the Mac's folder, with whatever the session
-    /// left running in it.
-    func projectReleased() {
-        guard state.projectClaims == 0, state.project != nil else {
+    /// A program on the project at `path` ended. When it was the last, the project is taken
+    /// away from the box after `unshareDelay`, unless it is asked for again by then: a box
+    /// that goes on running after its session must not keep the Mac's folder, with whatever
+    /// the session left running in it.
+    func projectReleased(_ path: String) {
+        guard let project = state.project(at: path), project.programs == 0 else {
             return
         }
-        unshareGeneration += 1
-        let generation = unshareGeneration
-        unsharePending = true
+        unshareGenerations[path, default: 0] += 1
+        let generation = unshareGenerations[path]
+        pendingUnshares.insert(path)
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: Self.unshareDelay)
-            guard let self, self.unshareGeneration == generation else {
+            guard let self, self.unshareGenerations[path] == generation else {
                 return
             }
-            self.unsharePending = false
+            self.pendingUnshares.remove(path)
             guard !self.state.stopRequested else {
                 return
             }
-            try? await self.unshareProject(asked: false)
+            try? await self.unshareProject(path, asked: false)
         }
     }
 
-    /// Takes the shared project away from the box, in turn with the share requests. `asked`:
-    /// a person's request (`box unshare`), which is refused while programs run on the project
-    /// and fails when the guest cannot let go of it; otherwise both are only logged.
-    func unshareProject(asked: Bool) async throws {
+    /// Takes shared projects away from the box, in turn with the share requests: the one at
+    /// `path`, or with no path every one. `asked`: a person's request (`box unshare`), which is
+    /// refused while programs run on a project it takes and fails when the guest cannot let go
+    /// of one; otherwise both are only logged, and a project programs run on stays.
+    func unshareProject(_ path: String?, asked: Bool) async throws {
         let previous = shareQueue
         let task = Task { @MainActor in
             _ = await previous?.result
@@ -618,35 +628,34 @@ public final class BoxSupervisor {
                 }
                 return
             }
-            guard let current = self.state.project else {
-                return
+            let shared = self.state.projects
+            let targets = shared.filter { path == nil || $0.path == path }
+            if asked, let busy = targets.first(where: { $0.programs > 0 }) {
+                let others = path == nil && shared.count > 1 ? ", or name another folder to unshare" : ""
+                throw AgentVMError.supervisorRefused("box \(self.box.name) is running programs on \(busy.path); wait until they end\(others)")
             }
-            guard self.state.projectClaims == 0 else {
-                if asked {
-                    throw AgentVMError.supervisorRefused("box \(self.box.name) is running programs on \(current.path); wait until they end")
+            for current in targets where current.programs == 0 {
+                do {
+                    try await self.removeProject(current, machine: machine, force: true)
+                } catch {
+                    if !asked {
+                        self.log("\(current.path) stays shared after its last program ended: \(error)")
+                    }
+                    throw error
                 }
-                return
-            }
-            do {
-                try await self.removeProject(current, machine: machine, force: true)
-            } catch {
-                if !asked {
-                    self.log("\(current.path) stays shared after its last program ended: \(error)")
-                }
-                throw error
             }
         }
         shareQueue = task
         try await task.value
     }
 
-    /// Unmounts the project in the guest and takes the folder out of the device's share.
+    /// Unmounts the project in the guest and takes the folder out of its device's share.
     ///
     /// `force`: the folder is taken away whatever the guest answers. That is for a project no
     /// program of the person's runs on any more: what still holds it in the box is what a
     /// session left behind, and the guest's word that it cannot unmount is not what keeps the
-    /// Mac's folder shared. Without it (one project replacing another) a refusal is an error.
-    private func removeProject(_ current: (path: String, readOnly: Bool), machine: GuestMachine, force: Bool = false) async throws {
+    /// Mac's folder shared. Without it (making room for another project) a refusal is an error.
+    private func removeProject(_ current: SharedProject, machine: GuestMachine, force: Bool = false) async throws {
         let guest = self.guest
         let layout: ShareLayout = guest == .linux ? .single : .namedEntry
         var held: String?
@@ -668,50 +677,59 @@ public final class BoxSupervisor {
             _ = try? await guestCapture(machine, ProjectShare.forcedUnmountRequest(current.path, guest: guest))
             log("\(current.path) was still in use in the box (\(held)); it is taken away regardless, and the programs that worked in it there are ended")
         }
-        state.setProject(nil)
-        try machine.share(tag: ProjectShare.tag(for: guest), directory: nil, readOnly: false, layout: layout)
+        state.removeProject(at: current.path)
+        try machine.share(tag: current.tag, directory: nil, readOnly: false, layout: layout)
         if guest == .linux {
-            // No project, no safe place for git.
-            _ = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest(nil))
+            // Only the projects still shared are safe places for git.
+            _ = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest(state.projects.map(\.path)))
         }
         log("Unshared \(current.path)")
         note(.init(.unshare, path: current.path))
     }
 
-    private func replaceProject(_ path: String, readOnly: Bool) async throws {
+    /// Shares `project` (a canonical path) beside the projects shared already, after taking away
+    /// what is in its way and unused (`ProjectShare.room`); what is in its way with programs on
+    /// it refuses the request.
+    private func addProject(_ project: String, readOnly: Bool) async throws {
         guard let machine, state.snapshot.state == .ready else {
             throw AgentVMError.supervisorRefused("box \(box.name) is not ready")
         }
         let guest = self.guest
-        let tag = ProjectShare.tag(for: guest)
         // A macOS guest gets the folder as the one entry of a root; a Linux guest the folder.
         let layout: ShareLayout = guest == .linux ? .single : .namedEntry
-        let storeRoot = box.directory.deletingLastPathComponent().deletingLastPathComponent()
-        let project = try ProjectShare.validated(path, storeRoot: storeRoot)
-        let current = state.project
-        if current?.path == project && current?.readOnly == readOnly {
+        let slots = ProjectShare.slots(for: guest)
+        // Resolved when the request came, before the requests ahead of it ran: a project those
+        // took away could have had a symlink swapped in on this one's path while it was mounted.
+        guard try ProjectShare.validated(project, storeRoot: storeRoot) == project else {
+            throw AgentVMError.unsuitableProject(path: project, reason: "its path changed while the request waited for its turn")
+        }
+        let inTheWay: [SharedProject]
+        switch ProjectShare.room(for: project, readOnly: readOnly, among: state.projects, slots: slots) {
+        case .shared:
             return
+        case let .blocked(busy):
+            throw shareRefusal(busy, asked: project, readOnly: readOnly, slots: slots)
+        case let .remove(projects):
+            inTheWay = projects
         }
-        if let current, state.projectClaims > 0 {
-            // The same folder in the same mode would have been taken: say that it is the other
-            // folder (or mode) that cannot be, and what can.
-            let mode = current.readOnly ? " (read only)" : ""
-            let asked = current.path == project ? "the same folder \(readOnly ? "read only" : "for writing")" : project
-            throw AgentVMError.supervisorRefused("box \(box.name) is running programs on \(current.path)\(mode), and a box shares one folder at a time, so it cannot share \(asked) now; "
-                + "start from \(current.path)\(mode) to work beside those programs, wait until they end, or use another box")
+        for other in inTheWay {
+            try await removeProject(other, machine: machine)
         }
-        if let current {
-            try await removeProject(current, machine: machine)
-            // While the previous project was mounted the guest could change folders on the
-            // new one's path (a symlink swapped in); it has no access now, so resolve again.
-            guard try ProjectShare.validated(path, storeRoot: storeRoot) == project else {
+        if !inTheWay.isEmpty {
+            // While the other projects were mounted the guest could change folders on this
+            // one's path (a symlink swapped in); it has no access now, so resolve again.
+            guard try ProjectShare.validated(project, storeRoot: storeRoot) == project else {
                 throw AgentVMError.unsuitableProject(path: project, reason: "its path changed while the previous project was being unshared")
             }
+        }
+        let used = Set(state.projects.map(\.tag))
+        guard let tag = ProjectShare.tags(for: guest).first(where: { !used.contains($0) }) else {
+            throw AgentVMError.supervisorRefused("box \(box.name) has no free share device for \(project)")
         }
         try machine.share(tag: tag, directory: URL(fileURLWithPath: project, isDirectory: true), readOnly: readOnly, layout: layout)
         var mountTried = false
         do {
-            let requests = ProjectShare.mountRequests(project, guest: guest, readOnly: readOnly)
+            let requests = ProjectShare.mountRequests(project, guest: guest, readOnly: readOnly, tag: tag)
             try await guestRun(machine, requests[0])
             let found = try await guestCapture(machine, ProjectShare.hiddenContentsRequest(project, guest: guest))
             let first = found.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -725,26 +743,51 @@ public final class BoxSupervisor {
             try await guestRun(machine, requests[1])
             if guest == .linux {
                 // Not fatal: the share works without it, and git says what it misses.
-                let told = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest(project))
+                let told = try? await guestCapture(machine, ProjectShare.safeDirectoryRequest(state.projects.map(\.path) + [project]))
                 if told?.report != ExitReport(status: 0) {
                     log("Could not tell git in the box that \(project) is a safe place: \(told.map { ($0.stderr + $0.stdout).trimmingCharacters(in: .whitespacesAndNewlines) } ?? "no answer")")
                 }
             }
         } catch {
             // Leave nothing mounted. If the guest cannot confirm that, keep the share recorded
-            // so the next request unmounts it first (the unmount succeeds when nothing is there).
-            // Before the mount the parent may be some other mount point: leave it alone.
+            // so a later request unmounts it first (the unmount succeeds when nothing is there),
+            // and let the unshare that follows a release try again: with several devices, a
+            // record nothing ever takes away would hold one for as long as the box runs.
+            // Before the mount the path may be some other mount point: leave it alone.
             let unmounted = mountTried ? try? await guestCapture(machine, ProjectShare.unmountRequest(project, guest: guest)) : nil
             if !mountTried || unmounted?.report == ExitReport(status: 0) {
                 try? machine.share(tag: tag, directory: nil, readOnly: false, layout: layout)
             } else {
-                state.setProject((project, readOnly))
+                state.addProject(SharedProject(path: project, readOnly: readOnly, tag: tag))
+                projectReleased(project)
             }
             throw error
         }
-        state.setProject((project, readOnly))
-        log("Shared \(project)\(readOnly ? " (read only)" : "")")
+        state.addProject(SharedProject(path: project, readOnly: readOnly, tag: tag))
+        log("Shared \(project)\(readOnly ? " (read only)" : "")\(slots > 1 ? " on device \(tag)" : "")")
         note(.init(.share, path: project, readOnly: readOnly))
+    }
+
+    /// Why `asked` cannot be shared while programs run on `busy`, and what works instead.
+    /// The words "is running programs on <folder>" are what avm and the tests look for.
+    private func shareRefusal(_ busy: SharedProject, asked project: String, readOnly: Bool, slots: Int) -> AgentVMError {
+        let mode = busy.readOnly ? " (read only)" : ""
+        let asked = busy.path == project ? "the same folder \(readOnly ? "read only" : "for writing")" : project
+        let reason: String
+        if slots == 1 {
+            reason = "a box shares one folder at a time"
+        } else if busy.path == project {
+            reason = "a box shares a folder in one mode at a time"
+        } else if project.hasPrefix(busy.path + "/") {
+            reason = "\(project) is inside it"
+        } else if busy.path.hasPrefix(project + "/") {
+            reason = "it is inside \(project)"
+        } else {
+            return AgentVMError.supervisorRefused("box \(box.name) is running programs on each of the \(slots) folders it shares (\(busy.path) first), and a box shares at most \(slots) folders at a time, so it cannot share \(project) now; "
+                + "wait until the programs on one of them end, or use another box")
+        }
+        return AgentVMError.supervisorRefused("box \(box.name) is running programs on \(busy.path)\(mode), and \(reason), so it cannot share \(asked) now; "
+            + "start from \(busy.path)\(mode) to work beside those programs, wait until they end, or use another box")
     }
 
     /// Runs one guest request; throws unless it exits with status 0.
@@ -840,6 +883,18 @@ public final class BoxSupervisor {
     }
 }
 
+/// A folder shared into a running box: on which device, and how many programs (execs) run on it.
+struct SharedProject: Equatable, Sendable {
+    var path: String
+    var readOnly: Bool
+    var tag: String
+    var programs = 0
+
+    var folder: SharedFolder {
+        return SharedFolder(path: path, readOnly: readOnly, programs: programs)
+    }
+}
+
 /// The supervisor's state as the control threads see it.
 final class SupervisorState: @unchecked Sendable {
     private let lock = NSLock()
@@ -847,8 +902,7 @@ final class SupervisorState: @unchecked Sendable {
     private var guest: String?
     private var features: [String] = []
     private var stopping = false
-    private var shared: (path: String, readOnly: Bool)?
-    private var claims = 0
+    private var shared: [SharedProject] = []
     private var execs = 0
     private var owner: Int32?
 
@@ -887,34 +941,48 @@ final class SupervisorState: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Programs (execs) running on the shared project; while any do, it is not switched.
-    var projectClaims: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return claims
-    }
-
-    func claimProject() {
-        lock.lock()
-        claims += 1
-        lock.unlock()
-    }
-
-    func releaseProject() {
-        lock.lock()
-        claims = max(0, claims - 1)
-        lock.unlock()
-    }
-
-    var project: (path: String, readOnly: Bool)? {
+    /// The folders shared into the box, in the order they were shared.
+    var projects: [SharedProject] {
         lock.lock()
         defer { lock.unlock() }
         return shared
     }
 
-    func setProject(_ project: (path: String, readOnly: Bool)?) {
+    /// The folder shared at `path`, if any.
+    func project(at path: String) -> SharedProject? {
         lock.lock()
-        shared = project
+        defer { lock.unlock() }
+        return shared.first { $0.path == path }
+    }
+
+    /// Records `project` as shared, replacing what was recorded for its path.
+    func addProject(_ project: SharedProject) {
+        lock.lock()
+        shared.removeAll { $0.path == project.path }
+        shared.append(project)
+        lock.unlock()
+    }
+
+    func removeProject(at path: String) {
+        lock.lock()
+        shared.removeAll { $0.path == path }
+        lock.unlock()
+    }
+
+    /// A program (exec) runs on the project at `path`; while any do, it stays as it is.
+    func claimProject(at path: String) {
+        lock.lock()
+        if let index = shared.firstIndex(where: { $0.path == path }) {
+            shared[index].programs += 1
+        }
+        lock.unlock()
+    }
+
+    func releaseProject(at path: String) {
+        lock.lock()
+        if let index = shared.firstIndex(where: { $0.path == path }) {
+            shared[index].programs = max(0, shared[index].programs - 1)
+        }
         lock.unlock()
     }
 
@@ -956,16 +1024,18 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
     private let machine: GuestMachine
     private let box: Box
     private let proxy: ProxyServer
-    private let share: @Sendable @MainActor (String, Bool, Bool) async throws -> Void
-    /// true: a person asked (`box unshare`); false: the last program on the project ended.
-    private let unshare: @Sendable @MainActor (Bool) async throws -> Void
+    /// Returns the folder as shared (its canonical path).
+    private let share: @Sendable @MainActor (String, Bool, Bool) async throws -> String
+    /// The folder (nil: every one), and true: a person asked (`box unshare`); false: the last
+    /// program on the folder ended.
+    private let unshare: @Sendable @MainActor (String?, Bool) async throws -> Void
     private let view: @Sendable @MainActor (Bool) throws -> Void
     private let type: @Sendable @MainActor (String?) async throws -> Void
     private let syncClock: @Sendable @MainActor () async throws -> Double
 
     init(state: SupervisorState, machine: GuestMachine, box: Box, proxy: ProxyServer,
-         share: @escaping @Sendable @MainActor (String, Bool, Bool) async throws -> Void,
-         unshare: @escaping @Sendable @MainActor (Bool) async throws -> Void,
+         share: @escaping @Sendable @MainActor (String, Bool, Bool) async throws -> String,
+         unshare: @escaping @Sendable @MainActor (String?, Bool) async throws -> Void,
          view: @escaping @Sendable @MainActor (Bool) throws -> Void,
          type: @escaping @Sendable @MainActor (String?) async throws -> Void,
          syncClock: @escaping @Sendable @MainActor () async throws -> Double) {
@@ -980,14 +1050,15 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         self.unshare = unshare
     }
 
-    /// Takes the project away on the main actor; blocks this control thread for at most 60 s.
-    func controlUnshare() throws {
+    /// Takes the project at `path` (nil: every one) away on the main actor; blocks this control
+    /// thread for at most 60 s.
+    func controlUnshare(path: String?) throws {
         let result = ShareResult()
         let done = DispatchSemaphore(value: 0)
         let unshare = self.unshare
         Task { @MainActor in
             do {
-                try await unshare(true)
+                try await unshare(path, true)
                 result.set(nil)
             } catch {
                 result.set(error)
@@ -1071,13 +1142,15 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         }
     }
 
-    private func shareBlocking(path: String, readOnly: Bool, claim: Bool) throws {
+    /// Returns the folder as shared (its canonical path).
+    @discardableResult
+    private func shareBlocking(path: String, readOnly: Bool, claim: Bool) throws -> String {
         let result = ShareResult()
         let done = DispatchSemaphore(value: 0)
         let share = self.share
         Task { @MainActor in
             do {
-                try await share(path, readOnly, claim)
+                result.set(path: try await share(path, readOnly, claim))
                 result.set(nil)
             } catch {
                 result.set(error)
@@ -1090,6 +1163,7 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         if let error = result.error {
             throw error
         }
+        return result.path ?? path
     }
 
     /// The store the box is in (Boxes/<name> under it).
@@ -1111,9 +1185,11 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
 
     func controlStatus() -> ControlResponse {
         let snapshot = state.snapshot
-        let project = state.project
+        let projects = state.projects
+        // `project` and `projectReadOnly` name the first, for readers that know of one.
         return ControlResponse(ok: true, state: snapshot.state, guestVersion: snapshot.guestVersion, pid: getpid(),
-                               project: project?.path, projectReadOnly: project?.readOnly, guestFeatures: snapshot.guestFeatures,
+                               project: projects.first?.path, projectReadOnly: projects.first?.readOnly, projects: projects.map(\.folder),
+                               guestFeatures: snapshot.guestFeatures,
                                supervisorVersion: AgentVM.version, supervisorPath: Self.executablePath, startedAt: state.startedAt,
                                activeExecs: state.activeExecs, ownerPid: state.ownerPid)
     }
@@ -1129,28 +1205,24 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         guard state.snapshot.state == .ready, !state.stopRequested else {
             throw AgentVMError.supervisorRefused("box \(box.name) is \(state.snapshot.state.rawValue), not ready")
         }
-        if let project {
-            try shareBlocking(path: project, readOnly: readOnly, claim: true)
-        }
+        let claimed = try project.map { try shareBlocking(path: $0, readOnly: readOnly, claim: true) }
         let state = self.state
+        let unshare = self.unshare
         do {
             let lent = try openConnection()
             state.execOpened()
-            let claimed = project != nil
-            let unshare = self.unshare
             return LentConnection(descriptor: lent.descriptor, release: {
                 lent.release()
                 state.execClosed()
-                if claimed {
-                    state.releaseProject()
-                    Task { @MainActor in try? await unshare(false) }
+                if let claimed {
+                    state.releaseProject(at: claimed)
+                    Task { @MainActor in try? await unshare(claimed, false) }
                 }
             })
         } catch {
-            if project != nil {
-                state.releaseProject()
-                let unshare = self.unshare
-                Task { @MainActor in try? await unshare(false) }
+            if let claimed {
+                state.releaseProject(at: claimed)
+                Task { @MainActor in try? await unshare(claimed, false) }
             }
             throw error
         }
@@ -1183,6 +1255,19 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
 private final class ShareResult: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: Error?
+    private var sharedPath: String?
+
+    func set(path: String) {
+        lock.lock()
+        sharedPath = path
+        lock.unlock()
+    }
+
+    var path: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return sharedPath
+    }
 
     func set(_ error: Error?) {
         lock.lock()

@@ -32,27 +32,27 @@ struct MachineShape: Sendable {
 
 enum MachineBuilder {
     /// The configuration of the machine `shape` describes, from `files`. `share` adds the
-    /// guest's project share device, empty. `auxiliaryStorage` is for a macOS install, which
+    /// guest's project share devices, empty. `auxiliaryStorage` is for a macOS install, which
     /// has just created it; `extras` are a Linux machine's. What is given for the other guest
     /// is refused, not ignored: a caller that passes it has mixed the two up. `validate` is false
     /// only in unit tests (LinuxMachineSpec.configuration).
     static func configuration(_ shape: MachineShape, files: MachineFiles, network: MachineNetwork = .nat, share: Bool = false,
                               auxiliaryStorage: VZMacAuxiliaryStorage? = nil,
                               extras: LinuxMachineExtras = LinuxMachineExtras(), validate: Bool = true) throws -> VZVirtualMachineConfiguration {
-        let shareTag = share ? ProjectShare.tag(for: shape.guest) : nil
+        let shareTags = share ? ProjectShare.tags(for: shape.guest) : []
         switch shape.guest {
         case .macOS:
             guard extras.seedDisk == nil, extras.console == nil else {
                 throw AgentVMError.virtualMachine(operation: "configure \(files.name)", message: "a macOS guest has no seed disk and no console log")
             }
             let spec = MacMachineSpec(cpuCount: shape.cpuCount, memoryBytes: shape.memoryBytes, macAddress: shape.macAddress)
-            return try spec.configuration(for: files, auxiliaryStorage: auxiliaryStorage, network: network, shareTag: shareTag)
+            return try spec.configuration(for: files, auxiliaryStorage: auxiliaryStorage, network: network, shareTag: shareTags.first)
         case .linux:
             guard auxiliaryStorage == nil else {
                 throw AgentVMError.virtualMachine(operation: "configure \(files.name)", message: "a Linux guest has no auxiliary storage")
             }
             let spec = LinuxMachineSpec(cpuCount: shape.cpuCount, memoryBytes: shape.memoryBytes, macAddress: shape.macAddress)
-            return try spec.configuration(for: files, network: network, shareTag: shareTag, extras: extras, validate: validate)
+            return try spec.configuration(for: files, network: network, shareTags: shareTags, extras: extras, validate: validate)
         }
     }
 

@@ -2,9 +2,10 @@
 //
 // A project folder shared into a box at the same absolute path it has on the Mac, so paths in
 // build logs, error messages and editor links mean the same thing on both sides. One virtio
-// file system device per box, empty at start; the supervisor fills it on the running machine
-// and the guest daemon mounts it (as root) with mount_virtiofs. One project at a time per box:
-// switching unmounts the previous one, which fails while programs in the box still use it.
+// file system device per folder a box can share at once (`slots(for:)`), empty at start; the
+// supervisor fills one on the running machine and the guest daemon mounts it (as root). A
+// macOS box has one, so a new project replaces the previous one, which fails while programs
+// in the box still use it; a Linux box has several, and its projects are not kept apart.
 //
 // Measured on macOS 27 guests (the reasons for the details below):
 // - The device uses Apple's automount tag. With any other tag the guest treats the mount as a
@@ -25,13 +26,70 @@ public enum ProjectShare {
     /// see above for why.
     public static let tag = "com.apple.virtio-fs.automount"
 
-    /// The tag of a Linux box's device. Apple's automount tag means nothing to Linux, and a
-    /// name of its own says whose device it is in the guest's mount table.
+    /// The tag of a Linux box's first device. Apple's automount tag means nothing to Linux, and
+    /// a name of its own says whose device it is in the guest's mount table.
     public static let linuxTag = "agent-vm-project"
 
-    /// The tag of the project share device in a guest of this kind.
+    /// The tag of the project share device in a guest of this kind (the first, for Linux).
     public static func tag(for guest: GuestKind) -> String {
         return guest == .linux ? linuxTag : tag
+    }
+
+    /// How many folders a box of this kind shares at once: one device each, and the device set
+    /// is fixed when the machine starts. A macOS guest has one: only Apple's automount tag
+    /// gives a local volume (see above), and a device's share cannot change while the guest
+    /// has it mounted. A Linux guest has several, so sessions on different folders can share
+    /// one box; nothing in the box keeps them apart (they run as the same account).
+    public static func slots(for guest: GuestKind) -> Int {
+        return guest == .linux ? 8 : 1
+    }
+
+    /// The tags of every project share device in a guest of this kind, in slot order:
+    /// "agent-vm-project", "agent-vm-project-2", ... for Linux.
+    public static func tags(for guest: GuestKind) -> [String] {
+        guard guest == .linux else {
+            return [tag]
+        }
+        return (0..<slots(for: guest)).map { $0 == 0 ? linuxTag : "\(linuxTag)-\($0 + 1)" }
+    }
+
+    /// Whether one of the two folders (canonical paths) is the other or inside it: a mount on
+    /// one would cover the other, or be made inside the Mac's copy of it.
+    static func overlaps(_ a: String, _ b: String) -> Bool {
+        return a == b || a.hasPrefix(b + "/") || b.hasPrefix(a + "/")
+    }
+
+    /// What sharing a folder beside the shared ones takes.
+    enum Room: Equatable {
+        /// It is shared already, in that mode.
+        case shared
+        /// Take these away first (none: there is room).
+        case remove([SharedProject])
+        /// Programs run on this one, which is in the way.
+        case blocked(by: SharedProject)
+    }
+
+    /// What sharing `project` (canonical) in mode `readOnly` beside `shared` (oldest first)
+    /// takes in a box with `slots` devices. In its way: the same folder in the other mode, a
+    /// folder inside it or around it, and, when every device is in use, the project shared
+    /// longest ago that no program runs on. Any of those with programs on it blocks it, as
+    /// does a box whose every device holds a project with programs on it.
+    static func room(for project: String, readOnly: Bool, among shared: [SharedProject], slots: Int) -> Room {
+        if shared.contains(where: { $0.path == project && $0.readOnly == readOnly }) {
+            return .shared
+        }
+        var inTheWay = shared.filter { overlaps($0.path, project) }
+        if shared.count - inTheWay.count >= slots,
+           let oldest = shared.first(where: { $0.programs == 0 && !overlaps($0.path, project) }) {
+            inTheWay.append(oldest)
+        }
+        if let busy = inTheWay.first(where: { $0.programs > 0 }) {
+            return .blocked(by: busy)
+        }
+        if shared.count - inTheWay.count >= slots, let busy = shared.first {
+            return .blocked(by: busy)
+        }
+        return .remove(inTheWay)
     }
 
     /// The canonical folder for `path`, or why it cannot be shared: the session rules (exists,
@@ -97,8 +155,8 @@ public enum ProjectShare {
     // for when a person runs something as root in the project and git as the user right after.
 
     /// What the guest runs, as root, to mount the share for the project at `path`: for Linux,
-    /// on the path itself.
-    static func mountRequests(_ path: String, guest: GuestKind, readOnly: Bool) -> [GuestRequest] {
+    /// on the path itself, from the device tagged `tag` (one of `tags(for:)`).
+    static func mountRequests(_ path: String, guest: GuestKind, readOnly: Bool, tag: String = linuxTag) -> [GuestRequest] {
         guard guest == .linux else {
             return mountRequests(path)
         }
@@ -106,7 +164,7 @@ public enum ProjectShare {
         let options = "nosuid,nodev" + (readOnly ? ",ro" : "")
         return [
             GuestRequest(op: .exec, argv: ["/usr/bin/mkdir", "-p", path], cwd: "/", user: "root"),
-            GuestRequest(op: .exec, argv: ["/usr/bin/mount", "-t", "virtiofs", "-o", options, linuxTag, path], cwd: "/", user: "root"),
+            GuestRequest(op: .exec, argv: ["/usr/bin/mount", "-t", "virtiofs", "-o", options, tag, path], cwd: "/", user: "root"),
         ]
     }
 
@@ -142,17 +200,18 @@ public enum ProjectShare {
     /// The file of agent-vm's own that a Linux image's git reads (see LinuxSetup).
     static let linuxGitConfig = "/etc/agent-vm/gitconfig"
 
-    /// What a Linux guest runs, as root, once the project is mounted: git is told that the
-    /// project, and every repository under it (a submodule, a workspace of several), is a safe
-    /// place, and no other. With no path, the file is emptied.
-    static func safeDirectoryRequest(_ path: String?) -> GuestRequest {
+    /// What a Linux guest runs, as root, whenever the shared projects change: git is told that
+    /// each project, and every repository under it (a submodule, a workspace of several), is a
+    /// safe place, and no other. With no paths, the file is emptied.
+    static func safeDirectoryRequest(_ paths: [String]) -> GuestRequest {
         var script = "/usr/bin/mkdir -p /etc/agent-vm && /usr/bin/git config --file \(linuxGitConfig) --unset-all safe.directory; "
-        if path != nil {
-            script += #"/usr/bin/git config --file \#(linuxGitConfig) --add safe.directory "$1" && /usr/bin/git config --file \#(linuxGitConfig) --add safe.directory "$1/*""#
-        } else {
+        if paths.isEmpty {
             script += "exit 0"
+        } else {
+            // The paths are arguments, never text of the script.
+            script += #"for p in "$@"; do /usr/bin/git config --file \#(linuxGitConfig) --add safe.directory "$p" && /usr/bin/git config --file \#(linuxGitConfig) --add safe.directory "$p/*" || exit 1; done"#
         }
-        return GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script, "sh"] + (path.map { [$0] } ?? []), cwd: "/", user: "root")
+        return GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script, "sh"] + paths, cwd: "/", user: "root")
     }
 
     /// What the guest runs, as root, after an unmount that was refused because the folder is in

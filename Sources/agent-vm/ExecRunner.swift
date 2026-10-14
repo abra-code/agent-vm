@@ -66,6 +66,22 @@ struct ExecRunner {
         return GuestTrouble.found(in: box).map { "\n\($0.words(for: box))" } ?? ""
     }
 
+    /// Set by avm for its session's child, after avm gave `otherFoldersNotice` itself.
+    static let foldersNotedVariable = "AGENT_VM_FOLDERS_NOTED"
+
+    /// What a program started on `project` should know when the box shares other folders too:
+    /// every program in the box runs as the same account and reaches them all. Nil when
+    /// `project` is the only one.
+    static func otherFoldersNotice(box: String, project: String, folders: [SharedFolder]) -> String? {
+        let others = folders.map(\.path).filter { $0 != project }
+        guard !others.isEmpty else {
+            return nil
+        }
+        return "box \(box) also shares \(others.map(ConnectRunner.tilde).joined(separator: ", ")); every program in it can read all of "
+            + "them and change those shared for writing. What a session's programs change in another session's folder shows in that "
+            + "session's report, and its undo takes it back. A box of its own keeps a project apart."
+    }
+
     private func runInBox() throws -> Never {
         signal(SIGPIPE, SIG_IGN)
         let box = try store.box(named: self.box)
@@ -123,6 +139,13 @@ struct ExecRunner {
             if environment["TERM"] == nil {
                 environment["TERM"] = Self.terminalType(host: ProcessInfo.processInfo.environment["TERM"], box: box, user: user)
             }
+        }
+
+        // Several folders in one box are not kept apart from each other: say so, once (avm,
+        // which starts this as its session's child, said it already).
+        if let projectPath, ProcessInfo.processInfo.environment[Self.foldersNotedVariable] == nil,
+           let notice = Self.otherFoldersNotice(box: box.name, project: projectPath, folders: BoxStatus.from(status).sharedFolders) {
+            Stderr.write("agent-vm: note: \(notice)\n")
         }
 
         let log = ExecLog(url: box.execLogURL)

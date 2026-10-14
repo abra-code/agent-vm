@@ -5,7 +5,7 @@ AgentVM runs an agent and its tools in a virtual machine (a "box", running macOS
 ## The short version
 
 - Everything that runs in a box is treated as hostile: the agent, its tools, code it downloads, root in the box, and the box's copy of AgentVM's own guest daemon.
-- A box can read and change the one folder you share with it, use the hosts you allow, and use the secrets you hand it. It can do nothing else on your Mac.
+- A box can read and change the folders you share with it, use the hosts you allow, and use the secrets you hand it. It can do nothing else on your Mac. A Linux box can share several folders at once, one per session; inside the box they are one trust zone, not kept apart from each other.
 - Three things come back out of a box, and each is a way to reach you: the files in the shared folder, what the box prints on your terminal or shows in its window, and what it sends to the hosts you allowed. AgentVM reports, filters or logs each of them; it cannot make them safe.
 - AgentVM does not defend against other programs that already run as you on your Mac, against root on your Mac, or against a flaw in Apple's Virtualization framework.
 
@@ -32,7 +32,7 @@ AgentVM runs an agent and its tools in a virtual machine (a "box", running macOS
 
 Each line names what the claim rests on.
 
-- **Read or change files on your Mac outside the shared folder.** The box has its own disk. One folder is shared, at its own path, and AgentVM refuses to share `/`, your home folder, `~/Library`, hidden folders of your home, and its own store, whatever name they are reached by. Your Keychain, SSH keys, browser data and other projects do not exist in the box.
+- **Read or change files on your Mac outside the shared folder.** The box has its own disk. Only the folders you share are there, each at its own path (one at a time in a macOS box, up to 8 in a Linux box), and AgentVM refuses to share `/`, your home folder, `~/Library`, hidden folders of your home, and its own store, whatever name they are reached by. Your Keychain, SSH keys, browser data and other projects do not exist in the box.
 - **Reach your Mac or your local network** (on the `allowlist` and `off` networks). A macOS box's network card leads nowhere: no route and no DNS. A Linux box has no network card at all. The only way out is a proxy on the Mac that the guest daemon relays to. The proxy checks the host name against your rules, looks the name up on the Mac, and connects only to public addresses. A name that resolves to the Mac, to a private or link-local address, to the Mac's own networks, or to an address that stands for one of those (NAT64, 6to4, Teredo) is refused.
 - **Reach hosts you did not allow.** Each request is one host and one port, checked before anything is connected. A plain HTTP connection carries one request, so a second one for another host cannot ride on it.
 - **Hide what it connected to.** Every attempt is logged on the Mac, in files the box cannot reach. Refused attempts cannot push allowed ones out of the log.
@@ -62,9 +62,19 @@ The folder is your real folder, live. An agent can write anything there, and som
 - A snapshot taken while something still changes the folder (an agent left running from an earlier session) is not a copy of one moment: it never holds anything from outside the project, but it may miss what was being moved. Stop what works in the folder before a session starts, as before an undo.
 - Sharing a folder read only (`--read-only`) closes this path.
 
+### Reach the other projects that share its box
+
+A Linux box can share up to 8 folders at once, so that sessions on different projects use one box. The box does not keep them apart: every program in it runs as the same account, and every folder the box shares at that moment is open to all of them.
+
+- An agent working on one project can read every other folder shared into its box, and change those shared for writing; anything it read can leave by the hosts its box allows, which are the box's rules, not one session's.
+- A change it makes in another session's folder is reported by that session's report, as that session's, and that session's undo takes it back. Its own session's report does not show it.
+- A program one session leaves running can work in a folder another session shares later, until that folder is unshared 5 seconds after its last program ends.
+- AgentVM says so when a program starts in a box that already shares another folder (`box <name> also shares ...`), and `agent-vm status` lists every folder each box shares.
+- A box of its own keeps a project apart, at the cost of its memory and processors. A macOS box shares one folder at a time.
+
 ### Send what it can read to the hosts you allowed
 
-Every program in the box can read the shared folder and every secret you passed in (`--env`, `--secret`). It can send them to any host the rules allow.
+Every program in the box can read the shared folders and every secret you passed in (`--env`, `--secret`). It can send them to any host the rules allow.
 
 - An allowed host that takes uploads (a code host, a package registry, a paste site, the agent's own provider) is a way out for data. Prefer keys that are limited to the task and that you can revoke.
 - The proxy does not look inside HTTPS. A rule allows a connection to the address behind a name; what the box asks for inside the encrypted connection is its own. Where one service hosts many sites, a rule for one of them allows them all, for reading and for sending data out. Measured with the one rule `pages.github.com`: `curl https://octocat.github.io/` is refused, but `curl --connect-to octocat.github.io:443:pages.github.com:443 https://octocat.github.io/` and `curl -H "Host: octocat.github.io" https://pages.github.com/` both return the other site's page, and the network log shows two allowed connections to `pages.github.com`. So the log names the host the rule allowed, not the site the box talked to. Any site on such a service is somebody's own content; treat a rule for a host on a shared service (`*.github.io`, a content delivery network, a storage bucket's host) as a rule for the whole service.
@@ -138,7 +148,7 @@ Everything above holds for a Linux box, with the differences each line names. Wh
 | The disk that installs the guest daemon at first boot | A secret left in the guest | It holds none: the daemon, its unit, and the daemon's SHA-256. |
 | What the build believes of the guest | The build takes the system's name, version and kernel from the guest it just made, on the open network | Each is taken only as a short printable word; nothing the guest says is run or used as a path on the Mac. |
 | The console log | A guest that prints without end, or prints control characters | 2 MB at most on disk and 4 MB a minute; shown only with control characters replaced. |
-| The shared folder | Every user in the box can do in it what you can on the Mac | Stated: inside a box there is one trust zone. The folder is mounted so that a setuid file or a device file in it means nothing in the box. |
+| The shared folder | Every user in the box can do in it what you can on the Mac | Stated: inside a box there is one trust zone, and several folders shared into one Linux box are in it together. The folder is mounted so that a setuid file or a device file in it means nothing in the box. |
 | Starting a program in the shared folder | The folder's files appear to belong to whoever asks, so root in the box must not be the one that looks | The daemon's helper checks the folder and the program after it has become the box user, and tells the daemon through a pipe limited to 1 KB, 10 seconds and plain text. |
 | Root in the box loads kernel modules | The guest daemon accepts connections only from the Mac | A socket in the guest cannot take the Mac's address, with or without the kernel's loopback module (measured). |
 | System updates | An upgrade that brings back what was sealed | `image update --system` compares what the build sealed before and after; something that held and no longer does fails the update. |
