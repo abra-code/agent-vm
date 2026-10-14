@@ -472,7 +472,7 @@ public struct BoxStore: Sendable {
 
     /// Deletes box `name` and creates it again from `image` with the same CPUs, memory,
     /// network rules and disposable flag: a fresh clone of the image, with a new identity and
-    /// empty logs (the old box's are kept, and `deleted` is told where). It checks first what it can (the box stopped, its memory enough to start, the image ready and free, the
+    /// empty logs (the old box's are kept, and `deleted` is told where). It checks first what it can (the box stopped, its memory enough to start, its size within what this Mac allows, the image ready and free, the
     /// rules and packs usable), so a refusal leaves the box as it was; a create that still fails
     /// after the delete says how to create the box by hand.
     public func recreate(name: String, from image: GoldenImage, imageStore: ImageStore, collectionPatience: Duration = .seconds(30),
@@ -490,6 +490,12 @@ public struct BoxStore: Sendable {
         if let refusal = MachineSize.memoryRefusal(memoryBytes: old.record.memoryBytes, guest: guest) {
             throw AgentVMError.virtualMachine(operation: "configure \(name)",
                                               message: "\(refusal); `agent-vm box set \(name) --memory-gb \(MachineSize.gigabytes(MachineSize.comfortableMemory(for: guest)))` gives it more")
+        }
+        // A box larger than this Mac allows (made on a larger Mac, or before a change to what
+        // it allows): `create` would refuse its size only after the delete.
+        if let problem = MachineSize.problem(cpuCount: old.record.cpuCount, memoryBytes: old.record.memoryBytes) {
+            throw AgentVMError.virtualMachine(operation: "configure \(name)",
+                                              message: "\(problem); \(MachineSize.fittingCommand(box: name, cpuCount: old.record.cpuCount, memoryBytes: old.record.memoryBytes)) makes it fit")
         }
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: "create a box from")

@@ -27,6 +27,21 @@ public enum MachineSize {
         return nil
     }
 
+    /// The `box set` command that brings a box of these numbers down to what this Mac allows,
+    /// changing only what is over. Memory is the limit rounded down, which `--memory-gb` can say.
+    public static func fittingCommand(box: String, cpuCount: Int, memoryBytes: UInt64,
+                                      maximumCPUs: Int = VZVirtualMachineConfiguration.maximumAllowedCPUCount,
+                                      maximumMemoryBytes: UInt64 = VZVirtualMachineConfiguration.maximumAllowedMemorySize) -> String {
+        var words = ["agent-vm", "box", "set", box]
+        if cpuCount > maximumCPUs {
+            words += ["--cpus", String(maximumCPUs)]
+        }
+        if memoryBytes > maximumMemoryBytes {
+            words += ["--memory-gb", String(max(1, maximumMemoryBytes >> 30))]
+        }
+        return "`" + words.joined(separator: " ") + "`"
+    }
+
     /// The least memory a box of the system starts with. A macOS box of 3 GB boots in the usual
     /// time and works, swapping from the start; at 2 GB and 1 GB its daemon never answers
     /// (measured 2026-10-03). A Linux box starts with 1 GB, the least `--memory-gb` takes (about

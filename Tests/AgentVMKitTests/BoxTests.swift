@@ -312,6 +312,29 @@ final class BoxScratch {
             _ = try fixture.boxes.recreate(name: "b1", from: unfinished, imageStore: fixture.images)
         }
         #expect(try fixture.boxes.box(named: "b1").record == box.record)
+        // Larger than this Mac allows (made on a larger Mac): `create` would refuse it after the delete.
+        var large = box.record
+        large.cpuCount = VZVirtualMachineConfiguration.maximumAllowedCPUCount + 1
+        large.memoryBytes = VZVirtualMachineConfiguration.maximumAllowedMemorySize + (1 << 30)
+        try SessionStore.encoder.encode(large).write(to: box.directory.appendingPathComponent(BoxStore.recordName))
+        do {
+            _ = try fixture.boxes.recreate(name: "b1", from: fixture.image, imageStore: fixture.images)
+            Issue.record("a box larger than this Mac allows was recreated")
+        } catch {
+            let expected = MachineSize.fittingCommand(box: "b1", cpuCount: large.cpuCount, memoryBytes: large.memoryBytes)
+            #expect("\(error)".contains("more than this Mac allows a box") && "\(error)".contains(expected), "\(error)")
+        }
+        #expect(try fixture.boxes.box(named: "b1").record == large)
+    }
+
+    @Test func theFittingCommandChangesOnlyWhatIsOver() {
+        #expect(MachineSize.fittingCommand(box: "b1", cpuCount: 12, memoryBytes: 8 << 30, maximumCPUs: 8, maximumMemoryBytes: 64 << 30)
+            == "`agent-vm box set b1 --cpus 8`")
+        // A limit between whole GB is rounded down, so the command is taken.
+        #expect(MachineSize.fittingCommand(box: "b1", cpuCount: 4, memoryBytes: 64 << 30, maximumCPUs: 8, maximumMemoryBytes: (16 << 30) - (1 << 20))
+            == "`agent-vm box set b1 --memory-gb 15`")
+        #expect(MachineSize.fittingCommand(box: "b1", cpuCount: 12, memoryBytes: 64 << 30, maximumCPUs: 8, maximumMemoryBytes: 16 << 30)
+            == "`agent-vm box set b1 --cpus 8 --memory-gb 16`")
     }
 
     /// A disposable box is not recreated while a collection runs: it could take the new box

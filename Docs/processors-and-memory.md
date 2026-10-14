@@ -52,6 +52,7 @@ agent-vm image create dev --ipsw latest --cpus 4 --memory-gb 8   # what an image
 | You see | Meaning | Do |
 |---|---|---|
 | `box create`, `box set`, `box recreate` or `box start` says "a macOS box needs at least 3 GB" | With less, macOS does not finish starting (a box made before 0.7.51 could have less, and its start then gave up after 180 seconds) | `box set <box> --memory-gb 4` or more |
+| `box create`, `box set` or `box recreate` says "more than this Mac allows a box" | The size is larger than this Mac can run, such as a box made on a Mac with more memory | A smaller size; for a box, `box recreate` names the `box set` command, and leaves the box as it was |
 | `box create` or `box set` notes that the box is small: a macOS box under 4 GB, a Linux box under 2 GB | It starts, but macOS swaps from the start; Linux has no swap, so a program that needs more than is free is ended | Give it more memory, unless the box only runs small commands |
 | Builds in the box are slow and its disk file grows | Too little memory: the box swaps onto its own disk | Give it more memory |
 | `box start` says "the Mac and the boxes may get slow" | Running boxes leave the Mac less than 6 GB | Stop a box, or make one smaller |
