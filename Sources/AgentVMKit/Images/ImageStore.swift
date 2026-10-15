@@ -68,9 +68,10 @@ public struct ImageStore: Sendable {
         return root.appendingPathComponent("Images", isDirectory: true)
     }
 
-    /// Lower-case letters, digits, ".", "_" and "-", starting with a letter or digit; at most 63.
+    /// Letters, digits, ".", "_" and "-", starting with a letter or digit; at most 63. Case is
+    /// kept, and two names that differ in case only cannot both be used (StoreName).
     public static func isValidName(_ name: String) -> Bool {
-        return name.range(of: #"^[a-z0-9][a-z0-9._-]{0,62}$"#, options: .regularExpression) != nil
+        return name.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$"#, options: .regularExpression) != nil
     }
 
     /// Holds an image's lock until released or deallocated.
@@ -82,6 +83,7 @@ public struct ImageStore: Sendable {
         guard Self.isValidName(record.name) else {
             throw AgentVMError.invalidImageName(record.name)
         }
+        try StoreName.checkFree(record.name, in: imagesDirectory, what: "image")
         try StoreRoot.prepare(root)
         try FileSystem.makeDirectories(imagesDirectory.path)
         let directory = imagesDirectory.appendingPathComponent(record.name, isDirectory: true)
@@ -141,6 +143,7 @@ public struct ImageStore: Sendable {
         guard Self.isValidName(name) else {
             throw AgentVMError.invalidImageName(name)
         }
+        try StoreName.checkExact(name, in: imagesDirectory, what: "image")
         let directory = imagesDirectory.appendingPathComponent(name, isDirectory: true)
         let path = directory.appendingPathComponent(Self.recordName).path
         guard FileSystem.exists(directory.path) else {
@@ -253,6 +256,7 @@ public struct ImageStore: Sendable {
         guard Self.isValidName(name) else {
             throw AgentVMError.invalidImageName(name)
         }
+        try StoreName.checkExact(name, in: imagesDirectory, what: "image")
         let directory = imagesDirectory.appendingPathComponent(name, isDirectory: true)
         guard FileSystem.exists(directory.path) else {
             throw AgentVMError.imageNotFound(name)
@@ -308,13 +312,20 @@ public struct ImageStore: Sendable {
         let oldDirectory = imagesDirectory.appendingPathComponent(old, isDirectory: true)
         let newDirectory = imagesDirectory.appendingPathComponent(new, isDirectory: true)
         let mark = BoxStore.RenameMark(from: old, to: new)
-        let resuming = !FileSystem.exists(oldDirectory.path)
+        // Listed, not merely found: the disk ignores case, so after a change of case only the
+        // old path still opens the folder.
+        let resuming = try !StoreName.isListed(old, in: imagesDirectory)
         if resuming {
             // The folder moved and the rest did not happen: finished below.
             guard BoxStore.RenameMark.read(in: newDirectory) == mark else {
+                try StoreName.checkExact(old, in: imagesDirectory, what: "image")
                 throw AgentVMError.imageNotFound(old)
             }
-        } else if FileSystem.exists(newDirectory.path) {
+        } else {
+            // A change of case only ("dev" to "Dev") is a rename of the folder onto itself.
+            try StoreName.checkFree(new, in: imagesDirectory, what: "image", except: old)
+        }
+        if !resuming, try StoreName.isListed(new, in: imagesDirectory) {
             throw AgentVMError.imageExists(name: new, state: (try? image(named: new))?.record.state.rawValue ?? "unreadable")
         }
         let directory = resuming ? newDirectory : oldDirectory

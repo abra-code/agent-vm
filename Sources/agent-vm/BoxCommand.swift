@@ -45,7 +45,7 @@ struct BoxCommand: ParsableCommand {
     struct Create: ParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Clone a ready image into a new box.")
 
-        @Argument(help: "Name of the new box (lower-case letters, digits, \".\", \"_\", \"-\"; `agent-vm version` says how long it can be in this store).")
+        @Argument(help: "Name of the new box (letters, digits, \".\", \"_\", \"-\"; `agent-vm version` says how long it can be in this store).")
         var name: String
 
         @Option(name: .long, help: "The image to clone.")

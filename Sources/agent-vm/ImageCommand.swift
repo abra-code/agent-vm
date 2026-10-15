@@ -43,7 +43,7 @@ struct ImageCommand: ParsableCommand {
                 agent-vm then exits with 128 + the signal.
                 """)
 
-        @Argument(help: "Name of the new image (lower-case letters, digits, \".\", \"_\", \"-\").")
+        @Argument(help: "Name of the new image (letters, digits, \".\", \"_\", \"-\"; case is kept).")
         var name: String
 
         @Option(name: .long, help: ArgumentHelp("The macOS restore image (.ipsw) to install: a path, the file name of one `image fetch-ipsw` downloaded (see `image fetch-ipsw --list`), or latest for the newest of those. A bare name is looked for in the current directory first.", valueName: "path|name|latest"))

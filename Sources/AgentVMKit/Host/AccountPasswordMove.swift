@@ -49,7 +49,12 @@ public enum AccountPasswordMove {
         // is gone can still be named for its boxes.
         let boxImages = Set(try boxes.list().boxes.map(\.record.image))
         for name in except.sorted() where !boxImages.contains(name) {
-            guard ImageStore.isValidName(name), FileSystem.exists(images.imagesDirectory.appendingPathComponent(name).path) else {
+            guard ImageStore.isValidName(name) else {
+                throw AgentVMError.imageNotFound(name)
+            }
+            // A path made from "DEV" opens the folder "dev", whose image is not left out.
+            try StoreName.checkExact(name, in: images.imagesDirectory, what: "image")
+            guard FileSystem.exists(images.imagesDirectory.appendingPathComponent(name).path) else {
                 throw AgentVMError.imageNotFound(name)
             }
         }

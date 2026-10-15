@@ -279,4 +279,76 @@ import Testing
         // Without its mark a folder under another name is no rename under way.
         #expect(throws: AgentVMError.imageNotFound("dev")) { try fixture.images.rename("dev", to: "base") }
     }
+
+    // MARK: - Case
+
+    /// A name keeps its case and is matched with it. The Mac's disk ignores case, so a path
+    /// made from "work" opens "Work": a lookup, a delete and a new name say so instead.
+    @Test func namesKeepTheirCaseAndAreMatchedWithIt() throws {
+        let fixture = try BoxScratch()
+        let made = try fixture.boxes.create(name: "Work", from: fixture.image, imageStore: fixture.images)
+        #expect(made.name == "Work")
+        #expect(try fixture.boxes.box(named: "Work").record.name == "Work")
+        let differs = AgentVMError.nameDiffersInCase(what: "box", name: "work", existing: "Work")
+        #expect(throws: differs) { try fixture.boxes.box(named: "work") }
+        #expect(throws: differs) { try fixture.boxes.delete(named: "work") }
+        #expect(throws: AgentVMError.nameTakenInOtherCase(what: "box", name: "WORK", existing: "Work")) {
+            _ = try fixture.boxes.create(name: "WORK", from: fixture.image, imageStore: fixture.images)
+        }
+        #expect(throws: AgentVMError.nameTakenInOtherCase(what: "box", name: "WORK", existing: "Work")) { try fixture.boxes.checkNewName("WORK") }
+        _ = try fixture.boxes.create(name: "other", from: fixture.image, imageStore: fixture.images)
+        #expect(throws: AgentVMError.nameTakenInOtherCase(what: "box", name: "work", existing: "Work")) { try fixture.boxes.rename("other", to: "work") }
+        #expect(throws: differs) { try fixture.boxes.rename("work", to: "w2") }
+        #expect(try fixture.boxes.list().boxes.map(\.name) == ["Work", "other"])
+        // Images alike.
+        let differsImage = AgentVMError.nameDiffersInCase(what: "image", name: "DEV", existing: "dev")
+        #expect(throws: differsImage) { try fixture.images.image(named: "DEV") }
+        #expect(throws: differsImage) { try fixture.images.delete(named: "DEV") }
+        #expect(throws: AgentVMError.nameTakenInOtherCase(what: "image", name: "Dev", existing: "dev")) {
+            try fixture.images.create(ImageStoreTests.record("Dev", state: .ready)).1.release()
+        }
+        #expect(try fixture.images.list().images.map(\.name) == ["dev"])
+    }
+
+    /// A change of case only renames the folder onto itself; the old name is a former one.
+    @Test func aChangeOfCaseOnlyIsARename() throws {
+        let fixture = try BoxScratch()
+        _ = try fixture.boxes.create(name: "work", from: fixture.image, imageStore: fixture.images)
+        try choices(fixture).remember(ConnectChoice(target: .box, box: "work"), for: "/p")
+        let renamed = try fixture.boxes.rename("work", to: "Work")
+        #expect(renamed.box.name == "Work" && renamed.rememberedFolders == 1)
+        #expect(try fixture.boxes.box(named: "Work").record.formerNames == ["work"])
+        #expect(try FileManager.default.contentsOfDirectory(atPath: fixture.boxes.boxesDirectory.path).filter { !$0.hasPrefix(".") } == ["Work"])
+        #expect(throws: AgentVMError.nameDiffersInCase(what: "box", name: "work", existing: "Work")) { try fixture.boxes.box(named: "work") }
+        // An image too, and what names it follows.
+        let image = try fixture.images.rename("dev", to: "Dev")
+        #expect(image.image.name == "Dev" && image.boxes == ["Work"])
+        #expect(try fixture.boxes.box(named: "Work").record.image == "Dev")
+        #expect(try fixture.images.image(named: "Dev").record.name == "Dev")
+    }
+
+    /// Killed after the folder took its new case: the same command finishes.
+    @Test func anInterruptedChangeOfCaseIsFinishedByTheSameCommand() throws {
+        let fixture = try BoxScratch()
+        let box = try fixture.boxes.create(name: "work", from: fixture.image, imageStore: fixture.images)
+        try BoxStore.RenameMark(from: "work", to: "Work").write(in: box.directory)
+        #expect(rename(box.directory.path, fixture.boxes.boxesDirectory.appendingPathComponent("Work").path) == 0)
+        #expect { try fixture.boxes.box(named: "Work") } throws: { error in
+            "\(error)".contains("renaming box work to Work was interrupted")
+        }
+        _ = try fixture.boxes.rename("work", to: "Work")
+        #expect(try fixture.boxes.box(named: "Work").record.formerNames == ["work"])
+    }
+
+    /// An image too: killed after its folder took the new case, finished by the same command.
+    @Test func anInterruptedChangeOfCaseOfAnImageIsFinishedByTheSameCommand() throws {
+        let fixture = try BoxScratch()
+        _ = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images)
+        try BoxStore.RenameMark(from: "dev", to: "Dev").write(in: fixture.image.directory)
+        #expect(rename(fixture.image.directory.path, fixture.images.imagesDirectory.appendingPathComponent("Dev").path) == 0)
+        let renamed = try fixture.images.rename("dev", to: "Dev")
+        #expect(renamed.image.name == "Dev" && renamed.boxes == ["b1"])
+        #expect(try fixture.images.image(named: "Dev").record.name == "Dev")
+        #expect(try fixture.boxes.box(named: "b1").record.image == "Dev")
+    }
 }

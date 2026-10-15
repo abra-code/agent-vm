@@ -248,6 +248,13 @@ public struct BoxStore: Sendable {
         try Self.checkNameLength(name, boxes: boxesDirectory.path, existing: existing)
     }
 
+    /// Refuses a name a new box cannot have here: too long for the store, or another box's in
+    /// other case. A box of that very name is the caller's to refuse (`boxExists`).
+    public func checkNewName(_ name: String) throws {
+        try checkNameLength(name)
+        try StoreName.checkFree(name, in: boxesDirectory, what: "box")
+    }
+
     static func checkNameLength(_ name: String, boxes: String, existing: Bool) throws {
         let limit = maxNameLength(boxes: boxes)
         guard name.utf8.count > limit else {
@@ -264,8 +271,9 @@ public struct BoxStore: Sendable {
         guard ImageStore.isValidName(name) else {
             throw AgentVMError.invalidBoxName(name)
         }
-        // A box whose supervisor could not listen would never start.
-        try checkNameLength(name)
+        // A box whose supervisor could not listen would never start; one whose name another
+        // box has in other case would share its folder.
+        try checkNewName(name)
         // A size that was asked for and this Mac cannot run; the image's own is not checked,
         // it may come from another Mac and the start says so.
         if let problem = MachineSize.problem(cpuCount: cpuCount, memoryBytes: memoryBytes) {
@@ -344,6 +352,7 @@ public struct BoxStore: Sendable {
         guard ImageStore.isValidName(name) else {
             throw AgentVMError.invalidBoxName(name)
         }
+        try StoreName.checkExact(name, in: boxesDirectory, what: "box")
         return try Self.read(name: name, directory: boxesDirectory.appendingPathComponent(name, isDirectory: true))
     }
 
@@ -600,6 +609,7 @@ public struct BoxStore: Sendable {
         guard ImageStore.isValidName(name) else {
             throw AgentVMError.invalidBoxName(name)
         }
+        try StoreName.checkExact(name, in: boxesDirectory, what: "box")
         let directory = boxesDirectory.appendingPathComponent(name, isDirectory: true)
         guard FileSystem.exists(directory.path) else {
             throw AgentVMError.boxNotFound(name)
@@ -738,9 +748,12 @@ public struct BoxStore: Sendable {
         let oldDirectory = boxesDirectory.appendingPathComponent(old, isDirectory: true)
         let newDirectory = boxesDirectory.appendingPathComponent(new, isDirectory: true)
         let mark = RenameMark(from: old, to: new)
-        if !FileSystem.exists(oldDirectory.path) {
+        // Listed, not merely found: the disk ignores case, so after a change of case only the
+        // old path still opens the folder.
+        if try !StoreName.isListed(old, in: boxesDirectory) {
             // The folder moved and the rest did not happen: finished here.
             guard RenameMark.read(in: newDirectory) == mark else {
+                try StoreName.checkExact(old, in: boxesDirectory, what: "box")
                 throw AgentVMError.boxNotFound(old)
             }
             guard let lock = try FolderLock.tryAcquire(newDirectory.appendingPathComponent(Self.lockName).path, patience: FolderLock.testPatience) else {
@@ -749,7 +762,9 @@ public struct BoxStore: Sendable {
             defer { lock.release() }
             return try finishRename(mark, directory: newDirectory)
         }
-        guard !FileSystem.exists(newDirectory.path) else {
+        // A change of case only ("work" to "Work") is a rename of the folder onto itself.
+        try StoreName.checkFree(new, in: boxesDirectory, what: "box", except: old)
+        guard try !StoreName.isListed(new, in: boxesDirectory) else {
             throw AgentVMError.boxExists(new)
         }
         let lock: FolderLock?

@@ -170,7 +170,11 @@ import Testing
         try logs.remove(ids[29]!)
         #expect(logs.list().map(\.logs.box) == ["b0"])
         #expect(throws: AgentVMError.keptLogsNotFound(ids[29]!)) { try logs.remove(ids[29]!) }
-        for id in ["", "..", "../Boxes", "b0/x", "B0", ".hidden"] {
+        // Another case of a kept folder's name is not that folder.
+        let upper = ids[0]!.uppercased()
+        #expect(KeptLogs.isValidID(upper) && !logs.exists(upper))
+        #expect(throws: AgentVMError.keptLogsNotFound(upper)) { try logs.remove(upper) }
+        for id in ["", "..", "../Boxes", "b0/x", "b0 x", ".hidden"] {
             #expect(!KeptLogs.isValidID(id), "\(id)")
             #expect(throws: AgentVMError.keptLogsNotFound(id)) { try logs.remove(id) }
         }

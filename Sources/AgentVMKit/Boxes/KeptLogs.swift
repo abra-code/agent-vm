@@ -127,7 +127,7 @@ public struct KeptLogs: Sendable {
 
     /// Whether `id` can be the name of a folder in Logs/: a box's name, "-" and a time.
     public static func isValidID(_ id: String) -> Bool {
-        return id.range(of: #"^[a-z0-9][a-z0-9._-]{0,90}$"#, options: .regularExpression) != nil
+        return id.range(of: #"^[A-Za-z0-9][A-Za-z0-9._-]{0,90}$"#, options: .regularExpression) != nil
     }
 
     static func stamp(_ date: Date) -> String {
@@ -410,7 +410,8 @@ public struct KeptLogs: Sendable {
     /// Whether Logs/ has a folder of that name: one `list` shows, or one without a readable
     /// record, which `remove` takes too.
     public func exists(_ id: String) -> Bool {
-        return Self.isValidID(id) && FileSystem.exists(directory.appendingPathComponent(id, isDirectory: true).path)
+        // Listed as it is: the disk ignores case, and a path made from "B0-..." opens "b0-...".
+        return Self.isValidID(id) && (try? StoreName.isListed(id, in: directory)) == true
     }
 
     /// The folder of one deleted box's logs.

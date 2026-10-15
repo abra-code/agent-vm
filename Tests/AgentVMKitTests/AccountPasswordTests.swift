@@ -303,6 +303,11 @@ import Testing
         #expect(throws: AgentVMError.imageNotFound("dve")) {
             try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes, except: ["dve"])
         }
+        // Another case of an image's name is not that image, though a path made from it opens
+        // the image's folder.
+        #expect(throws: AgentVMError.nameDiffersInCase(what: "image", name: "DEV", existing: "dev")) {
+            try AccountPasswordMove.run(images: fixture.images, boxes: fixture.boxes, except: ["DEV"])
+        }
         #expect(AccountPasswordMove.fileCount(store: fixture.images.root) == 4)
         #expect(try fixture.images.image(named: "dev").record.passwordID == nil)
         // An image that is gone is named for the boxes made from it.

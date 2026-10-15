@@ -96,6 +96,7 @@ extension ImageBuilder {
         guard daemon.error == nil, let daemonDigest = daemon.digest else {
             throw AgentVMError.hostNotReady("the Linux guest daemon \(options.guestDaemon.path) is missing or not a Linux program (\(daemon.error ?? "no digest")); Scripts/build.sh builds it when the swift.org toolchain and its static Linux SDK are installed")
         }
+        try StoreName.checkFree(options.name, in: store.imagesDirectory, what: "image")
         if FileSystem.exists(store.imagesDirectory.appendingPathComponent(options.name).path) {
             let state = (try? store.image(named: options.name))?.record.state.rawValue ?? "unreadable"
             throw AgentVMError.imageExists(name: options.name, state: state)

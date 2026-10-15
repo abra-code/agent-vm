@@ -150,11 +150,35 @@ test_a_stopped_box_refuses_exec_send_and_stop() {
     assert_missing "$AGENT_VM_HOME/Boxes/b1" || return 1
 }
 
+# Names keep their case and are matched with it; one that differs from another in case only is
+# refused, since the Mac's disk keeps both in one folder; a rename may change the case alone.
+test_names_keep_their_case() {
+    fake_image dev
+    run_avm box create Work --image dev
+    assert_status 0 || return 1
+    run_avm box create work --image dev
+    assert_status 1 || return 1
+    assert_err_contains "box Work already exists, and work differs from it in case only" || return 1
+    run_avm box info work
+    assert_status 1 || return 1
+    assert_err_contains "no box work, but there is box Work" || return 1
+    run_avm box rename Work WORK
+    assert_status 0 || return 1
+    run_avm box list
+    assert_out_contains "WORK" || return 1
+    assert_not_contains "$OUT" "Work " "box list" || return 1
+    run_avm image rename dev Dev
+    assert_status 0 || return 1
+    run_avm box info WORK
+    assert_status 0 || return 1
+    assert_out_contains "image Dev" || return 1
+}
+
 test_names_are_checked() {
-    run_avm box create Bad --image dev
+    run_avm box create "Bad!" --image dev
     assert_status 64 || return 1
     assert_err_contains "not a usable box name" || return 1
-    run_avm box delete Bad
+    run_avm box delete "Bad!"
     assert_status 1 || return 1
     assert_err_contains "not a usable box name" || return 1
     run_avm image delete ../etc

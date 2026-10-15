@@ -23,10 +23,10 @@ import Testing
     }
 
     @Test func namesAreRestricted() {
-        for good in ["macos-dev", "a", "dev.27", "x_1"] {
+        for good in ["macos-dev", "a", "dev.27", "x_1", "Upper", "MyBox-2"] {
             #expect(ImageStore.isValidName(good), "\(good)")
         }
-        for bad in ["", ".", "..", ".hidden", "-x", "Upper", "a/b", "a b", String(repeating: "a", count: 64)] {
+        for bad in ["", ".", "..", ".hidden", "-x", "_x", "a/b", "a b", "caf\u{00E9}", String(repeating: "a", count: 64)] {
             #expect(!ImageStore.isValidName(bad), "\(bad)")
         }
     }
@@ -389,7 +389,8 @@ import Testing
         }
         #expect(await refusal("missing") == .imageNotFound("missing"))
         #expect(await refusal("base", name: "base") == .imageExists(name: "base", state: "ready"))
-        #expect(await refusal("base", name: "Bad") == .invalidImageName("Bad"))
+        #expect(await refusal("base", name: "Bad!") == .invalidImageName("Bad!"))
+        #expect(await refusal("base", name: "Base") == .nameTakenInOtherCase(what: "image", name: "Base", existing: "base"))
         // Nothing was created by the refusals.
         #expect(try store.list().images.map(\.name) == ["base", "half", "old"])
     }

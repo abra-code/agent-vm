@@ -306,15 +306,15 @@ public enum ConnectPlanner {
     }
 
     /// A name to suggest for a kept box: the folder's last component in the box-name alphabet
-    /// (lower case; every run of other characters one "-"; no "-", "." or "_" at either end; at
+    /// (case kept; every run of other characters one "-"; no "-", "." or "_" at either end; at
     /// most `maxLength` less 4 characters, leaving room for a suffix), else the image's name plus
-    /// "-box"; then "-2", "-3" and so on while `existing` has it.
+    /// "-box"; then "-2", "-3" and so on while `existing` has it in any case.
     public static func suggestedBoxName(project: String?, image: String, existing: Set<String>, maxLength: Int = 63) -> String {
         let room = max(1, maxLength - 4)
         var base = ""
         if let project {
             var previousDash = false
-            for character in (project as NSString).lastPathComponent.lowercased() {
+            for character in (project as NSString).lastPathComponent {
                 if character.isASCII && (character.isLetter || character.isNumber || "._-".contains(character)) {
                     base.append(character)
                     previousDash = false
@@ -332,7 +332,8 @@ public enum ConnectPlanner {
         }
         var name = base
         var suffix = 2
-        while existing.contains(name) {
+        let taken = Set(existing.map { $0.lowercased() })
+        while taken.contains(name.lowercased()) {
             name = "\(base)-\(suffix)"
             suffix += 1
         }

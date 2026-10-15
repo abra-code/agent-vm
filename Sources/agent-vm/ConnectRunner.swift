@@ -235,7 +235,7 @@ struct ConnectRunner {
                 if (try? boxStore.box(named: name)) != nil {
                     throw AgentVMError.boxExists(name)
                 }
-                try boxStore.checkNameLength(name)
+                try boxStore.checkNewName(name)
             }
             // Rules and packs checked before anything is made.
             let network = BoxNetwork(mode: .allowlist, allow: newBox.allow)
@@ -461,12 +461,16 @@ struct ConnectRunner {
         let suggested = ConnectPlanner.suggestedBoxName(project: project, image: image.name, existing: existing, maxLength: limit)
         let boxName = try LineInput(prompt: "Name of the new box: ", initial: suggested) { name in
             guard ImageStore.isValidName(name) else {
-                return "a box name is lower-case letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit, at most 63"
+                return "a box name is letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit, at most 63"
             }
             guard name.utf8.count <= limit else {
                 return "a box name can have at most \(limit) characters in this store (the path of the box's control socket is limited)"
             }
-            return (try? boxStore.box(named: name)) == nil ? nil : "box \(name) already exists"
+            // The disk ignores case: another box's name in other case is taken too.
+            guard let other = existing.first(where: { $0.lowercased() == name.lowercased() }) else {
+                return nil
+            }
+            return other == name ? "box \(name) already exists" : "box \(other) already exists, and \(name) differs from it in case only"
         }.run(on: terminal)
         return .new(image: image, name: boxName)
     }

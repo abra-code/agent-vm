@@ -292,6 +292,7 @@ public final class ImageBuilder {
             try recipe.check(serves: .macOS, image: options.name)
         }
         // Fail on an existing name before reading the multi-GB restore image.
+        try StoreName.checkFree(options.name, in: store.imagesDirectory, what: "image")
         if FileSystem.exists(store.imagesDirectory.appendingPathComponent(options.name).path) {
             let state = (try? store.image(named: options.name))?.record.state.rawValue ?? "unreadable"
             throw AgentVMError.imageExists(name: options.name, state: state)
@@ -381,6 +382,7 @@ public final class ImageBuilder {
             throw AgentVMError.invalidImageName(options.name)
         }
         subject = shownName ?? options.name
+        try StoreName.checkFree(options.name, in: store.imagesDirectory, what: "image")
         if FileSystem.exists(store.imagesDirectory.appendingPathComponent(options.name).path) {
             let state = (try? store.image(named: options.name))?.record.state.rawValue ?? "unreadable"
             throw AgentVMError.imageExists(name: options.name, state: state)

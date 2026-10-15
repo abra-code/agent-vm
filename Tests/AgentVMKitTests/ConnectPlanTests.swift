@@ -324,7 +324,9 @@ import Testing
         #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/src/app", image: "dev", existing: []) == "app")
         #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/src/app", image: "dev", existing: ["app"]) == "app-2")
         #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/src/app", image: "dev", existing: ["app", "app-2"]) == "app-3")
-        #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/My App!", image: "dev", existing: []) == "my-app")
+        #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/My App!", image: "dev", existing: []) == "My-App")
+        // Taken in other case is taken: the disk would keep both in one folder.
+        #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/My App!", image: "dev", existing: ["my-app"]) == "My-App-2")
         #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/.hidden_", image: "dev", existing: []) == "hidden")
         #expect(ConnectPlanner.suggestedBoxName(project: "/Users/me/\u{00E9}\u{00E9}", image: "dev", existing: []) == "dev-box")
         #expect(ConnectPlanner.suggestedBoxName(project: nil, image: "dev-agents", existing: []) == "dev-agents-box")

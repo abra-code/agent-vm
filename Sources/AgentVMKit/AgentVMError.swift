@@ -31,7 +31,7 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case invalidUndoPath(String, reason: String)
     /// `session discard --older-than` could not discard these sessions (id and reason each).
     case sessionsNotDiscarded([String])
-    /// An image name that is not lower-case letters, digits, ".", "_" or "-".
+    /// An image name that is not letters, digits, ".", "_" or "-".
     case invalidImageName(String)
     case imageExists(name: String, state: String)
     case imageNotFound(String)
@@ -64,11 +64,16 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case invalidAgents(path: String, reason: String)
     /// An unusable --env entry or environment file (the message never includes a value).
     case invalidEnvironment(String)
-    /// A box name that is not lower-case letters, digits, ".", "_" or "-".
+    /// A box name that is not letters, digits, ".", "_" or "-".
     case invalidBoxName(String)
     /// A box name too long for this store: the path of the box's control socket would pass
     /// what macOS allows. `existing`: a box that has the name already, which a rename fixes.
     case boxNameTooLong(name: String, limit: Int, boxes: String, existing: Bool)
+    /// A box or image (`what`) asked for by a name the store has only in other case.
+    case nameDiffersInCase(what: String, name: String, existing: String)
+    /// A new box or image name that another one has in other case: the Mac's disk would keep
+    /// both in one folder.
+    case nameTakenInOtherCase(what: String, name: String, existing: String)
     case boxExists(String)
     case boxNotFound(String)
     /// No folder of that name in Logs/ (KeptLogs).
@@ -182,7 +187,7 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
         case let .sessionsNotDiscarded(failures):
             return "could not discard every session: \(failures.joined(separator: "; "))"
         case let .invalidImageName(name):
-            return "\(name) is not a usable image name (lower-case letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit, at most 63)"
+            return "\(name) is not a usable image name (letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit, at most 63)"
         case let .imageExists(name, state):
             return "image \(name) already exists (\(state)); delete it first with `agent-vm image delete \(name)`"
         case let .imageNotFound(name):
@@ -214,7 +219,7 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
         case let .invalidEnvironment(message):
             return message
         case let .invalidBoxName(name):
-            return "\(name) is not a usable box name (lower-case letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit, at most 63)"
+            return "\(name) is not a usable box name (letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit, at most 63)"
         case let .boxNameTooLong(name, limit, boxes, existing):
             let socket = "\(boxes)/<name>/\(BoxStore.controlSocketName)"
             guard limit >= 1 else {
@@ -222,6 +227,10 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             }
             let fix = existing ? "; `agent-vm box rename \(name) <name of at most \(limit) characters>` lets it start" : ""
             return "box name \(name) has \(name.utf8.count) characters, and in this store a box name can have at most \(limit): the box's control socket, \(socket), must fit the \(ControlChannel.maxPathBytes) bytes macOS allows a socket's path\(fix)"
+        case let .nameDiffersInCase(what, name, existing):
+            return "no \(what) \(name), but there is \(what) \(existing): names are matched with their case"
+        case let .nameTakenInOtherCase(what, name, existing):
+            return "\(what) \(existing) already exists, and \(name) differs from it in case only: the Mac's disk would keep both in one folder"
         case let .boxExists(name):
             return "box \(name) already exists; delete it first with `agent-vm box delete \(name)`"
         case let .boxNotFound(name):
