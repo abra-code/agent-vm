@@ -1,4 +1,5 @@
 # AgentVM CLI tools
+![AgentVM Icon](Icon/robot-small.png)
 
 Run AI agents and their tools inside disposable virtual machines on your Mac, running macOS or Linux, so a mistaken, prompt-injected or malicious agent cannot reach the rest of your Mac.
 
