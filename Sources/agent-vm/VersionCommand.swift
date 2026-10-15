@@ -24,7 +24,10 @@ struct VersionCommand: ParsableCommand {
             Last come the Linux systems `image create --linux` takes; with --json, linuxReleases \
             lists them (id, name, distribution, version; the newest of a distribution first) and \
             imageSizes gives, for macos and for linux, a new image's default processors, memory \
-            and disk, the smallest disk, and the least a copy's disk may grow by.
+            and disk, the smallest disk, and the least a copy's disk may grow by. \
+            maxBoxNameLength is the longest box name this store can start (AGENT_VM_HOME \
+            counts): a box's control socket, Boxes/<name>/control.sock, must fit the 103 bytes \
+            macOS allows a socket's path.
             """)
 
     @Flag(name: .long, help: "Print machine-readable JSON instead of text.")
@@ -43,13 +46,17 @@ struct VersionCommand: ParsableCommand {
         var linuxReleases: [LinuxRelease]
         /// A new image's default and smallest sizes, under each guest's word ("macos", "linux").
         var imageSizes: [String: ImageSizes]
+        /// The longest box name this store can start (BoxStore.maxBoxNameLength); the store is
+        /// not read.
+        var maxBoxNameLength: Int
     }
 
     func run() throws {
         let report = Report(version: AgentVM.version, controlProtocol: ControlChannel.version, guestProtocol: AgentVM.guestProtocolVersion,
                             path: try AskpassEntry.executablePath(), guestDaemon: LocalGuestDaemon.inspect(try ImageCommand.localGuestDaemon()),
                             linuxGuestDaemon: LocalGuestDaemon.inspectLinux(try ImageCommand.localGuestDaemon(for: .linux)),
-                            linuxReleases: LinuxRelease.all, imageSizes: ImageSizes.all)
+                            linuxReleases: LinuxRelease.all, imageSizes: ImageSizes.all,
+                            maxBoxNameLength: BoxStore(root: SessionStore.defaultRoot()).maxBoxNameLength)
         if json {
             try Output.json(report)
             return
@@ -67,6 +74,11 @@ struct VersionCommand: ParsableCommand {
                 print("linux/agent-vm-guest: \(linux.error ?? "not found")")
             }
             print("Linux systems for image create --linux: \(report.linuxReleases.map { "\($0.id) (\($0.name))" }.joined(separator: ", "))")
+            if report.maxBoxNameLength > 0 {
+                print("Box names in this store: at most \(report.maxBoxNameLength) characters")
+            } else {
+                print("Box names in this store: none fits (a box's control socket path would pass what macOS allows); use a shorter AGENT_VM_HOME")
+            }
         }
         if let error = daemon.error {
             print("agent-vm-guest: \(error)")

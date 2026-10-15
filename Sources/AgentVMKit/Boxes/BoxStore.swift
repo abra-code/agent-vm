@@ -230,6 +230,32 @@ public struct BoxStore: Sendable {
         return root.appendingPathComponent("Boxes", isDirectory: true)
     }
 
+    /// The longest box name a box of this store can start with: its control socket,
+    /// Boxes/<name>/control.sock, must fit the 103 bytes macOS allows a socket's path. At most
+    /// 63 (`ImageStore.isValidName`); 0 when the store's folder leaves no room.
+    public var maxBoxNameLength: Int {
+        return Self.maxNameLength(boxes: boxesDirectory.path)
+    }
+
+    static func maxNameLength(boxes: String) -> Int {
+        let around = (boxes + "/" + "/" + controlSocketName).utf8.count
+        return max(0, min(63, ControlChannel.maxPathBytes - around))
+    }
+
+    /// Refuses `name` when it is longer than `maxBoxNameLength`. `existing`: a box that has the
+    /// name already, which the refusal tells to rename.
+    public func checkNameLength(_ name: String, existing: Bool = false) throws {
+        try Self.checkNameLength(name, boxes: boxesDirectory.path, existing: existing)
+    }
+
+    static func checkNameLength(_ name: String, boxes: String, existing: Bool) throws {
+        let limit = maxNameLength(boxes: boxes)
+        guard name.utf8.count > limit else {
+            return
+        }
+        throw AgentVMError.boxNameTooLong(name: name, limit: limit, boxes: boxes, existing: existing)
+    }
+
     /// Clones a ready image into a new box. The image's lock is held while cloning, so the
     /// image cannot be deleted or rebuilt halfway.
     public func create(name: String, from image: GoldenImage, imageStore: ImageStore,
@@ -238,6 +264,8 @@ public struct BoxStore: Sendable {
         guard ImageStore.isValidName(name) else {
             throw AgentVMError.invalidBoxName(name)
         }
+        // A box whose supervisor could not listen would never start.
+        try checkNameLength(name)
         // A size that was asked for and this Mac cannot run; the image's own is not checked,
         // it may come from another Mac and the start says so.
         if let problem = MachineSize.problem(cpuCount: cpuCount, memoryBytes: memoryBytes) {
@@ -472,7 +500,7 @@ public struct BoxStore: Sendable {
 
     /// Deletes box `name` and creates it again from `image` with the same CPUs, memory,
     /// network rules and disposable flag: a fresh clone of the image, with a new identity and
-    /// empty logs (the old box's are kept, and `deleted` is told where). It checks first what it can (the box stopped, its memory enough to start, its size within what this Mac allows, the image ready and free, the
+    /// empty logs (the old box's are kept, and `deleted` is told where). It checks first what it can (the box stopped, its name short enough for this store, its memory enough to start, its size within what this Mac allows, the image ready and free, the
     /// rules and packs usable), so a refusal leaves the box as it was; a create that still fails
     /// after the delete says how to create the box by hand.
     public func recreate(name: String, from image: GoldenImage, imageStore: ImageStore, collectionPatience: Duration = .seconds(30),
@@ -481,6 +509,9 @@ public struct BoxStore: Sendable {
         guard !old.isRunning else {
             throw AgentVMError.boxRunning(name)
         }
+        // A box made before the length was checked (0.7.53), or in a store that moved:
+        // `create` would refuse its name only after the delete.
+        try checkNameLength(name, existing: true)
         let network = old.record.network ?? .legacy
         let disposable = old.record.disposable == true
         _ = try CompiledPolicy(network, packs: try NetworkPacks.needed(for: network, store: root, builtIn: builtInPacks))
@@ -694,6 +725,7 @@ public struct BoxStore: Sendable {
         guard ImageStore.isValidName(new) else {
             throw AgentVMError.invalidBoxName(new)
         }
+        try checkNameLength(new)
         guard old != new else {
             throw AgentVMError.cannotRename(what: "box \(old)", reason: "\(new) is the name it has")
         }

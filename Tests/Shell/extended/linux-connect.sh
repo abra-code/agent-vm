@@ -193,7 +193,14 @@ test_avm_finds_an_agent() {
     on_terminal ':' "$SCRATCH/avm" new "$_image" --agent missing --no-project
     unset AGENT_VM_AGENTS_FILE
     assert_eq "$_found" "0" "the status of the agent's run" || return 1
-    assert_contains "$_output" "Probe in box avm-$_image-" "the agent's run" || return 1
+    # The temporary box's name holds as much of the image's name as the store leaves room for:
+    # "avm-", the image's name, "-" and six hex digits within maxBoxNameLength.
+    local _limit
+    _limit="$("$AGENT_VM" version --json | /usr/bin/jq -r .maxBoxNameLength)"
+    case "$_limit" in
+        ''|*[!0-9]*) fail "version --json gave no maxBoxNameLength: $_limit"; return 1 ;;
+    esac
+    assert_contains "$_output" "Probe in box avm-${_image:0:$(( _limit - 11 ))}-" "the agent's run" || return 1
     assert_not_contains "$_output" "not installed" "the agent's run" || return 1
     # opencode --version prints a version number.
     case "$_output" in
@@ -201,6 +208,6 @@ test_avm_finds_an_agent() {
         *) fail "no version in the output"; return 1 ;;
     esac
     assert_status 1 || return 1
-    assert_out_contains "Missing (no-such-agent) is not installed in box avm-$_image-" || return 1
+    assert_out_contains "Missing (no-such-agent) is not installed in box avm-${_image:0:$(( _limit - 11 ))}-" || return 1
     assert_out_contains "then npm install --global no-such-agent" || return 1
 }

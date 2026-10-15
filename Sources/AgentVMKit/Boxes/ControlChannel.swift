@@ -152,16 +152,17 @@ public protocol ControlHandler: AnyObject, Sendable {
 public enum ControlChannel {
     public static let version = 1
     static let maxMessage = 65536
+    /// The longest socket path macOS allows: sun_path less its closing zero (103 bytes).
+    static let maxPathBytes = MemoryLayout.size(ofValue: sockaddr_un().sun_path) - 1
 
     // MARK: - Sockets
 
     static func address(_ path: String) throws -> sockaddr_un {
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
-        let capacity = MemoryLayout.size(ofValue: address.sun_path)
         let bytes = Array(path.utf8)
-        guard bytes.count < capacity else {
-            throw AgentVMError.hostNotReady("the control socket path \(path) is longer than macOS allows (\(capacity - 1) bytes); use a shorter AGENT_VM_HOME")
+        guard bytes.count <= maxPathBytes else {
+            throw AgentVMError.hostNotReady("the control socket path \(path) is longer than macOS allows (\(maxPathBytes) bytes); use a shorter AGENT_VM_HOME")
         }
         withUnsafeMutableBytes(of: &address.sun_path) { raw in
             raw.copyBytes(from: bytes)

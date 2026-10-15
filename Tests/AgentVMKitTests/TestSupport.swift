@@ -15,9 +15,16 @@ final class Scratch {
     let store: SessionStore
 
     init() throws {
-        let base = FileManager.default.temporaryDirectory
-            .appendingPathComponent("agent-vm-tests-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        // Under /private/tmp with a short name, not in $TMPDIR (/private/var/folders/...): a
+        // box's control socket, store/Boxes/<name>/control.sock, must fit 103 bytes, and the
+        // usual temporary folder leaves no room for a box name (BoxStore.maxBoxNameLength).
+        // mkdtemp: a folder no other test has, made at once.
+        var template = Array("/private/tmp/agent-vm-tests-XXXXXXXX".utf8CString)
+        guard mkdtemp(&template) != nil else {
+            throw AgentVMError.system(operation: "create a scratch folder in /private/tmp", code: errno)
+        }
+        let path = String(decoding: template.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        let base = URL(fileURLWithPath: path, isDirectory: true)
         // Canonical path, so assertions compare against what the store records.
         root = URL(fileURLWithPath: try FileSystem.canonicalPath(base.path), isDirectory: true)
         project = root.appendingPathComponent("project", isDirectory: true)

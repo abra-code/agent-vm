@@ -66,6 +66,9 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
     case invalidEnvironment(String)
     /// A box name that is not lower-case letters, digits, ".", "_" or "-".
     case invalidBoxName(String)
+    /// A box name too long for this store: the path of the box's control socket would pass
+    /// what macOS allows. `existing`: a box that has the name already, which a rename fixes.
+    case boxNameTooLong(name: String, limit: Int, boxes: String, existing: Bool)
     case boxExists(String)
     case boxNotFound(String)
     /// No folder of that name in Logs/ (KeptLogs).
@@ -212,6 +215,13 @@ public enum AgentVMError: Error, Equatable, CustomStringConvertible {
             return message
         case let .invalidBoxName(name):
             return "\(name) is not a usable box name (lower-case letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit, at most 63)"
+        case let .boxNameTooLong(name, limit, boxes, existing):
+            let socket = "\(boxes)/<name>/\(BoxStore.controlSocketName)"
+            guard limit >= 1 else {
+                return "box \(name) cannot be made or started in this store: a box's control socket, \(socket), must fit the \(ControlChannel.maxPathBytes) bytes macOS allows a socket's path, and the store's folder leaves no room for a name; use a shorter AGENT_VM_HOME"
+            }
+            let fix = existing ? "; `agent-vm box rename \(name) <name of at most \(limit) characters>` lets it start" : ""
+            return "box name \(name) has \(name.utf8.count) characters, and in this store a box name can have at most \(limit): the box's control socket, \(socket), must fit the \(ControlChannel.maxPathBytes) bytes macOS allows a socket's path\(fix)"
         case let .boxExists(name):
             return "box \(name) already exists; delete it first with `agent-vm box delete \(name)`"
         case let .boxNotFound(name):

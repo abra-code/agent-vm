@@ -188,6 +188,8 @@ The shipped recipes are in the `Recipes` folder beside the agent-vm program, the
 | `python/recipe.json` | An update step that follows a name its package manager moves (`python3`); a check that proves more than `--version`. |
 | `agent-clis/recipe.json` | Global npm installs, and an update step that installs the newest. |
 | `acp-agents/recipe.json` | Versions pinned as parameters with defaults; checks that run each program. |
+| `agent-clis-native/recipe.json` | Makers' own install scripts, saved to a file in one command and run in the next; downloads retried; a long silent download with a large timeout; links in `/usr/local/bin`. |
+| `agent-clis-china/recipe.json` | The same, plus a root step for Linux only that installs build tools when they are missing, an archive checked against its maker's checksum list, and a wrapper script where a link does not work. |
 | `xcode/recipe.json` | An input file; what was unpacked from it is checked before it is used; root steps. |
 | `xcode-platforms/recipe.json` | Parameters that hold a list; a long download with a large timeout. |
 | `linux-node/recipe.json` | For Linux: a script copied into the image and run as root, a download checked against the site's checksum list, a setting made as the box user, an update step that does nothing when there is nothing new. |

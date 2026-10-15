@@ -327,6 +327,66 @@ final class BoxScratch {
         #expect(try fixture.boxes.box(named: "b1").record == large)
     }
 
+    /// A box's control socket, Boxes/<name>/control.sock, must fit 103 bytes: the longest name
+    /// is what the store's path leaves, at most 63.
+    @Test func theLongestBoxNameIsWhatTheSocketPathLeaves() throws {
+        #expect(BoxStore.maxNameLength(boxes: "/s/Boxes") == 63)
+        let deep = "/" + String(repeating: "d", count: 70) + "/Boxes"
+        let limit = BoxStore.maxNameLength(boxes: deep)
+        #expect(limit < 63)
+        #expect((deep + "/" + String(repeating: "n", count: limit) + "/" + BoxStore.controlSocketName).utf8.count == ControlChannel.maxPathBytes)
+        #expect(BoxStore.maxNameLength(boxes: "/" + String(repeating: "d", count: 100)) == 0)
+        let fixture = try BoxScratch()
+        #expect(fixture.boxes.maxBoxNameLength == BoxStore.maxNameLength(boxes: fixture.boxes.boxesDirectory.path))
+    }
+
+    /// A name longer than the store leaves is refused by create and rename, before anything is
+    /// made; one exactly as long works.
+    @Test func createAndRenameRefuseANameTooLongForTheStore() throws {
+        let fixture = try BoxScratch()
+        let limit = fixture.boxes.maxBoxNameLength
+        try #require(limit >= 10 && limit < 63)
+        let longest = "b" + String(repeating: "x", count: limit - 1)
+        let tooLong = longest + "x"
+        #expect(throws: AgentVMError.boxNameTooLong(name: tooLong, limit: limit, boxes: fixture.boxes.boxesDirectory.path, existing: false)) {
+            _ = try fixture.boxes.create(name: tooLong, from: fixture.image, imageStore: fixture.images)
+        }
+        #expect(!FileSystem.exists(fixture.boxes.boxesDirectory.appendingPathComponent(tooLong).path))
+        _ = try fixture.boxes.create(name: longest, from: fixture.image, imageStore: fixture.images)
+        _ = try fixture.boxes.create(name: "b1", from: fixture.image, imageStore: fixture.images)
+        #expect(throws: AgentVMError.boxNameTooLong(name: tooLong, limit: limit, boxes: fixture.boxes.boxesDirectory.path, existing: false)) {
+            try fixture.boxes.rename("b1", to: tooLong)
+        }
+        #expect(try fixture.boxes.list().boxes.map(\.name) == [longest, "b1"].sorted())
+    }
+
+    /// A box whose name no longer fits (its store moved deeper, or it was made before the check)
+    /// is refused by recreate before the delete and by start before a supervisor is spawned,
+    /// each telling to rename it.
+    @Test func aBoxWhoseNameNoLongerFitsIsRefusedBeforeAnythingHappens() throws {
+        let fixture = try BoxScratch()
+        let limit = fixture.boxes.maxBoxNameLength
+        try #require(limit >= 10 && limit < 63)
+        let name = "b" + String(repeating: "x", count: limit - 1)
+        _ = try fixture.boxes.create(name: name, from: fixture.image, imageStore: fixture.images)
+        let moved = fixture.scratch.root.appendingPathComponent("deeper", isDirectory: true)
+        try FileManager.default.createDirectory(at: moved, withIntermediateDirectories: true)
+        let root = moved.appendingPathComponent("store", isDirectory: true)
+        try FileManager.default.moveItem(at: fixture.boxes.root, to: root)
+        let images = ImageStore(root: root)
+        let boxes = BoxStore(root: root, builtInPacks: TestPacks.repository)
+        let expected = AgentVMError.boxNameTooLong(name: name, limit: boxes.maxBoxNameLength, boxes: boxes.boxesDirectory.path, existing: true)
+        #expect("\(expected)".contains("agent-vm box rename \(name)"))
+        #expect(throws: expected) {
+            _ = try boxes.recreate(name: name, from: try images.image(named: "dev"), imageStore: images)
+        }
+        let box = try boxes.box(named: name)
+        #expect(throws: expected) {
+            _ = try BoxLauncher.start(box, executable: "/usr/bin/false") { _ in }
+        }
+        #expect(!FileSystem.exists(box.logURL.path))
+    }
+
     @Test func theFittingCommandChangesOnlyWhatIsOver() {
         #expect(MachineSize.fittingCommand(box: "b1", cpuCount: 12, memoryBytes: 8 << 30, maximumCPUs: 8, maximumMemoryBytes: 64 << 30)
             == "`agent-vm box set b1 --cpus 8`")

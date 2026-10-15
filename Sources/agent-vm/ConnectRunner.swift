@@ -231,8 +231,11 @@ struct ConnectRunner {
         if let newBox {
             let image = try imageStore.image(named: newBox.image)
             try Self.checkUsable(image)
-            if let name = newBox.name, (try? boxStore.box(named: name)) != nil {
-                throw AgentVMError.boxExists(name)
+            if let name = newBox.name {
+                if (try? boxStore.box(named: name)) != nil {
+                    throw AgentVMError.boxExists(name)
+                }
+                try boxStore.checkNameLength(name)
             }
             // Rules and packs checked before anything is made.
             let network = BoxNetwork(mode: .allowlist, allow: newBox.allow)
@@ -454,10 +457,14 @@ struct ConnectRunner {
             return .new(image: image, name: nil)
         }
         let existing = Set(((try? boxStore.list().boxes) ?? []).map(\.name))
-        let suggested = ConnectPlanner.suggestedBoxName(project: project, image: image.name, existing: existing)
+        let limit = boxStore.maxBoxNameLength
+        let suggested = ConnectPlanner.suggestedBoxName(project: project, image: image.name, existing: existing, maxLength: limit)
         let boxName = try LineInput(prompt: "Name of the new box: ", initial: suggested) { name in
             guard ImageStore.isValidName(name) else {
                 return "a box name is lower-case letters, digits, \".\", \"_\" and \"-\", starting with a letter or digit, at most 63"
+            }
+            guard name.utf8.count <= limit else {
+                return "a box name can have at most \(limit) characters in this store (the path of the box's control socket is limited)"
             }
             return (try? boxStore.box(named: name)) == nil ? nil : "box \(name) already exists"
         }.run(on: terminal)
@@ -478,13 +485,16 @@ struct ConnectRunner {
     /// A temporary box's name no box has: three tries with random hex.
     private func freeTemporaryName(image: String) throws -> String {
         let existing = Set(((try? boxStore.list().boxes) ?? []).map(\.name))
+        let limit = boxStore.maxBoxNameLength
         for _ in 0..<3 {
-            let name = ConnectPlanner.temporaryName(image: image, random: UInt32.random(in: 0...0xFF_FFFF))
+            let name = ConnectPlanner.temporaryName(image: image, random: UInt32.random(in: 0...0xFF_FFFF), maxLength: limit)
             if !existing.contains(name) {
+                // A store that leaves fewer than 12 characters: refused now, not after --refresh.
+                try boxStore.checkNameLength(name)
                 return name
             }
         }
-        throw AgentVMError.boxExists(ConnectPlanner.temporaryName(image: image, random: 0))
+        throw AgentVMError.boxExists(ConnectPlanner.temporaryName(image: image, random: 0, maxLength: limit))
     }
 
     /// The ready images, each usable or with why not.

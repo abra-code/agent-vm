@@ -299,17 +299,18 @@ public enum ConnectPlanner {
         return steps
     }
 
-    /// A temporary box's name: "avm-", the image's name cut so the whole fits 63 characters,
-    /// "-", and six hex digits of `random`.
-    public static func temporaryName(image: String, random: UInt32) -> String {
-        return "avm-" + String(image.prefix(52)) + "-" + String(format: "%06x", random & 0xFF_FFFF)
+    /// A temporary box's name: "avm-", the image's name cut so the whole fits `maxLength`
+    /// characters (the store's `BoxStore.maxBoxNameLength`), "-", and six hex digits of `random`.
+    public static func temporaryName(image: String, random: UInt32, maxLength: Int = 63) -> String {
+        return "avm-" + String(image.prefix(max(1, maxLength - 11))) + "-" + String(format: "%06x", random & 0xFF_FFFF)
     }
 
     /// A name to suggest for a kept box: the folder's last component in the box-name alphabet
     /// (lower case; every run of other characters one "-"; no "-", "." or "_" at either end; at
-    /// most 59 characters, leaving room for a suffix), else the image's name plus "-box"; then
-    /// "-2", "-3" and so on while `existing` has it.
-    public static func suggestedBoxName(project: String?, image: String, existing: Set<String>) -> String {
+    /// most `maxLength` less 4 characters, leaving room for a suffix), else the image's name plus
+    /// "-box"; then "-2", "-3" and so on while `existing` has it.
+    public static func suggestedBoxName(project: String?, image: String, existing: Set<String>, maxLength: Int = 63) -> String {
+        let room = max(1, maxLength - 4)
         var base = ""
         if let project {
             var previousDash = false
@@ -323,11 +324,11 @@ public enum ConnectPlanner {
                 }
             }
             base = String(base.drop { "-._".contains($0) }.reversed().drop { "-._".contains($0) }.reversed())
-            base = String(base.prefix(59))
+            base = String(base.prefix(room))
             base = String(base.reversed().drop { "-._".contains($0) }.reversed())
         }
         if base.isEmpty {
-            base = String(image.prefix(59 - 4)) + "-box"
+            base = String(image.prefix(max(1, room - 4))) + "-box"
         }
         var name = base
         var suffix = 2

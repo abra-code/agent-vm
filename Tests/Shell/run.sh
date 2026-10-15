@@ -147,11 +147,26 @@ run_watched() {
     TEST_PGID=""
 }
 
-# run_test <tier> <function>: one test; a fast test gets a store of its own.
+# run_test <tier> <function>: one test; a fast test gets a store of its own. The store has a
+# short path of its own, not under $SCRATCH, which is named after the test: a box's control
+# socket, <store>/Boxes/<name>/control.sock, must fit 103 bytes. $SCRATCH/home links to it.
 run_test() {
     if [ "$1" = "fast" ]; then
-        export AGENT_VM_HOME="$SCRATCH/home"
-        /bin/mkdir -p "$AGENT_VM_HOME"
+        local _home
+        _home="$(/usr/bin/mktemp -d "$SCRATCH_ROOT/h.XXXXXX")"
+        local _status=$?
+        if [ "$_status" -ne 0 ] || [ ! -d "$_home" ]; then
+            printf 'run.sh: cannot create a store folder under %s\n' "$SCRATCH_ROOT" >&2
+            return 2
+        fi
+        /bin/ln -s "$_home" "$SCRATCH/home"
+        _status=$?
+        if [ "$_status" -ne 0 ]; then
+            printf 'run.sh: cannot link %s to %s\n' "$SCRATCH/home" "$_home" >&2
+            /bin/rm -rf "$_home"
+            return 2
+        fi
+        export AGENT_VM_HOME="$_home"
     fi
     "$2"
 }
@@ -247,6 +262,12 @@ run_file() {
                 /usr/bin/tail -n 40 "$_log" | /usr/bin/sed 's/^/        /'
                 printf '        (scratch folder kept: %s)\n' "$SCRATCH"
             elif [ "$KEEP" -eq 0 ]; then
+                # A fast test's store, which run_test made outside $SCRATCH.
+                if [ -L "$SCRATCH/home" ]; then
+                    local _home
+                    _home="$(/usr/bin/readlink "$SCRATCH/home")"
+                    [ -z "$_home" ] || /bin/rm -rf "$_home"
+                fi
                 /bin/rm -rf "$SCRATCH"
             fi
         done

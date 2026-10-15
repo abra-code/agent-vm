@@ -304,6 +304,20 @@ import Testing
         #expect(ImageStore.isValidName(name))
         #expect(name.hasSuffix("-abcdef"))
         #expect(ConnectPlanner.temporaryName(image: "dev", random: 0x1_000_0001) == "avm-dev-000001")
+        // A store whose path leaves 31 characters: the image's name is cut to fit.
+        let short = ConnectPlanner.temporaryName(image: "rel-0752-linux-agents", random: 0xABCDEF, maxLength: 31)
+        #expect(short == "avm-rel-0752-linux-agent-abcdef")
+        #expect(short.count == 31)
+        #expect(ConnectPlanner.temporaryName(image: "dev", random: 1, maxLength: 31) == "avm-dev-000001")
+    }
+
+    @Test func suggestedNamesFitTheStore() {
+        let name = ConnectPlanner.suggestedBoxName(project: "/Users/me/src/a-project-with-a-long-folder-name", image: "dev", existing: [], maxLength: 20)
+        #expect(name == "a-project-with-a")
+        let taken = ConnectPlanner.suggestedBoxName(project: "/Users/me/src/a-project-with-a-long-folder-name", image: "dev", existing: [name], maxLength: 20)
+        #expect(taken == "a-project-with-a-2")
+        #expect(ConnectPlanner.suggestedBoxName(project: nil, image: "a-long-image-name", existing: [], maxLength: 20) == "a-long-image-box")
+        #expect(ConnectPlanner.suggestedBoxName(project: nil, image: "dev", existing: [], maxLength: 2) == "d-box")
     }
 
     @Test func suggestedNamesAvoidExistingOnes() {

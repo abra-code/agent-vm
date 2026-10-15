@@ -1388,6 +1388,9 @@ public enum BoxLauncher {
                 throw box.record.disposable == true ? AgentVMError.boxDisposed(box.name) : AgentVMError.boxNotFound(box.name)
             }
         }
+        // A name too long for the control socket (a box made before 0.7.53, or a store that
+        // moved): its supervisor could not listen, and the start would say only that it exited.
+        try BoxStore.checkNameLength(box.name, boxes: box.directory.deletingLastPathComponent().path, existing: true)
         // A box made before the smallest size was checked (0.7.51) would only time out, after
         // 180 s of a guest that never answers.
         let guest = box.record.effectiveGuest
