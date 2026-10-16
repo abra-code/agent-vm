@@ -277,15 +277,20 @@ extension ImageBuilder {
         // A restore image brings nothing from the base. When the base had a recipe (the record
         // says so) and the list holds none of the base's, it was built on a base from before
         // images kept every recipe: installing anew would drop what that recipe installed.
-        if base == nil, let from = image.record.derivedFrom, from.recipeDigest != nil,
+        // A record that says the base listed them is not such an image, though every inherited
+        // entry may have been run again here and taken over (0.7.56).
+        if base == nil, let from = image.record.derivedFrom, from.recipeDigest != nil, from.recipesListed != true,
            !(image.record.recipes ?? []).contains(where: { $0.inheritedFrom != nil }) {
             throw refuse("it was built from \(from.image) before agent-vm kept every recipe, so what ran on its base is not known: rebuild it with --from, or create a new image with all the recipes")
         }
-        // What the start already holds does not run again: a recipe with a digest in the
-        // start's list, and what the image inherited from that very image (the start may hold
+        // What the start already holds does not run again: a recipe the start's list has run
+        // the same way (the same files, input files and parameters: Xcode from a newer .xip
+        // runs again), and what the image inherited from that very image (the start may hold
         // a newer version of that recipe by now, and the old one must not run over it).
-        let held = Set((base?.record.recipes ?? base?.record.recipe.map { [$0] } ?? []).map(\.digest))
-        let replayed = kept.filter { !held.contains($0.info.digest) && (base == nil || $0.info.inheritedFrom != base?.name) }
+        let held = base?.record.recipes ?? base?.record.recipe.map { [$0] } ?? []
+        let replayed = kept.filter { entry in
+            !held.contains { $0.ranLike(entry.info) } && (base == nil || entry.info.inheritedFrom != base?.name)
+        }
         if let base, replayed.isEmpty {
             throw refuse("\(image.name) keeps no recipe that \(base.name) lacks: a rebuild would make a fresh copy of \(base.name), without anything set up in \(image.name) by hand. For that, delete it and run `agent-vm image create \(image.name) --from \(base.name)`")
         }

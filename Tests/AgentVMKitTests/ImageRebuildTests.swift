@@ -140,6 +140,11 @@ import Testing
         }
         #expect(reason(options("tools", restore: true))?.contains("what ran on its base is not known") == true)
         #expect(reason(options("tools", base: "plain")) == nil)
+        // Made since 0.7.56 from a base that listed its recipes, all of which ran again here and
+        // took their places: what ran on the base is known, and a restore image is fine.
+        try store.update(tools) { $0.derivedFrom?.recipesListed = true }
+        #expect(reason(options("tools", restore: true))?.contains("what ran on its base is not known") != true)
+        try store.update(tools) { $0.derivedFrom?.recipesListed = nil }
         try store.update(tools) { record in
             record.recipes = nil
             record.recipe = nil
@@ -294,5 +299,75 @@ import Testing
         let old = try JSONDecoder().decode(ImageRecord.InputInfo.self, from: Data(#"{"name":"xcode","file":"Xcode.xip","bytes":3,"sha256":"dd"}"#.utf8))
         #expect(old.path == nil)
         #expect(ImageStore.rebuildName(for: "tools") == "tools.rebuild")
+    }
+
+    /// A recipe the start ran with another input file (or other parameters) is not what the
+    /// start holds: it runs again. Before 0.7.56 the recipe's digest alone decided, and an image
+    /// that got a newer Xcode on top of its base's came back with the base's Xcode.
+    @MainActor
+    @Test func aRecipeTheStartRanAnotherWayRunsAgain() throws {
+        let scratch = try Scratch()
+        let (store, xip) = try images(in: scratch)
+        let builder = ImageBuilder(store: store) { (_: ProgressEvent) in }
+        // `dev` gets the Xcode recipe from Xcode_27.xip; `tools` ran it again, from another file.
+        let dev = try store.image(named: "dev")
+        let folder = dev.recipesURL.appendingPathComponent("2-xcode", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: try store.image(named: "tools").recipesURL.appendingPathComponent("2-xcode/recipe.json"),
+                                         to: folder.appendingPathComponent("recipe.json"))
+        let older = ImageRecord.InputInfo(name: "xcode", file: "Xcode_27.xip", bytes: 3, sha256: "d0", path: xip.path)
+        try store.update(dev) { record in
+            record.recipes?.append(ImageRecord.RecipeInfo(description: "Xcode", digest: "bb", inputs: [older], name: "xcode", folder: "2-xcode"))
+        }
+        #expect(try builder.rebuildPlan(options("tools")).recipes.map(\.name) == ["xcode", "agents"])
+        // The same file: the start holds it, so it does not run again.
+        let tools = try store.image(named: "tools")
+        try store.update(tools) { $0.recipes?[1].inputs = [older] }
+        #expect(try builder.rebuildPlan(options("tools")).recipes.map(\.name) == ["agents"])
+        // The same file and other parameters: it runs again.
+        try store.update(tools) { $0.recipes?[1].parameters = ["beta": "1"] }
+        #expect(try builder.rebuildPlan(options("tools")).recipes.map(\.name) == ["xcode", "agents"])
+    }
+
+    @Test func aRecipeTakesThePlaceOfOneOfItsName() {
+        func info(_ name: String?, _ folder: String?, digest: String = "aa") -> ImageRecord.RecipeInfo {
+            return ImageRecord.RecipeInfo(description: nil, digest: digest, name: name, folder: folder)
+        }
+        let base = [info("homebrew", "1-homebrew"), info("xcode", "2-xcode"), info("platforms", "3-platforms")]
+        // In the old one's place, so what came after it (the simulators, say) still comes after.
+        var placed = ImageRecord.RecipeInfo.placing(info("xcode", "4-xcode", digest: "bb"), in: base)
+        #expect(placed.list.map(\.folder) == ["1-homebrew", "4-xcode", "3-platforms"])
+        #expect(placed.list[1].digest == "bb" && placed.dropped == ["2-xcode"])
+        // A new name goes at the end; a recipe without a name is always added.
+        placed = ImageRecord.RecipeInfo.placing(info("node", "4-node"), in: base)
+        #expect(placed.list.map(\.folder) == ["1-homebrew", "2-xcode", "3-platforms", "4-node"] && placed.dropped.isEmpty)
+        placed = ImageRecord.RecipeInfo.placing(info(nil, "4-recipe"), in: [info(nil, "1-recipe")])
+        #expect(placed.list.count == 2 && placed.dropped.isEmpty)
+        // An image that lists one twice (made before 0.7.56): both go, the first one's place is kept.
+        let twice = [info("xcode", "6-xcode"), info("agents", "7-agents"), info("xcode", "8-xcode")]
+        placed = ImageRecord.RecipeInfo.placing(info("xcode", "9-xcode", digest: "cc"), in: twice)
+        #expect(placed.list.map(\.folder) == ["9-xcode", "7-agents"] && placed.dropped == ["6-xcode", "8-xcode"])
+        // The same folder (written again in place) is never one to remove.
+        placed = ImageRecord.RecipeInfo.placing(info("xcode", "2-xcode", digest: "cc"), in: base)
+        #expect(placed.dropped.isEmpty)
+    }
+
+    @Test func ranLikeComparesFilesInputsAndParameters() {
+        let input = ImageRecord.InputInfo(name: "xcode", file: "Xcode.xip", bytes: 3, sha256: "dd")
+        let one = ImageRecord.RecipeInfo(description: "a", digest: "aa", inputs: [input], parameters: ["p": "1"], name: "x", folder: "1-x", inheritedFrom: "dev")
+        var two = one
+        // Where it is kept and who ran it are not how it ran.
+        two.folder = "5-x"
+        two.inheritedFrom = nil
+        two.description = "b"
+        #expect(one.ranLike(two))
+        two.inputs?[0].sha256 = "ee"
+        #expect(!one.ranLike(two))
+        two = one
+        two.parameters = nil
+        #expect(!one.ranLike(two))
+        two = one
+        two.digest = "ab"
+        #expect(!one.ranLike(two))
     }
 }

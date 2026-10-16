@@ -466,7 +466,8 @@ public final class ImageBuilder {
             return recipe
         }
         record.recipes = inherited
-        record.derivedFrom = ImageRecord.DerivedFrom(image: base.name, recipeDigest: base.record.recipe?.digest)
+        record.derivedFrom = ImageRecord.DerivedFrom(image: base.name, recipeDigest: base.record.recipe?.digest,
+                                                     recipesListed: base.record.recipes != nil ? true : nil)
         let created: (GoldenImage, ImageStore.Lock)
         do {
             created = try store.create(record)
@@ -892,26 +893,44 @@ public final class ImageBuilder {
     }
 
     /// Runs `recipes` in order in the guest and records each in the image once it ran, so a
-    /// failed build's record says which ones did. Returns the updated image.
+    /// failed build's record says which ones did. A recipe of a name the image lists already
+    /// (one its base ran) takes that entry's place (`RecipeInfo.placing`): the Xcode recipe
+    /// given a newer .xip replaces the base's Xcode, and is not listed beside it. Returns the
+    /// updated image.
     func applyRecipes(_ recipes: [ImageRecipe], to image: GoldenImage, machine: GuestMachine) async throws -> GoldenImage {
         var current = image
         var own: [ImageRecord.RecipeInfo] = []
-        let inherited = current.record.recipes ?? []
+        var list = current.record.recipes ?? []
+        // Past every folder there: one that a replaced entry leaves must not be a new one's.
+        let numbered = list.compactMap { $0.folder.flatMap { Int($0.prefix { $0.isNumber }) } }
+        let first = max(list.count, numbered.max() ?? 0) + 1
         for (index, recipe) in recipes.enumerated() {
             // Kept before it runs, while its files are still the ones that were read: an edit
             // during the build fails this recipe, not the end of the build.
-            let folder = "\(inherited.count + index + 1)-\(recipe.name.isEmpty ? "recipe" : recipe.name)"
+            let folder = "\(first + index)-\(recipe.name.isEmpty ? "recipe" : recipe.name)"
             try recipe.write(to: current.recipesURL.appendingPathComponent(folder, isDirectory: true))
             let inputs = try await apply(recipe, machine: machine, boxUser: current.record.userName,
                                          position: recipes.count > 1 ? (index + 1, recipes.count) : nil, guest: current.record.effectiveGuest)
-            own.append(ImageRecord.RecipeInfo(description: recipe.description, digest: recipe.digest,
+            let info = ImageRecord.RecipeInfo(description: recipe.description, digest: recipe.digest,
                                               inputs: inputs.isEmpty ? nil : inputs,
                                               parameters: recipe.parameterValues.isEmpty ? nil : recipe.parameterValues,
-                                              name: recipe.name.isEmpty ? nil : recipe.name, folder: folder))
+                                              name: recipe.name.isEmpty ? nil : recipe.name, folder: folder)
+            if let name = info.name, list.contains(where: { $0.name == name }) {
+                log("  \(name) takes the place of the \(name) recipe that ran before")
+            }
+            let placed = ImageRecord.RecipeInfo.placing(info, in: list)
+            list = placed.list
+            own = ImageRecord.RecipeInfo.placing(info, in: own).list
             let applied = own
+            let listed = list
             current = try store.update(current) { record in
                 record.recipe = ImageRecord.RecipeInfo.combined(applied)
-                record.recipes = inherited + applied
+                record.recipes = listed
+            }
+            // Once the record no longer names them. A folder left behind (this failed) is
+            // only clutter: nothing reads a folder the record does not name.
+            for dropped in placed.dropped where !dropped.isEmpty && !dropped.contains("/") && dropped != "." && dropped != ".." {
+                try? FileSystem.removeTree(current.recipesURL.appendingPathComponent(dropped, isDirectory: true).path)
             }
         }
         if recipes.count == 1 {

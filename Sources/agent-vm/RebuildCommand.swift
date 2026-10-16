@@ -24,7 +24,7 @@ extension ImageCommand {
                 every recipe that ran on the image's disk runs again, in order, so an image \
                 built in layers comes back as one image; its Full Disk Access must be granted \
                 again (`image setup`). With --from, the recipes the base does not already hold \
-                run on a clone of it. With neither, the image it was built from is the base. \
+                run on a clone of it. One the base ran with another input file or other parameters runs again. With neither, the image it was built from is the base. \
                 Recipes run with the parameters the image recorded; --set changes one. An \
                 input is read from where it was when the image was built; --input names \
                 another file (a new Xcode, say), and must be given when that file is gone or \

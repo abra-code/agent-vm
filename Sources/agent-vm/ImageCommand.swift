@@ -31,7 +31,7 @@ struct ImageCommand: ParsableCommand {
                 store's Cache/linux and checked against the distribution's checksum list every \
                 time) and set up (about a minute). With \
                 --from, a ready image (macOS or Linux) is cloned and the recipes applied to the \
-                clone (minutes, or seconds for Linux). With no recipe the clone is a copy of the \
+                clone (minutes, or seconds for Linux). A recipe the base has already runs again and takes its place in the list. With no recipe the clone is a copy of the \
                 image with nothing added: an image of its own to set up by hand (image setup, \
                 image view), to give other processors, memory or a larger disk, or to try \
                 something on, with the original left as it is. A copy is started once all the \

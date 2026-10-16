@@ -211,8 +211,10 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     /// image built without a recipe.
     public var recipe: RecipeInfo?
     /// Every recipe whose steps ran on this disk, in the order they ran: those of the image it
-    /// was built from first (`inheritedFrom`), then its own. Each one's files are kept in the
-    /// image's `Recipes/` folder (`folder`). nil in images built before recipes were listed.
+    /// was built from first (`inheritedFrom`), then its own. A recipe of a name already listed
+    /// takes that entry's place (since 0.7.56; `RecipeInfo.placing`), so each name is there
+    /// once; images built before may list one twice. Each one's files are kept in the image's
+    /// `Recipes/` folder (`folder`). nil in images built before recipes were listed.
     public var recipes: [RecipeInfo]?
 
     /// How often `image update` changed the image's disk (nil: never), and when it last did.
@@ -253,6 +255,10 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     public struct DerivedFrom: Codable, Equatable, Sendable {
         public var image: String
         public var recipeDigest: String?
+        /// The base listed every recipe that ran on it (since 0.7.56): what ran there is known
+        /// even when no entry of this image's list is an inherited one any more (each was run
+        /// again here and took its place). Absent in images made before.
+        public var recipesListed: Bool? = nil
     }
 
     /// Whether the record names image `name` as what it was built from, or as where one of
@@ -334,6 +340,36 @@ public struct ImageRecord: Codable, Equatable, Sendable {
             return RecipeInfo(description: descriptions.joined(separator: "; "),
                               digest: ImageRecipe.sha256(Data(recipes.map(\.digest).joined(separator: "\n").utf8)),
                               inputs: inputs.isEmpty ? nil : inputs, parameters: parameters.isEmpty ? nil : parameters)
+        }
+
+        /// Whether `other` ran the same recipe the same way: the same files, the same input
+        /// files (by digest) and the same parameters. The Xcode recipe given a newer .xip is the
+        /// same recipe, run another way.
+        public func ranLike(_ other: RecipeInfo) -> Bool {
+            return digest == other.digest && (inputs ?? []).map(\.sha256).sorted() == (other.inputs ?? []).map(\.sha256).sorted()
+                && (parameters ?? [:]) == (other.parameters ?? [:])
+        }
+
+        /// `list` with `info` in it: in the place of the entries of the same name (a recipe the
+        /// base ran, or one run earlier in the same build), which go, or at the end when there
+        /// is none. One entry per name, so an image never keeps one recipe twice (and an update
+        /// never runs it twice). Also returns the folders of the entries that went, other than
+        /// `info`'s. A recipe without a name is always added.
+        static func placing(_ info: RecipeInfo, in list: [RecipeInfo]) -> (list: [RecipeInfo], dropped: [String]) {
+            guard let name = info.name, !name.isEmpty else {
+                return (list + [info], [])
+            }
+            let same = list.indices.filter { list[$0].name == name }
+            guard let first = same.first else {
+                return (list + [info], [])
+            }
+            var placed = list
+            placed[first] = info
+            for index in same.dropFirst().reversed() {
+                placed.remove(at: index)
+            }
+            let dropped = same.compactMap { list[$0].folder }.filter { $0 != info.folder }
+            return (placed, dropped)
         }
     }
 
