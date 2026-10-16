@@ -283,13 +283,22 @@ extension ImageBuilder {
            !(image.record.recipes ?? []).contains(where: { $0.inheritedFrom != nil }) {
             throw refuse("it was built from \(from.image) before agent-vm kept every recipe, so what ran on its base is not known: rebuild it with --from, or create a new image with all the recipes")
         }
-        // What the start already holds does not run again: a recipe the start's list has run
-        // the same way (the same files, input files and parameters: Xcode from a newer .xip
-        // runs again), and what the image inherited from that very image (the start may hold
-        // a newer version of that recipe by now, and the old one must not run over it).
+        // What the start already holds does not run again:
+        // - what the image inherited, from that very image or from one further back, when the
+        //   start has a recipe of its name: the start's is the newer state of it (an update
+        //   gave it a newer recipe file, another parameter, a new input file), and the old one
+        //   must not run over it. A start of that name made again without the recipe lacks it,
+        //   and it runs; a start that lists no recipes (made before they were listed) is
+        //   taken to hold what the image inherited from it, as before;
+        // - one of the image's own recipes that the start's list has run the same way (the same
+        //   files, input files and parameters: Xcode from a newer .xip than the start's runs).
         let held = base?.record.recipes ?? base?.record.recipe.map { [$0] } ?? []
         let replayed = kept.filter { entry in
-            !held.contains { $0.ranLike(entry.info) } && (base == nil || entry.info.inheritedFrom != base?.name)
+            if base != nil, let from = entry.info.inheritedFrom,
+               (from == base?.name && base?.record.recipes == nil) || held.contains(where: { $0.name != nil && $0.name == entry.info.name }) {
+                return false
+            }
+            return !held.contains { $0.ranLike(entry.info) }
         }
         if let base, replayed.isEmpty {
             throw refuse("\(image.name) keeps no recipe that \(base.name) lacks: a rebuild would make a fresh copy of \(base.name), without anything set up in \(image.name) by hand. For that, delete it and run `agent-vm image create \(image.name) --from \(base.name)`")

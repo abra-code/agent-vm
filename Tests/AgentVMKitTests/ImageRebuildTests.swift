@@ -329,6 +329,50 @@ import Testing
         #expect(try builder.rebuildPlan(options("tools")).recipes.map(\.name) == ["xcode", "agents"])
     }
 
+    /// Three generations: `tools` from `dev`, `top` from `tools`. `top` inherited node from dev
+    /// through tools. tools was then updated (another value for node's parameter, a newer node
+    /// recipe file): a rebuild of top from tools must take tools' node, not run its own older
+    /// one over it. Found 2026-10-16 in a real rebuild, after 0.7.56 began to compare parameters.
+    @MainActor
+    @Test func whatTheStartHoldsInANewerStateDoesNotRunAgain() throws {
+        let scratch = try Scratch()
+        let (store, _) = try images(in: scratch)
+        let builder = ImageBuilder(store: store) { (_: ProgressEvent) in }
+        let tools = try store.image(named: "tools")
+        var top = ImageStoreTests.record("top", state: .ready)
+        top.createdAt = tools.record.createdAt.addingTimeInterval(3600)
+        top.derivedFrom = ImageRecord.DerivedFrom(image: "tools", recipeDigest: "ab", recipesListed: true)
+        top.recipes = (tools.record.recipes ?? []).map { info in
+            var info = info
+            info.inheritedFrom = info.inheritedFrom ?? "tools"
+            return info
+        } + [ImageRecord.RecipeInfo(description: "Own", digest: "ee", name: "own", folder: "4-own")]
+        let (created, lock) = try store.create(top)
+        lock.release()
+        try Data("disk".utf8).write(to: created.diskURL)
+        try FileManager.default.copyItem(at: tools.recipesURL, to: created.recipesURL)
+        let own = created.recipesURL.appendingPathComponent("4-own", isDirectory: true)
+        try FileManager.default.createDirectory(at: own, withIntermediateDirectories: true)
+        try Data(#"{"version": 1, "steps": [{"run": "true"}]}"#.utf8).write(to: own.appendingPathComponent("recipe.json"))
+        #expect(try builder.rebuildPlan(options("top")).recipes.map(\.name) == ["own"])
+        // tools' node, inherited from dev, got another parameter value and a newer file.
+        try store.update(tools) { record in
+            record.recipes?[0].parameters = ["channel": "current"]
+            record.recipes?[0].digest = "a3"
+        }
+        #expect(try builder.rebuildPlan(options("top")).recipes.map(\.name) == ["own"])
+        // From another start that has no node: what top inherited runs again, as before.
+        #expect(try builder.rebuildPlan(options("top", base: "plain")).recipes.map(\.name) == ["node", "xcode", "agents", "own"])
+        // tools made again without the agents recipe: top's agents runs again, not lost.
+        try store.update(tools) { $0.recipes?.removeLast() }
+        #expect(try builder.rebuildPlan(options("top")).recipes.map(\.name) == ["agents", "own"])
+        // A tools that lists no recipes (made before they were listed) is taken to hold what top
+        // inherited from it; node, which came from further back, is not known there and runs,
+        // as it did before 0.7.56.
+        try store.update(tools) { $0.recipes = nil }
+        #expect(try builder.rebuildPlan(options("top")).recipes.map(\.name) == ["node", "own"])
+    }
+
     @Test func aRecipeTakesThePlaceOfOneOfItsName() {
         func info(_ name: String?, _ folder: String?, digest: String = "aa") -> ImageRecord.RecipeInfo {
             return ImageRecord.RecipeInfo(description: nil, digest: digest, name: name, folder: folder)
