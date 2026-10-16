@@ -409,4 +409,65 @@ import Testing
         #expect(record.recipe == ImageRecord.RecipeInfo(description: "Homebrew and Node", digest: "edef"))
         #expect(record.recipes == nil)
     }
+
+    /// An image made from another says when that one was built again or got other tools, and
+    /// says nothing after a plain update of it, or when nothing was recorded (made before 0.7.59).
+    @Test func aBaseThatChangedAsksForARebuild() throws {
+        let input = ImageRecord.InputInfo(name: "xcode", file: "Xcode_27.xip", bytes: 3, sha256: "d0")
+        var dev = ImageStoreTests.record("dev", state: .ready)
+        dev.recipes = [
+            ImageRecord.RecipeInfo(description: "Node", digest: "aa", parameters: ["node": "24"], name: "node", folder: "1-node"),
+            ImageRecord.RecipeInfo(description: "Xcode", digest: "bb", inputs: [input], name: "xcode", folder: "2-xcode"),
+        ]
+        var tools = ImageStoreTests.record("tools", state: .ready)
+        tools.derivedFrom = ImageRecord.DerivedFrom(image: "dev", recipeDigest: "ab", recipesListed: true, baseCreatedAt: dev.createdAt,
+                                                    baseRecipes: ImageRecord.DerivedFrom.states(dev.recipes))
+        func rebuild(_ base: ImageRecord?) -> ImageNeed? {
+            return tools.needs(base: base).first { $0.kind == .rebuild }
+        }
+        #expect(rebuild(dev) == nil)
+        // A plain update of the base: a newer recipe file (built-in), a parameter the newer
+        // recipe added, another macOS build. The image takes those by itself.
+        var updated = dev
+        updated.recipes?[0].digest = "a2"
+        updated.recipes?[0].parameters = ["node": "24", "corepack": "no"]
+        updated.revision = 3
+        updated.macOSBuild = "26B1"
+        #expect(rebuild(updated) == nil)
+        // Its tools are other ones: a new Xcode, another value for a parameter, another list.
+        var xcode = dev
+        xcode.recipes?[1].inputs?[0].sha256 = "d1"
+        #expect(rebuild(xcode) == ImageNeed(kind: .rebuild, reason: .baseRecipesChanged, base: "dev"))
+        var node = dev
+        node.recipes?[0].parameters = ["node": "25"]
+        #expect(rebuild(node)?.reason == .baseRecipesChanged)
+        var more = dev
+        more.recipes?.append(ImageRecord.RecipeInfo(description: nil, digest: "cc", name: "python", folder: "3-python"))
+        #expect(rebuild(more)?.reason == .baseRecipesChanged)
+        // Built again (or deleted and made again under the name).
+        var again = dev
+        again.createdAt = dev.createdAt.addingTimeInterval(86400)
+        #expect(rebuild(again) == ImageNeed(kind: .rebuild, reason: .baseRebuilt, base: "dev"))
+        // Nothing to say: no base, a base that is not ready, another image of the name, an
+        // image that names itself, or one made before the base was recorded.
+        #expect(rebuild(nil) == nil)
+        var building = again
+        building.state = .installing
+        #expect(rebuild(building) == nil)
+        var other = again
+        other.name = "dev2"
+        #expect(rebuild(other) == nil)
+        let ownName = tools
+        tools.derivedFrom?.image = "tools"
+        var me = again
+        me.name = "tools"
+        #expect(rebuild(me) == nil)
+        tools = ownName
+        tools.derivedFrom?.baseCreatedAt = nil
+        tools.derivedFrom?.baseRecipes = nil
+        #expect(rebuild(again) == nil && rebuild(xcode) == nil)
+        // In JSON, as AgentVM.app reads it.
+        let json = String(decoding: try JSONEncoder().encode(ImageNeed(kind: .rebuild, reason: .baseRebuilt, base: "dev")), as: UTF8.self)
+        #expect(json.contains(#""kind":"rebuild""#) && json.contains(#""reason":"base-rebuilt""#) && json.contains(#""base":"dev""#))
+    }
 }

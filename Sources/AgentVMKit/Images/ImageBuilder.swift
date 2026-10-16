@@ -467,7 +467,8 @@ public final class ImageBuilder {
         }
         record.recipes = inherited
         record.derivedFrom = ImageRecord.DerivedFrom(image: base.name, recipeDigest: base.record.recipe?.digest,
-                                                     recipesListed: base.record.recipes != nil ? true : nil)
+                                                     recipesListed: base.record.recipes != nil ? true : nil,
+                                                     baseCreatedAt: base.record.createdAt, baseRecipes: ImageRecord.DerivedFrom.states(base.record.recipes))
         let created: (GoldenImage, ImageStore.Lock)
         do {
             created = try store.create(record)

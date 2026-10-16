@@ -721,6 +721,14 @@ struct ImageCommand: ParsableCommand {
             var updating = false
             /// A newer macOS the image can take, by what `status --check-updates` last learned.
             var macOSUpdate: NewestMacOS.Update?
+            /// The record of the image it was made from, when that is still there: whether it
+            /// changed since is a need (`ImageRecord.needs(base:)`).
+            var base: ImageRecord? = nil
+
+            /// What the image lacks, its base's changes included.
+            var needs: [ImageNeed] {
+                return record.needs(base: base)
+            }
 
             private enum Keys: String, CodingKey {
                 case path
@@ -744,7 +752,7 @@ struct ImageCommand: ParsableCommand {
                 try container.encode(path, forKey: .path)
                 try container.encodeIfPresent(diskUsage, forKey: .diskUsage)
                 try container.encodeIfPresent(addedOverBase, forKey: .addedOverBase)
-                try container.encode(record.needs, forKey: .needs)
+                try container.encode(needs, forKey: .needs)
                 if updating {
                     try container.encode(true, forKey: .updating)
                 }
@@ -791,7 +799,7 @@ struct ImageCommand: ParsableCommand {
                 if let added = addedOverBase {
                     lines.append("    \(Output.size(added.bytes)) added over base \"\(added.image)\" image")
                 }
-                for need in record.needs {
+                for need in needs {
                     switch (need.kind, need.reason) {
                     case (.guestUpdate, _):
                         lines.append("    agent-vm-guest lacks \((need.missing ?? []).joined(separator: ", ")); `agent-vm image update \(record.name) --guest` adds it")
@@ -799,6 +807,10 @@ struct ImageCommand: ParsableCommand {
                         lines.append("    agent-vm-guest has no Full Disk Access: programs in boxes that open Desktop, Documents or Downloads wait on a hidden prompt; `agent-vm image setup \(record.name)`")
                     case (.fullDiskAccess, _):
                         lines.append("    Full Disk Access for agent-vm-guest is not checked\(record.fullDiskAccess == nil ? "" : " for its current version"); `agent-vm image setup \(record.name)`")
+                    case (.rebuild, .baseRebuilt?):
+                        lines.append("    image \(need.base ?? "?") was built again since this one was made from it; `agent-vm image rebuild \(record.name)` makes this one again from it")
+                    case (.rebuild, _):
+                        lines.append("    image \(need.base ?? "?") has other tools than when this one was made from it; `agent-vm image rebuild \(record.name)` makes this one again from it")
                     }
                 }
                 if let macOSUpdate {
@@ -809,6 +821,15 @@ struct ImageCommand: ParsableCommand {
                 }
                 return lines
             }
+        }
+
+        /// The record of the image `record` was made from, among `images`; nil when it has none
+        /// or that image is gone.
+        static func base(of record: ImageRecord, among images: [GoldenImage]) -> ImageRecord? {
+            guard let name = record.derivedFrom?.image else {
+                return nil
+            }
+            return images.first { $0.name == name }?.record
         }
 
         /// What a derived image's disk holds that its base's does not.
@@ -836,7 +857,8 @@ struct ImageCommand: ParsableCommand {
             }
             let store = options.imageStore
             let newest = NewestMacOS.read(root: store.root)
-            let entries = images.map { Entry(record: $0.record, path: $0.directory.path, updating: $0.record.state == .ready && store.isBeingChanged($0), macOSUpdate: newest?.update(for: $0.record)) }
+            let entries = images.map { Entry(record: $0.record, path: $0.directory.path, updating: $0.record.state == .ready && store.isBeingChanged($0), macOSUpdate: newest?.update(for: $0.record),
+                                             base: Self.base(of: $0.record, among: images)) }
             if options.json {
                 try Output.json(entries)
                 return
@@ -873,15 +895,17 @@ struct ImageCommand: ParsableCommand {
         func run() throws {
             let image = try options.imageStore.image(named: name)
             var added: List.Added?
+            var base: ImageRecord?
             if image.record.derivedFrom != nil {
                 // The base is found among all images, as `image list` found it.
                 let (images, _) = try options.imageStore.list()
                 added = List.added(image, among: images)
+                base = List.base(of: image.record, among: images)
             }
             let entry = List.Entry(record: image.record, path: image.directory.path,
                                    diskUsage: DiskUsage.of(image.directory), addedOverBase: added,
                                    updating: image.record.state == .ready && options.imageStore.isBeingChanged(image),
-                                   macOSUpdate: NewestMacOS.read(root: options.imageStore.root)?.update(for: image.record))
+                                   macOSUpdate: NewestMacOS.read(root: options.imageStore.root)?.update(for: image.record), base: base)
             if options.json {
                 try Output.json(entry)
                 return

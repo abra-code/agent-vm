@@ -259,6 +259,74 @@ public struct ImageRecord: Codable, Equatable, Sendable {
         /// even when no entry of this image's list is an inherited one any more (each was run
         /// again here and took its place). Absent in images made before.
         public var recipesListed: Bool? = nil
+        /// The base as it was when this image was made from it (since 0.7.59): when it was
+        /// built, and its recipes, so that a base built again or given other tools is noticed
+        /// (`needs(base:)`). Absent in images made before, which then say nothing.
+        public var baseCreatedAt: Date? = nil
+        public var baseRecipes: [RecipeState]? = nil
+
+        /// One recipe of the base by what it installed: its name, its input files (SHA-256)
+        /// and its parameters. Not its digest: agent-vm ships newer built-in recipes, which an
+        /// image takes by itself at its next tools update.
+        public struct RecipeState: Codable, Equatable, Sendable {
+            public var name: String?
+            public var inputs: [String]?
+            public var parameters: [String: String]?
+        }
+
+        /// `recipes` by what they installed; nil for nil.
+        static func states(_ recipes: [RecipeInfo]?) -> [RecipeState]? {
+            return recipes?.map { recipe in
+                let inputs = (recipe.inputs ?? []).map(\.sha256).sorted()
+                return RecipeState(name: recipe.name, inputs: inputs.isEmpty ? nil : inputs, parameters: recipe.parameters)
+            }
+        }
+
+        /// Whether the base's recipes now install something other than `then` recorded: another
+        /// list of names, another input file, or another value for a parameter recorded then.
+        /// A parameter that a newer version of a recipe added since is not a change.
+        static func recipesChanged(from then: [RecipeState], to now: [RecipeInfo]?) -> Bool {
+            let current = states(now) ?? []
+            guard current.map(\.name) == then.map(\.name) else {
+                return true
+            }
+            for (old, new) in zip(then, current) {
+                if (old.inputs ?? []) != (new.inputs ?? []) {
+                    return true
+                }
+                for (name, value) in old.parameters ?? [:] where new.parameters?[name].map({ $0 != value }) ?? false {
+                    return true
+                }
+            }
+            return false
+        }
+    }
+
+    /// What the image lacks (`needs`), and a rebuild when `base` (the record of the image named
+    /// by `derivedFrom`, nil when it is gone) is no longer what this image was made from: it
+    /// was built again, or its recipes install something else. A plain system or tools update
+    /// of the base is not: the image takes those by itself.
+    public func needs(base: ImageRecord?) -> [ImageNeed] {
+        var needs = self.needs
+        if let reason = baseChange(base), let from = derivedFrom {
+            needs.append(ImageNeed(kind: .rebuild, reason: reason, base: from.image))
+        }
+        return needs
+    }
+
+    func baseChange(_ base: ImageRecord?) -> ImageNeed.Reason? {
+        // An image that names itself as its base (the base was deleted and this one took its
+        // name) has nothing to compare with.
+        guard state == .ready, let from = derivedFrom, let base, base.name == from.image, base.name != name, base.state == .ready else {
+            return nil
+        }
+        if let builtAt = from.baseCreatedAt, builtAt != base.createdAt {
+            return .baseRebuilt
+        }
+        if let then = from.baseRecipes, DerivedFrom.recipesChanged(from: then, to: base.recipes) {
+            return .baseRecipesChanged
+        }
+        return nil
     }
 
     /// Whether the record names image `name` as what it was built from, or as where one of
@@ -394,6 +462,9 @@ public struct ImageNeed: Codable, Equatable, Sendable {
         /// Its agent-vm-guest has no Full Disk Access, or it was not checked for this daemon:
         /// `image setup`.
         case fullDiskAccess = "full-disk-access"
+        /// The image it was made from (`base`) is no longer what it was then (`reason`):
+        /// `image rebuild` makes it again from that image (since 0.7.59).
+        case rebuild
     }
 
     public enum Reason: String, Codable, Sendable {
@@ -401,18 +472,26 @@ public struct ImageNeed: Codable, Equatable, Sendable {
         case notGranted = "not-granted"
         /// `image setup` never checked the current daemon.
         case notChecked = "not-checked"
+        /// The base was built again (`image rebuild`), or deleted and made again.
+        case baseRebuilt = "base-rebuilt"
+        /// The base's recipes install something else: another input file, another value for
+        /// a parameter.
+        case baseRecipesChanged = "base-recipes-changed"
     }
 
     public var kind: Kind
     /// guest-update: the features the daemon lacks (GuestFeature).
     public var missing: [String]?
-    /// full-disk-access: whether it was refused or never checked.
+    /// full-disk-access: whether it was refused or never checked. rebuild: what changed.
     public var reason: Reason?
+    /// rebuild: the image it was made from.
+    public var base: String?
 
-    public init(kind: Kind, missing: [String]? = nil, reason: Reason? = nil) {
+    public init(kind: Kind, missing: [String]? = nil, reason: Reason? = nil, base: String? = nil) {
         self.kind = kind
         self.missing = missing
         self.reason = reason
+        self.base = base
     }
 }
 

@@ -106,7 +106,8 @@ struct StatusCommand: AsyncParsableCommand {
         let linux = HostReport.linuxGuests(boxes: boxes.filter { $0.record.effectiveGuest == .linux && $0.isRunning }.count,
                                            images: images.filter { options.imageStore.runsLinuxMachine($0) }.count, of: runningCount ?? Int.max)
         let summary = Summary(
-            images: images.map { ImageCommand.List.Entry(record: $0.record, path: $0.directory.path, updating: $0.record.state == .ready && options.imageStore.isBeingChanged($0), macOSUpdate: newest?.update(for: $0.record)) },
+            images: images.map { ImageCommand.List.Entry(record: $0.record, path: $0.directory.path, updating: $0.record.state == .ready && options.imageStore.isBeingChanged($0), macOSUpdate: newest?.update(for: $0.record),
+                                                         base: ImageCommand.List.base(of: $0.record, among: images)) },
             boxes: boxes.map { box in BoxCommand.List.Entry(box, image: images.first { $0.name == box.record.image }?.record) },
             jobs: jobs,
             jobsError: jobsError,
@@ -140,10 +141,11 @@ struct StatusCommand: AsyncParsableCommand {
             if let base = record.derivedFrom {
                 line += "  from \(base.image)"
             }
-            let needs = record.needs.map { need -> String in
+            let needs = entry.needs.map { need -> String in
                 switch need.kind {
                 case .guestUpdate: return "guest update"
                 case .fullDiskAccess: return "Full Disk Access"
+                case .rebuild: return "rebuild"
                 }
             }
             if !needs.isEmpty {
