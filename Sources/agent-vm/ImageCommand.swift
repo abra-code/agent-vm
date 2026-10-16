@@ -343,6 +343,9 @@ struct ImageCommand: ParsableCommand {
                 image keeps it when the update succeeds; a recipe of your own is never replaced \
                 this way. --kept-recipes runs the recipes as the image keeps them, and \
                 --recipe gives a newer version of any kept recipe, by the same folder name. \
+                --input gives a recipe's input a new file (Xcode from a newer .xip): the last \
+                kept recipe that has the input runs its steps and checks again with it, in its \
+                place among the others, and the image records the new file. \
                 Guest daemon: puts this \
                 agent-vm's agent-vm-guest into the image when it has another one, and boots once \
                 more to check it (what `image update-guest` does); with the system or the tools \
@@ -379,6 +382,9 @@ struct ImageCommand: ParsableCommand {
         @Option(name: .customLong("set"), help: ArgumentHelp("A new value for a parameter of the image's recipes, for the tools update (repeatable).", valueName: "name=value"))
         var settings: [String] = []
 
+        @Option(name: .customLong("input"), help: ArgumentHelp("A new file for an input of the image's recipes (a newer Xcode .xip, say): the recipe that has it runs its steps again with it, in the tools update (repeatable).", valueName: "name=path"))
+        var inputs: [String] = []
+
         @Option(name: .customLong("recipe"), help: ArgumentHelp("A newer version of a recipe the image keeps, by the same name (its folder's): the image runs its update steps and checks, and keeps it in the old one's place (repeatable).", valueName: "path"))
         var recipes: [String] = []
 
@@ -391,7 +397,7 @@ struct ImageCommand: ParsableCommand {
         @OptionGroup var options: StoreOptions
 
         func validate() throws {
-            for pair in settings where !pair.contains("=") || pair.hasPrefix("=") {
+            for pair in settings + inputs where !pair.contains("=") || pair.hasPrefix("=") {
                 throw ValidationError("\(pair): give name=value")
             }
             if let ifOlderThan, !(ifOlderThan >= 0 && ifOlderThan.isFinite) {
@@ -405,6 +411,12 @@ struct ImageCommand: ParsableCommand {
             }
             if ifOlderThan != nil && !recipes.isEmpty {
                 throw ValidationError("--recipe replaces a recipe whatever the image's age; leave out --if-older-than")
+            }
+            if (macOS || system || guest) && !tools && !inputs.isEmpty {
+                throw ValidationError("--input gives a recipe a new file, for the tools update; add --tools, or leave out --system and --guest")
+            }
+            if ifOlderThan != nil && !inputs.isEmpty {
+                throw ValidationError("--input runs a recipe again whatever the image's age; leave out --if-older-than")
             }
             if let pageSize {
                 guard LinuxPageSize.bytes(pageSize) != nil else {
@@ -441,6 +453,7 @@ struct ImageCommand: ParsableCommand {
                 }
             }
             let parameters = try Create.pairs(settings, option: "--set")
+            let files = try Create.pairs(inputs, option: "--input")
             let replacements = recipes.map { URL(fileURLWithPath: $0).standardizedFileURL }
             // No flag: everything.
             let both = !macOS && !system && !tools && !guest
@@ -450,7 +463,7 @@ struct ImageCommand: ParsableCommand {
             func update(_ name: String) throws -> (options: ImageUpdateOptions, localDigest: String?) {
                 let kind = (try? options.imageStore.image(named: name))?.record.effectiveGuest ?? .macOS
                 let daemon = guest || both ? try daemons.daemon(for: kind) : nil
-                return (ImageUpdateOptions(name: name, system: system, tools: tools || both, parameters: parameters, guestDaemon: daemon?.url, recipes: replacements, keptRecipes: keptRecipes,
+                return (ImageUpdateOptions(name: name, system: system, tools: tools || both, parameters: parameters, inputs: files, guestDaemon: daemon?.url, recipes: replacements, keptRecipes: keptRecipes,
                                            pageBytes: kind == .linux ? pageSize.flatMap(LinuxPageSize.bytes) : nil), daemon?.digest)
             }
             // A mistyped last name should not surface after the first images took minutes each.
@@ -565,8 +578,12 @@ struct ImageCommand: ParsableCommand {
             if !result.recipes.isEmpty {
                 parts.append("tools of \(result.recipes.joined(separator: ", "))")
             }
+            for name in result.reinstalledRecipes {
+                let files = (record.recipes ?? []).last { $0.name == name }?.inputs?.map(\.file) ?? []
+                parts.append("\(name) from \(files.isEmpty ? "new files" : files.joined(separator: ", "))")
+            }
             // Those without update steps are not among the tools above.
-            let replaced = result.replacedRecipes.filter { !result.recipes.contains($0) }
+            let replaced = result.replacedRecipes.filter { !result.recipes.contains($0) && !result.reinstalledRecipes.contains($0) }
             if !replaced.isEmpty {
                 parts.append("a newer recipe for \(replaced.joined(separator: ", "))")
             }

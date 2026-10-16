@@ -14,7 +14,7 @@ extension ImageCommand {
             commandName: "rebuild",
             abstract: "Build an image again from a fresh start and the recipes it keeps, under the same name.",
             discussion: """
-                For what `image update` does not do in place: a new major macOS, a new Xcode, \
+                For what `image update` does not do in place: a new major macOS, \
                 a base image that moved on, or a disk that gathered many updates. The new image \
                 is built beside the old one (as <image>.rebuild) with everything `image create` \
                 does, and takes its place in one step only when it is ready: until then the \

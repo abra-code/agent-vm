@@ -40,6 +40,10 @@ public struct ImageUpdateOptions: Sendable {
     public var tools: Bool
     /// New values for the recipes' parameters (`--set`), recorded with the image.
     public var parameters: [String: String]
+    /// New files for the recipes' inputs (`--input`), by input name: the last kept recipe that
+    /// has the input runs its steps again with them (Xcode from a newer .xip), and the image
+    /// records them.
+    public var inputs: [String: String]
     /// The agent-vm-guest to put in the image when it has another one (nil: leave the image's).
     public var guestDaemon: URL?
     /// Newer versions of recipes the image keeps (`--recipe`), each taking the place of the
@@ -54,12 +58,13 @@ public struct ImageUpdateOptions: Sendable {
     /// record names none (built before the size was kept) its system's default.
     public var pageBytes: Int?
 
-    public init(name: String, system: Bool, tools: Bool, parameters: [String: String] = [:], guestDaemon: URL? = nil, recipes: [URL] = [],
+    public init(name: String, system: Bool, tools: Bool, parameters: [String: String] = [:], inputs: [String: String] = [:], guestDaemon: URL? = nil, recipes: [URL] = [],
                 keptRecipes: Bool = false, pageBytes: Int? = nil) {
         self.name = name
         self.system = system
         self.tools = tools
         self.parameters = parameters
+        self.inputs = inputs
         self.guestDaemon = guestDaemon
         self.recipes = recipes
         self.keptRecipes = keptRecipes
@@ -85,6 +90,8 @@ public struct ImageUpdateResult: Sendable {
     public var previousKernel: String? = nil
     /// The names of the kept recipes a newer version took the place of.
     public var replacedRecipes: [String] = []
+    /// The names of the kept recipes whose steps ran again with new input files.
+    public var reinstalledRecipes: [String] = []
 }
 
 /// A macOS update as `softwareupdate --list` offers it.
@@ -202,6 +209,9 @@ extension ImageBuilder {
         /// It replaces the kept one by itself: the newer version of a recipe that came with
         /// agent-vm.
         var builtIn = false
+        /// It was given new input files (`--input`): its steps run again with them, as when the
+        /// image was built, instead of its update steps.
+        var reinstall = false
     }
 
     /// What `update` would refuse without booting anything: no such image, one that is not
@@ -211,9 +221,11 @@ extension ImageBuilder {
     public func checkUpdate(_ options: ImageUpdateOptions) throws {
         let image = try updatableImage(named: options.name, operation: "update", inPlace: false)
         if options.tools {
-            _ = try toolsPlans(image, set: options.parameters, replacing: options.recipes, builtIn: options.keptRecipes ? nil : builtInRecipes)
+            _ = try toolsPlans(image, set: options.parameters, inputs: options.inputs, replacing: options.recipes, builtIn: options.keptRecipes ? nil : builtInRecipes)
         } else if let recipe = options.recipes.first {
             throw AgentVMError.invalidRecipe(path: recipe.path, reason: "--recipe replaces a recipe the image keeps, for the tools update (add --tools, or leave out --system and --guest)")
+        } else if let name = options.inputs.keys.sorted().first {
+            throw Self.inputRefusal(name, image: image)
         }
         // A Linux image's daemon is built only where the Linux toolchain is installed.
         if let guestDaemon = options.guestDaemon {
@@ -259,14 +271,17 @@ extension ImageBuilder {
         case (.macOS, false):
             minimumFree = Self.minimumFreeBytesForToolsUpdate
         }
-        try Self.checkHost(HostFacts.current(storeRoot: store.root), minimumFree: minimumFree)
+        // A recipe run again with a new file writes what a build writes (an Xcode .xip expands to
+        // several GB on the copy).
+        let reinstalls = options.tools && !options.inputs.isEmpty
+        try Self.checkHost(HostFacts.current(storeRoot: store.root), minimumFree: reinstalls ? max(minimumFree, Self.minimumFreeBytesToDerive) : minimumFree)
         // A macOS update is given the account's password, minutes in.
         if options.system, guest == .macOS {
             try image.requireAccountPassword(keychain: store.passwords)
         }
         // Read before anything boots: a recipe that no longer loads, or a --set no recipe
         // takes, fails in a second.
-        let plans = try options.tools ? toolsPlans(image, set: options.parameters, replacing: options.recipes, builtIn: options.keptRecipes ? nil : builtInRecipes) : []
+        let plans = try options.tools ? toolsPlans(image, set: options.parameters, inputs: options.inputs, replacing: options.recipes, builtIn: options.keptRecipes ? nil : builtInRecipes) : []
         for plan in plans where plan.replaces {
             log(plan.builtIn
                 ? "Recipe \(plan.recipe.name): this agent-vm has a newer one than \(image.name) keeps; it is used, and kept when the update succeeds (--kept-recipes runs the old one)"
@@ -280,6 +295,12 @@ extension ImageBuilder {
         }
         if !options.tools, let name = options.parameters.keys.sorted().first {
             throw AgentVMError.invalidRecipe(path: image.recipesURL.path, reason: "--set \(name) changes a recipe's parameter; it needs the tools update (add --tools, or leave out --system and --guest)")
+        }
+        if !options.tools, let name = options.inputs.keys.sorted().first {
+            throw Self.inputRefusal(name, image: image)
+        }
+        for plan in plans where plan.reinstall {
+            log("Recipe \(plan.recipe.name): its steps run again with \(plan.recipe.inputFiles.keys.sorted().compactMap { plan.recipe.inputFiles[$0]?.lastPathComponent }.joined(separator: ", "))")
         }
 
         let work = image.updateURL
@@ -304,6 +325,7 @@ extension ImageBuilder {
         var changed = false
         var previousBuild: String?
         var updatedRecipes: [String] = []
+        var reinstalledRecipes: [String] = []
         var previousGuest: String?
         var systemPackages: Int?
         var previousKernel: String?
@@ -381,9 +403,24 @@ extension ImageBuilder {
                 }
                 let updates = plans.filter { !$0.checksOnly }
                 for (position, plan) in updates.enumerated() {
-                    try await runUpdate(plan.recipe, machine: machine, boxUser: record.userName, position: (position + 1, updates.count), guest: guest)
+                    if plan.reinstall {
+                        // As when the image was built: the files streamed in, the steps, the
+                        // checks, the files deleted. The recipe is the image's own from now on,
+                        // whatever image it ran on first.
+                        let sent = try await apply(plan.recipe, machine: machine, boxUser: record.userName, position: (position + 1, updates.count), guest: guest)
+                        record.recipes?[plan.index].inputs = sent.isEmpty ? nil : sent
+                        // An inherited entry shows that the base listed its recipes: a rebuild from a
+                        // restore image must not take this image for one made before they were listed.
+                        if record.recipes?[plan.index].inheritedFrom != nil {
+                            record.derivedFrom?.recipesListed = true
+                        }
+                        record.recipes?[plan.index].inheritedFrom = nil
+                        reinstalledRecipes.append(plan.recipe.name)
+                    } else {
+                        try await runUpdate(plan.recipe, machine: machine, boxUser: record.userName, position: (position + 1, updates.count), guest: guest)
+                        updatedRecipes.append(plan.recipe.name)
+                    }
                     record.recipes?[plan.index].parameters = plan.recipe.parameterValues.isEmpty ? nil : plan.recipe.parameterValues
-                    updatedRecipes.append(plan.recipe.name)
                     changed = true
                 }
                 for plan in plans where plan.replaces {
@@ -439,9 +476,9 @@ extension ImageBuilder {
             let now = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
             // What this run looked at, and how long a run without a macOS install takes.
             // Of a tools update only, and not one that also replaced the daemon or checked a new
-            // kernel (a second boot, and maybe a wait for a slot): the time a client shows
-            // before a wait it chose.
-            let seconds = options.tools && previousBuild == nil && !bootedAgain && systemPackages == nil
+            // kernel (a second boot, and maybe a wait for a slot), nor ran a recipe again with a
+            // new file (an Xcode install): the time a client shows before a wait it chose.
+            let seconds = options.tools && previousBuild == nil && !bootedAgain && systemPackages == nil && reinstalledRecipes.isEmpty
                 ? Self.seconds(ContinuousClock.now - began).rounded() : nil
             func stamp(_ record: inout ImageRecord) {
                 if options.system {
@@ -520,7 +557,7 @@ extension ImageBuilder {
         image = try store.image(named: image.name)
         return ImageUpdateResult(image: image, changed: true, previousMacOSBuild: previousBuild, recipes: updatedRecipes, previousGuestVersion: previousGuest,
                                  systemPackages: systemPackages, previousKernel: previousKernel,
-                                 replacedRecipes: plans.filter(\.replaces).map(\.recipe.name))
+                                 replacedRecipes: plans.filter(\.replaces).map(\.recipe.name), reinstalledRecipes: reinstalledRecipes)
     }
 
     /// The kernel a system update installs in place of the image's, nil when it keeps the one
@@ -782,7 +819,13 @@ extension ImageBuilder {
     ///
     /// `builtIn`: the recipes that came with agent-vm. A kept recipe that is an older version
     /// of one of them, and that `replacing` does not name, is replaced by the installed one.
-    func toolsPlans(_ image: GoldenImage, set: [String: String], replacing: [URL] = [], builtIn: BuiltInRecipes? = nil) throws -> [ToolsPlan] {
+    ///
+    /// `inputs`: new files for inputs, by name. Each goes to the last kept recipe that has the
+    /// input (an image made before 0.7.56 may keep the Xcode recipe twice), whose steps then
+    /// run again with it; its other inputs are read from where they were, and must be given
+    /// when that file is gone. A name no kept recipe has is refused.
+    func toolsPlans(_ image: GoldenImage, set: [String: String], inputs: [String: String] = [:], replacing: [URL] = [],
+                    builtIn: BuiltInRecipes? = nil) throws -> [ToolsPlan] {
         var newer: [String: ImageRecipe] = [:]
         let kept = (image.record.recipes ?? []).filter { $0.folder != nil }.compactMap(\.name)
         for url in replacing {
@@ -794,6 +837,31 @@ extension ImageBuilder {
             }
             guard newer.updateValue(recipe, forKey: recipe.name) == nil else {
                 throw AgentVMError.invalidRecipe(path: url.path, reason: "--recipe gives two recipes named \(recipe.name)")
+            }
+        }
+        // Which kept recipe each new input file goes to: the last one that has the input.
+        var takers: [String: Int] = [:]
+        if !inputs.isEmpty {
+            var declared: [String] = []
+            // As below: a recipe given with --recipe goes to the first kept one of its name.
+            var given = newer
+            for (index, info) in (image.record.recipes ?? []).enumerated() {
+                guard let folder = info.folder else {
+                    continue
+                }
+                let url = image.recipesURL.appendingPathComponent(folder, isDirectory: true).appendingPathComponent(ImageStore.recipeName)
+                // A recipe given with --recipe may name its inputs differently from the kept
+                // one: the one that will run decides (a newer built-in one is checked below).
+                let names = (info.name.flatMap { given.removeValue(forKey: $0) } ?? (try? ImageRecipe.load(from: url)))?.inputs.map(\.name) ?? []
+                declared += names
+                for name in names where inputs[name] != nil {
+                    takers[name] = index
+                }
+            }
+            if let name = inputs.keys.sorted().first(where: { takers[$0] == nil }) {
+                let names = Set(declared).sorted()
+                throw AgentVMError.invalidRecipe(path: image.recipesURL.path,
+                                                 reason: "--input \(name): \(image.name) keeps no recipe with that input\(names.isEmpty ? "" : " (they have: \(names.joined(separator: ", ")))")")
             }
         }
         var plans: [ToolsPlan] = []
@@ -822,6 +890,33 @@ extension ImageBuilder {
                 recipe = try inFolder.get()
             }
             recipe.name = info.name ?? recipe.name
+            if takers.values.contains(index) {
+                // Its steps again, with the new files and what the image recorded for the rest.
+                // A new file this recipe has no input for (a newer built-in one named it
+                // differently) is refused, not left out.
+                if let name = inputs.keys.sorted().first(where: { name in takers[name] == index && !recipe.inputs.contains { $0.name == name } }) {
+                    throw AgentVMError.invalidRecipe(path: recipe.path, reason: "--input \(name): the \(recipe.name) recipe that runs has no such input\(recipe.inputs.isEmpty ? "" : " (its inputs: \(recipe.inputs.map(\.name).joined(separator: ", ")))")")
+                }
+                var files: [String: String] = [:]
+                for input in recipe.inputs {
+                    let recorded = info.inputs?.first { $0.name == input.name }
+                    if let given = inputs[input.name], takers[input.name] == index {
+                        files[input.name] = given
+                    } else if let path = recorded?.path, FileSystem.exists(path) {
+                        files[input.name] = path
+                    } else {
+                        let was = recorded.map { " (the image was built with \($0.path ?? $0.file), \($0.bytes >> 20) MB)" } ?? ""
+                        throw AgentVMError.invalidRecipe(path: recipe.path, reason: "it needs --input \(input.name)=PATH\(input.description.map { ": \($0)" } ?? "")\(was)")
+                    }
+                }
+                var parameters = (info.parameters ?? [:]).filter { pair in recipe.parameters.contains { $0.name == pair.key } }
+                for (name, value) in set where recipe.parameters.contains(where: { $0.name == name }) {
+                    parameters[name] = value
+                }
+                plans.append(ToolsPlan(index: index, recipe: try recipe.binding(inputs: files, parameters: parameters), replaces: replaces, builtIn: ours,
+                                       reinstall: true))
+                continue
+            }
             guard !recipe.updateSteps.isEmpty else {
                 if !recipe.checks.isEmpty || replaces {
                     plans.append(ToolsPlan(index: index, recipe: try recipe.bindingForUpdate(recorded: info.parameters ?? [:], set: [:]), checksOnly: true, replaces: replaces, builtIn: ours))
@@ -837,7 +932,12 @@ extension ImageBuilder {
                 : "--set \(name): no recipe with update steps in \(image.name) has that parameter (they have: \(known.sorted().joined(separator: ", ")))"
             throw AgentVMError.invalidRecipe(path: image.recipesURL.path, reason: reason)
         }
-        return plans.contains { !$0.checksOnly || $0.replaces } ? plans : []
+        return plans.contains { !$0.checksOnly || $0.replaces || $0.reinstall } ? plans : []
+    }
+
+    /// `--input` without the tools update.
+    static func inputRefusal(_ name: String, image: GoldenImage) -> AgentVMError {
+        return AgentVMError.invalidRecipe(path: image.recipesURL.path, reason: "--input \(name) gives a recipe a new file, for the tools update (add --tools, or leave out --system and --guest)")
     }
 
     /// Puts `recipe` and the files it copies where the image keeps the recipe of that name,

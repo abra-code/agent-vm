@@ -141,6 +141,70 @@ import Testing
         #expect(reason([linux]) != nil)
     }
 
+    /// `--input`: a new file for a kept recipe's input runs that recipe's steps again, with it
+    /// and the parameters the image recorded, in the recipe's place among the others.
+    @MainActor
+    @Test func aNewInputRunsItsRecipeAgain() throws {
+        let scratch = try Scratch()
+        let (store, kept) = try image(in: scratch)
+        let builder = ImageBuilder(store: store) { (_: ProgressEvent) in }
+        let xip = scratch.root.appendingPathComponent("Xcode_27.1.xip")
+        try Data("xip".utf8).write(to: xip)
+        let image = try store.update(kept) { $0.recipes?[1].parameters = ["edition": "beta"] }
+        let plans = try builder.toolsPlans(image, set: [:], inputs: ["xcode": xip.path])
+        #expect(plans.map(\.recipe.name) == ["node", "xcode", "agents"])
+        #expect(plans.map(\.reinstall) == [false, true, false])
+        #expect(plans.map(\.checksOnly) == [false, false, false])
+        #expect(plans[1].recipe.inputFiles["xcode"]?.lastPathComponent == "Xcode_27.1.xip")
+        #expect(plans[1].recipe.parameterValues == ["edition": "beta"])
+        // --set reaches it too.
+        #expect(try builder.toolsPlans(image, set: ["edition": "release"], inputs: ["xcode": xip.path])[1].recipe.parameterValues == ["edition": "release"])
+        // Without the input it is checked only, as before.
+        #expect(try builder.toolsPlans(image, set: [:]).map(\.checksOnly) == [false, true, false])
+
+        // An image that keeps the recipe twice (made before 0.7.56): only the last one runs.
+        let twice = try store.update(image) { record in
+            record.recipes?.append(ImageRecord.RecipeInfo(description: "Xcode", digest: "bb", name: "xcode", folder: "4-xcode"))
+        }
+        let folder = twice.recipesURL.appendingPathComponent("4-xcode", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: twice.recipesURL.appendingPathComponent("2-xcode/recipe.json"), to: folder.appendingPathComponent("recipe.json"))
+        let last = try builder.toolsPlans(twice, set: [:], inputs: ["xcode": xip.path])
+        #expect(last.map(\.reinstall) == [false, false, false, true])
+        #expect(last[1].checksOnly && !last[3].checksOnly)
+
+        func reason(_ inputs: [String: String]) -> String? {
+            do {
+                _ = try builder.toolsPlans(image, set: [:], inputs: inputs)
+                return nil
+            } catch {
+                return "\(error)"
+            }
+        }
+        #expect(reason(["ipa": xip.path])?.contains("--input ipa: tools keeps no recipe with that input (they have: xcode)") == true)
+        #expect(reason(["xcode": scratch.root.appendingPathComponent("nosuch.xip").path])?.contains("does not exist") == true)
+        // Only the tools update takes one.
+        #expect { try builder.checkUpdate(ImageUpdateOptions(name: "tools", system: true, tools: false, inputs: ["xcode": xip.path])) }
+            throws: { "\($0)".contains("--input xcode gives a recipe a new file, for the tools update") }
+
+        // With --recipe the new file goes where the given recipe runs (the first kept one of
+        // its name), also when it names the input differently from the kept ones.
+        let given = try recipeFile("xcode", #"{"version": 1, "inputs": {"xip": {}}, "steps": [{"run": "xip"}]}"#, in: scratch)
+        let renamed = try builder.toolsPlans(twice, set: [:], inputs: ["xip": xip.path], replacing: [given])
+        #expect(renamed[1].reinstall && renamed[1].replaces && renamed[1].recipe.inputFiles["xip"]?.lastPathComponent == "Xcode_27.1.xip")
+        #expect(!renamed[3].reinstall)
+        // A newer built-in recipe without the input refuses the file instead of leaving it out.
+        let withInput = #"{"version": 1, "inputs": {"py": {}}, "checks": ["python3 --version"]}"#
+        let builtIn = try #require(BuiltInRecipes(folder: try BuiltInRecipesTests.folder(
+            in: scratch, recipe: BuiltInRecipesTests.new, history: [BuiltInRecipesTests.digest(withInput), BuiltInRecipesTests.digest(BuiltInRecipesTests.new)])))
+        let python = image.recipesURL.appendingPathComponent("4-python", isDirectory: true)
+        try FileManager.default.createDirectory(at: python, withIntermediateDirectories: true)
+        try Data(withInput.utf8).write(to: python.appendingPathComponent("recipe.json"))
+        let pythonImage = try store.update(image) { $0.recipes?.append(ImageRecord.RecipeInfo(description: nil, digest: BuiltInRecipesTests.digest(withInput), name: "python", folder: "4-python")) }
+        #expect { try builder.toolsPlans(pythonImage, set: [:], inputs: ["py": xip.path], builtIn: builtIn) }
+            throws: { "\($0)".contains("--input py: the python recipe that runs has no such input") }
+    }
+
     @MainActor
     @Test func aNewerBuiltInRecipeIsUsedByItself() throws {
         let scratch = try Scratch()
