@@ -3,7 +3,8 @@
 # Tests/Shell/extended/linux-updates.sh - image update and image rebuild for Linux images: the
 # tools' update steps, the system's package updates, the guest daemon, boxes made while an
 # update runs, a cancel, and a rebuild from the image's base and from its release's cloud
-# image. Every test works on an image of its own, built from the ready Linux image
+# image; a recipe run again (from a base that ran it, and with a new input file), and an image
+# whose base changed. Every test works on an image of its own, built from the ready Linux image
 # $AGENT_VM_TEST_LINUX_IMAGE (which is never changed); without it every test is skipped. The
 # system update and the rebuild from the cloud image need the internet.
 
@@ -25,6 +26,181 @@ update_recipe() {
       "update": [{ "name": "note again", "run": "[ \"$AGENT_VM_PARAM_MARK\" != fail ] && { [ \"$AGENT_VM_PARAM_MARK\" != slow ] || sleep 20; } && echo \"updated $AGENT_VM_PARAM_MARK\" >> ~/shtest-upd.txt" }],
       "checks": ["tr \"\\n\" \",\" < ~/shtest-upd.txt"]
     }'
+}
+
+# note_recipe <folder>: a recipe named after its folder with an input ("note") and a parameter
+# ("mark"): its steps put the file and the mark in /opt, its update step writes the mark again,
+# and its check prints both ("first note,one,").
+note_recipe() {
+    write_recipe "$1" '{
+      "version": 1,
+      "guest": "linux",
+      "description": "input test",
+      "inputs": {"note": {"description": "a small text file"}},
+      "parameters": {"mark": {"default": "one"}},
+      "steps": [{ "name": "note", "user": "root", "run": "cat \"$AGENT_VM_INPUT_NOTE\" > /opt/shtest-note.txt && echo \"$AGENT_VM_PARAM_MARK\" > /opt/shtest-mark.txt && chmod 0644 /opt/shtest-note.txt /opt/shtest-mark.txt" }],
+      "update": [{ "name": "mark again", "user": "root", "run": "echo \"$AGENT_VM_PARAM_MARK\" > /opt/shtest-mark.txt" }],
+      "checks": ["cat /opt/shtest-note.txt /opt/shtest-mark.txt | tr \"\\n\" \",\""]
+    }'
+}
+
+# recipe_place: where the entry named "note" is in the recipes of the image record in $OUT.
+recipe_place() {
+    printf '%s' "$OUT" | /usr/bin/jq '[.recipes[].name] | index("note")'
+}
+
+# image create --from with a recipe the base ran already: it runs again, takes the base's entry
+# in the new image's list, in its place, and the folder of the base's goes (0.7.56).
+test_linux_a_recipe_the_base_ran_takes_its_place() {
+    require_linux_image || return $(( $? == 1 ? 0 : 1 ))
+    local _base="shtest-lplb-$$"
+    local _image="shtest-lpli-$$"
+    "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
+    "$AGENT_VM" image delete "$_base" > /dev/null 2>&1
+    cleanup_on_exit image "$_image"
+    cleanup_on_exit image "$_base"
+    note_recipe "$SCRATCH/note"
+    printf 'first note\n' > "$SCRATCH/one.txt"
+    printf 'second note\n' > "$SCRATCH/two.txt"
+    run_avm image create "$_base" --from "$LINUX_TEST_IMAGE" --recipe "$SCRATCH/note/recipe.json" --input note="$SCRATCH/one.txt"
+    assert_status 0 || return 1
+    run_avm image info "$_base" --json
+    local _place="$(recipe_place)"
+    local _count="$(json_value recipes)"
+
+    run_avm image create "$_image" --from "$_base" --recipe "$SCRATCH/note/recipe.json" --input note="$SCRATCH/two.txt" --set mark=two
+    assert_status 0 || return 1
+    assert_out_contains "note takes the place of the note recipe that ran before" || return 1
+    assert_out_contains "second note,two," || return 1
+    run_avm image info "$_image" --json
+    assert_eq "$(printf '%s' "$OUT" | /usr/bin/jq '[.recipes[] | select(.name == "note")] | length')" "1" "entries named note" || return 1
+    assert_json recipes "$_count" || return 1
+    assert_json "recipes.$_place.name" "note" || return 1
+    assert_json "recipes.$_place.inputs.0.file" "two.txt" || return 1
+    assert_json "recipes.$_place.parameters.mark" "two" || return 1
+    assert_json "recipes.$_place.inheritedFrom" "" || return 1
+    # One folder of it: the new one.
+    local _folder="$(json_value path)"
+    local _kept="$(json_value "recipes.$_place.folder")"
+    assert_eq "$(/bin/ls "$_folder/Recipes" | /usr/bin/grep -c -- '-note$')" "1" "folders of the note recipe" || return 1
+    assert_exists "$_folder/Recipes/$_kept/recipe.json" || return 1
+    "$AGENT_VM" image delete "$_image"
+    "$AGENT_VM" image delete "$_base"
+}
+
+# image update --tools --input: the recipe that has the input runs its steps again with the new
+# file, and the image records it; what is refused is refused before anything boots (0.7.57).
+test_linux_update_gives_a_recipe_a_new_input_file() {
+    require_linux_image || return $(( $? == 1 ? 0 : 1 ))
+    local _image="shtest-lupi-$$"
+    "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
+    cleanup_on_exit image "$_image"
+    note_recipe "$SCRATCH/note"
+    printf 'first note\n' > "$SCRATCH/one.txt"
+    printf 'second note\n' > "$SCRATCH/two.txt"
+    run_avm image create "$_image" --from "$LINUX_TEST_IMAGE" --recipe "$SCRATCH/note/recipe.json" --input note="$SCRATCH/one.txt"
+    assert_status 0 || return 1
+
+    run_avm image update "$_image" --tools --input note="$SCRATCH/two.txt"
+    assert_status 0 || return 1
+    assert_out_contains "Recipe note: its steps run again with two.txt" || return 1
+    assert_out_contains "second note,one," || return 1
+    assert_out_contains "Image $_image is updated (revision 1): " || return 1
+    assert_out_contains "note from two.txt" || return 1
+    run_avm image info "$_image" --json
+    local _place="$(recipe_place)"
+    assert_json revision "1" || return 1
+    assert_json "recipes.$_place.inputs.0.file" "two.txt" || return 1
+    assert_json "recipes.$_place.parameters.mark" "one" || return 1
+
+    # Refused, and nothing boots.
+    run_avm image update "$_image" --tools --input nosuch="$SCRATCH/two.txt"
+    assert_status 1 || return 1
+    assert_err_contains "--input nosuch: $_image keeps no recipe with that input (they have: note)" || return 1
+    run_avm image update "$_image" --tools --input note="$SCRATCH/nosuch.txt"
+    assert_status 1 || return 1
+    assert_err_contains "does not exist" || return 1
+    run_avm image update "$_image" --system --input note="$SCRATCH/two.txt"
+    assert_status 64 || return 1
+    assert_err_contains "--input gives a recipe a new file, for the tools update" || return 1
+    assert_eq "$(image_value "$_image" revision)" "1" "the revision after the refusals" || return 1
+    "$AGENT_VM" image delete "$_image"
+}
+
+# Three generations: first (the note recipe), mid (a copy of first), top (a recipe of its own,
+# made from mid). An update gives mid's note another mark: top says it needs a rebuild, and the
+# rebuild takes mid as it is now; the note recipe, which top inherited from first, does not run
+# again over mid's newer state (0.7.58, 0.7.59).
+test_linux_a_changed_base_asks_for_a_rebuild() {
+    require_linux_image || return $(( $? == 1 ? 0 : 1 ))
+    local _first="shtest-lcbf-$$"
+    local _mid="shtest-lcbm-$$"
+    local _top="shtest-lcbt-$$"
+    local _box="shtest-lcbbox-$$"
+    local _image
+    for _image in "$_top" "$_top.rebuild" "$_mid" "$_first"; do
+        "$AGENT_VM" image delete "$_image" > /dev/null 2>&1
+    done
+    cleanup_on_exit box "$_box"
+    cleanup_on_exit image "$_top.rebuild"
+    cleanup_on_exit image "$_top"
+    cleanup_on_exit image "$_mid"
+    cleanup_on_exit image "$_first"
+    note_recipe "$SCRATCH/note"
+    printf 'first note\n' > "$SCRATCH/one.txt"
+    write_recipe "$SCRATCH/own" '{
+      "version": 1,
+      "guest": "linux",
+      "description": "own test",
+      "steps": [{ "name": "own", "user": "root", "run": "echo own > /opt/shtest-own.txt && chmod 0644 /opt/shtest-own.txt" }],
+      "checks": ["cat /opt/shtest-own.txt"]
+    }'
+    run_avm image create "$_first" --from "$LINUX_TEST_IMAGE" --recipe "$SCRATCH/note/recipe.json" --input note="$SCRATCH/one.txt"
+    assert_status 0 || return 1
+    run_avm image create "$_mid" --from "$_first"
+    assert_status 0 || return 1
+    run_avm image create "$_top" --from "$_mid" --recipe "$SCRATCH/own/recipe.json"
+    assert_status 0 || return 1
+    run_avm image info "$_top" --json
+    assert_json needs "0" || return 1
+
+    run_avm image update "$_mid" --tools --set mark=two
+    assert_status 0 || return 1
+    run_avm image info "$_top" --json
+    assert_json needs "1" || return 1
+    assert_json needs.0.kind "rebuild" || return 1
+    assert_json needs.0.reason "base-recipes-changed" || return 1
+    assert_json needs.0.base "$_mid" || return 1
+    run_avm image list
+    assert_out_contains "image $_mid has other tools than when this one was made from it; \`agent-vm image rebuild $_top\` makes this one again from it" || return 1
+    run_avm status
+    assert_out_contains "from $_mid  needs rebuild" || return 1
+    # The base's own plain update does not ask its images for anything more.
+    run_avm image info "$_mid" --json
+    assert_json needs "0" || return 1
+
+    run_avm image rebuild "$_top"
+    assert_status 0 || return 1
+    assert_not_contains "$OUT" "parameters: mark=one" "the inherited note recipe run again" || return 1
+    assert_out_contains "check cat /opt/shtest-own.txt: own" || return 1
+    run_avm image info "$_top" --json
+    local _place="$(recipe_place)"
+    assert_json needs "0" || return 1
+    assert_json "recipes.$_place.inheritedFrom" "$_first" || return 1
+    assert_json "recipes.$_place.parameters.mark" "two" || return 1
+
+    run_avm box create "$_box" --image "$_top"
+    assert_status 0 || return 1
+    run_avm box start "$_box"
+    assert_status 0 || return 1
+    run_avm exec --box "$_box" -- /bin/cat /opt/shtest-note.txt /opt/shtest-mark.txt /opt/shtest-own.txt
+    local _output="$OUT"
+    "$AGENT_VM" box stop "$_box"
+    "$AGENT_VM" box delete "$_box"
+    for _image in "$_top" "$_mid" "$_first"; do
+        "$AGENT_VM" image delete "$_image"
+    done
+    assert_eq "$_output" $'first note\ntwo\nown' "the rebuilt image" || return 1
 }
 
 # The update steps run on a copy, which takes the image's place: the revision goes up, a box
