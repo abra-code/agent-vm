@@ -1403,6 +1403,7 @@ public enum BoxLauncher {
             throw AgentVMError.system(operation: "open \(box.logURL.path)", code: errno)
         }
         defer { close(logDescriptor) }
+        let logStart = UInt64(max(lseek(logDescriptor, 0, SEEK_END), 0))
 
         var actions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&actions)
@@ -1432,7 +1433,7 @@ public enum BoxLauncher {
         }
 
         // A box that took long to stop still gets time to boot.
-        return try waitUntilReady(box, supervisor: pid, timeout: max(deadline - ContinuousClock.now, minimumBootWait), tick: tick,
+        return try waitUntilReady(box, supervisor: pid, logStart: logStart, timeout: max(deadline - ContinuousClock.now, minimumBootWait), tick: tick,
                                   progress: progress)
     }
 
@@ -1440,6 +1441,12 @@ public enum BoxLauncher {
     /// log's last "Ready in N s" line; nil when there is none (a new box) or the log cannot be
     /// read. Only the log's end is read.
     public static func lastBootSeconds(of box: Box) -> Int? {
+        return logTail(of: box).flatMap { lastBootSeconds(inLog: $0) }
+    }
+
+    /// The last 64 KiB of the box's supervisor log, or what was written after byte `offset`
+    /// when that is less; nil when the log cannot be read.
+    static func logTail(of box: Box, from offset: UInt64 = 0) -> String? {
         // As the supervisor writes it: never through a link, and never waiting on something
         // that is not a plain file.
         let descriptor = open(box.logURL.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
@@ -1453,11 +1460,11 @@ public enum BoxLauncher {
         }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         let size = (try? handle.seekToEnd()) ?? 0
-        try? handle.seek(toOffset: size > 65536 ? size - 65536 : 0)
+        try? handle.seek(toOffset: max(offset, size > 65536 ? size - 65536 : 0))
         guard let data = try? handle.readToEnd() else {
             return nil
         }
-        return lastBootSeconds(inLog: String(decoding: data, as: UTF8.self))
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// The seconds of the last "Ready in N s" line in `text`.
@@ -1474,8 +1481,26 @@ public enum BoxLauncher {
         return nil
     }
 
-    /// Polls our own supervisor until the box is ready; its exit ends the wait.
-    private static func waitUntilReady(_ box: Box, supervisor pid: pid_t, timeout: Duration, tick: (() -> Void)?,
+    /// Why a supervisor that exited failed: its last "Error: " line in `text` (what it wrote
+    /// to its log), without that prefix or a repeated "the guest is unreachable: ", as one
+    /// printable line. nil when there is none.
+    public static func lastError(inLog text: String) -> String? {
+        guard let line = text.split(separator: "\n").last(where: { $0.hasPrefix("Error: ") }) else {
+            return nil
+        }
+        var reason = line.dropFirst("Error: ".count)
+        let unreachable = "the guest is unreachable: "
+        if reason.hasPrefix(unreachable) {
+            reason = reason.dropFirst(unreachable.count)
+        }
+        let trimmed = reason.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : Printable.line(trimmed, limit: 1000)
+    }
+
+    /// Polls our own supervisor until the box is ready; its exit ends the wait. `logStart`:
+    /// the log's size before the supervisor started, so its exit is explained by what it
+    /// wrote, not by an earlier start's error.
+    private static func waitUntilReady(_ box: Box, supervisor pid: pid_t, logStart: UInt64, timeout: Duration, tick: (() -> Void)?,
                                        progress: (String) -> Void) throws -> ControlResponse {
         let deadline = ContinuousClock.now + timeout
         var lastState: ControlResponse.State?
@@ -1494,6 +1519,9 @@ public enum BoxLauncher {
                 if box.isRunning, let response = try waitForOtherSupervisor(box, timeout: max(deadline - ContinuousClock.now, minimumBootWait),
                                                                           tick: tick, progress: progress) {
                     return response
+                }
+                if let reason = logTail(of: box, from: logStart).flatMap({ lastError(inLog: $0) }) {
+                    throw AgentVMError.guestUnreachable("the supervisor exited (status \(status)): \(reason); see \(box.logURL.path)")
                 }
                 throw AgentVMError.guestUnreachable("the supervisor exited (status \(status)); see \(box.logURL.path)")
             }

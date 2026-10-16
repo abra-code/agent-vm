@@ -1121,4 +1121,21 @@ final class ShortFolder {
         // Not a boot line: no number, or no " s" after it.
         #expect(BoxLauncher.lastBootSeconds(inLog: "Ready in no time\nReady in 12 minutes\n") == nil)
     }
+
+    /// What a start that saw its supervisor exit says: the last "Error: " line, cleaned.
+    @Test func theLastErrorExplainsAnExit() {
+        let log = """
+            2026-10-16T06:49:39Z Starting box b (4 CPUs, 4 GB, image dev, network allowlist)
+            Error: host packs /x/packs.json: cannot read it
+            2026-10-16T06:50:52Z Starting box b (4 CPUs, 4 GB, image dev, network allowlist)
+            Error: the guest is unreachable: the guest daemon did not answer within 60.0 seconds; the console's last lines: \u{1B}[0;32m  OK
+            """
+        #expect(BoxLauncher.lastError(inLog: log) == "the guest daemon did not answer within 60.0 seconds; the console's last lines: ?[0;32m  OK")
+        #expect(BoxLauncher.lastError(inLog: "2026-10-16T06:49:39Z Starting box b\n") == nil)
+        #expect(BoxLauncher.lastError(inLog: "") == nil)
+        #expect(BoxLauncher.lastError(inLog: "Error: \n") == nil)
+        // Only a line that starts with it.
+        #expect(BoxLauncher.lastError(inLog: "2026-10-16T06:49:39Z Shared: Error: in a name\n") == nil)
+        #expect(BoxLauncher.lastError(inLog: "Error: " + String(repeating: "x", count: 5000)) == String(repeating: "x", count: 1000) + "...")
+    }
 }

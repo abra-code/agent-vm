@@ -1024,7 +1024,9 @@ test_a_broken_linux_box_does_not_start() {
     fake_linux_box work deb
     run_avm box start work
     assert_status 1 || return 1
-    assert_err_contains "the supervisor exited (status 1); see $AGENT_VM_HOME/Boxes/work/supervisor.log" || return 1
+    # Why, from the supervisor's own "Error:" line, so nobody has to open the log to find out.
+    assert_err_contains "the supervisor exited (status 1): image record $AGENT_VM_HOME/Boxes/work/MachineIdentifier is unusable: not a machine identifier" || return 1
+    assert_err_contains "; see $AGENT_VM_HOME/Boxes/work/supervisor.log" || return 1
     assert_contains "$(/bin/cat "$AGENT_VM_HOME/Boxes/work/supervisor.log")" "Boxes/work/MachineIdentifier is unusable: not a machine identifier" "the supervisor's log" || return 1
     run_avm box status work --json
     assert_json state stopped || return 1

@@ -143,13 +143,20 @@ final class RangeServer: @unchecked Sendable {
 
 @Suite struct RestoreImageDownloadTests {
     let body = Data((0..<300_000).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+    /// Held by the suite value, which lives as long as its test. A scratch folder returned by
+    /// the fixture and bound to `_` was deleted at once, and the download then made its folders
+    /// again where nothing removed them.
+    let scratch: Scratch
 
-    func fixture() throws -> (Scratch, RangeServer, RestoreImageCache, URL) {
-        let scratch = try Scratch()
+    init() throws {
+        scratch = try Scratch()
+    }
+
+    func fixture() throws -> (RangeServer, RestoreImageCache, URL) {
         let server = try RangeServer(body: body)
         let cache = RestoreImageCache(root: scratch.root)
         let file = try cache.file(for: server.url)
-        return (scratch, server, cache, file)
+        return (server, cache, file)
     }
 
     func download(_ server: RangeServer, _ file: URL, _ cache: RestoreImageCache, minimumFreeAfter: Int64 = 0) async throws {
@@ -158,7 +165,7 @@ final class RangeServer: @unchecked Sendable {
     }
 
     @Test func downloadsIntoTheCache() async throws {
-        let (_, server, cache, file) = try fixture()
+        let (server, cache, file) = try fixture()
         #expect(file.path.hasSuffix("/Cache/ipsw/UniversalMac_99.0_99A1_Restore.ipsw"))
         let remote = try await RestoreImageDownload.remote(server.url)
         #expect(remote == RestoreImageDownload.Remote(length: Int64(body.count), etag: "\"v1\""))
@@ -174,7 +181,7 @@ final class RangeServer: @unchecked Sendable {
     }
 
     @Test func anInterruptedDownloadResumesWhereItStopped() async throws {
-        let (_, server, cache, file) = try fixture()
+        let (server, cache, file) = try fixture()
         server.set { $0.cutAfter = 100_000 }
         await #expect(throws: AgentVMError.self) { try await download(server, file, cache) }
         // What arrived before the cut: usually all 100 000 bytes, fewer when the error came first.
@@ -206,7 +213,7 @@ final class RangeServer: @unchecked Sendable {
     /// A server that sends no ETag: a partial download is resumed when the address and the
     /// length are the same, with no condition to send; another length starts over.
     @Test func withoutAnETagTheLengthDecides() async throws {
-        let (_, server, cache, file) = try fixture()
+        let (server, cache, file) = try fixture()
         server.set {
             $0.etag = nil
             $0.cutAfter = 100_000
@@ -230,7 +237,7 @@ final class RangeServer: @unchecked Sendable {
 
     /// The file changed on the server (another ETag): the partial download is not trusted.
     @Test func aChangedFileStartsOver() async throws {
-        let (_, server, cache, file) = try fixture()
+        let (server, cache, file) = try fixture()
         server.set { $0.cutAfter = 100_000 }
         await #expect(throws: AgentVMError.self) { try await download(server, file, cache) }
         server.set {
@@ -246,7 +253,7 @@ final class RangeServer: @unchecked Sendable {
 
     /// A server that answers a range with the whole file (200): written from the start.
     @Test func aServerIgnoringRangesIsReadFromTheStart() async throws {
-        let (_, server, cache, file) = try fixture()
+        let (server, cache, file) = try fixture()
         server.set { $0.cutAfter = 50_000 }
         await #expect(throws: AgentVMError.self) { try await download(server, file, cache) }
         let kept = try Data(contentsOf: cache.partialFile(for: file)).count
@@ -263,7 +270,7 @@ final class RangeServer: @unchecked Sendable {
     /// A signal that came before the transfer started: the task is canceled before it is
     /// resumed, completes at once, and the download ends as canceled rather than waiting.
     @Test func aDownloadCanceledBeforeItStartsEnds() async throws {
-        let (_, server, cache, file) = try fixture()
+        let (server, cache, file) = try fixture()
         let remote = try await RestoreImageDownload.remote(server.url)
         let cancellation = BuildCancellation()
         cancellation.cancel(signal: SIGINT)
@@ -278,7 +285,7 @@ final class RangeServer: @unchecked Sendable {
     /// The file changed between the HEAD and the GET: refused, nothing kept that the next
     /// run would resume.
     @Test func aFileChangingDuringTheDownloadIsRefused() async throws {
-        let (_, server, cache, file) = try fixture()
+        let (server, cache, file) = try fixture()
         let remote = try await RestoreImageDownload.remote(server.url)
         server.set { $0.etag = "\"v2\"" }
         do {
@@ -295,7 +302,7 @@ final class RangeServer: @unchecked Sendable {
 
     /// Starting another restore image removes older partial downloads, never complete files.
     @Test func olderPartialDownloadsAreRemoved() async throws {
-        let (_, server, cache, file) = try fixture()
+        let (server, cache, file) = try fixture()
         try FileSystem.makeDirectories(cache.directory.path)
         let old = cache.directory.appendingPathComponent("UniversalMac_98.0_98A1_Restore.ipsw")
         try Data("old".utf8).write(to: URL(fileURLWithPath: old.path + ".part"))
@@ -308,7 +315,7 @@ final class RangeServer: @unchecked Sendable {
     }
 
     @Test func refusals() async throws {
-        let (_, server, cache, file) = try fixture()
+        let (server, cache, file) = try fixture()
         // Not enough space left afterwards: nothing is downloaded.
         do {
             try await download(server, file, cache, minimumFreeAfter: Int64.max / 2)
@@ -385,7 +392,6 @@ final class RangeServer: @unchecked Sendable {
     }
 
     @Test func anIPSWValueIsResolved() async throws {
-        let scratch = try Scratch()
         let cache = RestoreImageCache(root: scratch.root)
         let here = scratch.root.appendingPathComponent("here", isDirectory: true)
         try FileSystem.makeDirectories(here.path)
