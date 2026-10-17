@@ -199,6 +199,7 @@ The shipped recipes are in the `Recipes` folder beside the agent-vm program, the
 | `linux-python/recipe.json` | For Linux: packages from apt in a root step that asks nothing, a tool installed into `~/.local/bin` as the box user, update steps for both. |
 | `linux-sudo/recipe.json` | For Linux: a system file written by a root step and checked before it is put in place. Not something to copy into another recipe. |
 | `linux-desktop/recipe.json` | For Linux: a desktop, with `"screen": true`, packages from apt without recommended ones, and system settings written by root steps. |
+| `linux-desktop-extras/recipe.json` | For Linux: a recipe that adds to another, with a first step that names the recipe to put before it, and a check that something is not installed. |
 
 `agent-clis` and `acp-agents` say `"guest": "any"`: the same npm commands serve both systems, and their first step names the Node recipe of each.
 
