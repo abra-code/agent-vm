@@ -30,14 +30,20 @@ extension ImageBuilder {
     /// is, for whatever a person wants to do by hand: no System Settings, no Finder window.
     /// Whether the daemon has Full Disk Access is still looked at before the shutdown and
     /// recorded, so a grant given by hand in such a window is not missed.
+    ///
+    /// A Linux image is only viewed, and only when a recipe gave it a screen (a desktop): its
+    /// account has no password and there is no Full Disk Access. Before it shuts down, the image
+    /// is checked as its build sealed it (`LinuxSetup.sealChecks`), and an image that no longer
+    /// passes is marked failed, so no box is made of it.
     public func setUp(named name: String, fullDiskAccess: Bool = true) async throws -> GoldenImage {
         var image = try store.image(named: name)
         subject = image.name
-        guard image.record.effectiveGuest == .macOS else {
-            if fullDiskAccess {
-                throw LinuxGuest.noFullDiskAccess(image: image.name)
-            }
-            throw image.record.hasScreen ? LinuxGuest.noImageView(image: image.name) : LinuxGuest.noScreen("image \(image.name)")
+        let linux = image.record.effectiveGuest == .linux
+        if linux, fullDiskAccess {
+            throw LinuxGuest.noFullDiskAccess(image: image.name)
+        }
+        guard image.record.hasScreen else {
+            throw LinuxGuest.noScreen("image \(image.name)")
         }
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: fullDiskAccess ? "set up" : "view")
@@ -57,9 +63,15 @@ extension ImageBuilder {
         // `updating`: this command holds the update lock itself, so an `Update/` folder is a killed
         // update's leftover.
         image = try store.settle(image, updating: true)
-        let password = try await accountPassword(of: image)
+        let password = linux ? nil : try await accountPassword(of: image)
+        // A Linux guest's console goes to the image's console.log, as at every boot of it.
+        let console: ConsoleLog? = linux ? try ConsoleLog(url: image.consoleLogURL) : nil
+        defer { console?.close() }
+        if linux, LinuxPageNote.hasSmallPages(image.record.linux) {
+            try checkHostMemory(memoryBytes: image.record.memoryBytes, what: "the view of \(image.name)")
+        }
 
-        let machine = try makeMachine(for: image)
+        let machine = try makeMachine(for: image, extras: LinuxMachineExtras(console: console?.writeHandle))
         // Control-C (or SIGTERM) at any point ends the setup at the next step, with a clean
         // shutdown: killed, the process would take the image's VM down mid-write.
         let done = SetupDone()
@@ -82,7 +94,10 @@ extension ImageBuilder {
             }
         }
         progress("boot", "Booting \(image.name)")
-        try await machine.start(provisioning: nil)
+        try await start(machine, of: image)
+        guard let password else {
+            return try await viewLinux(image, machine: machine, done: done)
+        }
         let granted: Bool
         do {
             let hello = try await waitForDaemon(machine, attempts: 180)
@@ -115,6 +130,72 @@ extension ImageBuilder {
     }
 
     static let viewNote = "Do any one-time steps the image needs, then close this window: the image shuts down and keeps them."
+
+    /// A Linux image's view, on its started machine: the window until it closes (or a signal),
+    /// then the seal checks and a shutdown that clears what each boot must have of its own.
+    private func viewLinux(_ image: GoldenImage, machine: GuestMachine, done: SetupDone) async throws -> GoldenImage {
+        var sealProblem: Error?
+        do {
+            let hello = try await waitForDaemon(machine, attempts: 180, guest: .linux)
+            log("  agent-vm-guest \(hello.version ?? "?") answers")
+            if done.isFinished {
+                log("  Stopped before the window opened")
+            } else {
+                // No Type Password: the account has none, and the desktop is logged in.
+                let viewer = BoxViewer(name: image.name, kind: "image", machine: machine, guest: .linux, note: Self.viewNote,
+                                       onClose: { done.finish() }, log: { [weak self] in self?.log($0) })
+                viewer.show(interactive: true)
+                progress("window", "  The window is open; close it when done")
+                while !done.isFinished, machine.isRunning {
+                    try await Task.sleep(for: .seconds(2))
+                }
+                withExtendedLifetime(viewer) {}
+            }
+            if machine.isRunning {
+                // Someone with root in the image (the linux-sudo recipe) can undo the seal; the
+                // image must not go on as if it held.
+                do {
+                    try await sealCheck(machine, checks: LinuxSetup.sealChecks(distribution: image.record.linux?.distribution ?? "debian"))
+                } catch {
+                    sealProblem = error
+                }
+                try await shutDown(machine, guest: .linux)
+            } else if let failure = machine.failure {
+                throw AgentVMError.guestUnreachable("the guest stopped during the view: \(failure)")
+            } else {
+                // Only root can power the guest off (there is no polkitd): nothing was checked,
+                // and its machine id was not cleared, so the boxes made of it would share one.
+                let problem = AgentVMError.guestUnreachable("the guest shut itself down during the view, so it was not checked as its build sealed it")
+                try markUnsealed(image, problem)
+                throw problem
+            }
+        } catch {
+            if machine.isRunning {
+                try? await machine.forceStop()
+            }
+            // Also when the shutdown after a failed check failed (root stopped the daemon,
+            // say): the image is not left ready.
+            if let sealProblem {
+                try? markUnsealed(image, sealProblem)
+            }
+            throw error
+        }
+        if let sealProblem {
+            try markUnsealed(image, sealProblem)
+            throw sealProblem
+        }
+        return image
+    }
+
+    /// A Linux image that `image view` could not show to still be sealed: failed, so no box
+    /// is made of it.
+    private func markUnsealed(_ image: GoldenImage, _ problem: Error) throws {
+        _ = try store.update(image) { record in
+            record.state = .failed
+            record.failure = "after image view: \(problem)"
+        }
+        notice("  Image \(image.name) is marked failed, so no box is made of it; `agent-vm image rebuild \(image.name)` makes it again")
+    }
 
     /// The window part: shows the screen, opens the settings (with `guide`), and waits for the
     /// window to close. Returns whether agent-vm-guest has Full Disk Access at the end.

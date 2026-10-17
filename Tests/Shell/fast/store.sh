@@ -895,7 +895,7 @@ test_commands_without_a_linux_meaning_refuse() {
 }
 
 # A Linux box whose image installed a desktop (linux-desktop) has a screen: box view asks only
-# that it runs. image view does not open such an image yet.
+# that it runs. (image view boots the image, so the extended linux-desktop test covers it.)
 test_a_linux_box_with_a_desktop_has_a_screen() {
     fake_linux_image desk
     fake_linux_box work desk
@@ -904,9 +904,9 @@ test_a_linux_box_with_a_desktop_has_a_screen() {
     assert_status 1 || return 1
     assert_err_contains "box work is not running" || return 1
     assert_not_contains "$ERR" "no screen" "box view's refusal" || return 1
-    run_avm image view desk
+    run_avm image setup desk
     assert_status 1 || return 1
-    assert_err_contains "image view does not open a Linux image yet; make a box of image desk" || return 1
+    assert_err_contains "image desk runs Linux: there is no Full Disk Access to grant" || return 1
     run_avm box list --json
     assert_json 0.box.screen true || return 1
 }

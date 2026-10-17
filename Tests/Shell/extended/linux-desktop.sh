@@ -2,9 +2,9 @@
 #
 # Tests/Shell/extended/linux-desktop.sh - the bundled linux-desktop recipe: an image built with
 # it records a screen, its boxes start with a display and the box user logged in to XFCE, and
-# box view shows the desktop and types into it. From the ready Linux image
-# $AGENT_VM_TEST_LINUX_IMAGE, and only with AGENT_VM_TEST_LINUX_DESKTOP=1: the recipe downloads
-# about 92 MB. No signing identity is needed.
+# box view shows the desktop and types into it; image view opens the image. From the ready
+# Linux image $AGENT_VM_TEST_LINUX_IMAGE, and only with AGENT_VM_TEST_LINUX_DESKTOP=1: the
+# recipe downloads about 92 MB. No signing identity is needed.
 
 test_the_desktop_recipe_gives_a_screen() {
     require_linux_image || return $(( $? == 1 ? 0 : 1 ))
@@ -89,5 +89,37 @@ test_the_desktop_recipe_gives_a_screen() {
     done
     assert_eq "$OUT" "Typed-OK_42 x/y.z >AB" "what was typed into the terminal" || return 1
     run_avm box stop "$_box"
+    assert_status 0 || return 1
+
+    # image view opens the image itself (since 0.8.1). SIGTERM ends it as closing the window
+    # does: the image is checked as its build sealed it, and shut down by agent-vm.
+    "$AGENT_VM" image view "$_image" --json > "$SCRATCH/view.out" 2> "$SCRATCH/view.err" &
+    local _viewer=$!
+    _waited=0
+    while [ "$_waited" -lt 90 ]; do
+        /bin/sleep 1
+        _waited=$((_waited + 1))
+        case "$(/bin/cat "$SCRATCH/view.err")" in
+            *'"step":"window"'*) break ;;
+        esac
+    done
+    /bin/kill -TERM "$_viewer"
+    wait "$_viewer"
+    local _viewed=$?
+    local _events
+    _events="$(/bin/cat "$SCRATCH/view.err")"
+    printf '%s\n' "$_events"
+    assert_eq "$_viewed" "0" "image view's exit status" || return 1
+    assert_contains "$_events" '"step":"window"' "image view's events" || return 1
+    assert_contains "$_events" "checked: no ssh server" "image view's events" || return 1
+    assert_contains "$_events" '"step":"shutdown"' "image view's events" || return 1
+    run_avm image info "$_image" --json
+    assert_json state ready || return 1
+    # A box made of it afterwards still starts with its desktop.
+    run_avm box recreate "$_box"
+    assert_status 0 || return 1
+    run_avm box start "$_box"
+    assert_status 0 || return 1
+    run_avm exec --box "$_box" -- /bin/sh -c 'for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -x xfce4-session > /dev/null && exit 0; sleep 1; done; exit 1'
     assert_status 0 || return 1
 }

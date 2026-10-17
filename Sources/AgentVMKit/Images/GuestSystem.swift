@@ -94,11 +94,6 @@ enum LinuxGuest {
         return .notForThisGuest("\(owner) runs Linux without a desktop, so it has no screen to show (an image built with the linux-desktop recipe has one); open a shell with `agent-vm box shell <box>`")
     }
 
-    /// A Linux image with a desktop: `image view` does not boot one yet; a box of it shows it.
-    static func noImageView(image: String) -> AgentVMError {
-        return .notForThisGuest("image view does not open a Linux image yet; make a box of image \(image) and open it with `agent-vm box view <box>`")
-    }
-
     /// A Linux box's account has no password to type (it logs in to its desktop by itself).
     static func noPassword(_ owner: String) -> AgentVMError {
         return .notForThisGuest("\(owner) runs Linux, whose account has no password to type")

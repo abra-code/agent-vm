@@ -83,7 +83,7 @@ A kernel manages memory in pages of one size, fixed when the kernel is built: 4 
 | `image rebuild --linux <release>`, or `--from` | Builds again from a fresh cloud image, or from a Linux image. |
 | `image setup` | Refused: there is no Full Disk Access to grant. |
 | `box view` | Refused, unless the image installed a desktop ([A desktop](#a-desktop)); then as for macOS, without Type Password (the account has none). |
-| `image view` | Refused: it does not open a Linux image yet. Make a box of the image and use `box view`. |
+| `image view` | Refused, unless the image installed a desktop (since 0.8.1); then as for macOS, without Type Password, and the image is checked as its build sealed it before it shuts down (see [A desktop](#a-desktop)). |
 | `image update-guest` | Refused: use `image update <image> --guest`. |
 | `store secure-passwords`, the account password | Nothing to do: a Linux image has no password. |
 | `box start`, `box stop`, `box status`, `box network`, `box netlog`, `box execlog`, `box sync-clock` | As for macOS. |
@@ -161,11 +161,12 @@ agent-vm box view gui --interactive
 A Linux box has no screen unless its image installed a desktop with a recipe that says `"screen": true` (since 0.8.0). `Recipes/linux-desktop` is that recipe: XFCE, its terminal, the LightDM login manager and the X server, about 420 MB on disk. The image and every box made from it then have a display, a keyboard and a pointer, and `box view` shows the desktop as it shows a macOS box's: view only unless `--interactive`, with Send for files. Boxes made before the desktop was added stay without one: `box recreate` gives it to them.
 
 - **The box user is logged in by itself** at start: the account has no password, so there is no login window and no screen lock, and the screen never blanks. The window has no Type Password button, and `box view --type-password` is refused.
-- **The same seal:** the packages are installed without the ones they only recommend, so no network manager, sound server, printing service or polkitd comes with them. With the desktop running nothing listens for the network (measured; the build's own check runs before the desktop has started).
+- **The same seal:** the packages are installed without the ones they only recommend, so no network manager, sound server, printing service or polkitd comes with them. With the desktop running nothing listens for the network (measured; `image view` checks it again before the image shuts down, while the build's own check runs before the desktop has started).
 - **Drawn by the processors:** Virtualization gives a Linux guest no 3D acceleration, so the desktop and everything on it are drawn in software. XFCE is light enough for that; a browser or a heavy application is slow.
 - **Sizes and times:** the box starts in about 4 seconds with the desktop logged in, which takes about 200 MB of its memory; 4 GB suits a box with a desktop and an agent. The display is 1280 by 800, as a macOS box's.
 - **No clipboard between your Mac and the box.** Send files with Send or `box send`; text goes through `exec` or the shared folder.
 - **Programs started with `exec` do not appear on the screen** unless they are told the display: `agent-vm exec --box gui -- env DISPLAY=:0 XAUTHORITY=/home/agent/.Xauthority xfce4-terminal`.
+- **`image view` opens the image itself** (since 0.8.1), to set something up by hand that every box made afterwards inherits (a setting of the desktop, a browser profile): the image boots with its window, and closing the window shuts it down. Before it does, the image is checked as its build sealed it (no ssh server, nothing listening for the network, no account with a password, ...); an image that no longer passes, which takes root in it (`Recipes/linux-sudo`), is marked failed, and `image rebuild` makes it again. Boxes made before keep what they have.
 - **Another desktop** is a recipe of your own with `"screen": true` that does the same; `Recipes/WRITING-RECIPES.md` says what it must do.
 
 ## What a Linux image is made of
