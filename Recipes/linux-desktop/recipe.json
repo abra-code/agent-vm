@@ -5,10 +5,10 @@
   "screen": true,
   "steps": [
     {
-      "name": "XFCE, its terminal, the LightDM login manager and the X server, without recommended packages",
+      "name": "XFCE, its terminal, the LightDM login manager and the X server, without recommended packages except the SVG image loader its wallpaper and icons need",
       "user": "root",
       "env": {"DEBIAN_FRONTEND": "noninteractive"},
-      "run": "apt-get -q -y update && apt-get -q -y --no-install-recommends install xfce4 xfce4-terminal xfdesktop4-data lightdm lightdm-gtk-greeter xserver-xorg-core xserver-xorg-input-libinput dbus-x11",
+      "run": "apt-get -q -y update && apt-get -q -y --no-install-recommends install xfce4 xfce4-terminal xfdesktop4-data lightdm lightdm-gtk-greeter xserver-xorg-core xserver-xorg-input-libinput dbus-x11 librsvg2-common",
       "timeoutSeconds": 1800
     },
     {
@@ -27,10 +27,20 @@
       "run": "systemctl enable lightdm && systemctl set-default graphical.target"
     }
   ],
+  "update": [
+    {
+      "name": "The SVG image loader, for an image built before the recipe installed it",
+      "user": "root",
+      "env": {"DEBIAN_FRONTEND": "noninteractive"},
+      "run": "if [ \"$(dpkg-query -W -f '${db:Status-Status}' librsvg2-common 2> /dev/null)\" = installed ]; then echo 'the SVG image loader is installed'; else apt-get -q -y update && apt-get -q -y --no-install-recommends install librsvg2-common; fi",
+      "timeoutSeconds": 900
+    }
+  ],
   "checks": [
     "[ \"$(systemctl is-enabled lightdm)\" = enabled ] && echo 'LightDM starts with the system'",
     "[ \"$(systemctl get-default)\" = graphical.target ] && echo 'the system starts to graphical.target'",
     "grep -qx \"autologin-user=$(id -un)\" /etc/lightdm/lightdm.conf.d/50-agent-vm.conf && echo \"$(id -un) is logged in at start\"",
-    "command -v xfce4-session > /dev/null && command -v Xorg > /dev/null && echo 'XFCE and the X server are installed'"
+    "command -v xfce4-session > /dev/null && command -v Xorg > /dev/null && echo 'XFCE and the X server are installed'",
+    "[ \"$(dpkg-query -W -f '${db:Status-Status}' librsvg2-common)\" = installed ] && echo 'the wallpaper and the icons, which are SVG files, can be drawn'"
   ]
 }

@@ -4,12 +4,12 @@
 # it records a screen, its boxes start with a display and the box user logged in to XFCE, and
 # box view shows the desktop and types into it; image view opens the image. From the ready
 # Linux image $AGENT_VM_TEST_LINUX_IMAGE, and only with AGENT_VM_TEST_LINUX_DESKTOP=1: the
-# recipe downloads about 92 MB. No signing identity is needed.
+# recipe downloads about 94 MB. No signing identity is needed.
 
 test_the_desktop_recipe_gives_a_screen() {
     require_linux_image || return $(( $? == 1 ? 0 : 1 ))
     if [ "${AGENT_VM_TEST_LINUX_DESKTOP:-}" != "1" ]; then
-        skip "set AGENT_VM_TEST_LINUX_DESKTOP=1 to build an image with the desktop (downloads about 92 MB)"
+        skip "set AGENT_VM_TEST_LINUX_DESKTOP=1 to build an image with the desktop (downloads about 94 MB)"
         return 0
     fi
     local _image="shtest-ldesk-$$"
@@ -50,6 +50,9 @@ test_the_desktop_recipe_gives_a_screen() {
     run_avm exec --box "$_box" --user root -- /bin/sh -c 'ls /dev/dri/card0 && loginctl list-sessions --no-legend | grep -c " agent seat0 "'
     assert_status 0 || return 1
     assert_eq "$OUT" $'/dev/dri/card0\n1' "the display and the session" || return 1
+    # The wallpaper and many icons are SVG files: without the loader the desktop is black.
+    run_avm exec --box "$_box" -- /usr/bin/dpkg-query -W -f '${db:Status-Status}' librsvg2-common
+    assert_eq "$OUT" "installed" "the SVG image loader" || return 1
 
     run_avm box view "$_box"
     case "$ERR" in

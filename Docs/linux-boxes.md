@@ -152,16 +152,16 @@ agent-vm box recreate work                           # each box, to get what the
 ## A desktop
 
 ```sh
-agent-vm image create deb-desk --from deb --recipe Recipes/linux-desktop/recipe.json   # about 90 seconds, 92 MB of packages
+agent-vm image create deb-desk --from deb --recipe Recipes/linux-desktop/recipe.json   # about 90 seconds, 94 MB of packages
 agent-vm box create gui --image deb-desk
 agent-vm box start gui
 agent-vm box view gui --interactive
 ```
 
-A Linux box has no screen unless its image installed a desktop with a recipe that says `"screen": true` (since 0.8.0). `Recipes/linux-desktop` is that recipe: XFCE, its terminal, the LightDM login manager and the X server, about 420 MB on disk. The image and every box made from it then have a display, a keyboard and a pointer, and `box view` shows the desktop as it shows a macOS box's: view only unless `--interactive`, with Send for files. Boxes made before the desktop was added stay without one: `box recreate` gives it to them.
+A Linux box has no screen unless its image installed a desktop with a recipe that says `"screen": true` (since 0.8.0). `Recipes/linux-desktop` is that recipe: XFCE, its terminal, the LightDM login manager and the X server, about 430 MB on disk. The image and every box made from it then have a display, a keyboard and a pointer, and `box view` shows the desktop as it shows a macOS box's: view only unless `--interactive`, with Send for files. Boxes made before the desktop was added stay without one: `box recreate` gives it to them.
 
 - **The box user is logged in by itself** at start: the account has no password, so there is no login window and no screen lock, and the screen never blanks. The window has no Type Password button, and `box view --type-password` is refused.
-- **The same seal:** the packages are installed without the ones they only recommend, so no network manager, sound server, printing service or polkitd comes with them. With the desktop running nothing listens for the network (measured; `image view` checks it again before the image shuts down, while the build's own check runs before the desktop has started).
+- **The same seal:** the packages are installed without the ones they only recommend (except the SVG image loader that draws the wallpaper and icons, a library), so no network manager, sound server, printing service or polkitd comes with them. With the desktop running nothing listens for the network (measured; `image view` checks it again before the image shuts down, while the build's own check runs before the desktop has started).
 - **Drawn by the processors:** Virtualization gives a Linux guest no 3D acceleration, so the desktop and everything on it are drawn in software. XFCE is light enough for that; a browser or a heavy application is slow.
 - **Sizes and times:** the box starts in about 4 seconds with the desktop logged in, which takes about 200 MB of its memory; 4 GB suits a box with a desktop and an agent. The display is 1280 by 800, as a macOS box's.
 - **No clipboard between your Mac and the box.** Send files with Send or `box send`; text goes through `exec` or the shared folder.

@@ -122,7 +122,7 @@ A recipe with `"guest": "linux"` runs in Debian 13 or Ubuntu 26.04 on ARM (`arm6
 - **A file downloaded from a tool's site is checked before it is used,** against a checksum the site publishes (`sha256sum --check`), as `linux-node` does. apt checks its own packages.
 - **In a box the network is a proxy and nothing else** (by default): there is no network card. Tools that read `HTTPS_PROXY` work; one that does not cannot reach anything. `apt-get` in a box, as root from the Mac, needs `--allow pack:debian` (`pack:ubuntu` in an Ubuntu box).
 - **No services.** A box is not a server: do not enable systemd units, and install no ssh server (the image was built without one on purpose).
-- **A desktop** is `Recipes/linux-desktop` (XFCE): tell the person it exists rather than writing one. A recipe for another desktop says `"screen": true`, installs without recommended packages (they bring network services and a second network manager), starts the desktop with the system and logs the box user in by itself, since the account has no password; it must not install `polkitd` or anything that listens on the network.
+- **A desktop** is `Recipes/linux-desktop` (XFCE): tell the person it exists rather than writing one. A recipe for another desktop says `"screen": true`, installs without recommended packages (they bring network services and a second network manager) and names the few it needs (on Debian, `librsvg2-common`: without it the SVG wallpaper is black and SVG icons are missing), starts the desktop with the system and logs the box user in by itself, since the account has no password; it must not install `polkitd` or anything that listens on the network.
 
 ## 4. The loop: check, then build
 
