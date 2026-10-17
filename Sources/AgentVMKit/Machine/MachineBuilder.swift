@@ -13,20 +13,23 @@ struct MachineShape: Sendable {
     var cpuCount: Int
     var memoryBytes: UInt64
     var macAddress: String
+    /// A display, keyboard and pointer; every macOS machine has them whatever this says.
+    var screen: Bool
 
-    init(guest: GuestKind, cpuCount: Int, memoryBytes: UInt64, macAddress: String) {
+    init(guest: GuestKind, cpuCount: Int, memoryBytes: UInt64, macAddress: String, screen: Bool = false) {
         self.guest = guest
         self.cpuCount = cpuCount
         self.memoryBytes = memoryBytes
         self.macAddress = macAddress
+        self.screen = screen
     }
 
     init(_ record: ImageRecord) {
-        self.init(guest: record.effectiveGuest, cpuCount: record.cpuCount, memoryBytes: record.memoryBytes, macAddress: record.macAddress)
+        self.init(guest: record.effectiveGuest, cpuCount: record.cpuCount, memoryBytes: record.memoryBytes, macAddress: record.macAddress, screen: record.hasScreen)
     }
 
     init(_ record: BoxRecord) {
-        self.init(guest: record.effectiveGuest, cpuCount: record.cpuCount, memoryBytes: record.memoryBytes, macAddress: record.macAddress)
+        self.init(guest: record.effectiveGuest, cpuCount: record.cpuCount, memoryBytes: record.memoryBytes, macAddress: record.macAddress, screen: record.hasScreen)
     }
 }
 
@@ -51,7 +54,7 @@ enum MachineBuilder {
             guard auxiliaryStorage == nil else {
                 throw AgentVMError.virtualMachine(operation: "configure \(files.name)", message: "a Linux guest has no auxiliary storage")
             }
-            let spec = LinuxMachineSpec(cpuCount: shape.cpuCount, memoryBytes: shape.memoryBytes, macAddress: shape.macAddress)
+            let spec = LinuxMachineSpec(cpuCount: shape.cpuCount, memoryBytes: shape.memoryBytes, macAddress: shape.macAddress, screen: shape.screen)
             return try spec.configuration(for: files, network: network, shareTags: shareTags, extras: extras, validate: validate)
         }
     }

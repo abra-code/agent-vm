@@ -2,9 +2,12 @@
 //
 // A Linux guest: its Virtualization configuration. The machine is a generic one that boots its
 // disk through EFI, the firmware interface a PC-style machine has, so a distribution's own
-// cloud image starts unchanged. It has no display, keyboard or pointer: what the guest prints
-// on its console goes to a file (ConsoleLog), and everything else goes through the guest
-// daemon.
+// cloud image starts unchanged. What the guest prints on its console goes to a file
+// (ConsoleLog), and everything else goes through the guest daemon. It has no display, keyboard
+// or pointer, unless its image installed a desktop (a recipe with "screen"): then it has a
+// virtio display of the macOS guest's size, which `box view` shows, and a USB keyboard and
+// pointer. Virtualization draws a Linux guest without 3D acceleration: the desktop is drawn by
+// the processors (measured: XFCE logged in takes about 200 MB of the box's memory).
 //
 // Measured on macOS 27, MacBook Air M5, with Debian 13's cloud image: the daemon answers 2.7 s
 // after start. The entropy device is required (without it the guest waits for randomness at
@@ -32,11 +35,14 @@ public struct LinuxMachineSpec: Sendable {
     public var cpuCount: Int
     public var memoryBytes: UInt64
     public var macAddress: String
+    /// A display, keyboard and pointer.
+    public var screen: Bool
 
-    public init(cpuCount: Int, memoryBytes: UInt64, macAddress: String) {
+    public init(cpuCount: Int, memoryBytes: UInt64, macAddress: String, screen: Bool = false) {
         self.cpuCount = cpuCount
         self.memoryBytes = memoryBytes
         self.macAddress = macAddress
+        self.screen = screen
     }
 
     /// Creates what a new Linux machine has besides its disk: an empty store for the boot
@@ -134,6 +140,13 @@ public struct LinuxMachineSpec: Sendable {
             let port = VZVirtioConsoleDeviceSerialPortConfiguration()
             port.attachment = VZFileHandleSerialPortAttachment(fileHandleForReading: nil, fileHandleForWriting: console)
             configuration.serialPorts = [port]
+        }
+        if screen {
+            let graphics = VZVirtioGraphicsDeviceConfiguration()
+            graphics.scanouts = [VZVirtioGraphicsScanoutConfiguration(widthInPixels: MacMachineSpec.displayWidth, heightInPixels: MacMachineSpec.displayHeight)]
+            configuration.graphicsDevices = [graphics]
+            configuration.keyboards = [VZUSBKeyboardConfiguration()]
+            configuration.pointingDevices = [VZUSBScreenCoordinatePointingDeviceConfiguration()]
         }
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]

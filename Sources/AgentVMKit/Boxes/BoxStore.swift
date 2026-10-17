@@ -50,6 +50,9 @@ public struct BoxRecord: Codable, Equatable, Sendable {
     /// before there were Linux guests, which are macOS ones (`effectiveGuest`).
     public var guest: GuestKind?
     public var linux: LinuxSystem?
+    /// A Linux box with a display, keyboard and pointer, as its image had when the box was made
+    /// (`ImageRecord.screen`); nil for one without.
+    public var screen: Bool?
     public var guestProtocol: Int?
     public var createdAt: Date
     public var cpuCount: Int
@@ -83,6 +86,12 @@ public struct BoxRecord: Codable, Equatable, Sendable {
 
     public var effectiveGuest: GuestKind {
         return guest ?? .macOS
+    }
+
+    /// Whether the box's machine has a display, so `box view` can show it and its supervisor runs
+    /// AppKit: every macOS box, and a Linux box whose image installed a desktop.
+    public var hasScreen: Bool {
+        return effectiveGuest == .macOS || screen == true
     }
 
     /// "macOS 27.0 (26A428)", "Debian GNU/Linux 13 (trixie)".
@@ -313,7 +322,7 @@ public struct BoxStore: Sendable {
         let record = BoxRecord(
             formatVersion: ImageRecord.formatVersion(passwordID: current.record.passwordID, guest: current.record.guest), name: name, image: current.name,
             macOSVersion: current.record.macOSVersion, macOSBuild: current.record.macOSBuild,
-            guest: current.record.guest, linux: current.record.linux,
+            guest: current.record.guest, linux: current.record.linux, screen: current.record.screen,
             // Whole seconds: the record is stored with ISO 8601 dates, which drop fractions.
             guestProtocol: current.record.guestProtocol, createdAt: Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down)),
             cpuCount: cpuCount ?? current.record.cpuCount, memoryBytes: memoryBytes ?? current.record.memoryBytes,

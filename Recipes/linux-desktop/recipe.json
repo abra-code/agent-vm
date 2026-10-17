@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "guest": "linux",
+  "description": "The XFCE desktop, logged in as the box user at start: the image and its boxes get a screen, shown with box view",
+  "screen": true,
+  "steps": [
+    {
+      "name": "XFCE, its terminal, the LightDM login manager and the X server, without recommended packages",
+      "user": "root",
+      "env": {"DEBIAN_FRONTEND": "noninteractive"},
+      "run": "apt-get -q -y update && apt-get -q -y --no-install-recommends install xfce4 xfce4-terminal xfdesktop4-data lightdm lightdm-gtk-greeter xserver-xorg-core xserver-xorg-input-libinput dbus-x11",
+      "timeoutSeconds": 1800
+    },
+    {
+      "name": "The box user logged in to XFCE at start, with no password",
+      "user": "root",
+      "run": "mkdir -p /etc/lightdm/lightdm.conf.d && printf '%s\\n' '[Seat:*]' \"autologin-user=$AGENT_VM_BOX_USER\" 'autologin-user-timeout=0' 'autologin-session=xfce' 'user-session=xfce' > /etc/lightdm/lightdm.conf.d/50-agent-vm.conf"
+    },
+    {
+      "name": "The screen never blanks",
+      "user": "root",
+      "run": "mkdir -p /etc/X11/xorg.conf.d && printf '%s\\n' 'Section \"ServerFlags\"' '    Option \"BlankTime\" \"0\"' '    Option \"StandbyTime\" \"0\"' '    Option \"SuspendTime\" \"0\"' '    Option \"OffTime\" \"0\"' 'EndSection' > /etc/X11/xorg.conf.d/50-agent-vm.conf"
+    },
+    {
+      "name": "The desktop starts with the system",
+      "user": "root",
+      "run": "systemctl enable lightdm && systemctl set-default graphical.target"
+    }
+  ],
+  "checks": [
+    "[ \"$(systemctl is-enabled lightdm)\" = enabled ] && echo 'LightDM starts with the system'",
+    "[ \"$(systemctl get-default)\" = graphical.target ] && echo 'the system starts to graphical.target'",
+    "grep -qx \"autologin-user=$(id -un)\" /etc/lightdm/lightdm.conf.d/50-agent-vm.conf && echo \"$(id -un) is logged in at start\"",
+    "command -v xfce4-session > /dev/null && command -v Xorg > /dev/null && echo 'XFCE and the X server are installed'"
+  ]
+}

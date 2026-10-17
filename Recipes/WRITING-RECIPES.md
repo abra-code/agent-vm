@@ -23,6 +23,7 @@ A recipe is a JSON object. A key that is not in these tables is an error.
 | `description` | no | One line saying what the recipe installs. Always write one. |
 | `guest` | no | The system the recipe is for: `"macos"` (the default), `"linux"`, or `"any"` for commands that are the same on both (an `npm install`). A recipe for the other system is refused before anything is built. |
 | `commandLineTools` | no | `false` skips Xcode's Command Line Tools (git, clang, make, python3); in a Linux image, the compiler and make. Leave it out unless told otherwise. |
+| `screen` | no | Linux recipes only: `true` when the recipe installs a desktop. The image and every box made from it then have a display, keyboard and pointer, and `agent-vm box view` shows the desktop. Leave it out otherwise. |
 | `steps` | no | A list of steps, run in order while the image is built. |
 | `update` | no | A list of steps that bring what the recipe installed up to date. `agent-vm image update` runs them, never the build. |
 | `checks` | no | A list of shell commands, run as the box user after the steps and again after every update. Each must exit 0 within 300 seconds. Its first line of output is shown. |
@@ -121,6 +122,7 @@ A recipe with `"guest": "linux"` runs in Debian 13 or Ubuntu 26.04 on ARM (`arm6
 - **A file downloaded from a tool's site is checked before it is used,** against a checksum the site publishes (`sha256sum --check`), as `linux-node` does. apt checks its own packages.
 - **In a box the network is a proxy and nothing else** (by default): there is no network card. Tools that read `HTTPS_PROXY` work; one that does not cannot reach anything. `apt-get` in a box, as root from the Mac, needs `--allow pack:debian` (`pack:ubuntu` in an Ubuntu box).
 - **No services.** A box is not a server: do not enable systemd units, and install no ssh server (the image was built without one on purpose).
+- **A desktop** is `Recipes/linux-desktop` (XFCE): tell the person it exists rather than writing one. A recipe for another desktop says `"screen": true`, installs without recommended packages (they bring network services and a second network manager), starts the desktop with the system and logs the box user in by itself, since the account has no password; it must not install `polkitd` or anything that listens on the network.
 
 ## 4. The loop: check, then build
 
@@ -196,6 +198,7 @@ The shipped recipes are in the `Recipes` folder beside the agent-vm program, the
 | `linux-node/recipe.json` | For Linux: a script copied into the image and run as root, a download checked against the site's checksum list, a setting made as the box user, an update step that does nothing when there is nothing new. |
 | `linux-python/recipe.json` | For Linux: packages from apt in a root step that asks nothing, a tool installed into `~/.local/bin` as the box user, update steps for both. |
 | `linux-sudo/recipe.json` | For Linux: a system file written by a root step and checked before it is put in place. Not something to copy into another recipe. |
+| `linux-desktop/recipe.json` | For Linux: a desktop, with `"screen": true`, packages from apt without recommended ones, and system settings written by root steps. |
 
 `agent-clis` and `acp-agents` say `"guest": "any"`: the same npm commands serve both systems, and their first step names the Node recipe of each.
 

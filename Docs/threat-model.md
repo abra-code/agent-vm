@@ -86,7 +86,7 @@ Every program in the box can read the shared folders and every secret you passed
 ### Show and print what it likes inside its own window
 
 - A full-screen program draws anything in your terminal window for as long as the session lasts, including text that looks like your Mac's shell prompt or a password question. What you type during a session goes to the box.
-- The box's screen (`box view`, macOS boxes only) is drawn by the box. A dialog there that asks for your Mac's password is the box asking. A Linux box has no screen.
+- The box's screen (`box view`: macOS boxes, and Linux boxes whose image installed a desktop) is drawn by the box. A dialog there that asks for your Mac's password is the box asking. A Linux box without a desktop has no screen.
 - Window titles and links to `http` and `https` pages pass the terminal filter. A link's text and its address are the program's choice.
 - In an `avm` session, a program in the box can put text of its choice on your clipboard whenever you are typing or using the mouse in that session. agent-vm sees that you are there, not what you selected or whether you asked to copy: the text can differ from what you selected, and it can replace what you copied elsewhere a moment before. Nothing is written while you are not using the session, and the box never reads your clipboard. The text cannot carry escape sequences, end a bracketed paste, or hide characters, but what is left is still the box's words: it can hold several lines, and in a shell without bracketed paste (macOS's `/bin/bash`) each complete line runs as pasted; it can be a command that looks right, an address with a lookalike letter, or instructions meant for another agent you paste it into. Read what you paste from a box session. `box execlog` says how many times a session wrote the clipboard and how many requests were refused; `avm --no-clipboard` turns the writing off.
 
@@ -132,7 +132,7 @@ Everything above holds for a Linux box, with the differences each line names. Wh
 - **No account password exists.** There is nothing to store, to type, or to leak between sibling boxes.
 - **No SSH phase in the image build,** so no first contact that another machine on the virtual network could answer.
 - **No network card** on the `allowlist` and `off` networks. "No route and no DNS" becomes "no card": there is nothing to configure wrongly, and root in the box cannot bring up what is not there.
-- **No screen,** so no window in which a box can ask for your Mac's password.
+- **No screen,** so no window in which a box can ask for your Mac's password. An image built with a desktop (`Recipes/linux-desktop`, since 0.8.0) has one, in the table below.
 - **No ssh server and no background updates.** The server is removed from the image (not only disabled: systemd would make an installed one listen on a second kind of socket by itself), and the image's build checks that nothing listens for the network and nothing but the guest daemon on the socket the Mac uses.
 
 **New, and what it rests on**
@@ -152,6 +152,7 @@ Everything above holds for a Linux box, with the differences each line names. Wh
 | Starting a program in the shared folder | The folder's files appear to belong to whoever asks, so root in the box must not be the one that looks | The daemon's helper checks the folder and the program after it has become the box user, and tells the daemon through a pipe limited to 1 KB, 10 seconds and plain text. |
 | Root in the box loads kernel modules | The guest daemon accepts connections only from the Mac | A socket in the guest cannot take the Mac's address, with or without the kernel's loopback module (measured). |
 | System updates | An upgrade that brings back what was sealed | `image update --system` compares what the build sealed before and after; something that held and no longer does fails the update. |
+| A desktop (`Recipes/linux-desktop`, a recipe with `"screen": true`; since 0.8.0) | A screen through which the box can show you anything, keys and clicks from your Mac, and a desktop's packages in the image | As for a macOS box: what the window shows is drawn by the box, a dialog there that asks for your Mac's password is the box asking, and the window takes no keys or clicks until you open it with `--interactive`. The box user is logged in by itself and still has no password, no sudo and no `polkitd`. The packages come from Debian without the ones they only recommend, so no network manager, sound server or printing service, and with the desktop running nothing listens for the network (measured). The build's seal check runs in the boot that ran the recipe, before services it enabled have started. No clipboard is shared. The display, keyboard and pointer are more of Apple's device code within the guest's reach, so only images that ask for a screen have them. |
 | The boot firmware's variables (`EFIVariableStore`) | A file the guest writes and Apple's firmware reads at the next boot | Outside the model, as every input to the Virtualization framework is; named because a macOS box has no such file. It is per box, and a box recreated from its image gets the image's. |
 
 **Root in a Linux box**

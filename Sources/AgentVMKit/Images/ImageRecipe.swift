@@ -88,6 +88,9 @@ public struct ImageRecipe: Equatable, Sendable {
     public var guest: Guest = .macOS
     /// nil: the default (install them).
     public var commandLineTools: Bool?
+    /// A Linux recipe that installs a desktop asks for a screen: the image, and every box made
+    /// from it, then has a display, keyboard and pointer, and `box view` shows it. nil: no screen.
+    public var screen: Bool?
     public var steps: [Step]
     /// What `image update` runs to bring the recipe's tools up to date in a built image; never
     /// run while an image is built.
@@ -116,7 +119,7 @@ public struct ImageRecipe: Equatable, Sendable {
     public static let defaultTimeoutSeconds = 1800
     /// Every key the format knows, by where it stands; anything else is refused. The guide for
     /// agents (Recipes/WRITING-RECIPES.md) lists the same keys, and a test holds it to these.
-    static let recipeKeys: Set<String> = ["version", "description", "guest", "commandLineTools", "steps", "update", "checks", "inputs", "parameters"]
+    static let recipeKeys: Set<String> = ["version", "description", "guest", "commandLineTools", "screen", "steps", "update", "checks", "inputs", "parameters"]
     static let stepKeys: Set<String> = ["name", "run", "copy", "to", "mode", "user", "env", "timeoutSeconds"]
     static let inputKeys: Set<String> = ["description"]
     static let parameterKeys: Set<String> = ["description", "default"]
@@ -229,6 +232,17 @@ public struct ImageRecipe: Equatable, Sendable {
             }
             commandLineTools = flag
         }
+        var screen: Bool?
+        if let value = root["screen"] {
+            guard let flag = value as? Bool, CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID() else {
+                throw fail("\"screen\" must be true or false")
+            }
+            // A macOS guest always has one; a recipe for both cannot give one to Linux alone.
+            guard guest == .linux else {
+                throw fail("\"screen\" is for Linux recipes (\"guest\": \"linux\"): a macOS image always has a screen")
+            }
+            screen = flag
+        }
 
         var hasher = SHA256()
         hasher.update(data: data)
@@ -335,7 +349,7 @@ public struct ImageRecipe: Equatable, Sendable {
             throw fail("\(shared) is both an input and a parameter")
         }
         let digest = hex(hasher.finalize())
-        return ImageRecipe(description: description, guest: guest, commandLineTools: commandLineTools, steps: steps, updateSteps: updateSteps, checks: checks,
+        return ImageRecipe(description: description, guest: guest, commandLineTools: commandLineTools, screen: screen, steps: steps, updateSteps: updateSteps, checks: checks,
                            digest: digest, text: text, path: path, inputs: inputs, parameters: parameters)
     }
 

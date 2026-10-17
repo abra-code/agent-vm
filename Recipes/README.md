@@ -21,6 +21,7 @@ The recipes above are for macOS images, except the four agent recipes (agent-cli
 | [linux-node](linux-node/recipe.json) | Node and npm from nodejs.org in `/usr/local`: the newest release of one major version (`--set node=24`, the default), checked against nodejs.org's checksum list. `npm install --global` is set to put packages into `~/.local` for the box user, so it needs no root | nothing |
 | [linux-python](linux-python/recipe.json) | the distribution's Python (3.13 in Debian 13, 3.14 in Ubuntu 26.04) with `venv`, `pip3`, `pipx` and the headers (`python3`; there is no `python` without the 3); uv, from PyPI through pipx, in `~/.local/bin`. Debian's pip refuses `pip install` outside a virtual environment, so work in one (`python3 -m venv .venv`, or `uv venv`); boxes on the allowlist network need `--allow pack:pypi` | nothing |
 | [linux-sudo](linux-sudo/recipe.json) | A rule that lets the box user run anything as root with `sudo`, without a password. Read "sudo in a Linux box" below before you use it | nothing |
+| [linux-desktop](linux-desktop/recipe.json) | The XFCE desktop with its terminal, the LightDM login manager and the X server, without recommended packages (92 MB to download, about 420 MB on disk). The box user is logged in by itself at start and the screen never blanks. The recipe says `"screen": true`, so the image and its boxes get a display, keyboard and pointer, and `agent-vm box view` shows the desktop. See "A desktop in a Linux box" below | nothing |
 | [agent-clis](agent-clis/recipe.json), [acp-agents](acp-agents/recipe.json) | As above: the same npm commands | Node: the linux-node recipe before it |
 | [agent-clis-native](agent-clis-native/recipe.json), [agent-clis-china](agent-clis-china/recipe.json) | As above: the same installers, which pick the Linux build themselves | nothing |
 
@@ -62,6 +63,23 @@ The box user of a Linux image cannot become root: it has no password, no sudo ru
 - **The image says so.** `agent-vm image list` shows the recipe for the image built with it. An image built from that one shows its base's name there, and has the recipe in its record (`recipes` in `image info --json`, marked `inheritedFrom`).
 - **No other bundled recipe needs it,** and a recipe should not add a rule of its own.
 - **Seeing what an agent wanted root for,** in a box without the rule: each refused `sudo` is in the system's journal with its command. `agent-vm exec --box <box> --user root -- journalctl -t sudo` lists them (`user NOT in sudoers ; ... COMMAND=/usr/bin/apt-get install -y ripgrep`). The same packages asked for again and again belong in a recipe.
+
+### A desktop in a Linux box
+
+A Linux box has no screen unless its image installed a desktop (since agent-vm 0.8.0). `Recipes/linux-desktop` installs XFCE and asks for a screen:
+
+```sh
+agent-vm image create deb-desk --from deb --recipe Recipes/linux-desktop/recipe.json   # about 90 seconds
+agent-vm box create gui --image deb-desk
+agent-vm box start gui
+agent-vm box view gui --interactive
+```
+
+- **Logged in by itself:** the box user has no password, so LightDM logs it in to XFCE at every start, and nothing locks or blanks the screen. The window has no Type Password button.
+- **Drawn in software:** a Linux guest gets no 3D acceleration, so keep to light applications.
+- **The packages it updates with the system:** `image update --system` brings Debian's updates to the desktop too; the recipe has no update steps of its own.
+- **Put it with the others** in one image (`--recipe Recipes/linux-node/recipe.json --recipe Recipes/agent-clis/recipe.json --recipe Recipes/linux-desktop/recipe.json`): an agent in such a box can open windows on the desktop when it is told the display (`DISPLAY=:0`).
+- More in [../Docs/linux-boxes.md](../Docs/linux-boxes.md#a-desktop).
 
 ## Xcode
 

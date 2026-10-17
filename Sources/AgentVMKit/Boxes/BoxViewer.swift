@@ -22,6 +22,8 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     /// What the window shows: "box", or "image" for `image setup` and `image view`.
     private let kind: String
     private let machine: GuestMachine
+    /// The guest's system: what the Send button packs with, and how the guest unpacks it.
+    private let guest: GuestKind
     /// Gives the guest account's password, typed by the Type Password button (interactive
     /// only). Asked when the button is pressed, away from the main actor: read from the
     /// Keychain, it can wait for the person's answer to a question from macOS.
@@ -48,12 +50,13 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     /// Stop was pressed or the window closed: no further item starts.
     private var stopRequested = false
 
-    init(name: String, kind: String = "box", machine: GuestMachine, password: (@Sendable () throws -> String)? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil,
+    init(name: String, kind: String = "box", machine: GuestMachine, guest: GuestKind = .macOS, password: (@Sendable () throws -> String)? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil,
          log: (@MainActor (String) -> Void)? = nil, sent: (@MainActor (BoxEventLog.Item) -> Void)? = nil) {
         self.sent = sent
         self.name = name
         self.kind = kind
         self.machine = machine
+        self.guest = guest
         self.password = password
         self.note = note
         self.onClose = onClose
@@ -235,7 +238,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
             for (index, url) in urls.enumerated() where !stopRequested {
                 let item = url.lastPathComponent
                 let what = urls.count > 1 ? "\(item) (\(index + 1) of \(urls.count))" : item
-                let sender = GuestSend(source: url)
+                let sender = GuestSend(source: url, guest: guest)
                 currentSend = sender
                 setSendStatus("Sending \(what)")
                 do {

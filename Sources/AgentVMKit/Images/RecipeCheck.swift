@@ -44,6 +44,8 @@ public enum RecipeCheck {
         public var description: String?
         /// The guest the recipe is for: "macos", "linux" or "any".
         public var guest: String?
+        /// True for a Linux recipe that gives the image a screen (a desktop); absent otherwise.
+        public var screen: Bool?
         public var digest: String?
         public var steps: Int?
         public var updateSteps: Int?
@@ -125,6 +127,7 @@ public enum RecipeCheck {
         report.name = recipe.name
         report.description = recipe.description
         report.guest = recipe.guest.rawValue
+        report.screen = recipe.screen == true ? true : nil
         report.digest = recipe.digest
         report.steps = recipe.steps.count
         report.updateSteps = recipe.updateSteps.count

@@ -351,6 +351,19 @@ import Testing
         #expect(try ImageRecipe.load(from: recipe(#"{"version": 1, "guest": "any"}"#, in: scratch)).digest != plain.digest)
     }
 
+    @Test func theScreenKeyIsRead() throws {
+        let scratch = try Scratch()
+        #expect(try ImageRecipe.load(from: recipe(#"{"version": 1, "guest": "linux", "screen": true}"#, in: scratch)).screen == true)
+        #expect(try ImageRecipe.load(from: recipe(#"{"version": 1, "guest": "linux", "screen": false}"#, in: scratch)).screen == false)
+        #expect(try ImageRecipe.load(from: recipe(#"{"version": 1, "guest": "linux"}"#, in: scratch)).screen == nil)
+        #expect(reason(try recipe(#"{"version": 1, "guest": "linux", "screen": 1}"#, in: scratch)) == #""screen" must be true or false"#)
+        // A macOS image always has a screen, and a recipe for both systems cannot give one to
+        // Linux alone.
+        let forLinuxOnly = #""screen" is for Linux recipes ("guest": "linux"): a macOS image always has a screen"#
+        #expect(reason(try recipe(#"{"version": 1, "screen": true}"#, in: scratch)) == forLinuxOnly)
+        #expect(reason(try recipe(#"{"version": 1, "guest": "any", "screen": true}"#, in: scratch)) == forLinuxOnly)
+    }
+
     @Test func aRecipeForTheOtherGuestIsRefused() throws {
         let scratch = try Scratch()
         func refusal(_ json: String, _ kind: GuestKind) throws -> String? {

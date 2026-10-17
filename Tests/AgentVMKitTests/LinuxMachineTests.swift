@@ -54,6 +54,34 @@ import Virtualization
         #expect(configuration.pointingDevices.isEmpty)
     }
 
+    @Test func aScreenIsADisplayKeyboardAndPointer() throws {
+        let scratch = try Scratch()
+        var spec = Self.spec
+        spec.screen = true
+        let configuration = try spec.configuration(for: try Self.files(in: scratch), validate: false)
+        let display = try #require(configuration.graphicsDevices.first as? VZVirtioGraphicsDeviceConfiguration)
+        #expect(configuration.graphicsDevices.count == 1)
+        // The macOS guest's size: box view's window is made for it.
+        #expect(display.scanouts.map(\.widthInPixels) == [MacMachineSpec.displayWidth])
+        #expect(display.scanouts.map(\.heightInPixels) == [MacMachineSpec.displayHeight])
+        #expect(configuration.keyboards.count == 1 && configuration.keyboards.first is VZUSBKeyboardConfiguration)
+        #expect(configuration.pointingDevices.count == 1 && configuration.pointingDevices.first is VZUSBScreenCoordinatePointingDeviceConfiguration)
+        // The rest of the machine is the same.
+        #expect(configuration.socketDevices.count == 1 && configuration.serialPorts.isEmpty)
+    }
+
+    @Test func theRecordSaysWhetherThereIsAScreen() throws {
+        // Every macOS machine has one; a Linux one only when a recipe installed a desktop.
+        #expect(MachineShape(ImageStoreTests.record("dev", state: .ready)).screen)
+        var linux = GuestRecordTests.linuxRecord()
+        #expect(!MachineShape(linux).screen)
+        linux.screen = true
+        #expect(MachineShape(linux).screen)
+        let scratch = try Scratch()
+        let configuration = try MachineBuilder.configuration(MachineShape(linux), files: try Self.files(in: scratch), validate: false)
+        #expect(configuration.graphicsDevices.count == 1)
+    }
+
     @Test func noNetworkMeansNoCard() throws {
         let scratch = try Scratch()
         let configuration = try Self.spec.configuration(for: try Self.files(in: scratch), network: .none, validate: false)

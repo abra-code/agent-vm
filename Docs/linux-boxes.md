@@ -16,7 +16,7 @@ avm new deb-tools                                    # or a temporary box with y
 ```
 
 - **The system** is Debian 13 for ARM, built from Debian's own cloud image. Ubuntu 26.04 is built by the same code and withheld for now: [Debian or Ubuntu](#debian-or-ubuntu) says why and what differs.
-- **No screen, no password, no ssh.** A Linux box is reached through `exec`, `box shell` and `avm`, and nothing else listens in it.
+- **No password, no ssh, and no screen unless you add a desktop.** A Linux box is reached through `exec`, `box shell` and `avm`, and nothing else listens in it. An image built with `Recipes/linux-desktop` has XFCE and a screen that `box view` shows ([A desktop](#a-desktop)).
 - **The same protections as a macOS box:** only the folders you share, the allowlist network through the proxy on your Mac, a snapshot and a report around every `avm` session, disposable boxes.
 
 ## Sizes and times
@@ -81,7 +81,9 @@ A kernel manages memory in pages of one size, fixed when the kernel is built: 4 
 | `image update --system` | Installs the distribution's package updates. `--macos` is refused, with this name. |
 | `image update --tools`, `--guest`, `--set`, `--if-older-than` | As for macOS. |
 | `image rebuild --linux <release>`, or `--from` | Builds again from a fresh cloud image, or from a Linux image. |
-| `image setup`, `image view`, `box view` | Refused: there is no screen, and no Full Disk Access to grant. |
+| `image setup` | Refused: there is no Full Disk Access to grant. |
+| `box view` | Refused, unless the image installed a desktop ([A desktop](#a-desktop)); then as for macOS, without Type Password (the account has none). |
+| `image view` | Refused: it does not open a Linux image yet. Make a box of the image and use `box view`. |
 | `image update-guest` | Refused: use `image update <image> --guest`. |
 | `store secure-passwords`, the account password | Nothing to do: a Linux image has no password. |
 | `box start`, `box stop`, `box status`, `box network`, `box netlog`, `box execlog`, `box sync-clock` | As for macOS. |
@@ -147,6 +149,25 @@ agent-vm box recreate work                           # each box, to get what the
 - **Nothing updates by itself.** The timers that update packages in the background are off in an image, so a box changes only by what runs in it.
 - **The image is never half updated:** an update works on a copy and takes the image's place only when everything passed. A new kernel is booted once before it is kept. An image whose kernel has 4 KiB pages where its system has one with 16 KiB gets that one ([The kernel's page size](#the-kernels-page-size)).
 
+## A desktop
+
+```sh
+agent-vm image create deb-desk --from deb --recipe Recipes/linux-desktop/recipe.json   # about 90 seconds, 92 MB of packages
+agent-vm box create gui --image deb-desk
+agent-vm box start gui
+agent-vm box view gui --interactive
+```
+
+A Linux box has no screen unless its image installed a desktop with a recipe that says `"screen": true` (since 0.8.0). `Recipes/linux-desktop` is that recipe: XFCE, its terminal, the LightDM login manager and the X server, about 420 MB on disk. The image and every box made from it then have a display, a keyboard and a pointer, and `box view` shows the desktop as it shows a macOS box's: view only unless `--interactive`, with Send for files. Boxes made before the desktop was added stay without one: `box recreate` gives it to them.
+
+- **The box user is logged in by itself** at start: the account has no password, so there is no login window and no screen lock, and the screen never blanks. The window has no Type Password button, and `box view --type-password` is refused.
+- **The same seal:** the packages are installed without the ones they only recommend, so no network manager, sound server, printing service or polkitd comes with them. With the desktop running nothing listens for the network (measured; the build's own check runs before the desktop has started).
+- **Drawn by the processors:** Virtualization gives a Linux guest no 3D acceleration, so the desktop and everything on it are drawn in software. XFCE is light enough for that; a browser or a heavy application is slow.
+- **Sizes and times:** the box starts in about 4 seconds with the desktop logged in, which takes about 200 MB of its memory; 4 GB suits a box with a desktop and an agent. The display is 1280 by 800, as a macOS box's.
+- **No clipboard between your Mac and the box.** Send files with Send or `box send`; text goes through `exec` or the shared folder.
+- **Programs started with `exec` do not appear on the screen** unless they are told the display: `agent-vm exec --box gui -- env DISPLAY=:0 XAUTHORITY=/home/agent/.Xauthority xfce4-terminal`.
+- **Another desktop** is a recipe of your own with `"screen": true` that does the same; `Recipes/WRITING-RECIPES.md` says what it must do.
+
 ## What a Linux image is made of
 
 - **The distribution's cloud image:** Debian's from `cloud.debian.org`, checked against Debian's SHA-512 list, or Ubuntu's from `cloud-images.ubuntu.com`, checked against Ubuntu's SHA-256 list, before anything reads it. The README's Images section says what is trusted.
@@ -158,7 +179,6 @@ agent-vm box recreate work                           # each box, to get what the
 
 | | |
 |---|---|
-| A screen (`box view`) and a desktop | Several GB of packages and a second display path, for a box whose use is the terminal. |
 | Other distributions | Each has its own package tool and its own list of what to seal. Debian 13 and Ubuntu 26.04 are the ones that were measured. |
 | `snap` and `add-apt-repository` in an Ubuntu box | snapd is a daemon of root's that any user can reach and that updates programs by itself; `add-apt-repository` needs polkitd. Add a source by its file in `/etc/apt/sources.list.d`, in a recipe. |
 | Docker in the box | Wants its own settings for the proxy and its own measurements. |
@@ -177,4 +197,5 @@ agent-vm box recreate work                           # each box, to get what the
 - **Check a new box name against `maxBoxNameLength`** in the same answer (since 0.7.53, for every box, not only Linux ones): the longest name a box of the store in use can start with, at most 63, and 0 when the store's folder leaves no room for any. A box's control socket, `Boxes/<name>/control.sock`, must fit the 103 bytes macOS allows a socket's path, so it depends on the store's path (`AGENT_VM_HOME` counts). `box create` and `box rename` refuse a longer name; `box start` and `box recreate` refuse a box that has one, with the `box rename` that fixes it.
 - **Box and image names may have capital letters** (since 0.7.54): letters, digits, `.`, `_` and `-`, starting with a letter or a digit, at most 63 (a box less, see `maxBoxNameLength`). Every command matches a name with its case, and refuses a new name that another box (or image) has in other case: "box Work already exists, and work differs from it in case only". An app that checks a name before passing it, or compares names, must accept capitals and compare without case for "taken".
 - **Recipes** say which system they are for: `guest` in `recipe check --json`.
+- **Offer `box view` for a Linux box only when it has a screen** (since 0.8.0): `screen` is `true` in the box's record (`box list --json`, under `box`) and in its image's (`image list --json`, `image info --json`) when a recipe installed a desktop, and absent otherwise. Every macOS box and image has a screen, whatever `screen` says. Offer no Type Password for a Linux box.
 - **Do not copy Mac programs into a Linux box.** A tool the box runs must be built for 64-bit ARM Linux.

@@ -52,6 +52,9 @@ public struct ImageRecord: Codable, Equatable, Sendable {
     public var guest: GuestKind?
     /// A Linux image's system; nil in a macOS image.
     public var linux: LinuxSystem?
+    /// A Linux image with a display, keyboard and pointer, because one of its recipes asked for
+    /// a screen (a desktop); nil for one without. A macOS image always has a screen (`hasScreen`).
+    public var screen: Bool?
     /// What a Linux image's disk was unpacked from; nil in a macOS image and in a derived one.
     public var base: BaseSource?
     /// Linux: when `image update` last installed the system's package updates and ended well.
@@ -84,6 +87,11 @@ public struct ImageRecord: Codable, Equatable, Sendable {
 
     public var effectiveGuest: GuestKind {
         return guest ?? .macOS
+    }
+
+    /// Whether the image's machine has a display (and `image view` can show it).
+    public var hasScreen: Bool {
+        return effectiveGuest == .macOS || screen == true
     }
 
     /// "macOS 27.0 (26A428)", "Debian GNU/Linux 13 (trixie)".

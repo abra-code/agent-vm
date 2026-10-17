@@ -408,6 +408,10 @@ extension ImageBuilder {
                         // checks, the files deleted. The recipe is the image's own from now on,
                         // whatever image it ran on first.
                         let sent = try await apply(plan.recipe, machine: machine, boxUser: record.userName, position: (position + 1, updates.count), guest: guest)
+                        // A recipe whose steps installed a desktop: the image has a screen from now on.
+                        if plan.recipe.screen == true {
+                            record.screen = true
+                        }
                         record.recipes?[plan.index].inputs = sent.isEmpty ? nil : sent
                         // An inherited entry shows that the base listed its recipes: a rebuild from a
                         // restore image must not take this image for one made before they were listed.

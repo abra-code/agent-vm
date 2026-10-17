@@ -888,10 +888,27 @@ test_commands_without_a_linux_meaning_refuse() {
     assert_err_contains "image deb runs Linux: there is no Full Disk Access to grant" || return 1
     run_avm image view deb
     assert_status 1 || return 1
-    assert_err_contains "image deb runs Linux, which has no screen to show" || return 1
+    assert_err_contains "image deb runs Linux without a desktop, so it has no screen to show (an image built with the linux-desktop recipe has one)" || return 1
     run_avm box view work
     assert_status 1 || return 1
-    assert_err_contains "box work runs Linux, which has no screen to show; open a shell with" || return 1
+    assert_err_contains "box work runs Linux without a desktop, so it has no screen to show (an image built with the linux-desktop recipe has one); open a shell with" || return 1
+}
+
+# A Linux box whose image installed a desktop (linux-desktop) has a screen: box view asks only
+# that it runs. image view does not open such an image yet.
+test_a_linux_box_with_a_desktop_has_a_screen() {
+    fake_linux_image desk
+    fake_linux_box work desk
+    /usr/bin/sed -i '' -e 's/"guest" : "linux",/"guest" : "linux", "screen" : true,/' "$AGENT_VM_HOME/Images/desk/image.json" "$AGENT_VM_HOME/Boxes/work/box.json"
+    run_avm box view work
+    assert_status 1 || return 1
+    assert_err_contains "box work is not running" || return 1
+    assert_not_contains "$ERR" "no screen" "box view's refusal" || return 1
+    run_avm image view desk
+    assert_status 1 || return 1
+    assert_err_contains "image view does not open a Linux image yet; make a box of image desk" || return 1
+    run_avm box list --json
+    assert_json 0.box.screen true || return 1
 }
 
 # box send serves a Linux box: one that is stopped says so, as a macOS box does, and a path

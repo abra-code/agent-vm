@@ -195,6 +195,7 @@ import Virtualization
 
         let box = try boxes.create(name: "b1", from: image, imageStore: images)
         #expect(box.record.guest == .linux)
+        #expect(box.record.screen == nil && !box.record.hasScreen)
         #expect(box.record.linux == Self.debian)
         #expect(box.record.formatVersion == 3)
         #expect(box.record.macOSVersion == nil && box.record.passwordID == nil)
@@ -218,9 +219,14 @@ import Virtualization
         // A box is made again from its image, with the image's system as it is now.
         var newer = Self.debian
         newer.version = "14"
-        let updated = try images.update(image) { $0.linux = newer }
+        let updated = try images.update(image) {
+            $0.linux = newer
+            $0.screen = true
+        }
         let again = try boxes.recreate(name: "b1", from: updated, imageStore: images)
         #expect(again.record.linux?.version == "14")
+        // A desktop installed in the image since gives the box made again its screen.
+        #expect(again.record.screen == true && again.record.hasScreen)
         #expect(FileSystem.exists(again.efiVariableStoreURL.path))
 
         // An image without its variable store makes no box, and leaves no folder.
@@ -266,8 +272,18 @@ import Virtualization
     @Test func whatHasNoMeaningForLinuxSaysSo() {
         let box = BoxRecord(formatVersion: 3, name: "work", image: "deb", macOSVersion: nil, macOSBuild: nil, guest: .linux, linux: Self.debian,
                             guestProtocol: 1, createdAt: Date(), cpuCount: 4, memoryBytes: 4 << 30, macAddress: "", userName: "agent")
-        #expect(throws: AgentVMError.notForThisGuest("box work runs Linux, which has no screen to show; open a shell with `agent-vm box shell <box>`")) {
+        #expect(throws: AgentVMError.notForThisGuest("box work runs Linux without a desktop, so it has no screen to show (an image built with the linux-desktop recipe has one); open a shell with `agent-vm box shell <box>`")) {
             try box.requireScreen()
+        }
+        // A Linux box whose image installed a desktop has a screen, but no password to type.
+        var desktop = box
+        desktop.screen = true
+        #expect(desktop.hasScreen && !box.hasScreen)
+        #expect(throws: Never.self) {
+            try desktop.requireScreen()
+        }
+        #expect(throws: AgentVMError.notForThisGuest("box work runs Linux, whose account has no password to type")) {
+            try desktop.requirePassword()
         }
 
         // A macOS box is asked nothing.
@@ -275,6 +291,10 @@ import Virtualization
         mac.guest = nil
         #expect(throws: Never.self) {
             try mac.requireScreen()
+        }
+        #expect(mac.hasScreen)
+        #expect(throws: Never.self) {
+            try mac.requirePassword()
         }
         // The message is the whole text: no prefix that would be about something else.
         #expect("\(LinuxGuest.noFullDiskAccess(image: "deb"))" == "image deb runs Linux: there is no Full Disk Access to grant")

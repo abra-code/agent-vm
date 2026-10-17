@@ -21,6 +21,9 @@
     "homebrew": [
       "24100ce201d33a16ee6b66149a97a26b312914c77ce0cd68230f98dd753068f4"
     ],
+    "linux-desktop": [
+      "c6e40c8624faa2f60200b09ec59dc4e504d662cdd44b0a3a707c06e6b0354469"
+    ],
     "linux-node": [
       "1c8543887f910c45bc74c85b0153df1faaf106ed4d5f179c6ce51181e4d855c3",
       "663c9f15c5a084b1af6bbf7502a8aeb50ca41634768192e37f93390d794bf0ed"

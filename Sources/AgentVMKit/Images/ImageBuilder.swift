@@ -927,6 +927,10 @@ public final class ImageBuilder {
             current = try store.update(current) { record in
                 record.recipe = ImageRecord.RecipeInfo.combined(applied)
                 record.recipes = listed
+                // From its next start on, the machine has a display (MachineShape).
+                if recipe.screen == true {
+                    record.screen = true
+                }
             }
             // Once the record no longer names them. A folder left behind (this failed) is
             // only clutter: nothing reads a folder the record does not name.

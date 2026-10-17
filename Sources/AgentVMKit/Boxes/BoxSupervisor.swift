@@ -85,7 +85,9 @@ public final class BoxSupervisor {
         // VM: from the Keychain, the read waits when macOS asks the person about it.
         let box = self.box
         let firstShow = self.viewer == nil
-        let viewer = self.viewer ?? BoxViewer(name: box.name, machine: machine, password: { try box.accountPassword() }, log: { [weak self] in self?.log($0) },
+        // A Linux box's account has no password, so its window has no Type Password button.
+        let password: (@Sendable () throws -> String)? = box.record.effectiveGuest == .linux ? nil : { @Sendable in try box.accountPassword() }
+        let viewer = self.viewer ?? BoxViewer(name: box.name, machine: machine, guest: box.record.effectiveGuest, password: password, log: { [weak self] in self?.log($0) },
                                                   sent: { [weak self] item in self?.note(.init(.send, items: [item])) })
         self.viewer = viewer
         viewer.show(interactive: interactive)
@@ -93,7 +95,8 @@ public final class BoxSupervisor {
         note(.init(.view, interactive: interactive))
         // The screen saver and screen lock are per machine, so a box starts with them on
         // (GuestDesktop): off while someone may be looking, without holding up the window.
-        if firstShow {
+        // A Linux desktop is set up by its recipe never to lock or blank.
+        if firstShow, box.record.effectiveGuest == .macOS {
             let user = box.record.userName
             Task { @MainActor [weak self] in
                 guard let self else {
@@ -146,6 +149,7 @@ public final class BoxSupervisor {
             log("Typed \(text.count) characters into the screen")
             note(.init(.type, characters: text.count))
         } else {
+            try box.record.requirePassword()
             let box = self.box
             let password = try await Task.detached { try box.accountPassword() }.value
             try await viewer.type(password)
@@ -1418,8 +1422,9 @@ public enum BoxLauncher {
 
         var pid: pid_t = 0
         // The full path as argv[0], so a process list tells which binary runs the box.
-        // A Linux box has no screen to show, so its supervisor is no application.
-        let arguments = [executable, "box", "serve", box.name] + (box.record.effectiveGuest == .linux ? ["--headless"] : [])
+        // A box with no screen to show (a Linux box without a desktop) has a supervisor that is no
+        // application.
+        let arguments = [executable, "box", "serve", box.name] + (box.record.hasScreen ? [] : ["--headless"])
             + (ownerPid.map { ["--owner-pid", String($0)] } ?? [])
             + (ownerStartedAt.map { ["--owner-started-at", $0] } ?? [])
         // Not the caller's whole environment: the supervisor outlives it by days.

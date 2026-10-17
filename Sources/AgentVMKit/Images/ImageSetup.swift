@@ -34,7 +34,10 @@ extension ImageBuilder {
         var image = try store.image(named: name)
         subject = image.name
         guard image.record.effectiveGuest == .macOS else {
-            throw fullDiskAccess ? LinuxGuest.noFullDiskAccess(image: image.name) : LinuxGuest.noScreen("image \(image.name)")
+            if fullDiskAccess {
+                throw LinuxGuest.noFullDiskAccess(image: image.name)
+            }
+            throw image.record.hasScreen ? LinuxGuest.noImageView(image: image.name) : LinuxGuest.noScreen("image \(image.name)")
         }
         guard image.record.state == .ready else {
             throw AgentVMError.wrongImageState(name: image.name, state: image.record.state.rawValue, operation: fullDiskAccess ? "set up" : "view")
