@@ -1,12 +1,12 @@
 {
   "version": 1,
   "guest": "linux",
-  "description": "XFCE's recommended packages that work in a box: themes and icons, thumbnails, notifications, the user folders and X tools (needs a desktop: put Recipes/linux-desktop before it)",
+  "description": "XFCE's recommended packages that work in a box: themes and icons, thumbnails, notifications, the user folders and X tools (needs a desktop: put Recipes/linux-xfce before it)",
   "steps": [
     {
       "name": "A desktop is there",
       "user": "root",
-      "run": "command -v xfce4-session > /dev/null || { echo 'XFCE is not in this image: put Recipes/linux-desktop before this recipe' >&2; exit 1; }"
+      "run": "command -v xfce4-session > /dev/null || { echo 'XFCE is not in this image: put Recipes/linux-xfce before this recipe' >&2; exit 1; }"
     },
     {
       "name": "XFCE's recommended packages, less the ones a box must not have or cannot use",

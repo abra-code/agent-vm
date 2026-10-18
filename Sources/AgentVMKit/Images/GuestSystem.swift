@@ -91,7 +91,7 @@ enum LinuxGuest {
     }
 
     static func noScreen(_ owner: String) -> AgentVMError {
-        return .notForThisGuest("\(owner) runs Linux without a desktop, so it has no screen to show (an image built with the linux-desktop recipe has one); open a shell with `agent-vm box shell <box>`")
+        return .notForThisGuest("\(owner) runs Linux without a desktop, so it has no screen to show (an image built with a desktop recipe, such as linux-xfce, has one); open a shell with `agent-vm box shell <box>`")
     }
 
     /// A Linux box's account has no password to type (it logs in to its desktop by itself).

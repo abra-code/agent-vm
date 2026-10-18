@@ -888,14 +888,14 @@ test_commands_without_a_linux_meaning_refuse() {
     assert_err_contains "image deb runs Linux: there is no Full Disk Access to grant" || return 1
     run_avm image view deb
     assert_status 1 || return 1
-    assert_err_contains "image deb runs Linux without a desktop, so it has no screen to show (an image built with the linux-desktop recipe has one)" || return 1
+    assert_err_contains "image deb runs Linux without a desktop, so it has no screen to show (an image built with a desktop recipe, such as linux-xfce, has one)" || return 1
     run_avm box view work
     assert_status 1 || return 1
-    assert_err_contains "box work runs Linux without a desktop, so it has no screen to show (an image built with the linux-desktop recipe has one); open a shell with" || return 1
+    assert_err_contains "box work runs Linux without a desktop, so it has no screen to show (an image built with a desktop recipe, such as linux-xfce, has one); open a shell with" || return 1
 }
 
-# A Linux box whose image installed a desktop (linux-desktop) has a screen: box view asks only
-# that it runs. (image view boots the image, so the extended linux-desktop test covers it.)
+# A Linux box whose image installed a desktop (linux-xfce) has a screen: box view asks only
+# that it runs. (image view boots the image, so the extended linux-xfce test covers it.)
 test_a_linux_box_with_a_desktop_has_a_screen() {
     fake_linux_image desk
     fake_linux_box work desk

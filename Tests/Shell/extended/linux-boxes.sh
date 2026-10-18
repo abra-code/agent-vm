@@ -170,7 +170,7 @@ test_view_is_refused() {
     assert_status 0 || return 1
     run_avm box view "$_box"
     assert_status 1 || return 1
-    assert_err_contains "box $_box runs Linux without a desktop, so it has no screen to show (an image built with the linux-desktop recipe has one); open a shell with" || return 1
+    assert_err_contains "box $_box runs Linux without a desktop, so it has no screen to show (an image built with a desktop recipe, such as linux-xfce, has one); open a shell with" || return 1
     run_avm exec --box "$_box" -- /usr/bin/id -un
     assert_eq "$OUT" "agent" "the box after the refusal" || return 1
     run_avm box stop "$_box"

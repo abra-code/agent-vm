@@ -21,13 +21,6 @@
     "homebrew": [
       "24100ce201d33a16ee6b66149a97a26b312914c77ce0cd68230f98dd753068f4"
     ],
-    "linux-desktop": [
-      "c6e40c8624faa2f60200b09ec59dc4e504d662cdd44b0a3a707c06e6b0354469",
-      "7fdcfe6a27ea514f646f312be77c251a01ae416e9904f9fd198a0da963af4498"
-    ],
-    "linux-desktop-extras": [
-      "37c26249ee4d21e493a25847b515727dea5479c516fa69f0a0d69cdfd1843530"
-    ],
     "linux-node": [
       "1c8543887f910c45bc74c85b0153df1faaf106ed4d5f179c6ce51181e4d855c3",
       "663c9f15c5a084b1af6bbf7502a8aeb50ca41634768192e37f93390d794bf0ed"
@@ -38,6 +31,12 @@
     ],
     "linux-sudo": [
       "8ab7731a34c426649e860a52fa2c86fe297a34757bb82faf2fadaf737e24570c"
+    ],
+    "linux-xfce": [
+      "7fdcfe6a27ea514f646f312be77c251a01ae416e9904f9fd198a0da963af4498"
+    ],
+    "linux-xfce-extras": [
+      "40c2934f812ba987116d6e1f2c74bb93bc860bdf212c377dc72727010d2404c7"
     ],
     "node": [
       "d7918a9137b65eb076478401350a374add409b9fb552b8b936b0821b3045e591"

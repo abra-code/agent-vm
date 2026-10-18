@@ -303,7 +303,7 @@ struct ImageCommand: ParsableCommand {
                 Send, for copying files from this Mac into the image's Downloads folder, and \
                 Type Password. Whether agent-vm-guest has Full Disk Access is looked at when \
                 the window closes and recorded. A Linux image opens only when a recipe gave it \
-                a desktop (linux-desktop); its window has no Type Password, and before it shuts \
+                a desktop (such as linux-xfce); its window has no Type Password, and before it shuts \
                 down the image is checked as its build sealed it: one that no longer passes is \
                 marked failed. Needs a login session on this Mac (not SSH).
                 """)

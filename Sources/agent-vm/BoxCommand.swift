@@ -544,7 +544,7 @@ struct BoxCommand: ParsableCommand {
                 desktop (Finder, system dialogs, permission prompts); programs run with exec do \
                 not appear on it, so use `box shell` and `box execlog` to follow those. A Linux \
                 box has a screen only when its image installed a desktop with a recipe that \
-                asks for one (linux-desktop); its account has no password to type. A box \
+                asks for one (such as linux-xfce); its account has no password to type. A box \
                 started over SSH or by a service has no window server and cannot show one.
                 """)
 

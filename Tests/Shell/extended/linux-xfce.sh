@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Tests/Shell/extended/linux-desktop.sh - the bundled linux-desktop recipe: an image built with
+# Tests/Shell/extended/linux-xfce.sh - the bundled linux-xfce recipe: an image built with
 # it records a screen, its boxes start with a display and the box user logged in to XFCE, and
 # box view shows the desktop and types into it; image view opens the image. From the ready
 # Linux image $AGENT_VM_TEST_LINUX_IMAGE, and only with AGENT_VM_TEST_LINUX_DESKTOP=1: the
@@ -16,7 +16,7 @@ test_the_desktop_recipe_gives_a_screen() {
     local _box="shtest-ldeskbox-$$"
     cleanup_on_exit box "$_box"
     cleanup_on_exit image "$_image"
-    run_avm image create "$_image" --from "$LINUX_TEST_IMAGE" --recipe "$TESTS_DIR/../../Recipes/linux-desktop/recipe.json"
+    run_avm image create "$_image" --from "$LINUX_TEST_IMAGE" --recipe "$TESTS_DIR/../../Recipes/linux-xfce/recipe.json"
     assert_status 0 || return 1
     assert_out_contains "LightDM starts with the system" || return 1
     assert_out_contains "agent is logged in at start" || return 1

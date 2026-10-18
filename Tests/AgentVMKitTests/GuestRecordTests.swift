@@ -272,7 +272,7 @@ import Virtualization
     @Test func whatHasNoMeaningForLinuxSaysSo() {
         let box = BoxRecord(formatVersion: 3, name: "work", image: "deb", macOSVersion: nil, macOSBuild: nil, guest: .linux, linux: Self.debian,
                             guestProtocol: 1, createdAt: Date(), cpuCount: 4, memoryBytes: 4 << 30, macAddress: "", userName: "agent")
-        #expect(throws: AgentVMError.notForThisGuest("box work runs Linux without a desktop, so it has no screen to show (an image built with the linux-desktop recipe has one); open a shell with `agent-vm box shell <box>`")) {
+        #expect(throws: AgentVMError.notForThisGuest("box work runs Linux without a desktop, so it has no screen to show (an image built with a desktop recipe, such as linux-xfce, has one); open a shell with `agent-vm box shell <box>`")) {
             try box.requireScreen()
         }
         // A Linux box whose image installed a desktop has a screen, but no password to type.

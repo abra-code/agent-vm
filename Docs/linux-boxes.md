@@ -16,7 +16,7 @@ avm new deb-tools                                    # or a temporary box with y
 ```
 
 - **The system** is Debian 13 for ARM, built from Debian's own cloud image. Ubuntu 26.04 is built by the same code and withheld for now: [Debian or Ubuntu](#debian-or-ubuntu) says why and what differs.
-- **No password, no ssh, and no screen unless you add a desktop.** A Linux box is reached through `exec`, `box shell` and `avm`, and nothing else listens in it. An image built with `Recipes/linux-desktop` has XFCE and a screen that `box view` shows ([A desktop](#a-desktop)).
+- **No password, no ssh, and no screen unless you add a desktop.** A Linux box is reached through `exec`, `box shell` and `avm`, and nothing else listens in it. An image built with `Recipes/linux-xfce` has XFCE and a screen that `box view` shows ([A desktop](#a-desktop)).
 - **The same protections as a macOS box:** only the folders you share, the allowlist network through the proxy on your Mac, a snapshot and a report around every `avm` session, disposable boxes.
 
 ## Sizes and times
@@ -152,18 +152,18 @@ agent-vm box recreate work                           # each box, to get what the
 ## A desktop
 
 ```sh
-agent-vm image create deb-desk --from deb --recipe Recipes/linux-desktop/recipe.json   # about 90 seconds, 94 MB of packages
+agent-vm image create deb-desk --from deb --recipe Recipes/linux-xfce/recipe.json   # about 90 seconds, 94 MB of packages
 agent-vm box create gui --image deb-desk
 agent-vm box start gui
 agent-vm box view gui --interactive
 ```
 
-A Linux box has no screen unless its image installed a desktop with a recipe that says `"screen": true` (since 0.8.0). `Recipes/linux-desktop` is that recipe: XFCE, its terminal, the LightDM login manager and the X server, about 430 MB on disk. The image and every box made from it then have a display, a keyboard and a pointer, and `box view` shows the desktop as it shows a macOS box's: view only unless `--interactive`, with Send for files. Boxes made before the desktop was added stay without one: `box recreate` gives it to them.
+A Linux box has no screen unless its image installed a desktop with a recipe that says `"screen": true` (since 0.8.0). `Recipes/linux-xfce` is that recipe: XFCE, its terminal, the LightDM login manager and the X server, about 430 MB on disk. The image and every box made from it then have a display, a keyboard and a pointer, and `box view` shows the desktop as it shows a macOS box's: view only unless `--interactive`, with Send for files. Boxes made before the desktop was added stay without one: `box recreate` gives it to them.
 
 - **The box user is logged in by itself** at start: the account has no password, so there is no login window and no screen lock, and the screen never blanks. The window has no Type Password button, and `box view --type-password` is refused.
 - **The same seal:** the packages are installed without the ones they only recommend (except the SVG image loader that draws the wallpaper and icons, a library), so no network manager, sound server, printing service or polkitd comes with them. With the desktop running nothing listens for the network (measured; `image view` checks it again before the image shuts down, while the build's own check runs before the desktop has started).
 - **Drawn by the processors:** Virtualization gives a Linux guest no 3D acceleration, so the desktop and everything on it are drawn in software. XFCE is light enough for that; a browser or a heavy application is slow.
-- **A fuller desktop:** `Recipes/linux-desktop-extras`, after linux-desktop, adds the packages XFCE recommends that suit a box: Debian's themes and wallpapers to pick from, the Tango icons, thumbnails, notifications, the Desktop and Documents folders, and the X tools (about 130 MB on disk and 50 MB of memory more). It leaves out what would break the seal or cannot work in a box: polkitd and its password dialog, a screen locker (nobody could unlock it), disk mounting, power and color management, the sound server (a box has no sound device) and the X drivers for real graphics cards. Like linux-desktop, it installs nothing they in turn recommend.
+- **A fuller desktop:** `Recipes/linux-xfce-extras`, after linux-xfce, adds the packages XFCE recommends that suit a box: Debian's themes and wallpapers to pick from, the Tango icons, thumbnails, notifications, the Desktop and Documents folders, and the X tools (about 130 MB on disk and 50 MB of memory more). It leaves out what would break the seal or cannot work in a box: polkitd and its password dialog, a screen locker (nobody could unlock it), disk mounting, power and color management, the sound server (a box has no sound device) and the X drivers for real graphics cards. Like linux-xfce, it installs nothing they in turn recommend.
 - **Sizes and times:** the box starts in about 4 seconds with the desktop logged in, which takes about 200 MB of its memory; 4 GB suits a box with a desktop and an agent. The display is 1280 by 800, as a macOS box's.
 - **No clipboard between your Mac and the box.** Send files with Send or `box send`; text goes through `exec` or the shared folder.
 - **Programs started with `exec` do not appear on the screen** unless they are told the display: `agent-vm exec --box gui -- env DISPLAY=:0 XAUTHORITY=/home/agent/.Xauthority xfce4-terminal`.
