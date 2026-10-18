@@ -22,6 +22,19 @@
       "run": "mkdir -p /etc/X11/xorg.conf.d && printf '%s\\n' 'Section \"ServerFlags\"' '    Option \"BlankTime\" \"0\"' '    Option \"StandbyTime\" \"0\"' '    Option \"SuspendTime\" \"0\"' '    Option \"OffTime\" \"0\"' 'EndSection' > /etc/X11/xorg.conf.d/50-agent-vm.conf"
     },
     {
+      "name": "The screen takes the size an interactive box view window gives the display, which X does not by itself: the program that applies it",
+      "user": "root",
+      "copy": "files/fit-display.sh",
+      "to": "/usr/local/libexec/agent-vm-fit-display",
+      "mode": "0755"
+    },
+    {
+      "name": "That program starts with the XFCE session",
+      "user": "root",
+      "copy": "files/fit-display.desktop",
+      "to": "/etc/xdg/autostart/agent-vm-fit-display.desktop"
+    },
+    {
       "name": "The desktop starts with the system",
       "user": "root",
       "run": "systemctl enable lightdm && systemctl set-default graphical.target"
@@ -34,6 +47,19 @@
       "env": {"DEBIAN_FRONTEND": "noninteractive"},
       "run": "if [ \"$(dpkg-query -W -f '${db:Status-Status}' librsvg2-common 2> /dev/null)\" = installed ]; then echo 'the SVG image loader is installed'; else apt-get -q -y update && apt-get -q -y --no-install-recommends install librsvg2-common; fi",
       "timeoutSeconds": 900
+    },
+    {
+      "name": "The program that gives the screen the size of an interactive box view window, for an image built before the recipe had it",
+      "user": "root",
+      "copy": "files/fit-display.sh",
+      "to": "/usr/local/libexec/agent-vm-fit-display",
+      "mode": "0755"
+    },
+    {
+      "name": "That program starts with the XFCE session",
+      "user": "root",
+      "copy": "files/fit-display.desktop",
+      "to": "/etc/xdg/autostart/agent-vm-fit-display.desktop"
     }
   ],
   "checks": [
@@ -41,6 +67,7 @@
     "[ \"$(systemctl get-default)\" = graphical.target ] && echo 'the system starts to graphical.target'",
     "grep -qx \"autologin-user=$(id -un)\" /etc/lightdm/lightdm.conf.d/50-agent-vm.conf && echo \"$(id -un) is logged in at start\"",
     "command -v xfce4-session > /dev/null && command -v Xorg > /dev/null && echo 'XFCE and the X server are installed'",
-    "[ \"$(dpkg-query -W -f '${db:Status-Status}' librsvg2-common)\" = installed ] && echo 'the wallpaper and the icons, which are SVG files, can be drawn'"
+    "[ \"$(dpkg-query -W -f '${db:Status-Status}' librsvg2-common)\" = installed ] && echo 'the wallpaper and the icons, which are SVG files, can be drawn'",
+    "[ -x /usr/local/libexec/agent-vm-fit-display ] && [ -x /usr/bin/udevadm ] && [ -x /usr/bin/xrandr ] && grep -qx 'Exec=/usr/local/libexec/agent-vm-fit-display' /etc/xdg/autostart/agent-vm-fit-display.desktop && echo 'the screen takes the size of an interactive box view window'"
   ]
 }

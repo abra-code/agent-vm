@@ -200,7 +200,7 @@ The shipped recipes are in the `Recipes` folder beside the agent-vm program, the
 | `linux-sudo/recipe.json` | For Linux: a system file written by a root step and checked before it is put in place. Not something to copy into another recipe. |
 | `linux-gnome/recipe.json` | For Linux: a desktop that keeps a service the seal removes, with the rules the seal accepts; a parameter with a fixed set of values, checked in the first step before anything is downloaded, and an update step that applies a changed value (`image update --set`); checks that ask the system rather than read its files. |
 | `linux-kde/recipe.json` | For Linux: the same, and a file put into a folder another package reads (Plasma's update scripts) to change a default the package has no setting for. |
-| `linux-xfce/recipe.json` | For Linux: a desktop, with `"screen": true`, packages from apt without recommended ones, and system settings written by root steps. |
+| `linux-xfce/recipe.json` | For Linux: a desktop, with `"screen": true`, packages from apt without recommended ones, system settings written by root steps, and a program started with the desktop session, copied in by steps and again by update steps for images built before. |
 | `linux-xfce-extras/recipe.json` | For Linux: a recipe that adds to another, with a first step that names the recipe to put before it, and a check that something is not installed. |
 
 `agent-clis` and `acp-agents` say `"guest": "any"`: the same npm commands serve both systems, and their first step names the Node recipe of each.

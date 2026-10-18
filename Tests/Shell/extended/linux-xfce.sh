@@ -50,6 +50,16 @@ test_the_desktop_recipe_gives_a_screen() {
     run_avm exec --box "$_box" --user root -- /bin/sh -c 'ls /dev/dri/card0 && loginctl list-sessions --no-legend | grep -c " agent seat0 "'
     assert_status 0 || return 1
     assert_eq "$OUT" $'/dev/dri/card0\n1' "the display and the session" || return 1
+    # The session started the program that gives the screen an interactive window's size (a
+    # moment after xfce4-session itself).
+    _waited=0
+    while [ "$_waited" -lt 15 ]; do
+        run_avm exec --box "$_box" -- /usr/bin/pgrep -u agent -f /usr/local/libexec/agent-vm-fit-display
+        [ "$STATUS" -eq 0 ] && break
+        /bin/sleep 1
+        _waited=$((_waited + 1))
+    done
+    assert_status 0 || return 1
     # The wallpaper and many icons are SVG files: without the loader the desktop is black.
     run_avm exec --box "$_box" -- /usr/bin/dpkg-query -W -f '${db:Status-Status}' librsvg2-common
     assert_eq "$OUT" "installed" "the SVG image loader" || return 1

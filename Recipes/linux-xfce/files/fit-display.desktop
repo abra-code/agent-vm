@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Box display size
+Comment=Gives the screen the size of an interactive agent-vm box view window
+Exec=/usr/local/libexec/agent-vm-fit-display
+OnlyShowIn=XFCE;
+NoDisplay=true
