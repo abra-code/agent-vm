@@ -538,7 +538,7 @@ public struct BoxStore: Sendable {
         let guest = image.record.effectiveGuest
         if let refusal = MachineSize.memoryRefusal(memoryBytes: old.record.memoryBytes, guest: guest) {
             throw AgentVMError.virtualMachine(operation: "configure \(name)",
-                                              message: "\(refusal); `agent-vm box set \(name) --memory-gb \(MachineSize.gigabytes(MachineSize.comfortableMemory(for: guest)))` gives it more")
+                                              message: "\(refusal); `agent-vm box set \(name) --memory-gb \(MachineSize.gigabytes(MachineSize.comfortableMemory(for: guest, screen: image.record.screen == true)))` gives it more")
         }
         // A box larger than this Mac allows (made on a larger Mac, or before a change to what
         // it allows): `create` would refuse its size only after the delete.

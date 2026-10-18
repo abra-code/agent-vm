@@ -21,6 +21,8 @@ The recipes above are for macOS images, except the four agent recipes (agent-cli
 | [linux-node](linux-node/recipe.json) | Node and npm from nodejs.org in `/usr/local`: the newest release of one major version (`--set node=24`, the default), checked against nodejs.org's checksum list. `npm install --global` is set to put packages into `~/.local` for the box user, so it needs no root | nothing |
 | [linux-python](linux-python/recipe.json) | the distribution's Python (3.13 in Debian 13, 3.14 in Ubuntu 26.04) with `venv`, `pip3`, `pipx` and the headers (`python3`; there is no `python` without the 3); uv, from PyPI through pipx, in `~/.local/bin`. Debian's pip refuses `pip install` outside a virtual environment, so work in one (`python3 -m venv .venv`, or `uv venv`); boxes on the allowlist network need `--allow pack:pypi` | nothing |
 | [linux-sudo](linux-sudo/recipe.json) | A rule that lets the box user run anything as root with `sudo`, without a password. Read "sudo in a Linux box" below before you use it | nothing |
+| [linux-gnome](linux-gnome/recipe.json) | The GNOME desktop on Wayland with its terminal and file manager, the GDM login manager and the accessibility bus, without recommended packages (about 210 MB to download, about 950 MB on disk). The box user is logged in by itself at start, and the screen never locks, blanks or sleeps. GNOME needs polkitd: `--set polkit=deny` (the default) or `--set polkit=debian` says how it answers; read "polkitd in a GNOME or KDE image" below before you choose. With `"screen": true`, as linux-xfce. Debian images only | nothing |
+| [linux-kde](linux-kde/recipe.json) | The KDE Plasma desktop on Wayland with its terminal, file manager and settings, the SDDM login manager, PipeWire and the accessibility bus, without recommended packages (about 340 MB to download, about 1.35 GB on disk). Logged in by itself at start, Plasma's own screen lock switched off, and the panel's launchers set to the settings, the file manager and the terminal (Discover, the software store, is left out). Plasma needs polkitd: the same `polkit` choice as linux-gnome. With `"screen": true`. Debian images only | nothing |
 | [linux-xfce](linux-xfce/recipe.json) | The XFCE desktop with its terminal, the LightDM login manager and the X server, without recommended packages except the SVG image loader its wallpaper and icons need (94 MB to download, about 430 MB on disk). The box user is logged in by itself at start and the screen never blanks. The recipe says `"screen": true`, so the image and its boxes get a display, keyboard and pointer, and `agent-vm box view` shows the desktop. See "A desktop in a Linux box" below | nothing |
 | [linux-xfce-extras](linux-xfce-extras/recipe.json) | The packages XFCE recommends that suit a box, without the ones they in turn recommend: Debian's themes and wallpapers (to pick in the desktop's settings; XFCE's own stays the default), the Tango icons, thumbnails in the file manager, notifications, the Desktop and Documents folders, the accessibility and session buses, the X tools (35 MB to download, about 130 MB on disk, about 50 MB more of the box's memory). Not the ones a box must not have or cannot use: polkitd (and its password dialog), a screen locker (the account has no password to unlock it), disk mounting, power and color management, the sound server, and the X drivers for real graphics cards | Desktop: the linux-xfce recipe before it |
 | [agent-clis](agent-clis/recipe.json), [acp-agents](acp-agents/recipe.json) | As above: the same npm commands | Node: the linux-node recipe before it |
@@ -67,21 +69,52 @@ The box user of a Linux image cannot become root: it has no password, no sudo ru
 
 ### A desktop in a Linux box
 
-A Linux box has no screen unless its image installed a desktop (since agent-vm 0.8.0). `Recipes/linux-xfce` installs XFCE and asks for a screen:
+A Linux box has no screen unless its image installed a desktop (since agent-vm 0.8.0). Three recipes install one and ask for a screen; each logs the box user in by itself at start:
+
+| Recipe | Desktop | To download | On disk | Memory the box uses, idle | Build from a ready image |
+|---|---|---|---|---|---|
+| `linux-xfce` (since 0.8.0) | XFCE 4.20 on X11, with LightDM | 94 MB | about 430 MB | about 0.9 GB | about 1.5 minutes |
+| `linux-gnome` (since 0.8.3) | GNOME 48 on Wayland, with GDM | about 210 MB | about 950 MB | 1.1 to 1.4 GB | about 2.5 minutes |
+| `linux-kde` (since 0.8.3) | KDE Plasma 6.3 on Wayland, with SDDM | about 340 MB | about 1.35 GB | 1.6 to 1.9 GB | about 4 minutes |
+
+Measured on Debian 13 in boxes of 4 GB; a box without a desktop uses about 0.7 GB.
 
 ```sh
-agent-vm image create deb-desk --from deb --recipe Recipes/linux-xfce/recipe.json   # about 90 seconds
-agent-vm box create gui --image deb-desk
+agent-vm image create deb-gnome --from deb --recipe Recipes/linux-gnome/recipe.json   # about 2.5 minutes
+agent-vm box create gui --image deb-gnome
 agent-vm box start gui
 agent-vm box view gui --interactive
 ```
 
-- **Logged in by itself:** the box user has no password, so LightDM logs it in to XFCE at every start, and nothing locks or blanks the screen. The window has no Type Password button.
-- **Drawn in software:** a Linux guest gets no 3D acceleration, so keep to light applications.
-- **A fuller desktop:** add `Recipes/linux-xfce-extras` after it for Debian's themes and wallpapers to pick from, thumbnails, notifications and the user folders (the table above says what it leaves out and why).
-- **The packages it updates with the system:** `image update --system` brings Debian's updates to the desktop too; its own update step only installs the SVG image loader in an image built before the recipe had it.
-- **Put it with the others** in one image (`--recipe Recipes/linux-node/recipe.json --recipe Recipes/agent-clis/recipe.json --recipe Recipes/linux-xfce/recipe.json`): an agent in such a box can open windows on the desktop when it is told the display (`DISPLAY=:0`).
+- **Which one:** XFCE is the lightest and the quickest to draw. GNOME and KDE Plasma are the two desktops most Linux users have (GNOME is the default of Debian, Ubuntu and Fedora), so they are the ones to see an application of yours in. Both run on Wayland, as on a current Linux computer; a program that knows only the older X11 runs through Xwayland, as there.
+- **One desktop to an image:** the last desktop recipe of an image decides which login manager starts.
+- **Memory:** 4 GB, the default, suits a box with a desktop and an agent; give 8 GB to a box in which an agent builds and runs the application you look at (`--memory-gb 8`). Since 0.8.3, agent-vm notes a box with a desktop under 4 GB as small.
+- **Drawn in software:** a Linux guest gets no 3D acceleration, so the processors draw the desktop. XFCE is quick; GNOME's and Plasma's animations are slower than on a computer, and an application that uses OpenGL gets Mesa's software renderer.
+- **Logged in by itself, and no lock:** the box user has no password, so the login manager logs it in at every start, and nothing locks, blanks or sleeps the screen. In GNOME locking is switched off. In Plasma its own Lock is switched off, but a program can still ask the system to lock the screen (`loginctl lock-session`), and no password unlocks it: `agent-vm exec --box gui --user root -- loginctl unlock-sessions` does. The window has no Type Password button.
+- **Logging out** leaves the login screen, where no password works: stop and start the box to be logged in again.
+- **polkitd, in GNOME and KDE:** see below.
+- **A fuller XFCE:** add `Recipes/linux-xfce-extras` after it for Debian's themes and wallpapers to pick from, thumbnails, notifications and the user folders (the table above says what it leaves out and why). GNOME and KDE have their user folders already.
+- **The packages it updates with the system:** `image update --system` brings Debian's updates to the desktop too. linux-xfce's own update step only installs the SVG image loader in an image built before the recipe had it; linux-gnome's and linux-kde's write polkitd's rules again, as the `polkit` parameter says.
+- **Put it with the others** in one image (`--recipe Recipes/linux-node/recipe.json --recipe Recipes/agent-clis/recipe.json --recipe Recipes/linux-gnome/recipe.json`): an agent in such a box can open windows on the desktop when it is told where the desktop is ([../Docs/linux-boxes.md](../Docs/linux-boxes.md#a-desktop) has the commands).
 - More in [../Docs/linux-boxes.md](../Docs/linux-boxes.md#a-desktop).
+
+### polkitd in a GNOME or KDE image
+
+polkitd is a service of the system's, running as root, that decides whether a program may do something the system keeps for administrators: power the system off, mount a disk, change the clock. Any program can ask it. The images agent-vm builds have none: their seal removes it. GNOME and KDE Plasma cannot be installed without it, so `linux-gnome` and `linux-kde` keep it, and their `polkit` parameter sets how it answers:
+
+- **`deny`, the default:** polkitd refuses every request, except switching the screen between the system's consoles, which Plasma needs to start. Whatever on the desktop asks for privileges does nothing, and no password dialog appears: Power Off and Restart in the desktop's menu (use `agent-vm box stop`), mounting a disk, changing the date, an application's own request for administrator rights. What is left is polkitd itself, a program of root's that every program in the box can talk to: a flaw in it can give root (one did in 2021, CVE-2021-3560). The services that ask it (the disk service udisks2, the accounts service, the color service) get its no.
+- **`debian`:** polkitd follows Debian's own rules, as on a Linux computer. The account logged in at the screen may, without a password, power the system off and restart it, mount disks and disk images through udisks2, and change its own account's details, among others. What Debian keeps for administrators asks for a password that no account has, so it cannot be done. Choose it to try an application that asks polkitd for something, and see what its users see.
+
+**What `debian` means for an agent in the box.** What the desktop's user may do, every program of the box user may do, an agent included. A program started with `exec` is not part of the desktop's session, but one command (`systemd-run --user`) puts it there (measured). So, in a box of such an image, an agent can:
+
+- power the box off or restart it, which ends its own work and your session in it (an image whose system powers itself off during `image view` is marked failed);
+- make a disk image of its own, with a file system it designed, and have the system mount it (measured): the kernel then reads a file system the agent made, a way to root that flaws have opened before (in 2025, CVE-2025-6019 in udisks2 and its library). The mount allows no setuid programs.
+
+With `deny`, none of this goes through polkitd, and an agent's requests get the same no as yours. Use `debian` for an image whose boxes you use to try applications yourself, and `deny` for one where an agent works unattended.
+
+**Changing it later:** `agent-vm image update deb-gnome --tools --set polkit=debian` writes the new rules into the image with the recipe's update step, and the image records the value for the next update. Boxes made before keep their own until `agent-vm box recreate`.
+
+**What agent-vm checks:** the seal keeps polkitd only beside the rules file these recipes write (`/etc/polkit-1/rules.d/00-agent-vm.rules`). Its check, at the first build, at `image view` and around `image update --system`, accepts polkitd only with one of the two: the refusing rule, unchanged and read before any other rules file; or Debian's rules, the file then naming them and adding nothing, and every other rules file one that a package installed. A rules file put there by hand, or by another recipe, fails it.
 
 ## Xcode
 

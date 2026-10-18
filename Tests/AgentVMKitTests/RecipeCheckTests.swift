@@ -259,10 +259,10 @@ import Testing
         for report in result.recipes {
             guests[report.name ?? ""] = report.guest
         }
-        #expect(guests == ["acp-agents": "any", "agent-clis": "any", "agent-clis-china": "any", "agent-clis-native": "any", "homebrew": "macos", "linux-xfce": "linux", "linux-xfce-extras": "linux", "linux-node": "linux",
+        #expect(guests == ["acp-agents": "any", "agent-clis": "any", "agent-clis-china": "any", "agent-clis-native": "any", "homebrew": "macos", "linux-gnome": "linux", "linux-kde": "linux", "linux-xfce": "linux", "linux-xfce-extras": "linux", "linux-node": "linux",
                            "linux-python": "linux", "linux-sudo": "linux", "node": "macos", "python": "macos", "xcode": "macos", "xcode-platforms": "macos"])
-        // The desktop is the one that asks for a screen.
-        #expect(result.recipes.filter { $0.screen == true }.map(\.name) == ["linux-xfce"])
+        // The desktops are the ones that ask for a screen.
+        #expect(result.recipes.filter { $0.screen == true }.map(\.name) == ["linux-gnome", "linux-kde", "linux-xfce"])
     }
 
     /// The JSON the application reads: these keys, and nothing about a file that does not load

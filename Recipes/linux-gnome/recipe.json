@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "guest": "linux",
+  "description": "The GNOME desktop on Wayland, logged in as the box user at start: the image and its boxes get a screen, shown with box view (Debian images; GNOME needs polkitd, and the polkit parameter says how it answers)",
+  "screen": true,
+  "parameters": {
+    "polkit": {
+      "description": "how polkitd, which GNOME needs, answers a program that asks for a privileged action: deny refuses every request; debian follows Debian's rules, so the box user and every program it runs, an agent included, can power the box off and mount disks and disk images without a password. Recipes/README.md says more",
+      "default": "deny"
+    }
+  },
+  "steps": [
+    {
+      "name": "A Debian image, and a polkit choice this recipe knows",
+      "user": "root",
+      "run": "grep -qx 'ID=debian' /etc/os-release || { echo 'this recipe is for Debian images: an Ubuntu image removes udisks2, which GNOME needs' >&2; exit 1; }; case \"$AGENT_VM_PARAM_POLKIT\" in deny|debian) echo \"polkit=$AGENT_VM_PARAM_POLKIT\";; *) echo \"the polkit parameter is deny or debian, not '$AGENT_VM_PARAM_POLKIT'\" >&2; exit 1;; esac"
+    },
+    {
+      "name": "GNOME, its terminal and file manager, the GDM login manager and the accessibility bus, without recommended packages",
+      "user": "root",
+      "env": {"DEBIAN_FRONTEND": "noninteractive"},
+      "run": "apt-get -q -y update && apt-get -q -y --no-install-recommends install gnome-session gdm3 gnome-terminal nautilus xdg-user-dirs at-spi2-core",
+      "timeoutSeconds": 3600
+    },
+    {
+      "name": "polkitd's rules, as the polkit parameter says",
+      "user": "root",
+      "run": "rules=/etc/polkit-1/rules.d/00-agent-vm.rules; case \"$AGENT_VM_PARAM_POLKIT\" in deny) printf '%s\\n' '// agent-vm polkit=deny' 'polkit.addRule(function (action, subject) { return action.id == \"org.freedesktop.login1.chvt\" ? polkit.Result.YES : polkit.Result.NO; });' > \"$rules.new\";; debian) printf '%s\\n' '// agent-vm polkit=debian' > \"$rules.new\";; *) echo \"the polkit parameter is deny or debian, not '$AGENT_VM_PARAM_POLKIT'\" >&2; exit 1;; esac && chmod 644 \"$rules.new\" && mv -f \"$rules.new\" \"$rules\""
+    },
+    {
+      "name": "The box user logged in to GNOME at start, with no password",
+      "user": "root",
+      "run": "printf '%s\\n' '[daemon]' 'AutomaticLoginEnable=true' \"AutomaticLogin=$AGENT_VM_BOX_USER\" '' '[security]' '' '[xdmcp]' '' '[chooser]' '' '[debug]' > /etc/gdm3/daemon.conf"
+    },
+    {
+      "name": "The screen never locks, blanks or sleeps",
+      "user": "root",
+      "run": "mkdir -p /etc/dconf/profile /etc/dconf/db/local.d && printf '%s\\n' 'user-db:user' 'system-db:local' > /etc/dconf/profile/user && printf '%s\\n' '[org/gnome/desktop/screensaver]' 'lock-enabled=false' '' '[org/gnome/desktop/lockdown]' 'disable-lock-screen=true' '' '[org/gnome/desktop/session]' 'idle-delay=uint32 0' '' '[org/gnome/settings-daemon/plugins/power]' \"sleep-inactive-ac-type='nothing'\" > /etc/dconf/db/local.d/00-agent-vm && dconf update"
+    },
+    {
+      "name": "The desktop starts with the system",
+      "user": "root",
+      "run": "ln -sf /usr/lib/systemd/system/gdm.service /etc/systemd/system/display-manager.service && systemctl set-default graphical.target"
+    }
+  ],
+  "update": [
+    {
+      "name": "polkitd's rules, as the polkit parameter now says",
+      "user": "root",
+      "run": "rules=/etc/polkit-1/rules.d/00-agent-vm.rules; case \"$AGENT_VM_PARAM_POLKIT\" in deny) printf '%s\\n' '// agent-vm polkit=deny' 'polkit.addRule(function (action, subject) { return action.id == \"org.freedesktop.login1.chvt\" ? polkit.Result.YES : polkit.Result.NO; });' > \"$rules.new\";; debian) printf '%s\\n' '// agent-vm polkit=debian' > \"$rules.new\";; *) echo \"the polkit parameter is deny or debian, not '$AGENT_VM_PARAM_POLKIT'\" >&2; exit 1;; esac && chmod 644 \"$rules.new\" && mv -f \"$rules.new\" \"$rules\""
+    }
+  ],
+  "checks": [
+    "[ \"$(systemctl show -P Id display-manager.service)\" = gdm.service ] && echo 'GDM starts with the system'",
+    "[ \"$(systemctl get-default)\" = graphical.target ] && echo 'the system starts to graphical.target'",
+    "grep -qx \"AutomaticLogin=$(id -un)\" /etc/gdm3/daemon.conf && echo \"$(id -un) is logged in at start\"",
+    "command -v gnome-shell > /dev/null && echo 'GNOME is installed'",
+    "[ \"$(gsettings get org.gnome.desktop.screensaver lock-enabled) $(gsettings get org.gnome.desktop.lockdown disable-lock-screen) $(gsettings get org.gnome.desktop.session idle-delay)\" = 'false true uint32 0' ] && echo 'the screen never locks or blanks'",
+    "pkcheck --action-id org.freedesktop.login1.power-off --process $$ > /dev/null 2>&1; answer=$?; case \"$AGENT_VM_PARAM_POLKIT:$answer\" in deny:1) echo 'polkitd refuses every request (polkit=deny)';; debian:2) echo \"polkitd follows Debian's rules (polkit=debian): what they allow the desktop's user, every program of $(id -un) can do\";; *) echo \"polkit=$AGENT_VM_PARAM_POLKIT, and polkitd answered $answer to a request to power off\"; exit 1;; esac"
+  ]
+}

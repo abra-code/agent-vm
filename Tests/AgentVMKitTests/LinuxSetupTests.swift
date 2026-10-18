@@ -107,7 +107,9 @@ import Testing
     @Test func sealingRemovesTheWaysInAndTheChecksNameThem() {
         let seal = LinuxSetup.seal.map(\.script).joined(separator: "\n")
         // The ssh server is purged, not disabled, and what systemd opened for it is closed.
-        #expect(seal.contains("purge openssh-server unattended-upgrades polkitd"))
+        #expect(seal.contains("purge openssh-server unattended-upgrades $polkitd"))
+        // polkitd stays only beside the rules a desktop's recipe chose.
+        #expect(seal.contains(#"polkitd=polkitd; if [ -f /etc/polkit-1/rules.d/00-agent-vm.rules ]; then polkitd=""; fi; "#))
         #expect(seal.contains("systemctl stop sshd-vsock.socket sshd-unix-local.socket"))
         // A purge that fails fails the step: the commands after it do not hide its status.
         #expect(seal.contains("/usr/bin/apt-get -q -y -o Dpkg::Use-Pty=0 clean || exit 1; /usr/bin/systemctl stop"))
@@ -124,12 +126,23 @@ import Testing
         #expect(LinuxSetup.stopOnKernelFaultRequest.argv?.last == #"/usr/bin/printf '1\n' > /proc/sys/kernel/panic_on_oops"#)
         let checks = LinuxSetup.sealChecks(daemonPort: 1024)
         #expect(checks.map(\.name) == ["no ssh server", "no ssh server unit", "nothing listens on TCP port 22", "no TCP port is open to the network",
-                                       "nothing listens on vsock but the guest daemon", "the removed packages are gone", "no update timer is on",
+                                       "nothing listens on vsock but the guest daemon", "the removed packages are gone",
+                                       "polkitd is gone, or has the rules a desktop's recipe chose", "no update timer is on",
                                        "no account has a usable password", "cloud-init is off"])
         // The daemon's own port is the one vsock listener allowed, and the user is the image's.
         #expect(checks[4].script.contains("[:*]1024[[:space:]]"))
         // ... and it must be there: an empty list proves nothing.
         #expect(checks[4].script.contains(#"[ "$own" != "1" ]"#))
+        // polkitd: gone, Debian's rules, or the rule that refuses all but a console switch,
+        // unchanged and read first.
+        let polkit = checks[6].script
+        #expect(polkit.contains(#"if [ "$first" = '// agent-vm polkit=debian' ]; then if [ "$(/usr/bin/cat /etc/polkit-1/rules.d/00-agent-vm.rules)" != '// agent-vm polkit=debian' ]"#))
+        // With Debian's rules, every other rules file must be a package's, by a name dpkg cannot
+        // take for a pattern.
+        #expect(polkit.contains(#"! -path /etc/polkit-1/rules.d/00-agent-vm.rules -exec /usr/bin/sh -c 'case "$1" in *[!A-Za-z0-9._/-]*) /usr/bin/printf "%s\n" "$1"; exit 0;; esac; /usr/bin/dpkg -S "$1" > /dev/null 2>&1 || /usr/bin/printf "%s\n" "$1"' sh {} ';'"#))
+        #expect(polkit.contains("'\(LinuxSetup.polkitDeny)' '\(LinuxSetup.polkitDenyRule)'"))
+        #expect(polkit.contains("/usr/bin/find /etc/polkit-1/rules.d /run/polkit-1/rules.d /usr/local/share/polkit-1/rules.d /usr/share/polkit-1/rules.d -mindepth 1 -maxdepth 1 -name '*.rules' -printf '%f\\0'"))
+        #expect(!LinuxSetup.polkitDenyRule.contains("'"))
         // The account is checked before the recipes, which may give it sudo on purpose: the
         // check is not among those run after them.
         let account = LinuxSetup.accountCheck(user: "dev")
@@ -139,6 +152,26 @@ import Testing
             #expect(check.script.contains("exit 1"), "\(check.name)")
         }
         #expect(LinuxSetup.prepareForCloning.contains("/usr/bin/truncate -s 0 /etc/machine-id"))
+    }
+
+    /// The desktop recipes that keep polkitd write, in their steps and their update steps, the
+    /// rules the seal check accepts, word for word.
+    @Test func desktopRecipesWriteThePolkitRulesTheSealAccepts() throws {
+        let folder = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Recipes")
+        for name in ["linux-gnome", "linux-kde"] {
+            let recipe = try ImageRecipe.load(from: folder.appendingPathComponent(name).appendingPathComponent("recipe.json"))
+            var writers = 0
+            for step in recipe.steps + recipe.updateSteps {
+                guard case let .run(script) = step.action, script.contains(LinuxSetup.polkitRules) else {
+                    continue
+                }
+                writers += 1
+                #expect(script.contains("printf '%s\\n' '\(LinuxSetup.polkitDeny)' '\(LinuxSetup.polkitDenyRule)' > "), "\(name): \(step.name)")
+                #expect(script.contains("printf '%s\\n' '\(LinuxSetup.polkitDebian)' > "), "\(name): \(step.name)")
+            }
+            #expect(writers == 2, "\(name)")
+            #expect(recipe.parameters.map(\.name) == ["polkit"] && recipe.screen == true, "\(name)")
+        }
     }
 
     @Test func ubuntuSealsWhatItAlonehas() {
@@ -166,11 +199,11 @@ import Testing
         // The checks name what was removed and switched off, for each system its own.
         let checks = LinuxSetup.sealChecks(distribution: "ubuntu", daemonPort: 1024)
         #expect(checks.map(\.name) == LinuxSetup.sealChecks(daemonPort: 1024).map(\.name))
-        #expect(checks[5].script.contains("openssh-server unattended-upgrades polkitd snapd lxd-installer"))
-        #expect(checks[6].script.contains("apt-daily.timer apt-daily-upgrade.timer motd-news.timer"))
+        #expect(checks[5].script.contains("openssh-server unattended-upgrades snapd lxd-installer"))
+        #expect(checks[7].script.contains("apt-daily.timer apt-daily-upgrade.timer motd-news.timer"))
         let debian = LinuxSetup.sealChecks(daemonPort: 1024)
-        #expect(!debian[5].script.contains("snapd") && !debian[6].script.contains("motd-news"))
-        #expect(debian[6].script.contains("for timer in apt-daily.timer apt-daily-upgrade.timer; do"))
+        #expect(!debian[5].script.contains("snapd") && !debian[7].script.contains("motd-news"))
+        #expect(debian[7].script.contains("for timer in apt-daily.timer apt-daily-upgrade.timer; do"))
     }
 
     @Test func osReleaseIsReadStrictly() throws {

@@ -52,9 +52,12 @@ public enum MachineSize {
 
     /// Below this a box works, but too slowly or too tightly to recommend: 4 GB is what macOS
     /// itself asks for (it uses about 3 GB idle); a Linux box has no swap, so a program that
-    /// needs more than is free is ended by the system, and an agent takes 0.3 to 1 GB.
-    public static func comfortableMemory(for guest: GuestKind) -> UInt64 {
-        return guest == .linux ? 2 << 30 : 4 << 30
+    /// needs more than is free is ended by the system, and an agent takes 0.3 to 1 GB. A Linux
+    /// box with a desktop (`screen`) uses more: about 0.9 GB with XFCE, 1.1 to 1.4 GB with GNOME
+    /// and 1.6 to 1.9 GB with KDE, against 0.7 GB without one (measured 2026-10-18 in boxes of
+    /// 4 GB on Debian 13, idle after the login).
+    public static func comfortableMemory(for guest: GuestKind, screen: Bool) -> UInt64 {
+        return guest == .linux ? (screen ? 4 << 30 : 2 << 30) : 4 << 30
     }
 
     /// Why a box of `memoryBytes` cannot start, or nil.
@@ -67,9 +70,10 @@ public enum MachineSize {
         return "a \(system) box needs at least \(gigabytes(smallest)) GB of memory: with \(gigabytesText(memoryBytes)) GB, \(system) does not finish starting"
     }
 
-    /// What to say about a box of `memoryBytes` that starts but is small for its system, or nil.
-    public static func smallMemoryNote(memoryBytes: UInt64, guest: GuestKind) -> String? {
-        let comfortable = comfortableMemory(for: guest)
+    /// What to say about a box of `memoryBytes` that starts but is small for its system and its
+    /// desktop, if it has one (`screen`), or nil.
+    public static func smallMemoryNote(memoryBytes: UInt64, guest: GuestKind, screen: Bool) -> String? {
+        let comfortable = comfortableMemory(for: guest, screen: screen)
         guard memoryBytes < comfortable else {
             return nil
         }
@@ -77,6 +81,9 @@ public enum MachineSize {
         case .macOS:
             return "a macOS box of \(gigabytesText(memoryBytes)) GB starts, but macOS itself uses about 3 GB, so the box swaps from the start and builds are slow; \(gigabytes(comfortable)) GB is the least macOS asks for, and 8 GB suits an agent"
         case .linux:
+            if screen {
+                return "a Linux box of \(gigabytesText(memoryBytes)) GB with a desktop has little of it free and no swap: the system and its desktop use from 0.9 GB (XFCE) to 1.9 GB (KDE) of it, so a program that needs more, such as an agent session, a build or the application you try on the desktop, is ended by the system; \(gigabytes(comfortable)) GB or more suits a desktop and an agent"
+            }
             return "a Linux box of \(gigabytesText(memoryBytes)) GB has only about half of it free and no swap, so a program that needs more, such as an agent session or a build, is ended by the system; \(gigabytes(comfortable)) GB or more suits an agent"
         }
     }

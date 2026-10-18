@@ -32,7 +32,7 @@ struct BoxCommand: ParsableCommand {
     /// small for its system (`MachineSize.smallMemoryNote`). On stderr, with how to change it
     /// unless the person just did (`box set`), or as a JSON notice.
     static func noteSmallMemory(_ box: Box, json: Bool, sayHowToChange: Bool = true) {
-        guard let note = MachineSize.smallMemoryNote(memoryBytes: box.record.memoryBytes, guest: box.record.effectiveGuest) else {
+        guard let note = MachineSize.smallMemoryNote(memoryBytes: box.record.memoryBytes, guest: box.record.effectiveGuest, screen: box.record.screen == true) else {
             return
         }
         if json {

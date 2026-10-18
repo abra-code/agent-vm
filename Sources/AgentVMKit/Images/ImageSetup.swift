@@ -163,9 +163,10 @@ extension ImageBuilder {
             } else if let failure = machine.failure {
                 throw AgentVMError.guestUnreachable("the guest stopped during the view: \(failure)")
             } else {
-                // Only root can power the guest off (there is no polkitd): nothing was checked,
-                // and its machine id was not cleared, so the boxes made of it would share one.
-                let problem = AgentVMError.guestUnreachable("the guest shut itself down during the view, so it was not checked as its build sealed it")
+                // Root powered the guest off, or the desktop's user where its recipe gave polkitd
+                // Debian's rules (polkit=debian): nothing was checked, and its machine id was
+                // not cleared, so the boxes made of it would share one.
+                let problem = AgentVMError.guestUnreachable("the guest shut itself down during the view (from its desktop's Power Off, which polkit=debian allows, or as root), so it was not checked as its build sealed it")
                 try markUnsealed(image, problem)
                 throw problem
             }

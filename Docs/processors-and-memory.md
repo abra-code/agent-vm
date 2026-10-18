@@ -34,6 +34,7 @@ At most two macOS boxes run at once (a macOS limit). `agent-vm doctor` prints yo
 - **It takes what it uses, not what it was given:** about 0.5 GB of the Mac's memory when idle (Debian 13; Ubuntu 26.04 about 0.7 GB), growing as programs use more, up to its size. What it once used it keeps until it stops.
 - **4 GB is enough** for a command-line agent, git, Node or Python work and small builds; give 8 GB to a large C++ or Rust build or a test run with many workers (`agent-vm box set <box> --memory-gb 8`).
 - **1 GB starts** (about 570 MB of it free, measured on Debian 13), and Node, Claude Code and Codex start in it; but a Linux box has no swap, so a program that needs more than is free is ended by the system. agent-vm notes that a box under 2 GB is small.
+- **A desktop takes its share** (an image built with `Recipes/linux-xfce`, `linux-gnome` or `linux-kde`): idle after the login, a box uses about 0.9 GB with XFCE, 1.1 to 1.4 GB with GNOME and 1.6 to 1.9 GB with KDE, against 0.7 GB without a desktop. 4 GB suits a desktop and an agent; give 8 GB to a box in which an agent builds and runs the application you look at. agent-vm notes that a box with a desktop under 4 GB is small (since 0.8.3).
 - **Several run at once,** beside two macOS boxes too; the limit is the Mac's memory, and agent-vm warns at a start when the running boxes together, by the sizes they were given, leave the Mac less than 6 GB.
 
 ## 3. Set it
@@ -53,7 +54,7 @@ agent-vm image create dev --ipsw latest --cpus 4 --memory-gb 8   # what an image
 |---|---|---|
 | `box create`, `box set`, `box recreate` or `box start` says "a macOS box needs at least 3 GB" | With less, macOS does not finish starting (a box made before 0.7.51 could have less, and its start then gave up after 180 seconds) | `box set <box> --memory-gb 4` or more |
 | `box create`, `box set` or `box recreate` says "more than this Mac allows a box" | The size is larger than this Mac can run, such as a box made on a Mac with more memory | A smaller size; for a box, `box recreate` names the `box set` command, and leaves the box as it was |
-| `box create` or `box set` notes that the box is small: a macOS box under 4 GB, a Linux box under 2 GB | It starts, but macOS swaps from the start; Linux has no swap, so a program that needs more than is free is ended | Give it more memory, unless the box only runs small commands |
+| `box create` or `box set` notes that the box is small: a macOS box under 4 GB, a Linux box under 2 GB, or under 4 GB with a desktop | It starts, but macOS swaps from the start; Linux has no swap, so a program that needs more than is free is ended | Give it more memory, unless the box only runs small commands |
 | Builds in the box are slow and its disk file grows | Too little memory: the box swaps onto its own disk | Give it more memory |
 | `box start` says "the Mac and the boxes may get slow" | Running boxes leave the Mac less than 6 GB | Stop a box, or make one smaller |
 | Your Mac's own applications are slow while a box runs | The same | The same |

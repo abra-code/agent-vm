@@ -21,6 +21,12 @@
     "homebrew": [
       "24100ce201d33a16ee6b66149a97a26b312914c77ce0cd68230f98dd753068f4"
     ],
+    "linux-gnome": [
+      "fc696476a4f07fef9051300ab5c80728604fd1a54aaf36bbe016610395b21b0c"
+    ],
+    "linux-kde": [
+      "d968956f0340aed6d6e805cd0c39f34206290b3e12bf85dfdb8d509d9a90721c"
+    ],
     "linux-node": [
       "1c8543887f910c45bc74c85b0153df1faaf106ed4d5f179c6ce51181e4d855c3",
       "663c9f15c5a084b1af6bbf7502a8aeb50ca41634768192e37f93390d794bf0ed"

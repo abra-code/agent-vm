@@ -256,13 +256,17 @@ final class BoxScratch {
         #expect(MachineSize.memoryRefusal(memoryBytes: 3 << 30, guest: .macOS) == nil)
         #expect(MachineSize.memoryRefusal(memoryBytes: 2 << 30, guest: .macOS) == "a macOS box needs at least 3 GB of memory: with 2 GB, macOS does not finish starting")
         #expect(MachineSize.memoryRefusal(memoryBytes: 1 << 30, guest: .linux) == nil)
-        #expect(MachineSize.smallMemoryNote(memoryBytes: 4 << 30, guest: .macOS) == nil)
-        #expect(MachineSize.smallMemoryNote(memoryBytes: 3 << 30, guest: .macOS)?.hasPrefix("a macOS box of 3 GB starts, but macOS itself uses about 3 GB") == true)
-        #expect(MachineSize.smallMemoryNote(memoryBytes: 2 << 30, guest: .linux) == nil)
-        #expect(MachineSize.smallMemoryNote(memoryBytes: 1 << 30, guest: .linux)?.hasPrefix("a Linux box of 1 GB has only about half of it free and no swap") == true)
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 4 << 30, guest: .macOS, screen: false) == nil)
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 3 << 30, guest: .macOS, screen: false)?.hasPrefix("a macOS box of 3 GB starts, but macOS itself uses about 3 GB") == true)
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 2 << 30, guest: .linux, screen: false) == nil)
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 1 << 30, guest: .linux, screen: false)?.hasPrefix("a Linux box of 1 GB has only about half of it free and no swap") == true)
+        // A Linux box with a desktop uses up to 1.9 GB: 4 GB suits it with an agent.
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 4 << 30, guest: .linux, screen: true) == nil)
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 2 << 30, guest: .linux, screen: true)?.hasPrefix("a Linux box of 2 GB with a desktop has little of it free and no swap") == true)
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 2 << 30, guest: .linux, screen: true)?.hasSuffix("4 GB or more suits a desktop and an agent") == true)
         // A size between whole GB is not rounded up to the limit it is under.
         #expect(MachineSize.memoryRefusal(memoryBytes: (3 << 30) - 1, guest: .macOS)?.contains("with 2.9 GB") == true)
-        #expect(MachineSize.smallMemoryNote(memoryBytes: 7 << 29, guest: .macOS)?.hasPrefix("a macOS box of 3.5 GB starts") == true)
+        #expect(MachineSize.smallMemoryNote(memoryBytes: 7 << 29, guest: .macOS, screen: false)?.hasPrefix("a macOS box of 3.5 GB starts") == true)
 
         let fixture = try BoxScratch()
         #expect(throws: AgentVMError.self) {

@@ -216,15 +216,36 @@ enum LinuxSetup {
     /// The installed version of the tools package, for the record.
     static let toolsVersion = "/usr/bin/dpkg-query -W -f '${Version}' \(toolsPackage)"
 
+    /// polkitd's rules as a desktop recipe chose them. GNOME's and KDE's packages depend on
+    /// polkitd, so their recipes keep it and write this file, and the seal keeps polkitd only
+    /// beside it. Its first line is `polkitDeny` or `polkitDebian`. With the first, the line
+    /// after it is `polkitDenyRule` and nothing else: polkitd reads the rules files of its
+    /// folders in the order of their names, and this one, first, refuses every request, so no
+    /// later rule and no package's default is reached. Every request but one: switching the
+    /// screen to another of the system's consoles, which KWin asks logind for when Plasma
+    /// starts, and without which it does not (measured; GNOME starts either way). With the
+    /// second, polkitd answers by Debian's rules: the account logged in to the desktop gets what
+    /// they give the person at the computer, such as powering the system off and mounting disks,
+    /// without a password.
+    static let polkitRulesName = "00-agent-vm.rules"
+    static let polkitRules = "/etc/polkit-1/rules.d/\(polkitRulesName)"
+    static let polkitDeny = "// agent-vm polkit=deny"
+    static let polkitDebian = "// agent-vm polkit=debian"
+    static let polkitDenyRule = #"polkit.addRule(function (action, subject) { return action.id == "org.freedesktop.login1.chvt" ? polkit.Result.YES : polkit.Result.NO; });"#
+    /// The folders polkitd reads rules from (Debian 13's polkit 126).
+    static let polkitRuleFolders = ["/etc/polkit-1/rules.d", "/run/polkit-1/rules.d", "/usr/local/share/polkit-1/rules.d", "/usr/share/polkit-1/rules.d"]
+
     /// Sealing, at the end of the first build: the ways in are removed, the system no longer
     /// changes by itself, and it boots the same with any network card or none.
     static let seal: [Step] = [
         // Purged, not disabled: systemd makes an installed sshd listen on vsock port 22 by
         // itself, beside the TCP port. polkitd goes too: a program that runs with root's
         // rights for any user who asks it well, with a history of flaws, and nothing in a box
-        // needs it (removing it takes no other package along).
+        // needs it (removing it takes no other package along); unless a desktop's recipe that
+        // depends on it chose its rules (`polkitRules`), and the check below holds it to them.
         Step("remove the ssh server, background updates and polkitd",
-             "\(apt) purge openssh-server unattended-upgrades polkitd && \(apt) autoremove --purge && \(apt) clean || exit 1; "
+             #"polkitd=polkitd; if [ -f \#(polkitRules) ]; then polkitd=""; fi; "#
+             + "\(apt) purge openssh-server unattended-upgrades $polkitd && \(apt) autoremove --purge && \(apt) clean || exit 1; "
              // The sockets systemd made for sshd at this boot stay open until they are stopped
              // (a socket that is not there fails the stop, which is no failure of the step);
              // at the next boot it makes none, since there is no sshd.
@@ -317,7 +338,8 @@ enum LinuxSetup {
     /// What must be true of a sealed image of a distribution. A script prints what it found
     /// and ends with a status other than 0 when it is not.
     static func sealChecks(distribution: String = "debian", daemonPort: UInt32 = GuestProtocol.port) -> [Step] {
-        let removed = ["openssh-server", "unattended-upgrades", "polkitd"] + (distribution == "ubuntu" ? ubuntuRemoved : [])
+        // polkitd has a check of its own: a desktop's recipe may keep it.
+        let removed = ["openssh-server", "unattended-upgrades"] + (distribution == "ubuntu" ? ubuntuRemoved : [])
         let timers = ["apt-daily.timer", "apt-daily-upgrade.timer"] + (distribution == "ubuntu" ? ubuntuTimers : [])
         return [
             Step("no ssh server", "if [ -e /usr/sbin/sshd ]; then /usr/bin/echo '/usr/sbin/sshd is still there'; exit 1; fi"),
@@ -338,6 +360,24 @@ enum LinuxSetup {
                  + #"if [ "$own" != "1" ] || [ -n "$found" ]; then /usr/bin/echo "vsock listeners: $all"; exit 1; fi"#),
             Step("the removed packages are gone",
                  #"found="$(/usr/bin/dpkg-query -W -f '${Package} ${db:Status-Status}\n' \#(removed.joined(separator: " ")) 2> /dev/null | /usr/bin/grep ' installed$')"; if [ -n "$found" ]; then /usr/bin/echo "$found"; exit 1; fi"#),
+            // Gone, or kept by a desktop's recipe with Debian's rules (the file says so and
+            // adds nothing, and every other rules file is a package's) or with the rule that
+            // refuses every request (unchanged, and read before any other, so no other counts).
+            Step("polkitd is gone, or has the rules a desktop's recipe chose",
+                 #"state="$(/usr/bin/dpkg-query -W -f '${db:Status-Status}' polkitd 2> /dev/null)"; if [ "$state" != "installed" ]; then exit 0; fi; "#
+                 + #"if [ ! -f \#(polkitRules) ]; then /usr/bin/echo 'polkitd is installed, and no recipe chose its rules in \#(polkitRules)'; exit 1; fi; "#
+                 + #"first="$(/usr/bin/head -n 1 \#(polkitRules))"; if [ "$first" = '\#(polkitDebian)' ]; then "#
+                 + #"if [ "$(/usr/bin/cat \#(polkitRules))" != '\#(polkitDebian)' ]; then /usr/bin/echo '\#(polkitRules) has more than its first line'; exit 1; fi; "#
+                 // A name dpkg could take for a pattern (or a line break, which would end it)
+                 // counts as no package's.
+                 + #"found="$(/usr/bin/find \#(polkitRuleFolders.joined(separator: " ")) -mindepth 1 -maxdepth 1 -name '*.rules' ! -path \#(polkitRules) -exec /usr/bin/sh -c 'case "$1" in *[!A-Za-z0-9._/-]*) /usr/bin/printf "%s\n" "$1"; exit 0;; esac; /usr/bin/dpkg -S "$1" > /dev/null 2>&1 || /usr/bin/printf "%s\n" "$1"' sh {} ';' 2> /dev/null)"; "#
+                 + #"if [ -n "$found" ]; then /usr/bin/echo "rules files that no package installed: $found"; exit 1; fi; exit 0; fi; "#
+                 + #"if [ "$first" != '\#(polkitDeny)' ]; then /usr/bin/echo '\#(polkitRules) does not begin with \#(polkitDeny) or \#(polkitDebian)'; exit 1; fi; "#
+                 + #"if [ "$(/usr/bin/cat \#(polkitRules))" != "$(/usr/bin/printf '%s\n%s' '\#(polkitDeny)' '\#(polkitDenyRule)')" ]; then /usr/bin/echo '\#(polkitRules) has more than the rule that refuses every request'; exit 1; fi; "#
+                 // Every name polkitd loads, as it does: a dot file too, and a name with a line
+                 // break in it whole (ls hides the first and splits the second).
+                 + #"read="$(/usr/bin/find \#(polkitRuleFolders.joined(separator: " ")) -mindepth 1 -maxdepth 1 -name '*.rules' -printf '%f\0' 2> /dev/null | LC_ALL=C /usr/bin/sort -z | /usr/bin/head -z -n 1 | /usr/bin/tr -d '\0')"; "#
+                 + #"if [ "$read" != '\#(polkitRulesName)' ]; then /usr/bin/echo "polkitd reads $read before \#(polkitRulesName)"; exit 1; fi"#),
             // One unit to a question: the answer then is that unit's.
             Step("no update timer is on",
                  #"found=""; for timer in \#(timers.joined(separator: " ")); do state="$(/usr/bin/systemctl is-enabled "$timer" 2> /dev/null)"; if [ "$state" = "enabled" ]; then found="$found $timer"; fi; done; "#

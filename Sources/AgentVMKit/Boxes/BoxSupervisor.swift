@@ -329,8 +329,8 @@ public final class BoxSupervisor {
             noteStop("the guest daemon did not answer within \(bootLimit)")
             try? await machine.forceStop()
             // A small box is the likely reason; with the comfortable size, say nothing of it.
-            let small = MachineSize.smallMemoryNote(memoryBytes: box.record.memoryBytes, guest: guest) == nil ? ""
-                : "; a box of \(MachineSize.gigabytesText(box.record.memoryBytes)) GB may be too small: `agent-vm box set \(box.name) --memory-gb \(MachineSize.gigabytes(MachineSize.comfortableMemory(for: guest)))` gives it more"
+            let small = MachineSize.smallMemoryNote(memoryBytes: box.record.memoryBytes, guest: guest, screen: box.record.screen == true) == nil ? ""
+                : "; a box of \(MachineSize.gigabytesText(box.record.memoryBytes)) GB may be too small: `agent-vm box set \(box.name) --memory-gb \(MachineSize.gigabytes(MachineSize.comfortableMemory(for: guest, screen: box.record.screen == true)))` gives it more"
             throw AgentVMError.guestUnreachable("the guest daemon did not answer within \(bootLimit)\(small)\(consoleTail())")
         }
         do {
@@ -1400,7 +1400,7 @@ public enum BoxLauncher {
         let guest = box.record.effectiveGuest
         if let refusal = MachineSize.memoryRefusal(memoryBytes: box.record.memoryBytes, guest: guest) {
             throw AgentVMError.virtualMachine(operation: "start \(box.name)",
-                                              message: "\(refusal); `agent-vm box set \(box.name) --memory-gb \(MachineSize.gigabytes(MachineSize.comfortableMemory(for: guest)))` gives it more")
+                                              message: "\(refusal); `agent-vm box set \(box.name) --memory-gb \(MachineSize.gigabytes(MachineSize.comfortableMemory(for: guest, screen: box.record.screen == true)))` gives it more")
         }
         let logDescriptor = open(box.logURL.path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard logDescriptor >= 0 else {
