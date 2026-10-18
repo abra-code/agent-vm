@@ -9,6 +9,13 @@
 // this Mac into the guest account's Downloads folder (GuestSend), in either mode: it is not
 // input to the guest's screen.
 //
+// The window can be resized and made full screen. A view-only window scales the screen and
+// keeps its shape, so looking still changes nothing. An interactive one gives the guest's
+// display its own size once a resize ends, one pixel per point as at the 1280 by 800 start, so
+// the desktop gets the room and its text keeps its size (a Linux desktop cannot tell it is on a
+// Retina screen: its display reports no physical size, measured). Closing the window gives the
+// display back its start size, so a box nobody looks at is as every start leaves it.
+//
 // Only a supervisor in a login session can show windows: one started over SSH or by a service
 // has no window server, and runs without AppKit.
 
@@ -49,6 +56,21 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     private var sending = false
     /// Stop was pressed or the window closed: no further item starts.
     private var stopRequested = false
+    /// The fit of window and display waiting for a resize to settle (fitSoon).
+    private var pendingFit: Task<Void, Never>?
+    /// A move into or out of full screen is under way: its intermediate sizes are not fitted.
+    private var changingFullScreen = false
+    /// The next fit gives a view-only window the display's shape: after it was shown or left
+    /// full screen, not after a resize the person made (a window tiled to half the screen stays).
+    private var reshapePending = false
+    /// This window gave the display a size other than the start size, which closing it gives
+    /// back. A window that never did changes nothing when it closes.
+    private var gaveSize = false
+
+    /// The guest display's size at every start, which closing the window gives back.
+    static let startSize = CGSize(width: MacMachineSpec.displayWidth, height: MacMachineSpec.displayHeight)
+    /// The smallest content of the window, and so the smallest display it gives the guest.
+    static let minimumSize = NSSize(width: 800, height: 500)
 
     init(name: String, kind: String = "box", machine: GuestMachine, guest: GuestKind = .macOS, password: (@Sendable () throws -> String)? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil,
          log: (@MainActor (String) -> Void)? = nil, sent: (@MainActor (BoxEventLog.Item) -> Void)? = nil) {
@@ -80,6 +102,11 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         screen.capturesSystemKeys = interactive
         typeButton?.isEnabled = interactive
         window.title = Self.title(kind: kind, name: name, interactive: interactive)
+        // Any shape for an interactive window, whose size the display takes (the increments
+        // clear the aspect ratio); a view-only one gets the display's shape back in fit().
+        if interactive {
+            window.contentResizeIncrements = NSSize(width: 1, height: 1)
+        }
         NSApplication.shared.setActivationPolicy(.accessory)
         // In front even though the supervisor is not the active application (the user is in
         // Terminal, or in the app that ran box view).
@@ -92,36 +119,125 @@ final class BoxViewer: NSObject, NSWindowDelegate {
             window.makeKey()
             NSApplication.shared.activate()
         }
+        fitSoon(reshaping: true)
     }
 
     private func makeWindow() -> NSWindow {
-        let size = NSSize(width: CGFloat(MacMachineSpec.displayWidth), height: CGFloat(MacMachineSpec.displayHeight))
+        let size = machine.displaySize ?? Self.startSize
         let content = NSView(frame: NSRect(origin: .zero, size: size))
         let screen = BoxScreen(frame: content.bounds)
-        screen.autoresizingMask = [.width, .height]
         machine.attach(screen)
         content.addSubview(screen)
         let shield = InputShield(frame: content.bounds)
-        shield.autoresizingMask = [.width, .height]
         content.addSubview(shield)
+        // Virtualization's view turns its autoresizing mask off (measured), so a mask kept the
+        // screen at its first size whatever the window did: constraints hold both to the content.
+        for view in [screen, shield] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                view.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+                view.topAnchor.constraint(equalTo: content.topAnchor),
+                view.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            ])
+        }
 
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.contentView = content
-        window.contentAspectRatio = size
+        window.contentMinSize = Self.minimumSize
+        window.collectionBehavior.insert(.fullScreenPrimary)
         window.isReleasedWhenClosed = false
         window.delegate = self
+        window.addTitlebarAccessoryViewController(makeAccessory())
+        // The bar under the title takes its height from the content (measured): give it back,
+        // so the screen starts at its own size.
+        window.setContentSize(size)
         // A smaller start on a small screen; the guest's display keeps its size and is scaled.
         if let visible = NSScreen.main?.visibleFrame, visible.width < size.width + 80 || visible.height < size.height + 80 {
             let scale = min((visible.width - 80) / size.width, (visible.height - 80) / size.height)
             window.setContentSize(NSSize(width: size.width * scale, height: size.height * scale))
         }
         window.center()
-        window.addTitlebarAccessoryViewController(makeAccessory())
         self.window = window
         self.screen = screen
         self.shield = shield
         return window
+    }
+
+    /// Fits window and display to each other once resizing has settled: a full-screen change
+    /// reports several sizes, and a drag is fitted when it ends.
+    private func fitSoon(reshaping: Bool = false) {
+        if reshaping {
+            reshapePending = true
+        }
+        pendingFit?.cancel()
+        pendingFit = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else {
+                return
+            }
+            self?.fit()
+        }
+    }
+
+    /// An interactive window gives the guest's display its size; a view-only one keeps the
+    /// display's shape when resized, and takes it when reshapePending says so, unless it fills a
+    /// screen. A closed window fits nothing: one closed in full screen leaves it after
+    /// windowWillClose gave the display back (measured).
+    private func fit() {
+        guard let window, window.isVisible, let content = window.contentView, let screen, !changingFullScreen, !window.inLiveResize,
+              let display = machine.displaySize else {
+            return
+        }
+        let reshape = reshapePending
+        reshapePending = false
+        let size = content.bounds.size
+        if !screen.viewOnly {
+            let wanted = CGSize(width: size.width.rounded(.down), height: size.height.rounded(.down))
+            if wanted != display {
+                resizeScreen(wanted)
+            }
+        } else if !window.styleMask.contains(.fullScreen) {
+            window.contentAspectRatio = display
+            if reshape, let frame = Self.frame(window.frame, content: size, shapedLike: display, visible: window.screen?.visibleFrame) {
+                window.setFrame(frame, display: true)
+            }
+        }
+    }
+
+    private func resizeScreen(_ size: CGSize) {
+        do {
+            try machine.resizeDisplay(size)
+            gaveSize = size != Self.startSize
+            log?("Screen: \(Int(size.width)) by \(Int(size.height))")
+        } catch {
+            log?("Screen: \(error)")
+        }
+    }
+
+    /// The frame that gives a window's `content` the shape of `display`: the width and the top
+    /// edge stay, unless the new height would not fit in `visible`, which then sets it, with the
+    /// bottom edge kept on `visible`. Nil when the shape is already right.
+    static func frame(_ frame: NSRect, content: NSSize, shapedLike display: CGSize, visible: NSRect?) -> NSRect? {
+        guard display.width > 0, display.height > 0, content.width > 0 else {
+            return nil
+        }
+        // The title bar and the bar under it.
+        let chrome = frame.height - content.height
+        var size = NSSize(width: content.width, height: (content.width * display.height / display.width).rounded())
+        if let visible, size.height + chrome > visible.height {
+            size.height = visible.height - chrome
+            size.width = (size.height * display.width / display.height).rounded()
+        }
+        guard abs(size.width - content.width) >= 1 || abs(size.height - content.height) >= 1 else {
+            return nil
+        }
+        var shaped = NSRect(x: frame.minX, y: frame.maxY - size.height - chrome, width: size.width, height: size.height + chrome)
+        if let visible, shaped.minY < visible.minY {
+            shaped.origin.y = visible.minY
+        }
+        return shaped
     }
 
     /// Under the title bar: at the left the note and Type Password, which the note speaks of;
@@ -368,7 +484,52 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         return event
     }
 
+    func windowDidResize(_ notification: Notification) {
+        // A drag is fitted when it ends; other resizes (the zoom button, a double click on the
+        // title bar) at once.
+        if window?.inLiveResize == false {
+            fitSoon()
+        }
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        fitSoon()
+    }
+
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        changingFullScreen = true
+    }
+
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        changingFullScreen = false
+        fitSoon()
+    }
+
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        changingFullScreen = false
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        changingFullScreen = true
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        changingFullScreen = false
+        fitSoon(reshaping: true)
+    }
+
+    func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        changingFullScreen = false
+    }
+
     func windowWillClose(_ notification: Notification) {
+        pendingFit?.cancel()
+        pendingFit = nil
+        // Nobody looks any more: a display this window resized goes back to the size every start
+        // gives it.
+        if gaveSize {
+            resizeScreen(Self.startSize)
+        }
         // Nobody sees a send's progress or its Stop button any more (and closing an image setup
         // window shuts the guest down): stop it.
         stopSending()

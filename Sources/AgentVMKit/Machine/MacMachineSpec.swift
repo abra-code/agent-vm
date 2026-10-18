@@ -25,9 +25,9 @@ public struct MacMachineSpec: Sendable {
         self.macAddress = macAddress
     }
 
-    /// Guest display size. Small, because it is only looked at now and then (`box view`): macOS
-    /// guests need a display to keep Metal and the login session, and a smaller one costs less
-    /// GPU time.
+    /// Guest display size at start. Small, because it is only looked at now and then (`box
+    /// view`): macOS guests need a display to keep Metal and the login session, and a smaller one
+    /// costs less GPU time. An interactive window resizes it while it is open (BoxViewer).
     static let displayWidth = 1280
     static let displayHeight = 800
 

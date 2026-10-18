@@ -135,6 +135,26 @@ public final class GuestMachine: NSObject, VZVirtualMachineDelegate {
         view.virtualMachine = machine
     }
 
+    /// The size of the guest's display in pixels, as last given to it, if it has one (a macOS
+    /// guest always; a Linux guest when its image installed a desktop).
+    var displaySize: CGSize? {
+        return machine.graphicsDevices.first?.displays.first?.sizeInPixels
+    }
+
+    /// Gives the guest's display a new size in pixels, at the density it started with. The guest
+    /// decides whether to take it: macOS 27, GNOME and KDE Plasma do within a second; XFCE, under
+    /// X, does not by itself (measured).
+    func resizeDisplay(_ size: CGSize) throws {
+        guard let display = machine.graphicsDevices.first?.displays.first else {
+            return
+        }
+        do {
+            try display.reconfigure(sizeInPixels: size)
+        } catch {
+            throw AgentVMError.virtualMachine(operation: "resize the screen to \(Int(size.width)) by \(Int(size.height))", error: error)
+        }
+    }
+
     /// Forgets how an earlier run ended; every start calls it first.
     func willStart() {
         stopped = false

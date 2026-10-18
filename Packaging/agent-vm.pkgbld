@@ -73,7 +73,7 @@
           "DESTINATION" : "~\/.local\/share\/agent-vm\/versions\/${VERSION}\/LICENSE"
         }
       ],
-      "IDENTIFIER" : "com.abracode.pkg.agent-vm.0.8.3",
+      "IDENTIFIER" : "com.abracode.pkg.agent-vm.0.8.4",
       "VERSION" : "",
       "DESCRIPTION" : "Installs this version in ~\/.local\/share\/agent-vm\/versions and points ~\/.local\/bin\/agent-vm and ~\/.local\/bin\/avm at it. An earlier version that a running box or job still uses stays until a later install; the others are removed.",
       "SELECTED" : true,
@@ -120,7 +120,7 @@
   "FORMAT_VERSION" : 1,
   "PROJECT" : {
     "NAME" : "agent-vm",
-    "VERSION" : "0.8.3",
+    "VERSION" : "0.8.4",
     "OUTPUT_DIR" : "..\/.build\/package",
     "PACKAGE_NAME" : "${NAME}_${VERSION}.pkg",
     "MIN_OS_VERSION" : "27.0",
