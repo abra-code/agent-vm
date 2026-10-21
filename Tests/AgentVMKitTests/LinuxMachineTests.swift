@@ -98,6 +98,8 @@ import Virtualization
         let attachments = configuration.storageDevices.compactMap { $0.attachment as? VZDiskImageStorageDeviceAttachment }
         #expect(attachments.map(\.isReadOnly) == [false, true])
         #expect(attachments.map(\.url.lastPathComponent) == [ImageStore.diskName, "seed.iso"])
+        // Both through the Mac's file cache: a 4 KiB guest kernel loses memory otherwise.
+        #expect(attachments.map(\.cachingMode) == [.cached, .cached])
     }
 
     @Test func theConsoleIsOneSerialPort() throws {

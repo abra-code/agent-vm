@@ -105,16 +105,24 @@ public struct LinuxMachineSpec: Sendable {
         configuration.cpuCount = cpuCount
         configuration.memorySize = memoryBytes
 
+        // Every disk of a Linux guest is attached with the Mac's file cache (`.cached`). With
+        // `.automatic` or `.uncached`, a guest whose kernel has 4 KiB pages loses memory once
+        // it has read a disk through the raw block device (as Ubuntu's GRUB services do at every
+        // boot) and the Mac then pushes the guest's memory out: the memory reads as zeros and
+        // the kernel faults. `.cached` did not show it in any test (macOS 26 and 27); Lima
+        // attaches its disks the same way, after reports of corrupted guest disks (UTM issue
+        // 4840). A macOS guest
+        // has 16 KiB pages and keeps `.automatic` (MacMachineSpec).
         var disks: [VZStorageDeviceConfiguration] = []
         do {
-            let disk = try VZDiskImageStorageDeviceAttachment(url: files.disk, readOnly: false, cachingMode: .automatic, synchronizationMode: .full)
+            let disk = try VZDiskImageStorageDeviceAttachment(url: files.disk, readOnly: false, cachingMode: .cached, synchronizationMode: .full)
             disks.append(VZVirtioBlockDeviceConfiguration(attachment: disk))
         } catch {
             throw AgentVMError.virtualMachine(operation: "attach \(files.disk.path)", message: error.localizedDescription)
         }
         if let seedDisk = extras.seedDisk {
             do {
-                disks.append(VZVirtioBlockDeviceConfiguration(attachment: try VZDiskImageStorageDeviceAttachment(url: seedDisk, readOnly: true)))
+                disks.append(VZVirtioBlockDeviceConfiguration(attachment: try VZDiskImageStorageDeviceAttachment(url: seedDisk, readOnly: true, cachingMode: .cached, synchronizationMode: .full)))
             } catch {
                 throw AgentVMError.virtualMachine(operation: "attach \(seedDisk.path)", message: error.localizedDescription)
             }
