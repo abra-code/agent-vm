@@ -182,9 +182,12 @@ import Testing
         // After the shared removal, before the rest.
         #expect(ubuntu[0] == LinuxSetup.seal[0] && Array(ubuntu.dropFirst(2)) == Array(LinuxSetup.seal.dropFirst()))
         let own = ubuntu[1].script
-        for package in ["snapd", "lxd-installer", "ubuntu-pro-client", "update-notifier-common", "needrestart", "udisks2", "open-vm-tools"] {
+        for package in ["snapd", "lxd-installer", "ubuntu-pro-client", "update-notifier-common", "needrestart", "open-vm-tools"] {
             #expect(own.contains(" \(package) ") || own.contains(" \(package) &&"), "\(package)")
         }
+        // udisks2 too, unless a desktop's recipe chose polkitd's rules: GNOME and Plasma need it.
+        #expect(own.hasPrefix(#"udisks=udisks2; if [ -f /etc/polkit-1/rules.d/00-agent-vm.rules ]; then udisks=""; fi; "#))
+        #expect(own.contains(" open-iscsi $udisks && "))
         // A purge that fails fails the step.
         #expect(own.contains("clean || exit 1; /usr/bin/rm -rf /snap "))
         // needrestart goes first of all, right after the account, and only on Ubuntu; until it
@@ -201,8 +204,11 @@ import Testing
         #expect(checks.map(\.name) == LinuxSetup.sealChecks(daemonPort: 1024).map(\.name))
         #expect(checks[5].script.contains("openssh-server unattended-upgrades snapd lxd-installer"))
         #expect(checks[7].script.contains("apt-daily.timer apt-daily-upgrade.timer motd-news.timer"))
+        // The check names udisks2 by the same rule.
+        #expect(checks[5].script.hasPrefix(LinuxSetup.ubuntuDiskServiceUnlessDesktop) && checks[5].script.contains(" open-iscsi $udisks 2> /dev/null"))
         let debian = LinuxSetup.sealChecks(daemonPort: 1024)
         #expect(!debian[5].script.contains("snapd") && !debian[7].script.contains("motd-news"))
+        #expect(!debian[5].script.contains("udisks"))
         #expect(debian[7].script.contains("for timer in apt-daily.timer apt-daily-upgrade.timer; do"))
     }
 

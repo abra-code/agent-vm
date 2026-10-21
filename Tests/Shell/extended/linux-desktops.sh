@@ -3,7 +3,7 @@
 # Tests/Shell/extended/linux-desktops.sh - the bundled linux-gnome and linux-kde recipes: an
 # image built with each records a screen and keeps polkitd with the rules that refuse; its boxes
 # start with the box user logged in to the desktop on Wayland, nothing listens for the network,
-# polkitd refuses the box user (also through its user manager, where Debian's rules would let it
+# polkitd refuses the box user (also through its user manager, where the system's own rules would let it
 # act as the desktop's user), the screen does not stay locked, and image view's seal check passes
 # with polkitd. The GNOME test also turns polkit=debian on and back off with image update. From
 # the ready Linux image $AGENT_VM_TEST_LINUX_IMAGE, and only with AGENT_VM_TEST_LINUX_DESKTOP=1:
@@ -128,10 +128,10 @@ test_the_gnome_recipe_gives_a_screen_and_a_polkit_choice() {
     cleanup_on_exit image "$_image"
     check_desktop linux-gnome gnome-shell GDM never "$_image" "$_box" || return 1
 
-    # Debian's rules: the box user's manager may power the box off; the image keeps the choice.
+    # The system's own rules: the box user's manager may power the box off; the image keeps the choice.
     run_avm image update "$_image" --tools --set polkit=debian
     assert_status 0 || return 1
-    assert_out_contains "polkitd follows Debian's rules (polkit=debian)" || return 1
+    assert_out_contains "polkitd follows the system's own rules (polkit=debian)" || return 1
     run_avm box recreate "$_box"
     assert_status 0 || return 1
     run_avm box start "$_box"
@@ -139,10 +139,10 @@ test_the_gnome_recipe_gives_a_screen_and_a_polkit_choice() {
     run_avm exec --box "$_box" -- /bin/sh -c 'for i in $(seq 1 60); do pgrep -x gnome-shell > /dev/null && exit 0; sleep 1; done; exit 1'
     assert_status 0 || return 1
     polkit_answer_in_session "$_box"
-    assert_eq "$OUT" "0" "polkitd's answer in the box user's manager, with Debian's rules" || return 1
+    assert_eq "$OUT" "0" "polkitd's answer in the box user's manager, with the system's own rules" || return 1
     run_avm box stop "$_box"
     assert_status 0 || return 1
-    # The seal check takes Debian's rules as they are: the marker alone, and packages' rules files.
+    # The seal check takes the system's own rules as they are: the marker alone, and packages' rules files.
     view_and_check_seal "$_image" || return 1
     # And back.
     run_avm image update "$_image" --tools --set polkit=deny

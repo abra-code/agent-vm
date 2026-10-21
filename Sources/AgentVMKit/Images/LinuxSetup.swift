@@ -305,13 +305,22 @@ enum LinuxSetup {
     /// - needrestart, which restarts services after every apt run when it finds their program
     ///   replaced: the guest daemon among them, in the middle of the step that runs apt.
     /// - Daemons for hardware and hosts a box does not have: VMware's tools, multipath and
-    ///   iSCSI disks, and udisks2 (a daemon of root's that users ask over D-Bus).
+    ///   iSCSI disks, and udisks2 (`ubuntuDiskService`).
     static let ubuntuRemoved = [
         "snapd", "lxd-installer", "lxd-agent-loader",
         "ubuntu-pro-client", "update-notifier-common", "motd-news-config", "fwupd", "apport", "landscape-common", "ubuntu-release-upgrader-core",
         "needrestart",
-        "open-vm-tools", "multipath-tools", "open-iscsi", "udisks2",
+        "open-vm-tools", "multipath-tools", "open-iscsi",
     ]
+    /// udisks2, a daemon of root's that users ask over D-Bus to mount disks, is removed with
+    /// `ubuntuRemoved` unless a desktop's recipe chose polkitd's rules (`polkitRules`): GNOME
+    /// and Plasma depend on it, and it does only what polkitd allows, so that file decides for
+    /// both. A Debian image ends the same way: its cloud image has no udisks2, and the desktop
+    /// brings it.
+    static let ubuntuDiskService = "udisks2"
+    /// The shell line that sets `$udisks` to `ubuntuDiskService`, or to nothing beside a desktop
+    /// recipe's polkitd rules.
+    static let ubuntuDiskServiceUnlessDesktop = #"udisks=\#(ubuntuDiskService); if [ -f \#(polkitRules) ]; then udisks=""; fi; "#
     /// Ubuntu's timers that ask the network. Most go with their package; the check names them
     /// all, so that an update which brings one back is seen.
     static let ubuntuTimers = ["motd-news.timer", "update-notifier-download.timer", "update-notifier-motd.timer", "fwupd-refresh.timer", "ua-timer.timer",
@@ -322,7 +331,8 @@ enum LinuxSetup {
         var steps = seal
         if distribution == "ubuntu" {
             steps.insert(Step("remove snapd, Ubuntu's background services, and daemons for hardware a box does not have",
-                              "\(apt) purge \(ubuntuRemoved.joined(separator: " ")) && \(apt) autoremove --purge && \(apt) clean || exit 1; "
+                              ubuntuDiskServiceUnlessDesktop
+                              + "\(apt) purge \(ubuntuRemoved.joined(separator: " ")) $udisks && \(apt) autoremove --purge && \(apt) clean || exit 1; "
                               // What snapd's own removal leaves when a snap was mounted.
                               + "/usr/bin/rm -rf /snap /var/snap /var/lib/snapd /var/cache/snapd /root/snap; /usr/bin/systemctl daemon-reload; "
                               // A timer that belongs to a package which stays (the news timer is
@@ -338,8 +348,11 @@ enum LinuxSetup {
     /// What must be true of a sealed image of a distribution. A script prints what it found
     /// and ends with a status other than 0 when it is not.
     static func sealChecks(distribution: String = "debian", daemonPort: UInt32 = GuestProtocol.port) -> [Step] {
-        // polkitd has a check of its own: a desktop's recipe may keep it.
+        // polkitd has a check of its own: a desktop's recipe may keep it. So may it keep
+        // Ubuntu's udisks2, which is named only without that recipe's rules file.
         let removed = ["openssh-server", "unattended-upgrades"] + (distribution == "ubuntu" ? ubuntuRemoved : [])
+        let udisksSet = distribution == "ubuntu" ? ubuntuDiskServiceUnlessDesktop : ""
+        let udisksNamed = distribution == "ubuntu" ? " $udisks" : ""
         let timers = ["apt-daily.timer", "apt-daily-upgrade.timer"] + (distribution == "ubuntu" ? ubuntuTimers : [])
         return [
             Step("no ssh server", "if [ -e /usr/sbin/sshd ]; then /usr/bin/echo '/usr/sbin/sshd is still there'; exit 1; fi"),
@@ -359,7 +372,8 @@ enum LinuxSetup {
                  + #"found="$(/usr/bin/echo "$all" | /usr/bin/grep -v -E '[:*]\#(daemonPort)[[:space:]]')"; "#
                  + #"if [ "$own" != "1" ] || [ -n "$found" ]; then /usr/bin/echo "vsock listeners: $all"; exit 1; fi"#),
             Step("the removed packages are gone",
-                 #"found="$(/usr/bin/dpkg-query -W -f '${Package} ${db:Status-Status}\n' \#(removed.joined(separator: " ")) 2> /dev/null | /usr/bin/grep ' installed$')"; if [ -n "$found" ]; then /usr/bin/echo "$found"; exit 1; fi"#),
+                 udisksSet
+                 + #"found="$(/usr/bin/dpkg-query -W -f '${Package} ${db:Status-Status}\n' \#(removed.joined(separator: " "))\#(udisksNamed) 2> /dev/null | /usr/bin/grep ' installed$')"; if [ -n "$found" ]; then /usr/bin/echo "$found"; exit 1; fi"#),
             // Gone, or kept by a desktop's recipe with Debian's rules (the file says so and
             // adds nothing, and every other rules file is a package's) or with the rule that
             // refuses every request (unchanged, and read before any other, so no other counts).

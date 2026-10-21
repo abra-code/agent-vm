@@ -1,25 +1,25 @@
 {
   "version": 1,
   "guest": "linux",
-  "description": "The KDE Plasma desktop on Wayland, logged in as the box user at start: the image and its boxes get a screen, shown with box view (Debian images; Plasma needs polkitd, and the polkit parameter says how it answers)",
+  "description": "The KDE Plasma desktop on Wayland, logged in as the box user at start: the image and its boxes get a screen, shown with box view (Debian and Ubuntu images; Plasma needs polkitd, and the polkit parameter says how it answers)",
   "screen": true,
   "parameters": {
     "polkit": {
-      "description": "how polkitd, which Plasma needs, answers a program that asks for a privileged action: deny refuses every request; debian follows Debian's rules, so the box user and every program it runs, an agent included, can power the box off and mount disks and disk images without a password. Recipes/README.md says more",
+      "description": "how polkitd, which Plasma needs, answers a program that asks for a privileged action: deny refuses every request; debian follows the system's own rules (Debian's, or Ubuntu's in an Ubuntu image), so the box user and every program it runs, an agent included, can power the box off and mount disks and disk images without a password. Recipes/README.md says more",
       "default": "deny"
     }
   },
   "steps": [
     {
-      "name": "A Debian image, and a polkit choice this recipe knows",
+      "name": "A polkit choice this recipe knows",
       "user": "root",
-      "run": "grep -qx 'ID=debian' /etc/os-release || { echo 'this recipe is for Debian images: an Ubuntu image removes udisks2, which Plasma needs' >&2; exit 1; }; case \"$AGENT_VM_PARAM_POLKIT\" in deny|debian) echo \"polkit=$AGENT_VM_PARAM_POLKIT\";; *) echo \"the polkit parameter is deny or debian, not '$AGENT_VM_PARAM_POLKIT'\" >&2; exit 1;; esac"
+      "run": "case \"$AGENT_VM_PARAM_POLKIT\" in deny|debian) echo \"polkit=$AGENT_VM_PARAM_POLKIT\";; *) echo \"the polkit parameter is deny or debian, not '$AGENT_VM_PARAM_POLKIT'\" >&2; exit 1;; esac"
     },
     {
-      "name": "Plasma, its terminal, file manager and settings, the SDDM login manager, PipeWire and the accessibility bus, without recommended packages",
+      "name": "Plasma, its terminal, file manager and settings, the SDDM login manager, PipeWire and the accessibility bus, without recommended packages (but for the Wayland session, a package of its own on Ubuntu)",
       "user": "root",
       "env": {"DEBIAN_FRONTEND": "noninteractive"},
-      "run": "apt-get -q -y update && apt-get -q -y --no-install-recommends install plasma-desktop sddm konsole dolphin systemsettings pipewire wireplumber xdg-user-dirs at-spi2-core",
+      "run": "apt-get -q -y update && session=\"\"; if apt-cache show plasma-session-wayland > /dev/null 2>&1; then session=plasma-session-wayland; fi; apt-get -q -y --no-install-recommends install plasma-desktop sddm konsole dolphin systemsettings pipewire wireplumber xdg-user-dirs at-spi2-core $session",
       "timeoutSeconds": 3600
     },
     {
@@ -58,9 +58,9 @@
   "checks": [
     "[ \"$(systemctl show -P Id display-manager.service)\" = sddm.service ] && echo 'SDDM starts with the system'",
     "[ \"$(systemctl get-default)\" = graphical.target ] && echo 'the system starts to graphical.target'",
-    "grep -qx \"User=$(id -un)\" /etc/sddm.conf.d/50-agent-vm.conf && grep -qx 'Session=plasma' /etc/sddm.conf.d/50-agent-vm.conf && echo \"$(id -un) is logged in to Plasma at start\"",
+    "grep -qx \"User=$(id -un)\" /etc/sddm.conf.d/50-agent-vm.conf && grep -qx 'Session=plasma' /etc/sddm.conf.d/50-agent-vm.conf && [ -f /usr/share/wayland-sessions/plasma.desktop ] && echo \"$(id -un) is logged in to Plasma at start\"",
     "command -v plasmashell > /dev/null && command -v kwin_wayland > /dev/null && echo 'Plasma and KWin are installed'",
     "grep -qx 'Autolock=false' /etc/xdg/kscreenlockerrc && grep -qx 'action/lock_screen=false' /etc/xdg/kdeglobals && echo 'the screen never locks'",
-    "pkcheck --action-id org.freedesktop.login1.power-off --process $$ > /dev/null 2>&1; answer=$?; case \"$AGENT_VM_PARAM_POLKIT:$answer\" in deny:1) echo 'polkitd refuses every request (polkit=deny)';; debian:2) echo \"polkitd follows Debian's rules (polkit=debian): what they allow the desktop's user, every program of $(id -un) can do\";; *) echo \"polkit=$AGENT_VM_PARAM_POLKIT, and polkitd answered $answer to a request to power off\"; exit 1;; esac"
+    "pkcheck --action-id org.freedesktop.login1.power-off --process $$ > /dev/null 2>&1; answer=$?; case \"$AGENT_VM_PARAM_POLKIT:$answer\" in deny:1) echo 'polkitd refuses every request (polkit=deny)';; debian:2) echo \"polkitd follows the system's own rules (polkit=debian): what they allow the desktop's user, every program of $(id -un) can do\";; *) echo \"polkit=$AGENT_VM_PARAM_POLKIT, and polkitd answered $answer to a request to power off\"; exit 1;; esac"
   ]
 }
