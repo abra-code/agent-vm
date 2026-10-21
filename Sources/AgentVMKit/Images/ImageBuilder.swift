@@ -147,20 +147,6 @@ public final class ImageBuilder {
         report(ProgressEvent(.notice, text, image: subject))
     }
 
-    /// Before an image job boots a Linux guest of `memoryBytes` on a kernel with pages smaller
-    /// than the Mac's: a note when this Mac has little memory to spare, a refusal when it has
-    /// none (HostMemory). `what` names the boot.
-    func checkHostMemory(memoryBytes: UInt64, what: String, memory: HostMemory? = HostMemory.current()) throws {
-        switch memory?.verdict(guestBytes: memoryBytes, what: what) {
-        case .exhausted(let text):
-            throw AgentVMError.hostNotReady(text)
-        case .tight(let text):
-            notice("  note: \(text)")
-        case .enough, nil:
-            break
-        }
-    }
-
     /// Throws `canceled` once a cancel came in: called between steps.
     func checkCanceled() throws {
         if let signal = cancellation?.signal {
@@ -432,11 +418,6 @@ public final class ImageBuilder {
         do {
             if guest == .macOS {
                 try base.requireAccountPassword(keychain: store.passwords)
-            }
-            // The Mac's memory too, for a kernel with small pages: a refusal leaves the name
-            // free for another try.
-            if guest == .linux, LinuxPageNote.hasSmallPages(base.record.linux) {
-                try checkHostMemory(memoryBytes: memoryBytes, what: "the build of \(options.name)")
             }
         } catch {
             baseLock.release()

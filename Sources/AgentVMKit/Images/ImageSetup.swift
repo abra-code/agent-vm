@@ -67,9 +67,6 @@ extension ImageBuilder {
         // A Linux guest's console goes to the image's console.log, as at every boot of it.
         let console: ConsoleLog? = linux ? try ConsoleLog(url: image.consoleLogURL) : nil
         defer { console?.close() }
-        if linux, LinuxPageNote.hasSmallPages(image.record.linux) {
-            try checkHostMemory(memoryBytes: image.record.memoryBytes, what: "the view of \(image.name)")
-        }
 
         let machine = try makeMachine(for: image, extras: LinuxMachineExtras(console: console?.writeHandle))
         // Control-C (or SIGTERM) at any point ends the setup at the next step, with a clean

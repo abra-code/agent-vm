@@ -231,9 +231,13 @@ test_version_lists_the_linux_releases_and_sizes() {
     assert_json linuxReleases.0.name "Debian 13" || return 1
     assert_json linuxReleases.0.distribution debian || return 1
     assert_json linuxReleases.0.version 13 || return 1
-    local _second
-    _second="$(json_value linuxReleases.1.id)"
-    [ -z "$_second" ] || { fail "a second release, $_second: add it to this test and to Docs/linux-boxes.md"; return 1; }
+    assert_json linuxReleases.1.id ubuntu-26.04 || return 1
+    assert_json linuxReleases.1.name "Ubuntu 26.04" || return 1
+    assert_json linuxReleases.1.distribution ubuntu || return 1
+    assert_json linuxReleases.1.version 26.04 || return 1
+    local _third
+    _third="$(json_value linuxReleases.2.id)"
+    [ -z "$_third" ] || { fail "a third release, $_third: add it to this test and to Docs/linux-boxes.md"; return 1; }
     assert_json imageSizes.linux.cpuCount 4 || return 1
     assert_json imageSizes.linux.memoryBytes 4294967296 || return 1
     assert_json imageSizes.linux.diskBytes 34359738368 || return 1
@@ -246,15 +250,7 @@ test_version_lists_the_linux_releases_and_sizes() {
     assert_json imageSizes.macos.minimumDiskGrowthBytes 8589934592 || return 1
     run_avm version
     assert_status 0 || return 1
-    assert_out_contains "Linux systems for image create --linux: debian-13 (Debian 13)" || return 1
-    assert_not_contains "$OUT" "ubuntu" "the systems listed" || return 1
-    # A withheld system is listed for a test of what is not released.
-    export AGENT_VM_WITHHELD_LINUX=1
-    run_avm version --json
-    assert_status 0 || return 1
-    assert_json linuxReleases.1.id ubuntu-26.04 || return 1
-    assert_json linuxReleases.1.name "Ubuntu 26.04" || return 1
-    unset AGENT_VM_WITHHELD_LINUX
+    assert_out_contains "Linux systems for image create --linux: debian-13 (Debian 13), ubuntu-26.04 (Ubuntu 26.04)" || return 1
     assert_missing "$AGENT_VM_HOME" || return 1
 }
 

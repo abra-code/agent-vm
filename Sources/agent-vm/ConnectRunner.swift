@@ -631,10 +631,6 @@ struct ConnectRunner {
                     if let warning = MachineSize.memoryWarning(starting: current.record.memoryBytes, running: boxStore.runningMemory(except: name)) {
                         warn(warning)
                     }
-                    if let note = LinuxPageNote.forBox(name, system: current.record.effectiveGuest == .linux ? current.record.linux : nil, image: current.record.image,
-                                                       kept: current.record.disposable != true) {
-                        warn(note)
-                    }
                     let shown = StartProgress(box: name, estimate: BoxLauncher.lastBootSeconds(of: current), terminal: terminal)
                     shown.begin()
                     do {

@@ -226,11 +226,11 @@ extension ImageBuilder {
                     throw refuse("\(image.name) was installed from a restore image: give --ipsw (a restore image to install), or --from (a ready image to start from)")
                 case .linux:
                     let release = image.record.base?.release
-                    // A release this agent-vm does not offer (Ubuntu) is refused by --linux.
-                    guard let release, !LinuxBase.offered().contains(where: { $0.id == release }) else {
+                    // A release this agent-vm does not know is refused by --linux.
+                    guard let release, !LinuxBase.known.contains(where: { $0.id == release }) else {
                         throw refuse("\(image.name) was made from a cloud image\(release.map { " (\($0))" } ?? ""): give --linux (a release to start from again) or --from (a ready image)")
                     }
-                    throw refuse("\(image.name) was made from a cloud image (\(release)), which this agent-vm does not offer: give --from (a ready image to start from)")
+                    throw refuse("\(image.name) was made from a cloud image (\(release)), which this agent-vm does not know: give --from (a ready image to start from)")
                 }
             }
             guard baseName != image.name else {

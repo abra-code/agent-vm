@@ -22,7 +22,7 @@ test_cloud_image_needs_linux() {
 test_linux_release_must_be_known() {
     run_avm image create x --linux nope
     assert_status 1 || return 1
-    assert_err_contains "--linux nope: this agent-vm knows debian-13 (debian alone means its newest)" || return 1
+    assert_err_contains "--linux nope: this agent-vm knows debian-13, ubuntu-26.04 (debian or ubuntu alone means its newest)" || return 1
     assert_missing "$AGENT_VM_HOME/Images/x" || return 1
     assert_missing "$AGENT_VM_HOME/Cache" || return 1
 }
@@ -103,34 +103,9 @@ test_a_cloud_image_of_ones_own_is_looked_at_first() {
     assert_missing "$AGENT_VM_HOME/Images/x" || return 1
 }
 
-# Ubuntu is known and withheld: refused with the reason before anything is made or fetched.
-test_linux_ubuntu_is_withheld() {
-    local _release
-    for _release in ubuntu-26.04 ubuntu; do
-        run_avm image create x --linux "$_release"
-        assert_status 1 || return 1
-        assert_err_contains "--linux $_release: Ubuntu 26.04 is not offered in this release: it packages no kernel with 16 KiB pages" || return 1
-        assert_err_contains "this agent-vm builds debian-13" || return 1
-    done
-    # A file of one's own does not get around it: refused before the file is looked at.
-    printf 'not a disk' > "$SCRATCH/own.img"
-    run_avm image create x --linux ubuntu --cloud-image "$SCRATCH/own.img"
-    assert_status 1 || return 1
-    assert_err_contains "--linux ubuntu: Ubuntu 26.04 is not offered in this release" || return 1
-    assert_missing "$AGENT_VM_HOME/Images/x" || return 1
-    assert_missing "$AGENT_VM_HOME/Cache" || return 1
-    # Nor does a rebuild of an image that exists.
-    fake_linux_image deb
-    run_avm image rebuild deb --linux ubuntu-26.04
-    assert_status 1 || return 1
-    assert_err_contains "--linux ubuntu-26.04: Ubuntu 26.04 is not offered in this release" || return 1
-    assert_missing "$AGENT_VM_HOME/Images/deb.rebuild" || return 1
-}
-
-# With the variable for tests of what is not released, Ubuntu is taken by its name and by the
-# distribution's alone: the command gets as far as looking at the file.
+# Ubuntu is a release this agent-vm knows, by its name and by the distribution's alone: the
+# command gets as far as looking at the file.
 test_linux_ubuntu_is_a_known_release() {
-    export AGENT_VM_WITHHELD_LINUX=1
     local _linux
     _linux="$(/usr/bin/dirname "$AGENT_VM")/linux/agent-vm-guest"
     if [ ! -x "$_linux" ]; then
@@ -157,7 +132,6 @@ test_cloud_image_of_the_wrong_kind_is_refused() {
     fi
     printf 'QFI\373\0\0\0\2\0\0\0\0\0\0\1\0' > "$SCRATCH/backed.img"
     /usr/bin/head -c 200 /dev/zero >> "$SCRATCH/backed.img"
-    export AGENT_VM_WITHHELD_LINUX=1
     run_avm image create x --linux ubuntu-26.04 --cloud-image "$SCRATCH/backed.img"
     assert_status 1 || return 1
     assert_err_contains "backed.img is not a disk image agent-vm can read: it needs a backing file" || return 1

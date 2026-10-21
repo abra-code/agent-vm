@@ -88,7 +88,6 @@ test_linux_image_from_the_cloud_image() {
 # fails when a seal check does), and recorded as what it is; in a box of it, what Ubuntu alone
 # has is gone and the console's output is kept.
 test_ubuntu_image_from_the_cloud_image() {
-    export AGENT_VM_WITHHELD_LINUX=1
     require_linux_daemon || return 0
     local _image="shtest-ubuntu-$$"
     "$AGENT_VM" image delete "$_image" > /dev/null 2>&1

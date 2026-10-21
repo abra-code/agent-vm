@@ -44,9 +44,6 @@ public struct HostFacts: Sendable {
     /// The Linux guest daemon next to agent-vm, as LocalGuestDaemon.inspectLinux found it; nil
     /// when nobody looked. Without it macOS boxes work as ever, and Linux images cannot be made.
     public var linuxGuestDaemon: LocalGuestDaemon?
-    /// The store's ready Linux images whose kernels have memory pages smaller than the Mac's
-    /// (LinuxPageNote).
-    public var smallPageImages: [LinuxPageNote.Image] = []
 
     public struct Signature: Sendable, Equatable, Codable {
         public var isAdHoc: Bool
@@ -65,9 +62,8 @@ public struct HostFacts: Sendable {
                 memoryBytes: UInt64, storeRoot: String, storeFreeBytes: Int64?,
                 runningVirtualMachines: Int?, store: StoreRoot.State? = nil,
                 passwordFiles: Int? = 0, keepsPasswordsInKeychain: Bool = true, linuxGuestDaemon: LocalGuestDaemon? = nil,
-                runningLinuxBoxes: Int = 0, runningLinuxImages: Int = 0, smallPageImages: [LinuxPageNote.Image] = []) {
+                runningLinuxBoxes: Int = 0, runningLinuxImages: Int = 0) {
         self.linuxGuestDaemon = linuxGuestDaemon
-        self.smallPageImages = smallPageImages
         self.runningLinuxBoxes = runningLinuxBoxes
         self.runningLinuxImages = runningLinuxImages
         self.osVersion = osVersion
@@ -106,8 +102,7 @@ public struct HostFacts: Sendable {
             keepsPasswordsInKeychain: AccountPasswordStore.keepsNewPasswords,
             linuxGuestDaemon: linuxGuestDaemon,
             runningLinuxBoxes: countRunningLinuxBoxes(storeRoot: storeRoot),
-            runningLinuxImages: ImageStore(root: storeRoot).runningLinuxMachines(),
-            smallPageImages: LinuxPageNote.images(in: ImageStore(root: storeRoot))
+            runningLinuxImages: ImageStore(root: storeRoot).runningLinuxMachines()
         )
     }
 
@@ -362,9 +357,6 @@ public struct HostReport: Sendable, Equatable, Codable {
         }
 
         checks.append(linuxGuestDaemonCheck(facts.linuxGuestDaemon))
-        if let note = LinuxPageNote.forDoctor(facts.smallPageImages) {
-            checks.append(HostCheck(name: "linux kernels", status: .warning, detail: note))
-        }
         return HostReport(checks: checks)
     }
 

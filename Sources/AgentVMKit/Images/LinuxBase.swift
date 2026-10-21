@@ -34,9 +34,6 @@ public struct LinuxBase: Sendable, Equatable {
     public var kernels: [LinuxKernel]
     /// The page size an image of it gets when none is asked for.
     public var defaultPageBytes: Int
-    /// Why `image create --linux` does not take this system although agent-vm can build it; nil
-    /// for one that is offered. Images of it that exist are used and updated as before.
-    public var withheld: String? = nil
 
     /// The systems this agent-vm can build, newest of each distribution first.
     public static let known: [LinuxBase] = [
@@ -44,9 +41,9 @@ public struct LinuxBase: Sendable, Equatable {
                   folder: URL(string: "https://cloud.debian.org/images/cloud/trixie/latest/")!,
                   file: "debian-13-genericcloud-arm64.tar.xz", checksumList: "SHA512SUMS", digest: .sha512, member: "disk.raw",
                   manifest: "debian-13-genericcloud-arm64.json",
-                  // On macOS 27.0 a guest kernel with 4 KiB pages loses memory of its own when the Mac
-                  // pushes the guest's memory out (it reads as zeros, and the kernel faults); one with
-                  // 16 KiB pages, the Mac's own page size, did not in the same test.
+                  // 16 KiB pages, the Mac's own page size, by default. A guest kernel with 4 KiB pages
+                  // lost memory when the Mac pushed the guest's memory out, until Linux disks were
+                  // attached with the Mac's file cache (LinuxMachineSpec); 16 KiB never did.
                   kernels: [LinuxKernel(pageBytes: 4096, package: "linux-image-cloud-arm64", flavor: "cloud-arm64"),
                             LinuxKernel(pageBytes: 16384, package: "linux-image-arm64-16k", flavor: "arm64-16k")],
                   defaultPageBytes: 16384),
@@ -57,8 +54,7 @@ public struct LinuxBase: Sendable, Equatable {
                   // Ubuntu packages no kernel with 16 KiB pages. Its other kernel, linux-image-generic-64k,
                   // has 64 KiB pages, which a Mac's processor does not have (`LinuxPageSize.unsupported`).
                   kernels: [LinuxKernel(pageBytes: 4096, package: "linux-image-virtual", flavor: "generic")],
-                  defaultPageBytes: 4096,
-                  withheld: "it packages no kernel with 16 KiB pages, and a box on its 4 KiB kernel \(LinuxPageNote.risk)"),
+                  defaultPageBytes: 4096),
     ]
 
     /// A kind of checksum a distribution's list holds.
@@ -77,31 +73,17 @@ public struct LinuxBase: Sendable, Equatable {
         }
     }
 
-    /// The variable that makes withheld systems offered, for tests of what is not released:
-    /// set to 1.
-    public static let withheldVariable = "AGENT_VM_WITHHELD_LINUX"
-
-    /// The systems `image create --linux` takes: the known ones that are not withheld.
-    public static func offered(environment: [String: String] = ProcessInfo.processInfo.environment) -> [LinuxBase] {
-        return environment[withheldVariable] == "1" ? known : known.filter { $0.withheld == nil }
-    }
-
     /// The system `--linux <value>` names: an id, or a distribution's name alone for its newest.
-    /// A withheld system is refused with its reason.
-    public static func named(_ value: String, environment: [String: String] = ProcessInfo.processInfo.environment) throws -> LinuxBase {
-        let offered = offered(environment: environment)
-        if let base = offered.first(where: { $0.id == value }) ?? offered.first(where: { $0.distribution == value }) {
+    public static func named(_ value: String) throws -> LinuxBase {
+        if let base = known.first(where: { $0.id == value }) ?? known.first(where: { $0.distribution == value }) {
             return base
         }
-        if let base = known.first(where: { $0.id == value }) ?? known.first(where: { $0.distribution == value }), let reason = base.withheld {
-            throw AgentVMError.linuxBase("--linux \(value): \(base.name) is not offered in this release: \(reason); this agent-vm builds \(offered.map(\.id).joined(separator: ", "))")
-        }
-        let distributions = offered.reduce(into: [String]()) { list, base in
+        let distributions = known.reduce(into: [String]()) { list, base in
             if !list.contains(base.distribution) {
                 list.append(base.distribution)
             }
         }
-        throw AgentVMError.linuxBase("--linux \(Printable.line(value, limit: 40)): this agent-vm knows \(offered.map(\.id).joined(separator: ", ")) (\(distributions.joined(separator: " or ")) alone means its newest)")
+        throw AgentVMError.linuxBase("--linux \(Printable.line(value, limit: 40)): this agent-vm knows \(known.map(\.id).joined(separator: ", ")) (\(distributions.joined(separator: " or ")) alone means its newest)")
     }
 
     /// The largest checksum list that is read: Debian's and Ubuntu's are 8 KB.
