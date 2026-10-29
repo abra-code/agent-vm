@@ -88,7 +88,8 @@ public final class BoxSupervisor {
         // A Linux box's account has no password, so its window has no Type Password button.
         let password: (@Sendable () throws -> String)? = box.record.effectiveGuest == .linux ? nil : { @Sendable in try box.accountPassword() }
         let viewer = self.viewer ?? BoxViewer(name: box.name, machine: machine, guest: box.record.effectiveGuest, password: password, log: { [weak self] in self?.log($0) },
-                                                  sent: { [weak self] item in self?.note(.init(.send, items: [item])) })
+                                                  sent: { [weak self] item in self?.note(.init(.send, items: [item])) },
+                                                  clipboard: GuestClipboard(guest: box.record.effectiveGuest, user: box.record.userName, run: Self.guestRunner(machine)))
         self.viewer = viewer
         viewer.show(interactive: interactive)
         log("Showing the screen\(interactive ? " (interactive)" : " (view only)")")

@@ -7,7 +7,8 @@
 // running. The supervisor has no Dock icon and no menu, so nothing in the window can quit it
 // (quitting would pull the plug on the guest). The Send button copies files or folders from
 // this Mac into the guest account's Downloads folder (GuestSend), in either mode: it is not
-// input to the guest's screen.
+// input to the guest's screen. So do the two clipboard buttons of a box's window, which copy
+// text between this Mac's clipboard and the box user's, one click at a time (GuestClipboard).
 //
 // The window can be resized and made full screen. A view-only window scales the screen and
 // keeps its shape, so looking still changes nothing. An interactive one gives the guest's
@@ -42,6 +43,9 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     private let log: (@MainActor (String) -> Void)?
     /// Told of each file or folder the Send button copied into the guest.
     private let sent: (@MainActor (BoxEventLog.Item) -> Void)?
+    /// The box user's clipboard, for the clipboard buttons; nil for a window without them (an
+    /// image's).
+    private let clipboard: GuestClipboard?
     private var window: NSWindow?
     private var screen: BoxScreen?
     private var shield: InputShield?
@@ -49,6 +53,9 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     private var sendButton: NSButton?
     private var noteLabel: NSTextField?
     private var sendLabel: NSTextField?
+    private var clipboardButtons: [NSButton] = []
+    /// A clipboard button's copy is under way: neither button starts another meanwhile.
+    private var copyingClipboard = false
     /// The send under way, if any; its button then stops it.
     private var currentSend: GuestSend?
     /// Sends are under way (set before the first one starts, so the button never opens a
@@ -73,7 +80,8 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     static let minimumSize = NSSize(width: 800, height: 500)
 
     init(name: String, kind: String = "box", machine: GuestMachine, guest: GuestKind = .macOS, password: (@Sendable () throws -> String)? = nil, note: String? = nil, onClose: (@MainActor () -> Void)? = nil,
-         log: (@MainActor (String) -> Void)? = nil, sent: (@MainActor (BoxEventLog.Item) -> Void)? = nil) {
+         log: (@MainActor (String) -> Void)? = nil, sent: (@MainActor (BoxEventLog.Item) -> Void)? = nil, clipboard: GuestClipboard? = nil) {
+        self.clipboard = clipboard
         self.sent = sent
         self.name = name
         self.kind = kind
@@ -241,7 +249,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
     }
 
     /// Under the title bar: at the left the note and Type Password, which the note speaks of;
-    /// at the right what a send is doing and the Send button.
+    /// at the right what a send or a clipboard button did, the clipboard buttons and Send.
     private func makeAccessory() -> NSTitlebarAccessoryViewController {
         let bar = NSStackView()
         bar.orientation = .horizontal
@@ -274,6 +282,15 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         sending.isHidden = true
         bar.addArrangedSubview(sending)
         sendLabel = sending
+        if clipboard != nil {
+            clipboardButtons = [
+                Self.barButton("Send Clipboard", symbol: "arrow.right.doc.on.clipboard", target: self, action: #selector(clipboardToBox(_:)),
+                               toolTip: "Puts the text on this Mac's clipboard on the clipboard in the box"),
+                Self.barButton("Get Clipboard", symbol: "doc.on.clipboard", target: self, action: #selector(clipboardFromBox(_:)),
+                               toolTip: "Puts the text on the clipboard in the box on this Mac's clipboard, with control and invisible characters removed"),
+            ]
+            clipboardButtons.forEach(bar.addArrangedSubview)
+        }
         let send = NSButton(title: Self.sendTitle, target: self, action: #selector(sendFiles(_:)))
         send.controlSize = .small
         send.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
@@ -287,6 +304,18 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         accessory.view = bar
         accessory.layoutAttribute = .bottom
         return accessory
+    }
+
+    /// A small button of the bar under the title bar, with a symbol before its title.
+    private static func barButton(_ title: String, symbol: String, target: AnyObject, action: Selector, toolTip: String) -> NSButton {
+        let button = NSButton(title: title, target: target, action: action)
+        button.controlSize = .small
+        button.font = .systemFont(ofSize: NSFont.systemFontSize(for: .small))
+        button.toolTip = toolTip
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        button.imagePosition = .imageLeading
+        return button
     }
 
     /// "AgentVM box - work", "AgentVM image - dev"; a window that takes no keys says so.
@@ -409,6 +438,62 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         sendLabel?.textColor = failed ? .systemRed : .secondaryLabelColor
         sendLabel?.toolTip = text
         sendLabel?.isHidden = text.isEmpty
+    }
+
+    /// Send Clipboard: the text on this Mac's clipboard goes on the box user's clipboard.
+    @objc private func clipboardToBox(_ sender: Any?) {
+        guard let clipboard, !copyingClipboard else {
+            return
+        }
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else {
+            setSendStatus("This Mac's clipboard has no text", failed: true)
+            return
+        }
+        copyClipboard("Clipboard to box") {
+            try await clipboard.put(text)
+            return "copied \(Self.characters(text)) to the clipboard in the box"
+        }
+    }
+
+    /// Get Clipboard: the text on the box user's clipboard goes on this Mac's clipboard.
+    @objc private func clipboardFromBox(_ sender: Any?) {
+        guard let clipboard, !copyingClipboard else {
+            return
+        }
+        copyClipboard("Clipboard from box") {
+            let text = try await clipboard.text()
+            guard !text.isEmpty else {
+                throw GuestClipboard.Failure(description: "the clipboard in the box has no text")
+            }
+            GuestClipboard.putOnMac(text)
+            return "copied \(Self.characters(text)) to this Mac's clipboard"
+        }
+    }
+
+    /// Runs one clipboard button's copy, with both buttons off until it ends, and says how it
+    /// went in the window and the log (never the text).
+    private func copyClipboard(_ what: String, _ body: @escaping @MainActor () async throws -> String) {
+        copyingClipboard = true
+        clipboardButtons.forEach { $0.isEnabled = false }
+        Task { @MainActor in
+            defer {
+                copyingClipboard = false
+                clipboardButtons.forEach { $0.isEnabled = true }
+            }
+            do {
+                let done = try await body()
+                setSendStatus("\(what): \(done)")
+                log?("\(what): \(done)")
+            } catch {
+                setSendStatus("\(what): \(error)", failed: true)
+                log?("\(what): \(error)")
+            }
+        }
+    }
+
+    /// "1 character", "42 characters".
+    nonisolated static func characters(_ text: String) -> String {
+        return text.count == 1 ? "1 character" : "\(text.count) characters"
     }
 
     @objc private func typePassword(_ sender: Any?) {

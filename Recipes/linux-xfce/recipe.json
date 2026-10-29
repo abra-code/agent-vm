@@ -5,10 +5,10 @@
   "screen": true,
   "steps": [
     {
-      "name": "XFCE, its terminal, the LightDM login manager and the X server, without recommended packages except the SVG image loader its wallpaper and icons need",
+      "name": "XFCE, its terminal, the LightDM login manager and the X server, without recommended packages except the SVG image loader its wallpaper and icons need, and xclip for the box window's clipboard buttons",
       "user": "root",
       "env": {"DEBIAN_FRONTEND": "noninteractive"},
-      "run": "apt-get -q -y update && apt-get -q -y --no-install-recommends install xfce4 xfce4-terminal xfdesktop4-data lightdm lightdm-gtk-greeter xserver-xorg-core xserver-xorg-input-libinput dbus-x11 librsvg2-common",
+      "run": "apt-get -q -y update && apt-get -q -y --no-install-recommends install xfce4 xfce4-terminal xfdesktop4-data lightdm lightdm-gtk-greeter xserver-xorg-core xserver-xorg-input-libinput dbus-x11 librsvg2-common xclip",
       "timeoutSeconds": 1800
     },
     {
@@ -60,6 +60,13 @@
       "user": "root",
       "copy": "files/fit-display.desktop",
       "to": "/etc/xdg/autostart/agent-vm-fit-display.desktop"
+    },
+    {
+      "name": "xclip, which the box window's clipboard buttons use, for an image built before the recipe installed it",
+      "user": "root",
+      "env": {"DEBIAN_FRONTEND": "noninteractive"},
+      "run": "if command -v xclip > /dev/null; then echo 'xclip is installed'; else apt-get -q -y update && apt-get -q -y --no-install-recommends install xclip; fi",
+      "timeoutSeconds": 900
     }
   ],
   "checks": [
@@ -68,6 +75,7 @@
     "grep -qx \"autologin-user=$(id -un)\" /etc/lightdm/lightdm.conf.d/50-agent-vm.conf && echo \"$(id -un) is logged in at start\"",
     "command -v xfce4-session > /dev/null && command -v Xorg > /dev/null && echo 'XFCE and the X server are installed'",
     "[ \"$(dpkg-query -W -f '${db:Status-Status}' librsvg2-common)\" = installed ] && echo 'the wallpaper and the icons, which are SVG files, can be drawn'",
-    "[ -x /usr/local/libexec/agent-vm-fit-display ] && [ -x /usr/bin/udevadm ] && [ -x /usr/bin/xrandr ] && grep -qx 'Exec=/usr/local/libexec/agent-vm-fit-display' /etc/xdg/autostart/agent-vm-fit-display.desktop && echo 'the screen takes the size of an interactive box view window'"
+    "[ -x /usr/local/libexec/agent-vm-fit-display ] && [ -x /usr/bin/udevadm ] && [ -x /usr/bin/xrandr ] && grep -qx 'Exec=/usr/local/libexec/agent-vm-fit-display' /etc/xdg/autostart/agent-vm-fit-display.desktop && echo 'the screen takes the size of an interactive box view window'",
+    "command -v xclip > /dev/null && echo 'the box window can copy text to and from the clipboard (xclip)'"
   ]
 }

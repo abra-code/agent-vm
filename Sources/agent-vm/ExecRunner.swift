@@ -283,10 +283,7 @@ struct ExecRunner {
     /// (org.nspasteboard.source, which clipboard managers read).
     static func copy(_ text: String) {
         pasteboardQueue.async {
-            let pasteboard = NSPasteboard.general
-            pasteboard.clearContents()
-            pasteboard.setString(text, forType: .string)
-            pasteboard.setString("com.abracode.agent-vm", forType: NSPasteboard.PasteboardType("org.nspasteboard.source"))
+            GuestClipboard.putOnMac(text)
         }
     }
 

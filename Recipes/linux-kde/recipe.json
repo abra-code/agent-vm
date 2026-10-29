@@ -16,10 +16,10 @@
       "run": "case \"$AGENT_VM_PARAM_POLKIT\" in deny|debian) echo \"polkit=$AGENT_VM_PARAM_POLKIT\";; *) echo \"the polkit parameter is deny or debian, not '$AGENT_VM_PARAM_POLKIT'\" >&2; exit 1;; esac"
     },
     {
-      "name": "Plasma, its terminal, file manager and settings, the SDDM login manager, PipeWire and the accessibility bus, without recommended packages (but for the Wayland session, a package of its own on Ubuntu)",
+      "name": "Plasma, its terminal, file manager and settings, the SDDM login manager, PipeWire and the accessibility bus, without recommended packages (but for the Wayland session, a package of its own on Ubuntu), and wl-clipboard for the box window's clipboard buttons",
       "user": "root",
       "env": {"DEBIAN_FRONTEND": "noninteractive"},
-      "run": "apt-get -q -y update && session=\"\"; if apt-cache show plasma-session-wayland > /dev/null 2>&1; then session=plasma-session-wayland; fi; apt-get -q -y --no-install-recommends install plasma-desktop sddm konsole dolphin systemsettings pipewire wireplumber xdg-user-dirs at-spi2-core $session",
+      "run": "apt-get -q -y update && session=\"\"; if apt-cache show plasma-session-wayland > /dev/null 2>&1; then session=plasma-session-wayland; fi; apt-get -q -y --no-install-recommends install plasma-desktop sddm konsole dolphin systemsettings pipewire wireplumber xdg-user-dirs at-spi2-core wl-clipboard $session",
       "timeoutSeconds": 3600
     },
     {
@@ -53,6 +53,13 @@
       "name": "polkitd's rules, as the polkit parameter now says",
       "user": "root",
       "run": "rules=/etc/polkit-1/rules.d/00-agent-vm.rules; case \"$AGENT_VM_PARAM_POLKIT\" in deny) printf '%s\\n' '// agent-vm polkit=deny' 'polkit.addRule(function (action, subject) { return action.id == \"org.freedesktop.login1.chvt\" ? polkit.Result.YES : polkit.Result.NO; });' > \"$rules.new\";; debian) printf '%s\\n' '// agent-vm polkit=debian' > \"$rules.new\";; *) echo \"the polkit parameter is deny or debian, not '$AGENT_VM_PARAM_POLKIT'\" >&2; exit 1;; esac && chmod 644 \"$rules.new\" && mv -f \"$rules.new\" \"$rules\""
+    },
+    {
+      "name": "wl-clipboard, which the box window's clipboard buttons use, for an image built before the recipe installed it",
+      "user": "root",
+      "env": {"DEBIAN_FRONTEND": "noninteractive"},
+      "run": "if command -v wl-copy > /dev/null; then echo 'wl-clipboard is installed'; else apt-get -q -y update && apt-get -q -y --no-install-recommends install wl-clipboard; fi",
+      "timeoutSeconds": 900
     }
   ],
   "checks": [
@@ -61,6 +68,7 @@
     "grep -qx \"User=$(id -un)\" /etc/sddm.conf.d/50-agent-vm.conf && grep -qx 'Session=plasma' /etc/sddm.conf.d/50-agent-vm.conf && [ -f /usr/share/wayland-sessions/plasma.desktop ] && echo \"$(id -un) is logged in to Plasma at start\"",
     "command -v plasmashell > /dev/null && command -v kwin_wayland > /dev/null && echo 'Plasma and KWin are installed'",
     "grep -qx 'Autolock=false' /etc/xdg/kscreenlockerrc && grep -qx 'action/lock_screen=false' /etc/xdg/kdeglobals && echo 'the screen never locks'",
-    "pkcheck --action-id org.freedesktop.login1.power-off --process $$ > /dev/null 2>&1; answer=$?; case \"$AGENT_VM_PARAM_POLKIT:$answer\" in deny:1) echo 'polkitd refuses every request (polkit=deny)';; debian:2) echo \"polkitd follows the system's own rules (polkit=debian): what they allow the desktop's user, every program of $(id -un) can do\";; *) echo \"polkit=$AGENT_VM_PARAM_POLKIT, and polkitd answered $answer to a request to power off\"; exit 1;; esac"
+    "pkcheck --action-id org.freedesktop.login1.power-off --process $$ > /dev/null 2>&1; answer=$?; case \"$AGENT_VM_PARAM_POLKIT:$answer\" in deny:1) echo 'polkitd refuses every request (polkit=deny)';; debian:2) echo \"polkitd follows the system's own rules (polkit=debian): what they allow the desktop's user, every program of $(id -un) can do\";; *) echo \"polkit=$AGENT_VM_PARAM_POLKIT, and polkitd answered $answer to a request to power off\"; exit 1;; esac",
+    "command -v wl-copy > /dev/null && echo 'the box window can copy text to and from the clipboard (wl-clipboard)'"
   ]
 }

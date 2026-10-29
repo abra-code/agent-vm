@@ -16,10 +16,10 @@
       "run": "case \"$AGENT_VM_PARAM_POLKIT\" in deny|debian) echo \"polkit=$AGENT_VM_PARAM_POLKIT\";; *) echo \"the polkit parameter is deny or debian, not '$AGENT_VM_PARAM_POLKIT'\" >&2; exit 1;; esac"
     },
     {
-      "name": "GNOME, its terminal and file manager, the GDM login manager and the accessibility bus, without recommended packages",
+      "name": "GNOME, its terminal and file manager, the GDM login manager and the accessibility bus, without recommended packages, and xclip for the box window's clipboard buttons (through GNOME's X server, Xwayland)",
       "user": "root",
       "env": {"DEBIAN_FRONTEND": "noninteractive"},
-      "run": "apt-get -q -y update && apt-get -q -y --no-install-recommends install gnome-session gdm3 gnome-terminal nautilus xdg-user-dirs at-spi2-core",
+      "run": "apt-get -q -y update && apt-get -q -y --no-install-recommends install gnome-session gdm3 gnome-terminal nautilus xdg-user-dirs at-spi2-core xclip",
       "timeoutSeconds": 3600
     },
     {
@@ -48,6 +48,13 @@
       "name": "polkitd's rules, as the polkit parameter now says",
       "user": "root",
       "run": "rules=/etc/polkit-1/rules.d/00-agent-vm.rules; case \"$AGENT_VM_PARAM_POLKIT\" in deny) printf '%s\\n' '// agent-vm polkit=deny' 'polkit.addRule(function (action, subject) { return action.id == \"org.freedesktop.login1.chvt\" ? polkit.Result.YES : polkit.Result.NO; });' > \"$rules.new\";; debian) printf '%s\\n' '// agent-vm polkit=debian' > \"$rules.new\";; *) echo \"the polkit parameter is deny or debian, not '$AGENT_VM_PARAM_POLKIT'\" >&2; exit 1;; esac && chmod 644 \"$rules.new\" && mv -f \"$rules.new\" \"$rules\""
+    },
+    {
+      "name": "xclip, which the box window's clipboard buttons use, for an image built before the recipe installed it",
+      "user": "root",
+      "env": {"DEBIAN_FRONTEND": "noninteractive"},
+      "run": "if command -v xclip > /dev/null; then echo 'xclip is installed'; else apt-get -q -y update && apt-get -q -y --no-install-recommends install xclip; fi",
+      "timeoutSeconds": 900
     }
   ],
   "checks": [
@@ -56,6 +63,7 @@
     "conf=/etc/gdm3/daemon.conf; if grep -qx 'ID=ubuntu' /etc/os-release; then conf=/etc/gdm3/custom.conf; fi; grep -qx \"AutomaticLogin=$(id -un)\" \"$conf\" && echo \"$(id -un) is logged in at start\"",
     "command -v gnome-shell > /dev/null && echo 'GNOME is installed'",
     "[ \"$(gsettings get org.gnome.desktop.screensaver lock-enabled) $(gsettings get org.gnome.desktop.lockdown disable-lock-screen) $(gsettings get org.gnome.desktop.session idle-delay)\" = 'false true uint32 0' ] && echo 'the screen never locks or blanks'",
-    "pkcheck --action-id org.freedesktop.login1.power-off --process $$ > /dev/null 2>&1; answer=$?; case \"$AGENT_VM_PARAM_POLKIT:$answer\" in deny:1) echo 'polkitd refuses every request (polkit=deny)';; debian:2) echo \"polkitd follows the system's own rules (polkit=debian): what they allow the desktop's user, every program of $(id -un) can do\";; *) echo \"polkit=$AGENT_VM_PARAM_POLKIT, and polkitd answered $answer to a request to power off\"; exit 1;; esac"
+    "pkcheck --action-id org.freedesktop.login1.power-off --process $$ > /dev/null 2>&1; answer=$?; case \"$AGENT_VM_PARAM_POLKIT:$answer\" in deny:1) echo 'polkitd refuses every request (polkit=deny)';; debian:2) echo \"polkitd follows the system's own rules (polkit=debian): what they allow the desktop's user, every program of $(id -un) can do\";; *) echo \"polkit=$AGENT_VM_PARAM_POLKIT, and polkitd answered $answer to a request to power off\"; exit 1;; esac",
+    "command -v xclip > /dev/null && echo 'the box window can copy text to and from the clipboard (xclip)'"
   ]
 }
