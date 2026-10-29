@@ -449,7 +449,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
             setSendStatus("This Mac's clipboard has no text", failed: true)
             return
         }
-        copyClipboard("Clipboard to box") {
+        copyClipboard("Send Clipboard") {
             try await clipboard.put(text)
             return "copied \(Self.characters(text)) to the clipboard in the box"
         }
@@ -460,7 +460,7 @@ final class BoxViewer: NSObject, NSWindowDelegate {
         guard let clipboard, !copyingClipboard else {
             return
         }
-        copyClipboard("Clipboard from box") {
+        copyClipboard("Get Clipboard") {
             let text = try await clipboard.text()
             guard !text.isEmpty else {
                 throw GuestClipboard.Failure(description: "the clipboard in the box has no text")
