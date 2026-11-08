@@ -65,7 +65,8 @@ public struct ImageDeriveOptions: Sendable {
     public var base: String
     /// Recipes applied to the clone, in this order.
     public var recipes: [ImageRecipe]
-    /// Install the Command Line Tools if the base lacks them.
+    /// Install the Command Line Tools if the base lacks them; for macOS, otherwise install a
+    /// newer package when Apple offers one.
     public var commandLineTools: Bool
     /// nil: the base image's.
     public var cpuCount: Int?
@@ -844,7 +845,8 @@ public final class ImageBuilder {
 
     /// What every image gets once its guest daemon answers: Spotlight indexing off, a desktop
     /// that never locks, names the image and hides its widgets, the Command Line Tools when
-    /// asked for and missing, then the recipes in order. Returns the updated image.
+    /// asked for (installed when missing, else updated to the newest package Apple offers),
+    /// then the recipes in order. Returns the updated image.
     private func configure(_ image: GoldenImage, machine: GuestMachine, commandLineTools: Bool, recipes: [ImageRecipe]) async throws -> GoldenImage {
         var current = image
         // Boxes have no use for Spotlight, and indexing the whole new disk competes with the
@@ -863,7 +865,16 @@ public final class ImageBuilder {
 
         if commandLineTools {
             if let installed = current.record.commandLineTools {
-                log("  Command Line Tools already installed (\(installed))")
+                // A base image keeps the tools it was built with, and Apple offers only the
+                // newest package, which comes with the newest Xcode: taking it here keeps the
+                // tools in step with an Xcode the recipes install.
+                progress("command-line-tools", "Command Line Tools installed (\(installed)); asking softwareupdate for a newer package")
+                if let label = try await updateCommandLineTools(machine, installed: installed) {
+                    current = try store.update(current) { $0.commandLineTools = label }
+                    log("  Command Line Tools updated to \(label)")
+                } else {
+                    log("  Command Line Tools are the newest offered")
+                }
             } else {
                 let label = try await installCommandLineTools(machine)
                 current = try store.update(current) { $0.commandLineTools = label }

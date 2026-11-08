@@ -46,7 +46,7 @@ Keys are written in sorted order, and a key is left out when it has no value. A 
 | `install` | Installing macOS, with `fraction` every 10%. About 3 minutes. |
 | `first-boot` | The first boot creates the account, logs it in and turns on SSH. A `notice` follows when this Mac has refused every connection to the guest for 30 seconds (Local Network access; since 0.6.13). |
 | `guest-daemon` | Installing `agent-vm-guest` over SSH. |
-| `command-line-tools` | Installing Xcode's Command Line Tools (unless `--no-command-line-tools`). |
+| `command-line-tools` | Installing Xcode's Command Line Tools (unless `--no-command-line-tools`), or, with `--from`, updating the base image's to a newer package. |
 | `recipe`, `recipe-input`, `recipe-step`, `recipe-check` | With `--recipe`: the recipe begins, each input file is sent, each step runs, each check runs. |
 | `shutdown` | Shutting the guest down. |
 

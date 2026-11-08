@@ -77,7 +77,7 @@ struct ImageCommand: ParsableCommand {
         var guestDaemon: String?
 
         @Flag(name: .customLong("command-line-tools"), inversion: .prefixedNo,
-              help: "Install Xcode's Command Line Tools (clang, swift, git, python3; about 530 MB, needs the internet); for Linux, the compiler and make (build-essential). Default: yes for --ipsw and --linux, or what the recipe says; with --from, only if the base lacks them.")
+              help: "Install Xcode's Command Line Tools (clang, swift, git, python3; about 530 MB, needs the internet); for Linux, the compiler and make (build-essential). Default: yes for --ipsw and --linux, or what the recipe says; with --from, installed if the base lacks them, and for macOS otherwise updated when Apple offers a newer package.")
         var commandLineTools: Bool?
 
         @Option(name: .long, help: "A JSON recipe of steps to run in the image (see Docs/image-recipes.md); repeatable, applied in the order given.")

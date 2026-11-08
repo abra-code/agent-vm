@@ -1075,8 +1075,9 @@ extension ImageBuilder {
     }
 
     /// Installs a newer Command Line Tools package when the image has the tools and Apple
-    /// offers one; returns its label.
-    private func updateCommandLineTools(_ machine: GuestMachine, installed: String?) async throws -> String? {
+    /// offers one; returns its label. `image update --system` and a build from an image with
+    /// the tools (`configure`) run it.
+    func updateCommandLineTools(_ machine: GuestMachine, installed: String?) async throws -> String? {
         guard let installed else {
             return nil
         }
