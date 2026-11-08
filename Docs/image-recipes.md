@@ -18,7 +18,7 @@ Examples are in [../Recipes/](../Recipes/README.md).
   "commandLineTools": true,
   "steps": [
     { "name": "Homebrew folder", "user": "root", "run": "mkdir -p /opt/homebrew && chown \"$AGENT_VM_BOX_USER\":admin /opt/homebrew" },
-    { "name": "Homebrew", "run": "curl -fsSL https://github.com/Homebrew/brew/tarball/HEAD | tar xz --strip-components 1 -C /opt/homebrew" },
+    { "name": "Homebrew", "run": "git clone --quiet https://github.com/Homebrew/brew /opt/homebrew" },
     { "name": "Node", "run": "/opt/homebrew/bin/brew install node", "timeoutSeconds": 3600 },
     { "name": "git settings", "copy": "files/gitconfig", "to": "~/.gitconfig", "mode": "0644" }
   ],

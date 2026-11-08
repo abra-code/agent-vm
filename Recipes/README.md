@@ -4,7 +4,7 @@ Recipes for `agent-vm image create --recipe`. The format is described in [../Doc
 
 | Recipe | Installs | Needs |
 |---|---|---|
-| [homebrew](homebrew/recipe.json) | Homebrew in `/opt/homebrew` (owned by the box user, so no `sudo`), and a `~/.zprofile` that puts it on the login shell's path. Nothing else: the recipes below install what they need with it | the Command Line Tools (default) |
+| [homebrew](homebrew/recipe.json) | Homebrew in `/opt/homebrew` (owned by the box user, so no `sudo`), installed as Homebrew's own installer installs it: a git copy of Homebrew/brew at its newest release, fetched with up to 5 tries (that installer itself needs `sudo`, which the box user does not have). A `~/.zprofile` puts it on the login shell's path. Nothing else: the recipes below install what they need with it | the Command Line Tools (default) |
 | [node](node/recipe.json) | Node and npm, from Homebrew | Homebrew: the homebrew recipe before it |
 | [python](python/recipe.json) | A current Python (3.15 at this writing) and uv, from Homebrew: `python3` and `pip3`, ahead of Apple's on the path; there is no `python` or `pip` without the 3. Homebrew moves `python3` to each new Python when it comes out, and the recipe's update step follows it. Apple's own Python 3.9 stays at `/usr/bin/python3`, where Xcode and its debugger expect it. Homebrew's Python refuses `pip install` outside a virtual environment, so work in one (`python3 -m venv .venv`, or `uv venv`); boxes on the allowlist network need `--allow pack:pypi` | Homebrew: the homebrew recipe before it |
 | [agent-clis](agent-clis/recipe.json) | Claude Code, Codex and opencode, from npm (what `avm` runs) | Node: the homebrew and node recipes before it |

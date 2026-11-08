@@ -8,9 +8,16 @@
       "run": "mkdir -p /opt/homebrew && chown -R \"$AGENT_VM_BOX_USER\":admin /opt/homebrew"
     },
     {
-      "name": "Homebrew",
-      "run": "set -o pipefail; curl -fsSL https://github.com/Homebrew/brew/tarball/HEAD | tar xz --strip-components 1 -C /opt/homebrew && /opt/homebrew/bin/brew update --force --quiet",
-      "env": { "HOMEBREW_NO_ANALYTICS": "1" }
+      "name": "The install script",
+      "copy": "files/install-homebrew.sh",
+      "to": "/private/var/tmp/agent-vm-install-homebrew",
+      "mode": "0755"
+    },
+    {
+      "name": "Homebrew as its own installer installs it: a git copy at the newest release",
+      "run": "/private/var/tmp/agent-vm-install-homebrew; status=$?; rm -f /private/var/tmp/agent-vm-install-homebrew; exit $status",
+      "env": { "HOMEBREW_NO_ANALYTICS": "1" },
+      "timeoutSeconds": 1800
     },
     {
       "name": "Homebrew in login shells",
