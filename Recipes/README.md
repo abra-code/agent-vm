@@ -120,7 +120,7 @@ With `deny`, none of this goes through polkitd, and an agent's requests get the 
 
 Apple offers Xcode only to someone signed in with an Apple ID (any Apple ID, no paid membership), so the image build cannot download it; you download it once and give it to the recipe. Everything after that downloads in the guest without an account: simulator runtimes and components come from Apple's public servers through `xcodebuild`.
 
-Xcode comes in one of two archive formats, and the recipe takes either: a `.aea` (Apple Encrypted Archive, offered from Xcode 27.3 on) or a `.xip` (Xcode 27.3 is the last release offered as one). The recipe tells them apart by their first bytes, not by the file name, and expands a `.aea` with `archiveutil extractXcodeAEA` and a `.xip` with `xip --expand`.
+Xcode comes in one of two archive formats, and the recipe takes either (since agent-vm 0.8.9): a `.aea` (Apple Encrypted Archive, offered from Xcode 27.3 on) or a `.xip` (Xcode 27.3 is the last release offered as one). The recipe tells them apart by their first bytes, not by the file name, and expands a `.aea` with `archiveutil extractXcodeAEA` and a `.xip` with `xip --expand`.
 
 1. Download Xcode from [developer.apple.com/download/all](https://developer.apple.com/download/all/) (search for Xcode), for example `~/Downloads/Xcode_27.3_beta.aea`. Any Xcode that runs on the image's macOS works.
 2. Build one image with Xcode and the simulators, or layers:
