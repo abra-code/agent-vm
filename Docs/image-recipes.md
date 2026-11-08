@@ -77,7 +77,7 @@ Error: recipe Recipes/homebrew/recipe.json: it is for macOS images, and image de
 
 ## Inputs and parameters
 
-Some things cannot be written into a recipe: a file too big for a `copy` step that cannot be downloaded without an account (Xcode's `.xip` needs an Apple ID), or a choice that differs from one image to the next (which simulator runtimes to install). A recipe declares these, and whoever builds the image gives them:
+Some things cannot be written into a recipe: a file too big for a `copy` step that cannot be downloaded without an account (Xcode's `.aea` or `.xip` needs an Apple ID), or a choice that differs from one image to the next (which simulator runtimes to install). A recipe declares these, and whoever builds the image gives them:
 
 ```json
 {
@@ -122,7 +122,7 @@ agent-vm image create dev-xcode --from dev --recipe recipe.json --input xcode=~/
 - **Write them to be run again and again**: an update step runs at every `image update`, on an image where it may have run before (`brew upgrade`, `npm install ...@latest`, `softwareupdate` is not needed: `image update` does macOS itself).
 - **Parameters are not for secrets**: a value given with `--set` is in agent-vm's argument list (which every user of this Mac can read with `ps`), in the build log, in the job's record and in the image's record. A step that needs a token should read it from a file the recipe copies and removes, or be run by hand afterwards.
 - **Parameters** have the values the image recorded when it was built; `image update --set name=value` changes one and records it, so the next update uses it too. A recipe that pins a version as a parameter moves the pin that way.
-- **Inputs are not there**: an input was streamed in for the build and deleted after it, so update steps and checks see no `AGENT_VM_INPUT_` variables. What needs the file again (a newer Xcode `.xip`) is a rebuild: `agent-vm image rebuild <image> --input xcode=<file>`.
+- **Inputs are not there**: an input was streamed in for the build and deleted after it, so update steps and checks see no `AGENT_VM_INPUT_` variables. What needs the file again (a newer Xcode `.aea` or `.xip`) is a rebuild: `agent-vm image rebuild <image> --input xcode=<file>`.
 - **Every recipe's checks run**, not only those of the recipes with update steps: once all update steps ran, the checks of the other kept recipes run too, in order. One recipe's update can change what another installed (Homebrew's upgrade reaches Node and Python), and a check is how that is noticed. So write checks that hold after any update, and that need no input file. When no recipe has update steps, nothing runs at all.
 - **Nothing is kept from a failed update**: a failing update step or check leaves the image as it was before `image update`.
 - **The recipe is the one the image keeps**, as it was when the image was built (`Recipes/` in the image's folder): changing the recipe file later does not change what `image update` runs.

@@ -1,17 +1,17 @@
 {
   "version": 1,
-  "description": "Xcode from a .xip you downloaded (next: Recipes/xcode-platforms for simulator runtimes)",
+  "description": "Xcode from a .aea or .xip you downloaded (next: Recipes/xcode-platforms for simulator runtimes)",
   "commandLineTools": true,
   "inputs": {
     "xcode": {
-      "description": "an Xcode .xip from https://developer.apple.com/download/all/ (any Apple ID; Apple does not offer it without one)"
+      "description": "an Xcode .aea or .xip from https://developer.apple.com/download/all/ (any Apple ID; Apple does not offer it without one)"
     }
   },
   "steps": [
     {
-      "name": "Expand the .xip into /Applications (xip replaces the folder it expands into, so the step changes into it again after)",
+      "name": "Expand the archive into /Applications: a .aea (Apple Encrypted Archive, from Xcode 27.3 on) with archiveutil, a .xip with xip (xip replaces the folder it expands into, so the step changes into it again after)",
       "user": "root",
-      "run": "work=/private/var/tmp/agent-vm-xcode; rm -rf \"$work\" && mkdir -p \"$work\" && cd \"$work\" && /usr/bin/xip --expand \"$AGENT_VM_INPUT_XCODE\" && cd \"$work\" && apps=$(ls -d *.app) && [ \"$(printf '%s\\n' \"$apps\" | wc -l)\" -eq 1 ] && rm -rf \"/Applications/$apps\" && mv \"$apps\" /Applications/ && cd / && rm -rf \"$work\" && echo \"/Applications/$apps\" > /private/var/tmp/agent-vm-xcode-path",
+      "run": "work=/private/var/tmp/agent-vm-xcode; rm -rf \"$work\" && mkdir -p \"$work\" && cd \"$work\" && case \"$(/usr/bin/head -c 4 \"$AGENT_VM_INPUT_XCODE\")\" in AEA1) /usr/bin/archiveutil extractXcodeAEA \"$AGENT_VM_INPUT_XCODE\" ;; 'xar!') /usr/bin/xip --expand \"$AGENT_VM_INPUT_XCODE\" ;; *) echo \"$AGENT_VM_INPUT_XCODE is neither an Xcode .aea nor a .xip\" >&2; false ;; esac && cd \"$work\" && apps=$(ls -d *.app) && [ \"$(printf '%s\\n' \"$apps\" | wc -l)\" -eq 1 ] && rm -rf \"/Applications/$apps\" && mv \"$apps\" /Applications/ && cd / && rm -rf \"$work\" && echo \"/Applications/$apps\" > /private/var/tmp/agent-vm-xcode-path",
       "timeoutSeconds": 3600
     },
     {

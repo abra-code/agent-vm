@@ -106,7 +106,7 @@ A step has either `run`, or `copy` with `to`. The same keys are used in `steps` 
 - **A changed recipe reaches old images through its update steps only.** An image built with an earlier version of a recipe that comes with agent-vm runs the new version's `update` steps and checks at its next `image update`, never its `steps`. So when you change what `steps` install, make `update` bring an older image to the same place (the python recipe's update step is its install step again). After changing a recipe in this folder, run `python3 Scripts/recipe-history.py`.
 - **Update steps run again and again,** on an image where they ran before: `brew upgrade x || true`, `npm install --global x@latest`. They must succeed when there is nothing to update. Do not update macOS in a recipe.
 - **Inputs are gone after the build.** Do not use `$AGENT_VM_INPUT_...` in an update step or in a check: checks run again at every update.
-- **A recipe with inputs can run again.** `image update --tools --input NAME=PATH` runs the recipe's `steps` again, with the new file, on an image where they ran before (a newer Xcode .xip). Write them so that a second run replaces what the first installed: the xcode recipe removes the old `/Applications/Xcode.app` before it moves the new one in.
+- **A recipe with inputs can run again.** `image update --tools --input NAME=PATH` runs the recipe's `steps` again, with the new file, on an image where they ran before (a newer Xcode .aea or .xip). Write them so that a second run replaces what the first installed: the xcode recipe removes the old `/Applications/Xcode.app` before it moves the new one in.
 - **Checks must hold forever:** after the build and after any later update. Check that the tool runs (`tool --version`), not an exact version number.
 - **Pin nothing you do not have to.** If a version must be pinned, make it a parameter with a default, so it can be moved without editing the recipe.
 
@@ -165,7 +165,7 @@ If a build fails for a reason that is not the recipe's (no free virtual machine,
 
 ## 5. When to stop and ask the person
 
-- **A file only they can get:** an installer behind a login (Xcode's `.xip` needs an Apple ID), a license file. Declare it as an input, and ask them for the path.
+- **A file only they can get:** an installer behind a login (Xcode's `.aea` or `.xip` needs an Apple ID), a license file. Declare it as an input, and ask them for the path.
 - **Which image to build from,** when more than one is ready or none is, unless they already named one.
 - **Anything that needs an account, a login or a payment.** A recipe never logs in to anything.
 - **Where the recipe folder should go,** if they did not say.
