@@ -561,7 +561,7 @@ public final class BoxSupervisor {
     /// Returns the folder as shared (its canonical path), which a claim is released by.
     @discardableResult
     func shareProject(_ path: String, readOnly: Bool, claim: Bool) async throws -> String {
-        let project = try ProjectShare.validated(path, storeRoot: storeRoot)
+        let project = try ProjectShare.validated(path, storeRoot: storeRoot, readOnly: readOnly)
         // Someone wants this project now: a pending unshare of it is off.
         unshareGenerations[project, default: 0] += 1
         let calledOff = pendingUnshares.remove(project) != nil
@@ -708,7 +708,7 @@ public final class BoxSupervisor {
         let slots = ProjectShare.slots(for: guest)
         // Resolved when the request came, before the requests ahead of it ran: a project those
         // took away could have had a symlink swapped in on this one's path while it was mounted.
-        guard try ProjectShare.validated(project, storeRoot: storeRoot) == project else {
+        guard try ProjectShare.validated(project, storeRoot: storeRoot, readOnly: readOnly) == project else {
             throw AgentVMError.unsuitableProject(path: project, reason: "its path changed while the request waited for its turn")
         }
         let inTheWay: [SharedProject]
@@ -726,7 +726,7 @@ public final class BoxSupervisor {
         if !inTheWay.isEmpty {
             // While the other projects were mounted the guest could change folders on this
             // one's path (a symlink swapped in); it has no access now, so resolve again.
-            guard try ProjectShare.validated(project, storeRoot: storeRoot) == project else {
+            guard try ProjectShare.validated(project, storeRoot: storeRoot, readOnly: readOnly) == project else {
                 throw AgentVMError.unsuitableProject(path: project, reason: "its path changed while the previous project was being unshared")
             }
         }

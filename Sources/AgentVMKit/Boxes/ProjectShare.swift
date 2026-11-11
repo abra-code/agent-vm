@@ -95,13 +95,17 @@ public enum ProjectShare {
     /// The canonical folder for `path`, or why it cannot be shared: the session rules (exists,
     /// a folder, not the disk or the home folder or a folder containing it, clear of the
     /// agent-vm store), nothing inside ~/Library or a hidden folder of the home folder
-    /// (keychains, keys, application data), nothing in the Mac's system folders
-    /// (`systemFolder(of:)`), and, with `checkLinks`, no way there through a link a box could
-    /// have made (`linkCrossed`). A relative path is taken from `currentFolder()`.
-    public static func validated(_ path: String, storeRoot: URL, checkLinks: Bool = true) throws -> String {
+    /// (keychains, keys, application data), nothing in the folders of programs the Mac runs
+    /// or holding one unless `readOnly` (`systemFolder(of:)`, `systemFolder(heldBy:)`, ~/bin,
+    /// ~/Applications), never /dev or /cores,
+    /// and, with `checkLinks`, no way there through a link a box could have made
+    /// (`linkCrossed`). A relative path is taken from `currentFolder()`.
+    public static func validated(_ path: String, storeRoot: URL, readOnly: Bool = false, checkLinks: Bool = true) throws -> String {
         let given = absolute(path)
         var walked: Walk?
         if checkLinks {
+            // Where a box can write: folders that can be shared writable. A read-only share
+            // gives it none, so a link in one is not the box's.
             let found = walk(given, isShareable: { (try? validated($0, storeRoot: storeRoot, checkLinks: false)) != nil })
             if case let .crossed(link, target) = found {
                 // The names are the box's to choose: no terminal controls from them.
@@ -135,32 +139,57 @@ public enum ProjectShare {
                 if first.lowercased() == "library" || first.hasPrefix(".") {
                     throw AgentVMError.unsuitableProject(path: project, reason: "it is inside ~/\(first), which holds keys and application data; share a project folder")
                 }
+                if !readOnly, homeProgramFolders.contains(first.lowercased()) {
+                    throw AgentVMError.unsuitableProject(path: project, reason: Self.programsReason("~/\(first)"))
+                }
                 break
             }
             first = (folder as NSString).lastPathComponent
             folder = (folder as NSString).deletingLastPathComponent
         }
-        if let system = systemFolder(of: project) {
-            throw AgentVMError.unsuitableProject(path: project, reason: "it is in \(system), which holds programs and settings this Mac uses; a box that could change them could change what the Mac runs. Share a project folder")
+        if let system = systemFolder(of: project, among: neverShared) {
+            throw AgentVMError.unsuitableProject(path: project, reason: "it is in \(system), which is not shared even read only: \(system == "/dev" ? "it holds this Mac's devices" : "it holds crashed programs' memory")")
+        }
+        if !readOnly, let system = systemFolder(of: project) {
+            throw AgentVMError.unsuitableProject(path: project, reason: Self.programsReason(system))
+        }
+        // A folder holding one of them by a name not directly in / (/System/Volumes/Data/private
+        // holds /private/etc and /private/var).
+        if !readOnly, let system = systemFolder(heldBy: project) {
+            throw AgentVMError.unsuitableProject(path: project, reason: Self.programsReason(system, holds: true))
         }
         return project
     }
 
+    /// Why a folder of programs is not shared writable, and what to do instead; `holds`: the
+    /// folder asked for holds it rather than being in it.
+    static func programsReason(_ folder: String, holds: Bool = false) -> String {
+        return "it \(holds ? "holds" : "is in") \(folder), which holds programs and settings this Mac uses; a box that could change them could change what the Mac runs. Share it read only (--read-only), or share a project folder"
+    }
+
+    /// Folders of the home folder that hold programs the Mac runs, in lowercase: shared read
+    /// only, as the system's are.
+    static let homeProgramFolders: Set<String> = ["bin", "applications"]
+
+    /// Never shared, not even read only: the Mac's devices, and crashed programs' memory.
+    static let neverShared = ["/dev", "/cores"]
+
     /// The Mac's own folders: programs it runs (Homebrew's in /opt/homebrew and /usr/local
-    /// too), its settings, applications. Nothing in them is a project, and a box given one
-    /// writable could replace a program the Mac runs later. Compared in lowercase, as the
+    /// too, Nix's in /nix), its settings, applications. A box given one writable could replace
+    /// a program the Mac runs later, so they are shared read only or not at all; read only,
+    /// a box can run the Mac's tools without installing them. Compared in lowercase, as the
     /// default volume does not tell case apart; named as the Mac spells them.
-    static let systemFolders = ["/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/opt", "/cores", "/dev",
+    static let systemFolders = ["/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/opt", "/nix", "/cores", "/dev",
                                 "/private/etc", "/private/var"]
     /// Inside a system folder, but each user's temporary folders: scratch work is done there.
     static let systemExceptions = ["/private/var/folders"]
 
-    /// The system folder `project` (canonical) is or is inside, as the error names it; nil for
+    /// The folder of `folders` (the system folders unless told) that `project` (canonical) is or is inside, as the error names it; nil for
     /// any other folder. By both names the folder has (realpath's and its path on its volume,
     /// `FileSystem.physicalPath`), each without the prefixes that lead to the same place
     /// (/System/Volumes/Data, /.nofollow), so neither /System/Volumes/Data/opt/homebrew nor
     /// /.nofollow/usr/local gets past it.
-    static func systemFolder(of project: String) -> String? {
+    static func systemFolder(of project: String, among folders: [String] = systemFolders) -> String? {
         var names = [project]
         if let place = FileSystem.physicalPath(project) {
             names.append(place)
@@ -170,7 +199,23 @@ public enum ProjectShare {
             if systemExceptions.contains(where: { plain.hasPrefix($0 + "/") }) {
                 continue
             }
-            if let folder = systemFolders.first(where: { plain == $0.lowercased() || plain.hasPrefix($0.lowercased() + "/") }) {
+            if let folder = folders.first(where: { plain == $0.lowercased() || plain.hasPrefix($0.lowercased() + "/") }) {
+                return folder
+            }
+        }
+        return nil
+    }
+
+    /// The system folder inside `project` (canonical), by both of its names as for
+    /// `systemFolder(of:)`; nil when it holds none.
+    static func systemFolder(heldBy project: String) -> String? {
+        var names = [project]
+        if let place = FileSystem.physicalPath(project) {
+            names.append(place)
+        }
+        for name in names {
+            let plain = withoutVolumePrefixes(name.lowercased())
+            if let folder = systemFolders.first(where: { $0.lowercased().hasPrefix(plain + "/") }) {
                 return folder
             }
         }

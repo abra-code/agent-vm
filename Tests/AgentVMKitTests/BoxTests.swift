@@ -1128,8 +1128,52 @@ final class ShortFolder {
             #expect(throws: AgentVMError.self, "\(folder)") {
                 _ = try ProjectShare.validated(folder, storeRoot: store)
             }
+            // Read only, a box can run the Mac's tools without installing them, and change none.
+            #expect(throws: Never.self, "\(folder) read only") {
+                _ = try ProjectShare.validated(folder, storeRoot: store, readOnly: true)
+            }
         }
         #expect(tried >= 5)
+        // A folder holding one of them, by a name that is not directly in / (/private is): the
+        // box would get /private/etc and /private/var writable.
+        for folder in ["/System/Volumes/Data/private", "/.nofollow/private", "/.nofollow/System/Volumes/Data/private"]
+            where FileManager.default.fileExists(atPath: folder) {
+            #expect(throws: AgentVMError.self, "\(folder)") {
+                _ = try ProjectShare.validated(folder, storeRoot: store)
+            }
+        }
+        #expect(ProjectShare.systemFolder(heldBy: "/System/Volumes/Data/private") == "/private/etc")
+        #expect(ProjectShare.systemFolder(heldBy: "/.nofollow/private") == "/private/etc")
+        #expect(ProjectShare.systemFolder(heldBy: "/private/var/folders/ab") == nil)
+        #expect(ProjectShare.systemFolder(heldBy: "/opt/homebrew") == nil)
+        // The writable refusal says how to share it instead.
+        if FileManager.default.fileExists(atPath: "/usr/local") {
+            do {
+                _ = try ProjectShare.validated("/usr/local", storeRoot: store)
+                Issue.record("/usr/local was accepted for writing")
+            } catch let AgentVMError.unsuitableProject(_, reason) {
+                #expect(reason.contains("--read-only"), "\(reason)")
+            }
+        }
+        // The home folder's own folders of programs, the same way.
+        let home = try FileSystem.canonicalPath(NSHomeDirectory())
+        for folder in ["\(home)/bin", "\(home)/Applications"] where FileManager.default.fileExists(atPath: folder) {
+            #expect(throws: AgentVMError.self, "\(folder)") {
+                _ = try ProjectShare.validated(folder, storeRoot: store)
+            }
+            #expect(throws: Never.self, "\(folder) read only") {
+                _ = try ProjectShare.validated(folder, storeRoot: store, readOnly: true)
+            }
+        }
+        // Devices and crashed programs' memory: not even read only.
+        for folder in ["/dev/fd", "/cores"] where FileManager.default.fileExists(atPath: folder) {
+            #expect(throws: AgentVMError.self, "\(folder) read only") {
+                _ = try ProjectShare.validated(folder, storeRoot: store, readOnly: true)
+            }
+        }
+        #expect(ProjectShare.systemFolder(of: "/cores/core.123", among: ProjectShare.neverShared) == "/cores")
+        #expect(ProjectShare.systemFolder(of: "/usr/local", among: ProjectShare.neverShared) == nil)
+        #expect(ProjectShare.systemFolder(of: "/nix/store") == "/nix")
         // Named as the Mac spells it.
         #expect(ProjectShare.systemFolder(of: "/Library/Developer") == "/Library")
         #expect(ProjectShare.systemFolder(of: "/private/var/folders/ab/cd/T") == nil)

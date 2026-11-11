@@ -194,7 +194,7 @@ struct ConnectRunner {
         var project: String?
         var problem: String?
         do {
-            project = try ProjectShare.validated(path ?? ProjectShare.currentFolder(), storeRoot: root)
+            project = try ProjectShare.validated(path ?? ProjectShare.currentFolder(), storeRoot: root, readOnly: options.readOnly)
         } catch let error as AgentVMError {
             guard case let .unsuitableProject(_, reason) = error else {
                 throw error
@@ -544,7 +544,7 @@ struct ConnectRunner {
             return nil
         }
         do {
-            return try ProjectShare.validated(options.project ?? ProjectShare.currentFolder(), storeRoot: root)
+            return try ProjectShare.validated(options.project ?? ProjectShare.currentFolder(), storeRoot: root, readOnly: options.readOnly)
         } catch let error as AgentVMError {
             guard case let .unsuitableProject(path, reason) = error else {
                 throw ConnectError.failed(error)

@@ -107,7 +107,7 @@ struct ExecRunner {
         var directory = cwd
         var projectPath: String?
         if let project {
-            projectPath = try ProjectShare.validated(project, storeRoot: store.root)
+            projectPath = try ProjectShare.validated(project, storeRoot: store.root, readOnly: readOnly)
             directory = directory ?? projectPath
         }
 
