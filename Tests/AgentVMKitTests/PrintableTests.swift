@@ -38,6 +38,28 @@ import Testing
         }
     }
 
+    /// JSON output keeps every value exact, but nothing in it acts on a terminal: what JSON
+    /// leaves as it is (C1, DEL, separators, bidirectional marks) becomes an escape, which a
+    /// JSON reader reads back as the same character.
+    @Test func jsonIsReadTheSameAndDrivesNoTerminal() throws {
+        struct Named: Codable, Equatable {
+            var name: String
+        }
+        let value = Named(name: "a\u{9B}2J\u{9D}0;t\u{9C}\u{7F}b\u{202E}c\u{2028}d\u{1B}e caf\u{E9} \u{65E5}")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let text = Printable.json(String(decoding: try encoder.encode(value), as: UTF8.self))
+        #expect(!text.unicodeScalars.contains { (0x7F..<0xA0).contains($0.value) || [0x1B, 0x202E, 0x2028].contains($0.value) })
+        #expect(text.contains("\\u009B2J\\u009D0;t\\u009C\\u007Fb\\u202Ec\\u2028d"))
+        #expect(try JSONDecoder().decode(Named.self, from: Data(text.utf8)) == value)
+        // The layout (newlines, indentation) and plain text stay as they are.
+        #expect(Printable.json("{\n  \"a\" : \"caf\u{E9}\"\n}") == "{\n  \"a\" : \"caf\u{E9}\"\n}")
+        // A progress event's line (--json on stderr) is written the same way.
+        let event = ProgressEvent(.log, "x\u{9B}31m\u{2029}y", image: nil)
+        #expect(event.jsonLine == #"{"event":"log","message":"x\u009B31m\u2029y"}"#)
+        #expect(try JSONDecoder().decode(ProgressEvent.self, from: Data(event.jsonLine.utf8)).message == event.message)
+    }
+
     @Test func anErrorIsPrintable() {
         let error = AgentVMError.guestCommandFailed(command: "network setup", status: 1, output: "one\ntwo\u{1B}]0;title\u{07}")
         #expect(!"\(error)".unicodeScalars.contains { $0.value == 0x1B || $0.value == 0x07 })

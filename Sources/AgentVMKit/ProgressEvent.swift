@@ -80,6 +80,6 @@ public struct ProgressEvent: Codable, Equatable, Sendable {
         guard let data = try? encoder.encode(self) else {
             return #"{"event":"log","message":"(unencodable event)"}"#
         }
-        return String(decoding: data, as: UTF8.self)
+        return Printable.json(String(decoding: data, as: UTF8.self))
     }
 }

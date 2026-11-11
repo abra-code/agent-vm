@@ -80,6 +80,37 @@ import Testing
         #expect(log.records().last?.prompts == few)
     }
 
+    /// A guest sends notices as often as it is let (32 a minute): a line for each prompt the
+    /// first time, one for the first stop, and a count of the rest on the end line.
+    @Test func repeatedNoticesAreCountedNotLogged() throws {
+        var tally = ExecLog.NoticeTally()
+        // The first stop has a line even for a prompt already logged; later ones do not.
+        let notices = [("the Downloads folder", false), ("the Downloads folder", false), ("the Desktop folder", false),
+                       ("the Downloads folder", true), ("the Downloads folder", true)]
+        let lines = notices.map { tally.admit($0.0, stopped: $0.1) }
+        #expect(lines == [true, false, true, true, false])
+        #expect(tally.prompts == ["the Downloads folder", "the Desktop folder"])
+        #expect(tally.notLogged == 2)
+        // However many names a guest makes up, at most maxPrompts lines.
+        var flood = ExecLog.NoticeTally()
+        let logged = (0..<10_000).filter { flood.admit("service \($0)", stopped: false) }.count
+        #expect(logged == ExecLog.maxPrompts)
+        #expect(flood.prompts.count == ExecLog.maxPrompts)
+        #expect(flood.notLogged == 10_000 - ExecLog.maxPrompts)
+        // With the list full, the first stop still has its line (for a new prompt too), once.
+        let stops = [flood.admit("service 99999", stopped: true), flood.admit("service 0", stopped: true)]
+        #expect(stops == [true, false])
+        #expect(flood.prompts.count == ExecLog.maxPrompts)
+        #expect(flood.notLogged == 10_000 - ExecLog.maxPrompts + 1)
+
+        // The count reaches the record.
+        let scratch = try Scratch()
+        let log = ExecLog(url: scratch.root.appendingPathComponent("exec.jsonl"))
+        log.append(ExecLog.Entry(id: "a", event: .start, time: t0, argv: ["/bin/sh"]))
+        log.append(ExecLog.Entry(id: "a", event: .end, time: t0, status: 0, prompts: tally.prompts, noticesNotLogged: tally.notLogged))
+        #expect(log.records().first?.noticesNotLogged == 2)
+    }
+
     @Test func unreadableLinesAreSkipped() throws {
         let scratch = try Scratch()
         let url = scratch.root.appendingPathComponent("exec.jsonl")

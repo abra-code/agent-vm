@@ -46,6 +46,30 @@ public enum Printable {
         }
     }
 
+    /// JSON text with every control character JSON leaves as it is written as an escape
+    /// (`\u009B`): DEL, C1, the separators and the bidirectional marks (the rules of
+    /// `line`). JSON escapes C0 in strings itself, and outside strings only its whitespace
+    /// stands, so C0 is left alone; the rest can stand only inside strings, where the escape
+    /// means the same character. So any JSON reader reads the same value, and a terminal the
+    /// output is printed on is not driven by it (xterm reads U+009B as ESC [).
+    public static func json(_ text: String) -> String {
+        let scalars = text.unicodeScalars
+        guard scalars.contains(where: { $0.value >= 0x7F && isControl($0) }) else {
+            return text
+        }
+        var result = ""
+        result.reserveCapacity(text.utf8.count + 16)
+        for scalar in scalars {
+            if scalar.value >= 0x7F && isControl(scalar) {
+                let hex = String(scalar.value, radix: 16, uppercase: true)
+                result += "\\u" + String(repeating: "0", count: max(0, 4 - hex.count)) + hex
+            } else {
+                result.unicodeScalars.append(scalar)
+            }
+        }
+        return result
+    }
+
     private static func clean(_ text: String, keeping kept: Set<Unicode.Scalar>, limit: Int?) -> String {
         let scalars = text.unicodeScalars
         let tooLong = limit.map { scalars.count > $0 } ?? false

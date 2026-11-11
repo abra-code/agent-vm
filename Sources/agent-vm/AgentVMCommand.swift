@@ -154,8 +154,10 @@ enum Output {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(value)
-        StandardStream.write(data, to: STDOUT_FILENO)
+        // Characters JSON leaves as they are but a terminal acts on (C1, bidirectional marks)
+        // as escapes: the same value for a JSON reader.
+        let text = Printable.json(String(decoding: try encoder.encode(value), as: UTF8.self))
+        StandardStream.write(text, to: STDOUT_FILENO)
         StandardStream.write("\n", to: STDOUT_FILENO)
     }
 

@@ -851,6 +851,9 @@ struct BoxCommand: ParsableCommand {
                     let what = record.stoppedOnPrompt == true ? "stopped while waiting" : "waited"
                     line += "  (\(what) on a permission prompt for \(prompts.joined(separator: ", ")))"
                 }
+                if let more = record.noticesNotLogged {
+                    line += "  (\(more == 1 ? "1 more notice" : "\(more) more notices") not logged one by one)"
+                }
                 if let writes = record.clipboardWrites {
                     line += "  (put text on the clipboard \(writes == 1 ? "once" : "\(writes) times"))"
                 }
@@ -977,8 +980,8 @@ struct BoxCommand: ParsableCommand {
                 }
                 for entry in entries {
                     if options.json {
-                        // As it is, like every other JSON output: JSON's own escapes, no "?".
-                        Swift.print(String(decoding: try encoder.encode(entry), as: UTF8.self))
+                        // As it is, like every other JSON output: JSON's escapes, no "?".
+                        Swift.print(Printable.json(String(decoding: try encoder.encode(entry), as: UTF8.self)))
                     } else {
                         print(Self.text(entry))
                     }

@@ -61,13 +61,17 @@ public final class ExecLog: @unchecked Sendable {
         /// On an end line: how many such requests were refused (nobody was using the session,
         /// or too many came at once); absent when none was.
         public var clipboardRefusals: Int?
+        /// On an end line: how many of the run's notices have no line of their own (a prompt
+        /// already logged, a stop after the first, a prompt past `maxPrompts`); absent when none.
+        public var noticesNotLogged: Int?
 
         public init(id: String, event: Event, time: Date, argv: [String]? = nil, user: String? = nil, cwd: String? = nil,
                     project: String? = nil, readOnly: Bool? = nil, terminal: Bool? = nil, hostPid: Int32? = nil,
                     guestPid: Int32? = nil, status: Int32? = nil, seconds: Double? = nil, prompts: [String]? = nil,
                     prompt: String? = nil, service: String? = nil, program: String? = nil, stopped: Bool? = nil,
                     session: String? = nil, envNames: [String]? = nil, secretNames: [String]? = nil, clipboardWrites: Int? = nil,
-                    clipboardRefusals: Int? = nil) {
+                    clipboardRefusals: Int? = nil, noticesNotLogged: Int? = nil) {
+            self.noticesNotLogged = noticesNotLogged
             self.clipboardWrites = clipboardWrites
             self.clipboardRefusals = clipboardRefusals
             self.session = session
@@ -123,6 +127,8 @@ public final class ExecLog: @unchecked Sendable {
         public var clipboardWrites: Int?
         /// How many requests to do so were refused; nil when none was.
         public var clipboardRefusals: Int?
+        /// How many notices of the run have no line of their own; nil when none.
+        public var noticesNotLogged: Int?
     }
 
     public let url: URL
@@ -138,6 +144,33 @@ public final class ExecLog: @unchecked Sendable {
     /// The most prompts a run's end line names, each cut to `maxArgumentLength`. A run waits
     /// on a few (macOS has about twenty kinds); a guest names its own in every notice.
     public static let maxPrompts = 32
+
+    /// A run's notices: the prompts they named, at most `maxPrompts`, and which of them get a
+    /// line of their own. A guest may send 32 a minute, each line up to a few KB: a line for
+    /// every one would push every earlier record out of the log within hours. So a line for
+    /// each prompt the first time it is named, and one for the first stop (the record's
+    /// "stopped while waiting"); the rest are counted for the end line.
+    public struct NoticeTally: Sendable {
+        public private(set) var prompts: [String] = []
+        public private(set) var notLogged = 0
+        private var stopLogged = false
+
+        public init() {}
+
+        /// Takes a notice of `prompt`; true when it gets a line of its own.
+        public mutating func admit(_ prompt: String, stopped: Bool) -> Bool {
+            let new = !prompts.contains(prompt) && prompts.count < ExecLog.maxPrompts
+            if new {
+                prompts.append(prompt)
+            }
+            guard new || (stopped && !stopLogged) else {
+                notLogged += 1
+                return false
+            }
+            stopLogged = stopLogged || stopped
+            return true
+        }
+    }
 
     /// Names as a start line takes them: sorted, each once, nil when there are none. Only what
     /// is a variable's name: `--env` takes whatever stands before the first "=" as the name, so
@@ -239,6 +272,7 @@ public final class ExecLog: @unchecked Sendable {
                 records[position].seconds = entry.seconds
                 records[position].clipboardWrites = entry.clipboardWrites
                 records[position].clipboardRefusals = entry.clipboardRefusals
+                records[position].noticesNotLogged = entry.noticesNotLogged
                 records[position].prompts = Self.merged(records[position].prompts, entry.prompts ?? [])
                 records[position].guestPid = records[position].guestPid ?? entry.guestPid
             case .notice:

@@ -450,7 +450,8 @@ final class ExecExit: @unchecked Sendable {
     private var log: ExecLog?
     private var id: String?
     private var guestPid: Int32?
-    private var prompts: [String] = []
+    /// The run's notices: the prompts named (for the end of the run) and which get a line.
+    private var notices = ExecLog.NoticeTally()
     private var box: String?
     private var outputFilter: TerminalOutputFilter?
     /// Where the filter's reset is written: the stream that is the terminal.
@@ -497,10 +498,8 @@ final class ExecExit: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let what = notice.serviceDescription
-        // A guest names the service of its notices: the list kept for the end of the run (a
-        // line on the terminal and the exec log's end line) takes only so many of them.
-        if !prompts.contains(what), prompts.count < ExecLog.maxPrompts {
-            prompts.append(what)
+        guard notices.admit(what, stopped: stopped) else {
+            return
         }
         if let log, let id {
             log.append(ExecLog.Entry(id: id, event: .notice, time: Date(), guestPid: notice.pid, prompt: what, service: notice.service,
@@ -558,10 +557,10 @@ final class ExecExit: @unchecked Sendable {
         if wasRaw {
             // A full-screen program may have drawn over the notices: say it again, now that the
             // terminal is ours.
-            if !prompts.isEmpty {
+            if !notices.prompts.isEmpty {
                 // One plain write, errors ignored: writeAll would come back here on EPIPE and
                 // wait forever on the lock this thread holds.
-                let text = "agent-vm: while it ran, a program waited on \(prompts.joined(separator: ", ")) (see `agent-vm box execlog \(box ?? "<box>")`)\n"
+                let text = "agent-vm: while it ran, a program waited on \(notices.prompts.joined(separator: ", ")) (see `agent-vm box execlog \(box ?? "<box>")`)\n"
                 _ = Array(text.utf8).withUnsafeBytes { write(STDERR_FILENO, $0.baseAddress!, $0.count) }
             }
             if let refusals = clipboardGate?.refusals, refusals > 0 {
@@ -577,9 +576,10 @@ final class ExecExit: @unchecked Sendable {
             let elapsed = (ContinuousClock.now - began).components
             let seconds = Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18
             log.append(ExecLog.Entry(id: id, event: .end, time: Date(), guestPid: guestPid, status: status,
-                                     seconds: (seconds * 1000).rounded() / 1000, prompts: prompts.isEmpty ? nil : prompts,
+                                     seconds: (seconds * 1000).rounded() / 1000, prompts: notices.prompts.isEmpty ? nil : notices.prompts,
                                      clipboardWrites: clipboardGate.flatMap { $0.count > 0 ? $0.count : nil },
-                                     clipboardRefusals: clipboardGate.flatMap { $0.refusals > 0 ? $0.refusals : nil }))
+                                     clipboardRefusals: clipboardGate.flatMap { $0.refusals > 0 ? $0.refusals : nil },
+                                     noticesNotLogged: notices.notLogged > 0 ? notices.notLogged : nil))
         }
         Darwin.exit(status)
     }
