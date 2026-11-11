@@ -94,10 +94,30 @@ public enum ProjectShare {
 
     /// The canonical folder for `path`, or why it cannot be shared: the session rules (exists,
     /// a folder, not the disk or the home folder or a folder containing it, clear of the
-    /// agent-vm store), and nothing inside ~/Library or a hidden folder of the home folder
-    /// (keychains, keys, application data).
-    public static func validated(_ path: String, storeRoot: URL) throws -> String {
-        let project = try SessionStore(root: storeRoot).validatedProject(path)
+    /// agent-vm store), nothing inside ~/Library or a hidden folder of the home folder
+    /// (keychains, keys, application data), nothing in the Mac's system folders
+    /// (`systemFolder(of:)`), and, with `checkLinks`, no way there through a link a box could
+    /// have made (`linkCrossed`). A relative path is taken from `currentFolder()`.
+    public static func validated(_ path: String, storeRoot: URL, checkLinks: Bool = true) throws -> String {
+        let given = absolute(path)
+        var walked: Walk?
+        if checkLinks {
+            let found = walk(given, isShareable: { (try? validated($0, storeRoot: storeRoot, checkLinks: false)) != nil })
+            if case let .crossed(link, target) = found {
+                // The names are the box's to choose: no terminal controls from them.
+                let (link, target) = (Printable.line(link, limit: 1024), Printable.line(target, limit: 1024))
+                throw AgentVMError.unsuitableProject(path: given, reason: "it goes through \(link), a link to \(target) in a folder a box can be given, so a program in a box could have made it; name \(target) itself to share it")
+            }
+            walked = found
+        }
+        let project = try SessionStore(root: storeRoot).validatedProject(given)
+        // A box can swap a folder on the path with a link between the walk and realpath, so
+        // realpath must have ended where the walk did (names compared as the disk does).
+        if let walked {
+            guard case let .resolved(folder) = walked, folder.caseInsensitiveCompare(project) == .orderedSame else {
+                throw AgentVMError.unsuitableProject(path: given, reason: "its path changed while it was being checked; a program in a box may be changing it")
+            }
+        }
         // The share is mounted on the parent folder, which cannot be the guest's root.
         guard (project as NSString).deletingLastPathComponent != "/" else {
             throw AgentVMError.unsuitableProject(path: project, reason: "a folder directly in / cannot be shared; move it one level down")
@@ -120,7 +140,142 @@ public enum ProjectShare {
             first = (folder as NSString).lastPathComponent
             folder = (folder as NSString).deletingLastPathComponent
         }
+        if let system = systemFolder(of: project) {
+            throw AgentVMError.unsuitableProject(path: project, reason: "it is in \(system), which holds programs and settings this Mac uses; a box that could change them could change what the Mac runs. Share a project folder")
+        }
         return project
+    }
+
+    /// The Mac's own folders: programs it runs (Homebrew's in /opt/homebrew and /usr/local
+    /// too), its settings, applications. Nothing in them is a project, and a box given one
+    /// writable could replace a program the Mac runs later. Compared in lowercase, as the
+    /// default volume does not tell case apart; named as the Mac spells them.
+    static let systemFolders = ["/System", "/Library", "/Applications", "/usr", "/bin", "/sbin", "/opt", "/cores", "/dev",
+                                "/private/etc", "/private/var"]
+    /// Inside a system folder, but each user's temporary folders: scratch work is done there.
+    static let systemExceptions = ["/private/var/folders"]
+
+    /// The system folder `project` (canonical) is or is inside, as the error names it; nil for
+    /// any other folder. By both names the folder has (realpath's and its path on its volume,
+    /// `FileSystem.physicalPath`), each without the prefixes that lead to the same place
+    /// (/System/Volumes/Data, /.nofollow), so neither /System/Volumes/Data/opt/homebrew nor
+    /// /.nofollow/usr/local gets past it.
+    static func systemFolder(of project: String) -> String? {
+        var names = [project]
+        if let place = FileSystem.physicalPath(project) {
+            names.append(place)
+        }
+        for name in names {
+            let plain = withoutVolumePrefixes(name.lowercased())
+            if systemExceptions.contains(where: { plain.hasPrefix($0 + "/") }) {
+                continue
+            }
+            if let folder = systemFolders.first(where: { plain == $0.lowercased() || plain.hasPrefix($0.lowercased() + "/") }) {
+                return folder
+            }
+        }
+        return nil
+    }
+
+    /// `path` (lowercase) without the leading names that lead to the same folders as the path
+    /// after them: the data volume's (/system/volumes/data) and /.nofollow, in any order.
+    static func withoutVolumePrefixes(_ path: String) -> String {
+        var plain = path
+        var changed = true
+        while changed {
+            changed = false
+            for prefix in ["/system/volumes/data", "/.nofollow"] where plain.hasPrefix(prefix + "/") {
+                plain = String(plain.dropFirst(prefix.count))
+                changed = true
+            }
+        }
+        return plain
+    }
+
+    /// The folder this process runs in, by the name the shell gave it when that is the same
+    /// folder ($PWD): after `cd project/link`, getcwd names the link's target, and only $PWD
+    /// still shows the link for `linkCrossed` to check.
+    public static func currentFolder(environment: [String: String] = ProcessInfo.processInfo.environment) -> String {
+        let physical = FileManager.default.currentDirectoryPath
+        if let pwd = environment["PWD"], pwd.hasPrefix("/"), let named = FileSystem.identity(pwd), named == FileSystem.identity(physical) {
+            return pwd
+        }
+        return physical
+    }
+
+    /// `path` with ~ expanded and, when relative, taken from `currentFolder()`. An empty path
+    /// stays empty, so it is refused as missing rather than taken for the current folder.
+    static func absolute(_ path: String) -> String {
+        guard !path.isEmpty else {
+            return path
+        }
+        let expanded = (path as NSString).expandingTildeInPath
+        return expanded.hasPrefix("/") ? expanded : (currentFolder() as NSString).appendingPathComponent(expanded)
+    }
+
+    /// The first link on the way to `path` (absolute) that sits in a folder `isShareable`
+    /// accepts, with where it leads; nil when there is none. A box can write only in folders
+    /// that can be shared, so a link anywhere else (/tmp and /var in /, a link in the home
+    /// folder itself) was not made by one; a link in a project may have been, and following
+    /// it would give a box whatever folder it chose. Resolved one name at a time as the
+    /// kernel does, links inside a link's target included; a name that does not exist ends
+    /// the walk (the session rules then say so).
+    static func linkCrossed(_ path: String, isShareable: (String) -> Bool) -> (link: String, target: String)? {
+        if case let .crossed(link, target) = walk(path, isShareable: isShareable) {
+            return (link, target)
+        }
+        return nil
+    }
+
+    /// How the walk to a path ends (`walk`).
+    enum Walk: Equatable {
+        /// Through `link`, in a folder a box can be given, which leads to `target`.
+        case crossed(link: String, target: String)
+        /// At this folder, through no link a box could have made: the path as the kernel
+        /// resolves it, with the names as given (realpath gives them as they are on the disk).
+        case resolved(String)
+        /// At a name that does not exist or a link that cannot be followed.
+        case unresolved
+    }
+
+    /// The walk `linkCrossed` makes, and where it ends.
+    static func walk(_ path: String, isShareable: (String) -> Bool) -> Walk {
+        var pending = path.split(separator: "/").map(String.init)
+        var resolved = "/"
+        var hops = 0
+        while !pending.isEmpty {
+            let name = pending.removeFirst()
+            if name == "." {
+                continue
+            }
+            if name == ".." {
+                resolved = (resolved as NSString).deletingLastPathComponent
+                continue
+            }
+            let candidate = (resolved as NSString).appendingPathComponent(name)
+            var info = stat()
+            guard lstat(candidate, &info) == 0 else {
+                return .unresolved
+            }
+            guard (info.st_mode & S_IFMT) == S_IFLNK else {
+                resolved = candidate
+                continue
+            }
+            hops += 1
+            guard hops <= 40, let target = try? FileManager.default.destinationOfSymbolicLink(atPath: candidate) else {
+                // A loop, or a link that cannot be read: realpath fails on it too.
+                return .unresolved
+            }
+            if isShareable(resolved) {
+                let leads = (try? FileSystem.canonicalPath(candidate)) ?? (target.hasPrefix("/") ? target : (resolved as NSString).appendingPathComponent(target))
+                return .crossed(link: candidate, target: leads)
+            }
+            pending = target.split(separator: "/").map(String.init) + pending
+            if target.hasPrefix("/") {
+                resolved = "/"
+            }
+        }
+        return .resolved(resolved)
     }
 
     /// What the guest runs, as root, to mount the share for the project at `path`: the

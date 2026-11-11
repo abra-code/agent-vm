@@ -5,9 +5,31 @@
 
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 @testable import AgentVMKit
 import Virtualization
+
+/// Swaps two entries again and again on a thread of its own until `finish`, as a box racing a
+/// check on the Mac would.
+final class LinkSwapper: Sendable {
+    private let stop = Atomic<Bool>(false)
+    private let done = DispatchSemaphore(value: 0)
+
+    init(_ first: String, _ second: String) {
+        Thread.detachNewThread { [self] in
+            while !stop.load(ordering: .relaxed) {
+                _ = renamex_np(first, second, UInt32(RENAME_SWAP))
+            }
+            done.signal()
+        }
+    }
+
+    func finish() {
+        stop.store(true, ordering: .relaxed)
+        done.wait()
+    }
+}
 
 /// A scratch store with a fake "ready" image (small files standing in for the disk).
 final class BoxScratch {
@@ -1090,6 +1112,132 @@ final class ShortFolder {
         #expect(throws: AgentVMError.self) {
             _ = try ProjectShare.validated("/Applications", storeRoot: store)
         }
+    }
+
+    /// The Mac's own folders are not projects, and a box given one writable could replace a
+    /// program the Mac runs (Homebrew's in /opt/homebrew or /usr/local): refused by any name.
+    @Test func systemFoldersAreNotShared() throws {
+        let scratch = try Scratch()
+        let store = scratch.root.appendingPathComponent("store")
+        let folders = ["/opt/homebrew", "/opt/homebrew/bin", "/usr/local", "/usr/local/bin", "/usr/share", "/private/etc", "/etc/ssh",
+                       "/private/var/db", "/Library/Developer", "/System/Library", "/Applications/Utilities",
+                       "/System/Volumes/Data/opt/homebrew", "/System/Volumes/Data/private/etc", "/.nofollow/usr/local", "/OPT/homebrew"]
+        var tried = 0
+        for folder in folders where FileManager.default.fileExists(atPath: folder) {
+            tried += 1
+            #expect(throws: AgentVMError.self, "\(folder)") {
+                _ = try ProjectShare.validated(folder, storeRoot: store)
+            }
+        }
+        #expect(tried >= 5)
+        // Named as the Mac spells it.
+        #expect(ProjectShare.systemFolder(of: "/Library/Developer") == "/Library")
+        #expect(ProjectShare.systemFolder(of: "/private/var/folders/ab/cd/T") == nil)
+        // An empty path is no folder, not the current one.
+        #expect(throws: AgentVMError.self) {
+            _ = try ProjectShare.validated("", storeRoot: store)
+        }
+        // Each user's temporary folders are not the system's, nor is /private/tmp.
+        let temporary = try FileSystem.canonicalPath(NSTemporaryDirectory())
+        #expect(try ProjectShare.validated(temporary, storeRoot: store) == temporary)
+        #expect(try ProjectShare.validated(scratch.project.path, storeRoot: store) == scratch.project.path)
+        // The prefixes that lead to the same folders, however they are stacked.
+        #expect(ProjectShare.withoutVolumePrefixes("/.nofollow/system/volumes/data/opt/homebrew") == "/opt/homebrew")
+        #expect(ProjectShare.withoutVolumePrefixes("/system/volumes/data/users/me") == "/users/me")
+        #expect(ProjectShare.withoutVolumePrefixes("/system/volumes/preboot") == "/system/volumes/preboot")
+    }
+
+    /// A link in a folder a box can be given may be the box's: following it would share the
+    /// folder the box chose. Refused, naming where it leads; a link nowhere a box can write
+    /// (/tmp in /) is followed as before.
+    @Test func linksABoxCouldHaveMadeAreNotFollowed() throws {
+        let scratch = try Scratch()
+        let store = scratch.root.appendingPathComponent("store")
+        let other = scratch.root.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: other.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        let project = scratch.project.path
+        try FileManager.default.createSymbolicLink(atPath: project + "/absolute", withDestinationPath: other.path)
+        try FileManager.default.createSymbolicLink(atPath: project + "/relative", withDestinationPath: "../other")
+        try FileManager.default.createDirectory(atPath: project + "/real", withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: project + "/inside", withDestinationPath: "real")
+        for path in [project + "/absolute", project + "/relative", project + "/absolute/sub", project + "/real/../relative/sub", project + "/inside"] {
+            do {
+                _ = try ProjectShare.validated(path, storeRoot: store)
+                Issue.record("\(path) was shared")
+            } catch let AgentVMError.unsuitableProject(_, reason) {
+                #expect(reason.contains("a link to"), "\(path): \(reason)")
+            }
+        }
+        // Where the link leads is the box's to name: no terminal controls reach the message.
+        let escape = String(Character(Unicode.Scalar(27)))
+        let odd = other.appendingPathComponent("odd" + escape + "]0;title")
+        try FileManager.default.createDirectory(at: odd, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: project + "/odd", withDestinationPath: odd.path)
+        do {
+            _ = try ProjectShare.validated(project + "/odd", storeRoot: store)
+            Issue.record("the odd link was shared")
+        } catch let AgentVMError.unsuitableProject(_, reason) {
+            #expect(reason.contains("a link to") && !reason.contains(escape), "\(reason)")
+        }
+        // The target itself, named, is shared; so is the link's way when links are not asked
+        // about (unsharing a folder grants nothing).
+        #expect(try ProjectShare.validated(other.path, storeRoot: store) == other.path)
+        #expect(try ProjectShare.validated(project + "/absolute", storeRoot: store, checkLinks: false) == other.path)
+        // /tmp is a link in /, which no box can be given.
+        let viaTmp = "/tmp/" + scratch.root.lastPathComponent + "/project"
+        #expect(try ProjectShare.validated(viaTmp, storeRoot: store) == project)
+        // A link chain that loops ends the walk; realpath then refuses the path.
+        try FileManager.default.createSymbolicLink(atPath: scratch.root.path + "/loop", withDestinationPath: "loop")
+        #expect(ProjectShare.linkCrossed(scratch.root.path + "/loop", isShareable: { _ in false }) == nil)
+    }
+
+    /// A box that keeps swapping a folder on the named path with a link gets nothing: what
+    /// realpath found must be the folder the walk found free of links.
+    @Test func aLinkSwappedInWhileCheckedIsRefused() throws {
+        let scratch = try Scratch()
+        let store = scratch.root.appendingPathComponent("store")
+        let other = scratch.root.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let project = scratch.project.path
+        let sub = project + "/sub"
+        try FileManager.default.createDirectory(atPath: sub, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: project + "/swap", withDestinationPath: other.path)
+        let swapper = LinkSwapper(sub, project + "/swap")
+        var given = 0
+        for _ in 0..<3000 {
+            if (try? ProjectShare.validated(sub, storeRoot: store)) == other.path {
+                given += 1
+            }
+        }
+        swapper.finish()
+        #expect(given == 0)
+    }
+
+    /// Where the walk ends is what realpath says, for paths through links nobody in a box can
+    /// make and names written in another case.
+    @Test func theWalkEndsWhereRealpathDoes() throws {
+        let scratch = try Scratch()
+        let viaTmp = "/tmp/" + scratch.root.lastPathComponent + "/./project/"
+        #expect(ProjectShare.walk(viaTmp, isShareable: { _ in false }) == .resolved(scratch.project.path))
+        let upper = scratch.project.path.uppercased()
+        if case let .resolved(found) = ProjectShare.walk(upper, isShareable: { _ in false }) {
+            #expect(found.caseInsensitiveCompare(scratch.project.path) == .orderedSame)
+        } else {
+            Issue.record("\(upper) was not walked")
+        }
+        #expect(ProjectShare.walk(scratch.root.path + "/missing", isShareable: { _ in false }) == .unresolved)
+    }
+
+    /// $PWD names the current folder only when it is that folder.
+    @Test func theCurrentFolderIsTakenFromPWDOnlyWhenItIsTheSame() throws {
+        let scratch = try Scratch()
+        let physical = FileManager.default.currentDirectoryPath
+        #expect(ProjectShare.currentFolder(environment: [:]) == physical)
+        #expect(ProjectShare.currentFolder(environment: ["PWD": scratch.project.path]) == physical)
+        #expect(ProjectShare.currentFolder(environment: ["PWD": "relative/path"]) == physical)
+        #expect(ProjectShare.currentFolder(environment: ["PWD": physical]) == physical)
+        // Another name for the same folder is the shell's, and kept.
+        #expect(ProjectShare.currentFolder(environment: ["PWD": physical + "/."]) == physical + "/.")
     }
 
     /// The store is refused by what it is, not by how its path is written: realpath keeps

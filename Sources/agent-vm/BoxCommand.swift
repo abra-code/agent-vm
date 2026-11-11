@@ -1193,7 +1193,7 @@ struct BoxCommand: ParsableCommand {
             // A supervisor before 0.7.48 shares one folder and names it in `project` alone.
             let shared = status.projects?.map(\.path) ?? status.project.map { [$0] } ?? []
             // As the supervisor records it; a folder deleted on the Mac is taken by its path.
-            let path = folder.map { (try? ProjectShare.validated($0, storeRoot: options.store.root)) ?? URL(fileURLWithPath: $0).standardizedFileURL.path }
+            let path = folder.map { (try? ProjectShare.validated($0, storeRoot: options.store.root, checkLinks: false)) ?? URL(fileURLWithPath: $0).standardizedFileURL.path }
             let taken = path.map { shared.contains($0) ? [$0] : [] } ?? shared
             guard !taken.isEmpty else {
                 if options.json {
