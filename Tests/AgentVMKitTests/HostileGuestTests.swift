@@ -191,6 +191,58 @@ private final class FakeGuest {
         }
     }
 
+    /// A refusal of hello, the clock or the shutdown is quoted in a message a person reads, as
+    /// an exec's is: one line of the guest's text, which cannot start lines of its own.
+    @Test func everyRefusalIsOneLine() throws {
+        let asks: [(String, (Int32) throws -> Void)] = [
+            ("hello", { _ = try GuestClient.hello($0) }),
+            ("time-sync", { _ = try GuestClient.syncTime($0) }),
+            ("shutdown", { try GuestClient.shutdown($0) }),
+        ]
+        for (name, ask) in asks {
+            let guest = try FakeGuest { channel in
+                try? channel.send(Frame(.response, Array(#"{"v":1,"ok":false,"error":"no\nError: forged\r\u001b[2K\#(String(repeating: "x", count: 2000))"}"#.utf8)))
+            }
+            do {
+                try ask(guest.host)
+                Issue.record("\(name): the refusal was not thrown")
+            } catch let AgentVMError.guestRefused(reason) {
+                #expect(reason.hasPrefix("no?Error: forged??[2Kxxx"), "\(name): \(reason.prefix(40))")
+                #expect(reason.unicodeScalars.count == 503 && reason.hasSuffix("..."), "\(name)")
+            }
+        }
+    }
+
+    /// avm asks a box which agents it has before its session, with a limit on each read: a
+    /// guest that sends a byte now and then meets that one for as long as it likes, so the
+    /// whole answer has a limit too.
+    @Test(.timeLimit(.minutes(1)))
+    func aProbeAnsweredAByteAtATimeEnds() throws {
+        let guest = try FakeGuest { channel in
+            // A response frame announcing 100,000 bytes, then a byte every 50 ms.
+            var sent = FrameChannel.writeIgnoringErrors(channel.descriptor, [FrameType.response.rawValue, 0, 1, 0x86, 0xa0])
+            while sent {
+                usleep(50_000)
+                sent = FrameChannel.writeIgnoringErrors(channel.descriptor, [0x20])
+            }
+        }
+        let began = ContinuousClock.now
+        #expect(throws: AgentVMError.self) {
+            _ = try AgentProbe.ask(guest.host, commands: ["claude"], user: nil, timeout: 1)
+        }
+        #expect(ContinuousClock.now - began < .seconds(20))
+    }
+
+    /// The same probe, answered: the names asked about that the box has.
+    @Test func aProbeAnsweredIsRead() throws {
+        let guest = try FakeGuest { channel in
+            try? channel.send(Frame(.response, FakeGuest.accepted))
+            try? channel.send(Frame(.stdout, Array("motd\nclaude\nrm\n".utf8)))
+            try? channel.send(Frame(.exit, Array(#"{"status":0}"#.utf8)))
+        }
+        #expect(try AgentProbe.ask(guest.host, commands: ["claude", "codex"], user: nil, timeout: 5) == ["claude"])
+    }
+
     /// Notices cost the caller a printed line, a log line and perhaps a stopped program each.
     @Test func noticesAreCheckedCountedAndNotRepeated() throws {
         let guest = try FakeGuest { channel in

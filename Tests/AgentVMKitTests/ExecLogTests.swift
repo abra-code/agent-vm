@@ -57,6 +57,29 @@ import Testing
         #expect(log.records().count == 1)
     }
 
+    /// A guest names the service of every notice it sends, 32 a minute: after a quarter of an
+    /// hour the names alone are longer than a line may be. The end line is still written, with
+    /// the first of them: it is where the run's status and clipboard counts are.
+    @Test func anEndLineIsWrittenHoweverManyPromptsTheGuestNamed() throws {
+        let scratch = try Scratch()
+        let log = ExecLog(url: scratch.root.appendingPathComponent("exec.jsonl"))
+        log.append(ExecLog.Entry(id: "a", event: .start, time: t0, argv: ["/bin/sh"]))
+        let named = (0..<1000).map { String(format: "%04d", $0) + String(repeating: "x", count: 124) }
+        #expect(named.joined().utf8.count > ExecLog.maxLineBytes)
+        let problem = log.append(ExecLog.Entry(id: "a", event: .end, time: t0.addingTimeInterval(1), status: 3, seconds: 1, prompts: named,
+                                               clipboardWrites: 2, clipboardRefusals: 5))
+        #expect(problem == nil)
+        let record = try #require(log.records().first)
+        #expect(record.status == 3)
+        #expect(record.clipboardWrites == 2 && record.clipboardRefusals == 5)
+        #expect(record.prompts == Array(named.prefix(ExecLog.maxPrompts)))
+        // A list that fits is written as it is.
+        let few = ["the Downloads folder", "the Desktop folder"]
+        log.append(ExecLog.Entry(id: "b", event: .start, time: t0, argv: ["/bin/ls"]))
+        #expect(log.append(ExecLog.Entry(id: "b", event: .end, time: t0, status: 0, prompts: few)) == nil)
+        #expect(log.records().last?.prompts == few)
+    }
+
     @Test func unreadableLinesAreSkipped() throws {
         let scratch = try Scratch()
         let url = scratch.root.appendingPathComponent("exec.jsonl")

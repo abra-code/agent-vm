@@ -609,11 +609,43 @@ public struct SessionStore: Sendable {
             }
             ancestor = (ancestor as NSString).deletingLastPathComponent
         }
+        // The walk up from the home folder goes from /Users to / and never meets the volume
+        // the home folder is on (/System/Volumes/Data) or the folder that volume is in, which
+        // hold it all the same: those are known by where the folders are on their volumes.
+        let projectPlace = FileSystem.physicalPath(project)
+        if let projectPlace, let homePlace = FileSystem.physicalPath(home), homePlace == projectPlace || Self.isInside(homePlace, projectPlace) {
+            throw AgentVMError.unsuitableProject(path: project, reason: "it is your home folder or contains it; choose the project folder itself")
+        }
         let store = (try? FileSystem.canonicalPath(root.path)) ?? root.path
         if project == store || Self.isInside(store, project) || Self.isInside(project, store) {
             throw AgentVMError.unsuitableProject(path: project, reason: "it overlaps the agent-vm store \(store)")
         }
+        // By identity too, as for the home folder: realpath keeps other names for the same
+        // folder (/System/Volumes/Data/..., /.nofollow/...), which the path prefixes above miss,
+        // and a store outside ~/Library (AGENT_VM_HOME) has no other rule in its way.
+        if let storeID = FileSystem.identity(store), Self.isAtOrAbove(storeID, project) || Self.isAtOrAbove(projectID, store) {
+            throw AgentVMError.unsuitableProject(path: project, reason: "it overlaps the agent-vm store \(store)")
+        }
+        // And a store that the volume's own folder holds, as above for the home folder.
+        if let projectPlace, let storePlace = FileSystem.physicalPath(store), Self.isInside(storePlace, projectPlace) {
+            throw AgentVMError.unsuitableProject(path: project, reason: "it overlaps the agent-vm store \(store)")
+        }
         return project
+    }
+
+    /// True when the folder with identity `folderID` is `path` or one of the folders above it,
+    /// compared as files (`FileSystem.identity`), whatever names lead there.
+    static func isAtOrAbove(_ folderID: [UInt64], _ path: String) -> Bool {
+        var ancestor = path
+        while true {
+            if FileSystem.identity(ancestor) == folderID {
+                return true
+            }
+            if ancestor == "/" || ancestor.isEmpty {
+                return false
+            }
+            ancestor = (ancestor as NSString).deletingLastPathComponent
+        }
     }
 
     /// True when `path` is strictly inside `folder` (both canonical).

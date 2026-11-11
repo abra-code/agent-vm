@@ -740,10 +740,12 @@ public final class BoxSupervisor {
             let requests = ProjectShare.mountRequests(project, guest: guest, readOnly: readOnly, tag: tag)
             try await guestRun(machine, requests[0])
             let found = try await guestCapture(machine, ProjectShare.hiddenContentsRequest(project, guest: guest))
-            let first = found.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            // The guest's words, quoted in the refusal the client prints: one line of them, as
+            // for a folder still in use (`removeProject`).
+            let first = Printable.line(found.stdout.trimmingCharacters(in: .whitespacesAndNewlines), limit: 1024)
             guard found.report == ExitReport(status: 0), first.isEmpty else {
                 let hidden = ProjectShare.mountPoint(project, guest: guest)
-                let what = first.isEmpty ? "cannot be examined (\(found.stderr.trimmingCharacters(in: .whitespacesAndNewlines)))" : "already holds \(first)"
+                let what = first.isEmpty ? "cannot be examined (\(Printable.line(found.stderr.trimmingCharacters(in: .whitespacesAndNewlines), limit: 200)))" : "already holds \(first)"
                 let advice = guest == .linux ? "share a folder whose path is new or holds only folders in the box" : "share a folder whose parent is new or empty in the box"
                 throw AgentVMError.unsuitableProject(path: project, reason: "\(hidden) in the box \(what), which the share would hide; \(advice)")
             }

@@ -458,6 +458,11 @@ public final class TerminalOutputFilter: @unchecked Sendable {
         case (UInt8(ascii: "i"), _):
             // Media copy: printing.
             return nil
+        case (UInt8(ascii: "y"), nil) where intermediates == [UInt8(ascii: "*")]:
+            // DECRQCRA, the checksum of a rectangle of the screen: asked for one cell at a time
+            // it reads the window, and what the window shows when a session begins is the
+            // Mac's, from before the box drew anything (xterm and WezTerm answer it).
+            return nil
         case (UInt8(ascii: "h"), UInt8(ascii: "?")), (UInt8(ascii: "l"), UInt8(ascii: "?")):
             let on = final == UInt8(ascii: "h")
             // VT52 mode (mode 2 off) and Tektronix mode (38 on) read what follows by other

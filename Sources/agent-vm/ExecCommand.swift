@@ -29,7 +29,11 @@ struct ExecCommand: ParsableCommand {
             Keychain (`agent-vm secret set`), so API keys stay off the command line; anything \
             running in the box can read them. With --tty the program gets a \
             terminal in the box (its output all arrives on stdout), keys such as Control-C \
-            go to it as typed, and SIGHUP or SIGTERM to agent-vm end the session. With \
+            go to it as typed, and SIGHUP or SIGTERM to agent-vm end the session. Output that \
+            reaches this Mac's terminal goes through the filter a terminal session uses, also \
+            without --tty (with no clipboard then): what draws passes, while images, files, \
+            window control and clipboard writes are dropped. Output to a pipe or a file is \
+            passed byte for byte. With \
             --clipboard as well, text the program asks to copy is put on this Mac's clipboard \
             while you are using the session (a key or the mouse within the last 2 seconds). Each \
             run is recorded in the box's exec log (`box execlog`): the command, account, \

@@ -135,6 +135,9 @@ public final class ExecLog: @unchecked Sendable {
     static let maxArgumentLength = 200
     /// The most variable names one start line holds, each cut to `maxArgumentLength`.
     static let maxNames = 200
+    /// The most prompts a run's end line names, each cut to `maxArgumentLength`. A run waits
+    /// on a few (macOS has about twenty kinds); a guest names its own in every notice.
+    public static let maxPrompts = 32
 
     /// Names as a start line takes them: sorted, each once, nil when there are none. Only what
     /// is a variable's name: `--env` takes whatever stands before the first "=" as the name, so
@@ -163,12 +166,20 @@ public final class ExecLog: @unchecked Sendable {
             return error.localizedDescription
         }
         // A record this long would push earlier records out. A long command line (a script or a
-        // prompt passed as an argument) is recorded by its start, so the run is still listed;
-        // nothing else in a record is long.
-        if line.count >= Self.maxLineBytes, let argv = entry.argv {
+        // prompt passed as an argument) is recorded by its start, so the run is still listed.
+        // The other list a record holds is what the run waited on, and its names are the
+        // guest's (a notice's service): too many of them must not cost the run its end line,
+        // which is where its status and its clipboard counts are.
+        if line.count >= Self.maxLineBytes, entry.argv != nil || entry.prompts != nil {
+            func shortened(_ text: String) -> String {
+                return text.unicodeScalars.count > Self.maxArgumentLength ? String(text.unicodeScalars.prefix(Self.maxArgumentLength)) + "..." : text
+            }
             var cut = entry
-            cut.argv = argv.prefix(Self.maxArguments).map { $0.unicodeScalars.count > Self.maxArgumentLength ? String($0.unicodeScalars.prefix(Self.maxArgumentLength)) + "..." : $0 }
-            cut.argvCut = true
+            if let argv = entry.argv {
+                cut.argv = argv.prefix(Self.maxArguments).map(shortened)
+                cut.argvCut = true
+            }
+            cut.prompts = entry.prompts.map { $0.prefix(Self.maxPrompts).map(shortened) }
             if let shorter = try? encoder.encode(cut) {
                 line = shorter
             }

@@ -42,15 +42,23 @@ public enum AgentProbe {
                 close(guest)
                 close(control)
             }
-            var limit = timeval(tv_sec: timeout, tv_usec: 0)
-            _ = setsockopt(guest, SOL_SOCKET, SO_RCVTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
-            let result = try GuestClient.capture(guest, request(commands: commands, user: box.record.userName))
-            guard result.report == ExitReport(status: 0) else {
-                return nil
-            }
-            return parse(result.stdout, commands: commands)
+            return try ask(guest, commands: commands, user: box.record.userName, timeout: timeout)
         } catch {
             return nil
         }
+    }
+
+    /// The probe on `descriptor`, a connection to the guest daemon: nil when the program did
+    /// not end well. No read waits longer than `timeout` seconds, and the whole answer has
+    /// three times that: a read's limit alone lets a guest that sends a byte now and then hold
+    /// the caller (avm, before its session) for as long as it likes (GuestDeadline).
+    static func ask(_ descriptor: Int32, commands: [String], user: String?, timeout: Int) throws -> Set<String>? {
+        var limit = timeval(tv_sec: timeout, tv_usec: 0)
+        _ = setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &limit, socklen_t(MemoryLayout<timeval>.size))
+        let result = try GuestClient.capture(descriptor, request(commands: commands, user: user), within: .seconds(timeout * 3))
+        guard result.report == ExitReport(status: 0) else {
+            return nil
+        }
+        return parse(result.stdout, commands: commands)
     }
 }

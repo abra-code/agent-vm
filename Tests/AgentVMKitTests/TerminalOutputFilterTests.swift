@@ -109,6 +109,18 @@ import Testing
         }
     }
 
+    /// The one query whose answer is not about the terminal but about what is on it: the
+    /// checksum of a rectangle (DECRQCRA), which read a cell at a time gives back the window's
+    /// text, the lines of the Mac's shell from before the session included.
+    @Test func theScreenIsNotReadBack() {
+        for sequence in ["\u{1b}[1;1;1;1;1;1*y", "\u{1b}[*y", "\u{1b}[7;0;5;10;5;10*y"] {
+            expectDropped(sequence, "\(sequence.debugDescription)")
+        }
+        // Its neighbors still pass: a mode's state (DECRQM) and the report of the tab stops
+        // (DECRQPSR), which are about the terminal's settings, and erasing a rectangle (DECERA).
+        expectSame("\u{1b}[?2026$p\u{1b}[2$w\u{1b}[1;1;1;1$z")
+    }
+
     /// Sequences that change how the terminal reads what follows, so the filter would no
     /// longer read it the same way: screen's and tmux's window name string (ESC k, ended only
     /// by ESC, CAN or SUB in tmux), leaving UTF-8 (ESC % @), VT52 mode and Tektronix mode.

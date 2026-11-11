@@ -39,7 +39,7 @@ public enum GuestClient {
         try channel.sendRequest(GuestRequest(op: .hello))
         let response = try channel.receive(.response, as: GuestResponse.self)
         guard response.ok else {
-            throw AgentVMError.guestRefused(response.error ?? "no reason given")
+            throw AgentVMError.guestRefused(refusal(response.error, else: "no reason given"))
         }
         // Kept in the box's status and records and shown by every list from then on: only what
         // a version, a build and a feature name look like is taken.
@@ -61,7 +61,7 @@ public enum GuestClient {
         try channel.sendRequest(GuestRequest(op: .timeSync, epoch: Date().timeIntervalSince1970))
         let response = try channel.receive(.response, as: GuestResponse.self)
         guard response.ok, let offset = response.offset else {
-            throw AgentVMError.guestRefused(response.error ?? "no offset in the answer")
+            throw AgentVMError.guestRefused(refusal(response.error, else: "no offset in the answer"))
         }
         return offset
     }
@@ -72,8 +72,15 @@ public enum GuestClient {
         try channel.sendRequest(GuestRequest(op: .shutdown))
         let response = try channel.receive(.response, as: GuestResponse.self)
         guard response.ok else {
-            throw AgentVMError.guestRefused(response.error ?? "no reason given")
+            throw AgentVMError.guestRefused(refusal(response.error, else: "no reason given"))
         }
+    }
+
+    /// Why a guest refused a request, for a message: the guest's text, and printed, so one
+    /// line of it, as an exec's refusal is (ExecSession.init). Left as it came, it could
+    /// start lines of its own after the message it is quoted in.
+    static func refusal(_ reason: String?, else missing: String) -> String {
+        return Printable.line(reason ?? missing, limit: 500)
     }
 
     /// Runs a program and collects its output (for short commands the host itself needs), with

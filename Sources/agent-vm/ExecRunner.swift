@@ -251,9 +251,15 @@ struct ExecRunner {
                 }
             }
         }
-        let filter = terminal ? TerminalOutputFilter(clipboard: taker) : nil
+        // Without a terminal of its own, the program's output is bytes for a pipe or a file and
+        // is passed on as it is. A stream that is this Mac's terminal instead (exec run by
+        // hand) shows it, and acts on its escape sequences as in a terminal session: so that
+        // stream goes through the same filter, with no clipboard. One filter for both streams,
+        // as the terminal reads them as one.
+        let filtered = (stdout: terminal || isatty(STDOUT_FILENO) == 1, stderr: terminal || isatty(STDERR_FILENO) == 1)
+        let filter = terminal ? TerminalOutputFilter(clipboard: taker) : filtered.stdout || filtered.stderr ? TerminalOutputFilter() : nil
         if let filter {
-            ExecExit.shared.filter(filter, clearAfter: clearAfter)
+            ExecExit.shared.filter(filter, clearAfter: clearAfter, resetOn: terminal || filtered.stdout ? STDOUT_FILENO : STDERR_FILENO)
         }
         let report: ExitReport
         do {
@@ -261,7 +267,8 @@ struct ExecRunner {
             let prompts = self.prompts
             // A guest daemon sends no stderr on a terminal (it is the terminal), but a replaced
             // one could: the same filter, read on the same thread as stdout.
-            report = try session.run(stdout: { Self.writeAll(STDOUT_FILENO, filter?.filter($0) ?? $0) }, stderr: { Self.writeAll(STDERR_FILENO, filter?.filter($0) ?? $0) }, notice: { notice in
+            report = try session.run(stdout: { Self.writeAll(STDOUT_FILENO, filtered.stdout ? filter?.filter($0) ?? $0 : $0) },
+                                     stderr: { Self.writeAll(STDERR_FILENO, filtered.stderr ? filter?.filter($0) ?? $0 : $0) }, notice: { notice in
                 Self.report(notice, box: box, terminal: terminal, prompts: prompts)
             })
         } catch {
@@ -340,7 +347,9 @@ struct ExecRunner {
                 }
                 var timeout = timeval(tv_sec: 30, tv_usec: 0)
                 _ = setsockopt(guest, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-                let result = try GuestClient.capture(guest, GuestRequest(op: .exec, argv: ["/bin/kill", "-KILL", String(pid)], cwd: "/", user: "root"))
+                // A limit on the whole answer too: a read's alone is met by a byte now and then.
+                let result = try GuestClient.capture(guest, GuestRequest(op: .exec, argv: ["/bin/kill", "-KILL", String(pid)], cwd: "/", user: "root"),
+                                                     within: .seconds(60))
                 if result.report != ExitReport(status: 0) {
                     let reason = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                     writeAll(STDERR_FILENO, Array("agent-vm: could not stop process \(pid) in box \(box.name): \(Printable.line(reason, limit: 500))\(end)".utf8))
@@ -370,7 +379,10 @@ struct ExecRunner {
             }
             var timeout = timeval(tv_sec: 10, tv_usec: 0)
             _ = setsockopt(guest, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-            let installed = try GuestClient.capture(guest, GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script], user: user), input: entry)
+            // A limit on the whole exchange too: a read's alone is met by a byte now and then,
+            // and a guest that does not read holds the write, so the session would never start.
+            let installed = try GuestClient.capture(guest, GuestRequest(op: .exec, argv: ["/bin/sh", "-c", script], user: user), input: entry,
+                                                    within: .seconds(30))
             return installed.report == ExitReport(status: 0) ? host : known
         } catch {
             return known
@@ -441,6 +453,8 @@ final class ExecExit: @unchecked Sendable {
     private var prompts: [String] = []
     private var box: String?
     private var outputFilter: TerminalOutputFilter?
+    /// Where the filter's reset is written: the stream that is the terminal.
+    private var resetDescriptor = STDOUT_FILENO
     private var clearAfter = false
     private var clipboardGate: ClipboardGate?
     private let began = ContinuousClock.now
@@ -453,12 +467,14 @@ final class ExecExit: @unchecked Sendable {
         self.box = box
     }
 
-    /// The terminal session's output filter: its reset is written when the session ends, and
-    /// with `clearAfter` the window is cleared after it.
-    func filter(_ filter: TerminalOutputFilter, clearAfter: Bool = false) {
+    /// The output filter of a terminal session, or of a plain exec that prints on this Mac's
+    /// terminal: its reset is written when the program ends (to `resetOn`, when that is a
+    /// terminal), and with `clearAfter` the window is cleared after it.
+    func filter(_ filter: TerminalOutputFilter, clearAfter: Bool = false, resetOn descriptor: Int32 = STDOUT_FILENO) {
         lock.lock()
         defer { lock.unlock() }
         outputFilter = filter
+        resetDescriptor = descriptor
         self.clearAfter = clearAfter
     }
 
@@ -481,7 +497,9 @@ final class ExecExit: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         let what = notice.serviceDescription
-        if !prompts.contains(what) {
+        // A guest names the service of its notices: the list kept for the end of the run (a
+        // line on the terminal and the exec log's end line) takes only so many of them.
+        if !prompts.contains(what), prompts.count < ExecLog.maxPrompts {
             prompts.append(what)
         }
         if let log, let id {
@@ -518,12 +536,12 @@ final class ExecExit: @unchecked Sendable {
     /// back. TCSAFLUSH: input not read yet is discarded, so an answer the terminal typed to a
     /// query the program sent just before it ended does not land in the Mac's shell.
     private func restoreLocked() {
-        if var reset = outputFilter?.resetSequence(), isatty(STDOUT_FILENO) == 1 {
+        if var reset = outputFilter?.resetSequence(), isatty(resetDescriptor) == 1 {
             if clearAfter {
                 reset += TerminalOutputFilter.clearSequence(rows: Int(ExecRunner.localTerminalSize().rows))
             }
             // One plain write, errors ignored: writeAll comes back to `exit` on EPIPE.
-            _ = reset.withUnsafeBytes { write(STDOUT_FILENO, $0.baseAddress!, $0.count) }
+            _ = reset.withUnsafeBytes { write(resetDescriptor, $0.baseAddress!, $0.count) }
         }
         outputFilter = nil
         if var saved = savedTerminal {

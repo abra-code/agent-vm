@@ -1056,7 +1056,10 @@ final class ShortFolder {
     @Test func sessionsRefuseAliasesOfTheHomeFolder() throws {
         let scratch = try Scratch()
         let home = try FileSystem.canonicalPath(NSHomeDirectory())
-        for alias in ["/System/Volumes/Data" + home, "/System/Volumes/Data" + (home as NSString).deletingLastPathComponent] where FileManager.default.fileExists(atPath: alias) {
+        // The last three hold the home folder without being above it by name: the volume it is
+        // on, that volume's folder, and the volume again under another name.
+        for alias in ["/System/Volumes/Data" + home, "/System/Volumes/Data" + (home as NSString).deletingLastPathComponent,
+                      "/System/Volumes/Data", "/System/Volumes", "/.nofollow/System/Volumes/Data"] where FileManager.default.fileExists(atPath: alias) {
             #expect(throws: AgentVMError.self, "\(alias)") {
                 _ = try scratch.store.validatedProject(alias)
             }
@@ -1074,7 +1077,10 @@ final class ShortFolder {
             }
         }
         // Other names realpath keeps for the same folders are recognized too.
-        for folder in ["/System/Volumes/Data\(home)/Library/Caches", "/System/Volumes/Data\(home)", "/.nofollow\(home)/Library"]
+        // And the volume the home folder is on, with the folder that volume is in: everything
+        // above is inside them.
+        for folder in ["/System/Volumes/Data\(home)/Library/Caches", "/System/Volumes/Data\(home)", "/.nofollow\(home)/Library",
+                       "/System/Volumes/Data", "/System/Volumes", "/.nofollow/System/Volumes/Data"]
             where FileManager.default.fileExists(atPath: folder) {
             #expect(throws: AgentVMError.self, "\(folder)") {
                 _ = try ProjectShare.validated(folder, storeRoot: store)
@@ -1084,6 +1090,34 @@ final class ShortFolder {
         #expect(throws: AgentVMError.self) {
             _ = try ProjectShare.validated("/Applications", storeRoot: store)
         }
+    }
+
+    /// The store is refused by what it is, not by how its path is written: realpath keeps
+    /// /System/Volumes/Data/... and /.nofollow/... as they are, and a store outside ~/Library
+    /// (AGENT_VM_HOME) is kept out of a box by this rule alone.
+    @Test func theStoreIsNotSharedUnderAnotherName() throws {
+        let scratch = try Scratch()
+        let store = scratch.root.appendingPathComponent("store")
+        let box = store.appendingPathComponent("Boxes/dev")
+        try FileManager.default.createDirectory(at: box, withIntermediateDirectories: true)
+        var tried = 0
+        for prefix in ["/System/Volumes/Data", "/.nofollow"] where FileManager.default.fileExists(atPath: prefix + box.path) {
+            tried += 1
+            // A folder in the store, the store itself, and a folder that holds it.
+            for folder in [box.path, store.path, scratch.root.path] {
+                #expect(throws: AgentVMError.self, "\(prefix)\(folder)") {
+                    _ = try ProjectShare.validated(prefix + folder, storeRoot: store)
+                }
+                #expect(throws: AgentVMError.self, "\(prefix)\(folder)") {
+                    _ = try scratch.store.validatedProject(prefix + folder)
+                }
+            }
+            // A project beside the store is still one, under that name too.
+            #expect(throws: Never.self, "\(prefix)\(scratch.project.path)") {
+                _ = try ProjectShare.validated(prefix + scratch.project.path, storeRoot: store)
+            }
+        }
+        #expect(tried > 0, "this Mac has neither /System/Volumes/Data nor /.nofollow")
     }
 
     @Test func theControlSocketCarriesShareRequests() throws {

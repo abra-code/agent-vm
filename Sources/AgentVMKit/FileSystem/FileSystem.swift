@@ -44,6 +44,26 @@ enum FileSystem {
         return [UInt64(UInt32(bitPattern: info.st_dev)), info.st_ino]
     }
 
+    /// Where the folder at `path` is on its own volume, whatever name it was reached by: the
+    /// path the system gives for it without the links between the system's volumes
+    /// (/System/Volumes/Data/Users/me for /Users/me). nil when it cannot be opened or named.
+    /// Those links make the walk up from /Users/me end at / without meeting the volume the
+    /// folder is on, so a folder is known to hold another by these paths.
+    static func physicalPath(_ path: String) -> String? {
+        // O_EVTONLY needs no read permission, and the descriptor still names the folder.
+        let descriptor = open(path, O_EVTONLY | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            return nil
+        }
+        defer { close(descriptor) }
+        var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
+        guard fcntl(descriptor, F_GETPATH_NOFIRMLINK, &buffer) == 0 else {
+            return nil
+        }
+        let found = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        return found.hasPrefix("/") ? found : nil
+    }
+
     /// `lstat` of a path (a symlink is described, not followed).
     static func status(_ path: String) throws -> stat {
         var info = stat()
