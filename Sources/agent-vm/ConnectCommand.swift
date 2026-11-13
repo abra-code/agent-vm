@@ -281,7 +281,9 @@ enum Connect {
         var project: String?
 
         func run() throws {
-            try ConnectRunner(options: ConnectOptions(), root: SessionStore.defaultRoot(), invokedAs: Main.invokedName).list(json: json, project: project)
+            // The defaults by parsing no arguments: ConnectOptions() leaves its property wrappers
+            // unset, and reading one (list reads readOnly) traps in ArgumentParser
+            try ConnectRunner(options: try ConnectOptions.parse([]), root: SessionStore.defaultRoot(), invokedAs: Main.invokedName).list(json: json, project: project)
         }
     }
 
@@ -299,7 +301,7 @@ enum Connect {
         var json = false
 
         func run() throws {
-            try ConnectRunner(options: ConnectOptions(), root: SessionStore.defaultRoot(), invokedAs: Main.invokedName).agents(json: json)
+            try ConnectRunner(options: try ConnectOptions.parse([]), root: SessionStore.defaultRoot(), invokedAs: Main.invokedName).agents(json: json)
         }
     }
 }
