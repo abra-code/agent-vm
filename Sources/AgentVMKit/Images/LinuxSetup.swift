@@ -552,7 +552,9 @@ enum LinuxSetup {
                  #"found=""; for timer in \#(timers.joined(separator: " ")); do state="$(/usr/bin/systemctl is-enabled "$timer" 2> /dev/null)"; if [ "$state" = "enabled" ]; then found="$found $timer"; fi; done; "#
                  + #"if [ -n "$found" ]; then /usr/bin/echo "still enabled:$found"; exit 1; fi"#),
             Step("no account has a usable password",
-                 #"found="$(/usr/bin/passwd -S -a | /usr/bin/grep -E '^[^ ]+ P ')"; if [ -n "$found" ]; then /usr/bin/echo "$found"; exit 1; fi"#),
+                 // "P" a password, "NP" none at all, which Debian's PAM also lets in (nullok);
+                 // "L" locked
+                 #"found="$(/usr/bin/passwd -S -a | /usr/bin/grep -E '^[^ ]+ (P|NP) ')"; if [ -n "$found" ]; then /usr/bin/echo "$found"; exit 1; fi"#),
             Step("cloud-init is off", "if [ ! -e /etc/cloud/cloud-init.disabled ]; then /usr/bin/echo 'cloud-init is still on'; exit 1; fi"),
         ]
     }

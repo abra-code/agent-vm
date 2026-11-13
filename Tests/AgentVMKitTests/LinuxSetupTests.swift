@@ -216,6 +216,16 @@ import Testing
         #expect(debian[7].script.contains("for timer in apt-daily.timer apt-daily-upgrade.timer; do"))
     }
 
+    @Test func anEmptyPasswordIsAUsablePassword() throws {
+        // passwd -S -a: "P" a password, "NP" an empty one (Debian's PAM lets it in), "L" locked
+        let check = try #require(LinuxSetup.sealChecks(daemonPort: 1024).first { $0.name == "no account has a usable password" })
+        #expect(check.script.contains("/usr/bin/grep -E '^[^ ]+ (P|NP) '"))
+        let pattern = try Regex("^[^ ]+ (P|NP) ")
+        #expect("guest NP 2026-11-13 0 99999 7 -1".firstMatch(of: pattern) != nil)
+        #expect("agent P 2026-11-13 0 99999 7 -1".firstMatch(of: pattern) != nil)
+        #expect("agent L 2026-11-13 0 99999 7 -1".firstMatch(of: pattern) == nil)
+    }
+
     @Test func fedoraIsSetUpWithDnfAndRpm() {
         #expect(LinuxSetup.Family(distribution: "fedora") == .dnf && LinuxSetup.Family(distribution: "ubuntu") == .apt)
         let setup = LinuxSetup.steps(user: "agent", tools: true, distribution: "fedora")
