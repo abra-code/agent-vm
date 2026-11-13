@@ -55,6 +55,17 @@ public struct LinuxBase: Sendable, Equatable {
                   // has 64 KiB pages, which a Mac's processor does not have (`LinuxPageSize.unsupported`).
                   kernels: [LinuxKernel(pageBytes: 4096, package: "linux-image-virtual", flavor: "generic")],
                   defaultPageBytes: 4096),
+        // A Fedora release folder never changes once released; the list is BSD style
+        // ("SHA256 (<file>) = <digest>") inside an OpenPGP clear-signed message, whose signature
+        // is not checked (as Ubuntu's is not).
+        LinuxBase(id: "fedora-45", name: "Fedora 45", distribution: "fedora", version: "45",
+                  folder: URL(string: "https://dl.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/aarch64/images/")!,
+                  file: "Fedora-Cloud-Base-Generic-45-1.4.aarch64.qcow2", checksumList: "Fedora-Cloud-45-1.4-aarch64-CHECKSUM", digest: .sha256, member: "",
+                  manifest: nil,
+                  // Fedora packages no aarch64 kernel with 16 KiB pages (kernel-16k is Asahi's,
+                  // not Fedora's): kernel-core, with 4 KiB pages, is the only one.
+                  kernels: [LinuxKernel(pageBytes: 4096, package: "kernel-core", flavor: "")],
+                  defaultPageBytes: 4096),
     ]
 
     /// A kind of checksum a distribution's list holds.
@@ -91,7 +102,8 @@ public struct LinuxBase: Sendable, Equatable {
 
     /// The checksum the list gives for `file`, in lower case. A list line is the digest in
     /// hexadecimal digits (128 for SHA-512, 64 for SHA-256), two spaces (or a space and "*"),
-    /// and a file name; a line for `file` that is anything else, a second line for it, no line
+    /// and a file name, or Fedora's "SHA256 (<file>) = <digest>" (the name whole between the
+    /// parentheses, the kind of digest the one asked for); a line for `file` that is anything else, a second line for it, no line
     /// for it, or a list larger than `listLimit` is refused. Lines for other files are not
     /// looked at.
     static func digest(for file: String, inList text: String, kind: Digest = .sha512) throws -> String {
@@ -99,23 +111,30 @@ public struct LinuxBase: Sendable, Equatable {
             throw ListProblem("the checksum list is larger than \(listLimit >> 10) KB")
         }
         var found: String?
+        // Fedora's form: "SHA256 (<name>) = <digest>", the name whole between the parentheses
+        let bsdPrefix = (kind == .sha512 ? "SHA512" : "SHA256") + " (" + file + ") = "
         for line in text.split(whereSeparator: \.isNewline) {
-            guard line.hasSuffix(file) else {
-                continue
+            let digest: String
+            if line.hasPrefix(bsdPrefix) {
+                digest = String(line.dropFirst(bsdPrefix.count))
+            } else {
+                guard line.hasSuffix(file) else {
+                    continue
+                }
+                // "<digest>  <name>" or "<digest> *<name>": the name must be the whole of the rest.
+                let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+                guard parts.count == 2 else {
+                    continue
+                }
+                var name = parts[1].drop(while: { $0 == " " })
+                if name.hasPrefix("*") {
+                    name = name.dropFirst()
+                }
+                guard name == file else {
+                    continue
+                }
+                digest = String(parts[0])
             }
-            // "<digest>  <name>" or "<digest> *<name>": the name must be the whole of the rest.
-            let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
-            guard parts.count == 2 else {
-                continue
-            }
-            var name = parts[1].drop(while: { $0 == " " })
-            if name.hasPrefix("*") {
-                name = name.dropFirst()
-            }
-            guard name == file else {
-                continue
-            }
-            let digest = String(parts[0])
             guard digest.utf8.count == kind.hexDigits, digest.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) || ($0 >= 0x41 && $0 <= 0x46) }) else {
                 throw ListProblem("the checksum list's line for \(file) does not start with a \(kind.name) (\(kind.hexDigits) hexadecimal digits)")
             }

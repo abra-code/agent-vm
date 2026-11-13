@@ -18,6 +18,10 @@ import Testing
             + [LinuxSetup.Step("packages", LinuxSetup.packageList), LinuxSetup.Step("newest kernel", LinuxSetup.newestKernel)]
             + [LinuxSetup.accountCheck(user: "agent"), LinuxSetup.waitForNetwork, LinuxSetup.packageLists, LinuxSetup.tools]
             + [LinuxSetup.kernel(Self.sixteen), LinuxSetup.waitForKernelBoot, LinuxSetup.Step("page size", LinuxSetup.pageSize)]
+            + LinuxSetup.steps(user: "agent", tools: true, distribution: "fedora") + LinuxSetup.seal(distribution: "fedora")
+            + LinuxSetup.sealChecks(distribution: "fedora") + LinuxSetup.systemUpdate(distribution: "fedora")
+            + [LinuxSetup.waitForNetwork(distribution: "fedora"), LinuxSetup.Step("fedora packages", LinuxSetup.packageList(distribution: "fedora")),
+               LinuxSetup.Step("fedora tools", LinuxSetup.toolsVersion(distribution: "fedora")), LinuxSetup.Step("fedora arch", LinuxSetup.architecture(distribution: "fedora"))]
     }
 
     /// The first word of every command in `script`: after the start, `;`, `&&`, `||`, `|`,
@@ -68,7 +72,7 @@ import Testing
         #expect(account.contains("/usr/bin/install -d -o dev -g dev -m 755 /home/dev/.local /home/dev/.local/bin; fi && /usr/bin/id dev"))
         // The same step runs in an image built from an image, and leaves a folder that is there.
         #expect(LinuxSetup.toolFolder(user: "dev").script.hasPrefix("if [ ! -d /home/dev/.local/bin ]; then /usr/bin/install -d "))
-        #expect(account.contains("if /usr/bin/getent passwd debian > /dev/null || /usr/bin/getent passwd ubuntu > /dev/null; then"))
+        #expect(account.contains("if /usr/bin/getent passwd debian > /dev/null || /usr/bin/getent passwd ubuntu > /dev/null || /usr/bin/getent passwd fedora > /dev/null; then"))
         // apt asks nothing and dpkg prints plain lines.
         #expect(LinuxSetup.environment["DEBIAN_FRONTEND"] == "noninteractive")
         #expect(LinuxSetup.apt == "/usr/bin/apt-get -q -y -o Dpkg::Use-Pty=0")
@@ -210,6 +214,46 @@ import Testing
         #expect(!debian[5].script.contains("snapd") && !debian[7].script.contains("motd-news"))
         #expect(!debian[5].script.contains("udisks"))
         #expect(debian[7].script.contains("for timer in apt-daily.timer apt-daily-upgrade.timer; do"))
+    }
+
+    @Test func fedoraIsSetUpWithDnfAndRpm() {
+        #expect(LinuxSetup.Family(distribution: "fedora") == .dnf && LinuxSetup.Family(distribution: "ubuntu") == .apt)
+        let setup = LinuxSetup.steps(user: "agent", tools: true, distribution: "fedora")
+        // The same steps as Debian's, with dnf: no apt anywhere, no needrestart to remove.
+        #expect(setup.map(\.name) == ["account agent", "package lists", "system updates", "git, jq, unzip, zip, nmap-ncat", "the compiler and make (gcc, gcc-c++, make)", "git settings"])
+        #expect(setup[1].script == "/usr/bin/dnf -y makecache --refresh" && setup[2].script == "/usr/bin/dnf -y upgrade --refresh")
+        #expect(setup[3].script == "/usr/bin/dnf -y install git jq unzip zip nmap-ncat")
+        let seal = LinuxSetup.seal(distribution: "fedora")
+        let checks = LinuxSetup.sealChecks(distribution: "fedora", daemonPort: 1024)
+        let update = LinuxSetup.systemUpdate(distribution: "fedora")
+        for step in setup + seal + checks + update + [LinuxSetup.waitForNetwork(distribution: "fedora"), LinuxSetup.tools(distribution: "fedora")] {
+            #expect(!step.script.contains("apt-get") && !step.script.contains("dpkg") && !step.script.contains("netplan") && !step.script.contains("update-grub"), "\(step.name)")
+        }
+        for script in [LinuxSetup.packageList(distribution: "fedora"), LinuxSetup.toolsVersion(distribution: "fedora"), LinuxSetup.architecture(distribution: "fedora")] {
+            #expect(!script.contains("dpkg"))
+        }
+        // Debian's commands are unchanged
+        #expect(LinuxSetup.packageList(distribution: "debian") == LinuxSetup.packageList && LinuxSetup.systemUpdate(distribution: "ubuntu") == LinuxSetup.systemUpdate)
+        #expect(LinuxSetup.toolsPackage(distribution: "fedora") == "gcc" && LinuxSetup.toolsPackage(distribution: "debian") == "build-essential")
+        // The sealed image is checked for what the seal did, Fedora's way, under the shared names
+        // where the check is the same
+        #expect(Array(checks.map(\.name).dropLast()) == LinuxSetup.sealChecks(daemonPort: 1024).map(\.name).map { $0 == "polkitd is gone, or has the rules a desktop's recipe chose" ? "polkit is gone, or has the rules a desktop's recipe chose" : $0 })
+        #expect(seal.contains { $0.script.contains("dnf-makecache.timer") } && checks.contains { $0.script.contains("dnf-makecache.timer") })
+        #expect(seal.contains { $0.script.contains(#"'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0"'"#) && $0.script.contains("/usr/sbin/grub2-mkconfig -o /boot/grub2/grub.cfg") })
+        #expect(checks.last?.name == "every boot entry has the console")
+        #expect(seal.contains { $0.script.contains("/etc/NetworkManager/system-connections/cloud-init-*.nmconnection") })
+        #expect(checks.contains { $0.script.contains("/etc/shadow") && $0.name == "no account has a usable password" })
+        // rpm's list reads as dpkg's for the count of changes
+        #expect(LinuxSetup.packageChanges(before: "bash.aarch64 0:5.2-1 installed\n", after: "bash.aarch64 0:5.3-1 installed\nzip.aarch64 0:3.0-1 installed\n") == 2)
+        // Kernels side by side: a new one counts whatever order rpm lists them in
+        let kernels = "kernel-core.aarch64 0:6.2-1 installed\nkernel-core.aarch64 0:6.1-1 installed\n"
+        #expect(LinuxSetup.packageChanges(before: kernels, after: "kernel-core.aarch64 0:6.3-1 installed\n" + kernels) == 1)
+        #expect(LinuxSetup.packageChanges(before: kernels, after: "kernel-core.aarch64 0:6.1-1 installed\nkernel-core.aarch64 0:6.2-1 installed\n") == 0)
+        // An empty password field is a usable password (Fedora's PAM has nullok); a database
+        // rpm cannot read proves nothing of a package
+        #expect(checks.contains { $0.script.contains(#"/usr/bin/awk -F: '$2 !~ /^[!*]/ { print $1 }' /etc/shadow"#) })
+        #expect(checks.filter { $0.script.contains("/usr/bin/rpm -q --quiet rpm; reads=$?; ") }.count == 2)
+        #expect(!LinuxSetup.isValidUserName("fedora") && !LinuxSetup.isValidUserName("wheel"))
     }
 
     @Test func osReleaseIsReadStrictly() throws {

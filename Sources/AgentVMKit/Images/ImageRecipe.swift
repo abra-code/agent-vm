@@ -86,6 +86,23 @@ public struct ImageRecipe: Equatable, Sendable {
 
     public var description: String?
     public var guest: Guest = .macOS
+    /// The Linux distributions the recipe is written for (os-release IDs: "debian", "ubuntu",
+    /// "fedora"); nil when it says none. Without the key a Linux recipe is taken as written
+    /// for apt (Debian and Ubuntu, `aptDistributions`), as every Linux recipe was before Fedora,
+    /// and a recipe for both guests serves every distribution: its commands are the same on
+    /// macOS and Linux, so they use no package manager.
+    public var distributions: [String]?
+
+    /// What a Linux recipe without "distributions" is for.
+    public static let aptDistributions = ["debian", "ubuntu"]
+
+    /// The distributions the recipe serves; nil: every one.
+    public var servedDistributions: [String]? {
+        if let distributions {
+            return distributions
+        }
+        return guest == .linux ? Self.aptDistributions : nil
+    }
     /// nil: the default (install them).
     public var commandLineTools: Bool?
     /// A Linux recipe that installs a desktop asks for a screen: the image, and every box made
@@ -119,7 +136,7 @@ public struct ImageRecipe: Equatable, Sendable {
     public static let defaultTimeoutSeconds = 1800
     /// Every key the format knows, by where it stands; anything else is refused. The guide for
     /// agents (Recipes/WRITING-RECIPES.md) lists the same keys, and a test holds it to these.
-    static let recipeKeys: Set<String> = ["version", "description", "guest", "commandLineTools", "screen", "steps", "update", "checks", "inputs", "parameters"]
+    static let recipeKeys: Set<String> = ["version", "description", "guest", "distributions", "commandLineTools", "screen", "steps", "update", "checks", "inputs", "parameters"]
     static let stepKeys: Set<String> = ["name", "run", "copy", "to", "mode", "user", "env", "timeoutSeconds"]
     static let inputKeys: Set<String> = ["description"]
     static let parameterKeys: Set<String> = ["description", "default"]
@@ -224,6 +241,24 @@ public struct ImageRecipe: Equatable, Sendable {
                 throw fail("\"guest\" must be one of \(Guest.allCases.map { "\"\($0.rawValue)\"" }.joined(separator: ", ")); leave it out for a macOS recipe")
             }
             guest = known
+        }
+        var distributions: [String]?
+        if let value = root["distributions"] {
+            let known = LinuxBase.known.reduce(into: [String]()) { list, base in
+                if !list.contains(base.distribution) {
+                    list.append(base.distribution)
+                }
+            }
+            guard guest != .macOS else {
+                throw fail("\"distributions\" is for Linux recipes (\"guest\": \"linux\" or \"any\")")
+            }
+            guard let list = value as? [String], !list.isEmpty, Set(list).count == list.count else {
+                throw fail("\"distributions\" must be a list of distribution names, each once (of \(known.map { "\"\($0)\"" }.joined(separator: ", ")))")
+            }
+            for name in list where !known.contains(name) {
+                throw fail("\"distributions\" names \"\(Printable.line(name, limit: 40))\", which this agent-vm does not build (it builds \(known.map { "\"\($0)\"" }.joined(separator: ", ")))")
+            }
+            distributions = list
         }
         var commandLineTools: Bool?
         if let value = root["commandLineTools"] {
@@ -349,7 +384,7 @@ public struct ImageRecipe: Equatable, Sendable {
             throw fail("\(shared) is both an input and a parameter")
         }
         let digest = hex(hasher.finalize())
-        return ImageRecipe(description: description, guest: guest, commandLineTools: commandLineTools, screen: screen, steps: steps, updateSteps: updateSteps, checks: checks,
+        return ImageRecipe(description: description, guest: guest, distributions: distributions, commandLineTools: commandLineTools, screen: screen, steps: steps, updateSteps: updateSteps, checks: checks,
                            digest: digest, text: text, path: path, inputs: inputs, parameters: parameters)
     }
 
@@ -467,8 +502,14 @@ public struct ImageRecipe: Equatable, Sendable {
 
     /// Refuses a recipe that is for the other guest, before anything boots. `image` is the
     /// image being built, or the one it starts from.
-    public func check(serves kind: GuestKind, image: String) throws {
+    /// `distribution`: the Linux image's (its os-release ID), when it is known.
+    public func check(serves kind: GuestKind, image: String, distribution: String? = nil) throws {
         guard !guest.serves(kind) else {
+            if kind == .linux, let distribution, let served = servedDistributions, !served.contains(distribution) {
+                let said = distributions == nil ? "it uses apt, for \(served.joined(separator: " and ")) images (a recipe for other distributions lists them in \"distributions\")"
+                                                : "it is for \(served.joined(separator: ", ")) images (its \"distributions\")"
+                throw AgentVMError.invalidRecipe(path: path, reason: "\(said), and image \(image) runs \(Printable.line(distribution, limit: 40))")
+            }
             return
         }
         switch kind {

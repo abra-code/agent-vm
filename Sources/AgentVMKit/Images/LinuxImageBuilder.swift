@@ -89,7 +89,7 @@ extension ImageBuilder {
             throw AgentVMError.virtualMachine(operation: "configure \(options.name)", message: problem)
         }
         for recipe in options.recipes {
-            try recipe.check(serves: .linux, image: options.name)
+            try recipe.check(serves: .linux, image: options.name, distribution: options.base.distribution)
         }
         let kernel = try options.base.kernel(pageBytes: options.pageBytes ?? options.base.defaultPageBytes)
         let daemon = LocalGuestDaemon.inspectLinux(options.guestDaemon)
@@ -284,9 +284,10 @@ extension ImageBuilder {
             // Before the recipes: one of them may give the account sudo on purpose.
             try await sealCheck(machine, checks: [LinuxSetup.accountCheck(user: user)], what: "account check")
             if options.commandLineTools {
-                let version = try await guestCapture(machine, Self.rootRequest(LinuxSetup.toolsVersion))
-                let label = try LinuxSetup.packageVersion(version.stdout, package: LinuxSetup.toolsPackage)
-                current = try store.update(current) { $0.commandLineTools = "\(LinuxSetup.toolsPackage) \(label)" }
+                let toolsPackage = LinuxSetup.toolsPackage(distribution: distribution)
+                let version = try await guestCapture(machine, Self.rootRequest(LinuxSetup.toolsVersion(distribution: distribution)))
+                let label = try LinuxSetup.packageVersion(version.stdout, package: toolsPackage)
+                current = try store.update(current) { $0.commandLineTools = "\(toolsPackage) \(label)" }
             }
 
             current = try await applyRecipes(options.recipes, to: current, machine: machine)
@@ -314,21 +315,23 @@ extension ImageBuilder {
     /// missing, then the recipes in order. Returns the updated image.
     func configureLinux(_ image: GoldenImage, machine: GuestMachine, commandLineTools: Bool, recipes: [ImageRecipe]) async throws -> GoldenImage {
         var current = image
-        var steps = [LinuxSetup.waitForNetwork, LinuxSetup.toolFolder(user: current.record.userName)]
+        let distribution = current.record.linux?.distribution ?? "debian"
+        var steps = [LinuxSetup.waitForNetwork(distribution: distribution), LinuxSetup.toolFolder(user: current.record.userName)]
         var installsTools = false
         if commandLineTools {
             if let installed = current.record.commandLineTools {
                 log("  the compiler and make are already installed (\(installed))")
             } else {
-                steps += [LinuxSetup.packageLists, LinuxSetup.tools]
+                steps += [LinuxSetup.packageLists(distribution: distribution), LinuxSetup.tools(distribution: distribution)]
                 installsTools = true
             }
         }
         try await runLinuxSteps(steps, machine: machine, offset: 0, count: steps.count)
         if installsTools {
-            let version = try await guestCapture(machine, Self.rootRequest(LinuxSetup.toolsVersion))
-            let label = try LinuxSetup.packageVersion(version.stdout, package: LinuxSetup.toolsPackage)
-            current = try store.update(current) { $0.commandLineTools = "\(LinuxSetup.toolsPackage) \(label)" }
+            let toolsPackage = LinuxSetup.toolsPackage(distribution: distribution)
+            let version = try await guestCapture(machine, Self.rootRequest(LinuxSetup.toolsVersion(distribution: distribution)))
+            let label = try LinuxSetup.packageVersion(version.stdout, package: toolsPackage)
+            current = try store.update(current) { $0.commandLineTools = "\(toolsPackage) \(label)" }
         }
         return try await applyRecipes(recipes, to: current, machine: machine)
     }
@@ -397,7 +400,7 @@ extension ImageBuilder {
                                                   output: "the cloud image is \(release.distribution) \(release.version), not \(base.name)")
         }
         let kernel = try LinuxSetup.token(try await answer(LinuxSetup.kernel), what: "kernel version")
-        let architecture = try LinuxSetup.token(try await answer(LinuxSetup.architecture), what: "architecture")
+        let architecture = try LinuxSetup.token(try await answer(LinuxSetup.architecture(distribution: base.distribution)), what: "architecture")
         guard let pageSize = LinuxPageSize.parsed(try await answer(LinuxSetup.pageSize)) else {
             throw AgentVMError.guestCommandFailed(command: LinuxSetup.pageSize, status: 0, output: "the guest's page size is not one a kernel has")
         }

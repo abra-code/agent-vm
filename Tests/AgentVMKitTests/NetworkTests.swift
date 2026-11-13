@@ -1233,9 +1233,18 @@ final class HoldingServer: @unchecked Sendable {
         let proxied = GuestNetworkSetup.command(for: .allowlist, guest: .linux)
         #expect(GuestNetworkSetup.command(for: .off, guest: .linux) == proxied)
         // apt, ssh, and shells that exec did not start; each written beside the file and moved.
-        for path in ["/etc/apt/apt.conf.d/90agent-vm-proxy", "/etc/ssh/ssh_config.d/agent-vm.conf", "/etc/profile.d/agent-vm-proxy.sh"] {
+        for path in ["/etc/profile.d/agent-vm-proxy.sh"] {
             #expect(proxied.contains("> \(path).new && /usr/bin/chmod 644 \(path).new && /usr/bin/mv -f \(path).new \(path) || exit 1"), "\(path)")
         }
+        // apt's file where the system has apt, dnf's where it has dnf (Fedora), and the ssh
+        // line for the nc the system has (Fedora's is nmap's ncat)
+        for path in ["/etc/apt/apt.conf.d/90agent-vm-proxy", "/etc/dnf/libdnf5.conf.d/90-agent-vm-proxy.conf", "/etc/ssh/ssh_config.d/agent-vm.conf"] {
+            #expect(proxied.contains("> \(path).new && /usr/bin/chmod 644 \(path).new && /usr/bin/mv -f \(path).new \(path)"), "\(path)")
+        }
+        #expect(proxied.contains("if [ -d /etc/apt/apt.conf.d ]; then /usr/bin/printf"))
+        #expect(proxied.contains("if [ -d /etc/dnf ]; then /usr/bin/mkdir -p /etc/dnf/libdnf5.conf.d && /usr/bin/printf '%s\\n' '# Written by agent-vm at each start of a box whose network goes through its proxy (allowlist or off).' '[main]' 'proxy=http://127.0.0.1:3128'"))
+        #expect(proxied.contains("if [ -x /usr/bin/ncat ]; then /usr/bin/printf") && proxied.contains("ProxyCommand /usr/bin/ncat --proxy 127.0.0.1:3128 --proxy-type http %h %p"))
+        #expect(proxied.contains("ProxyCommand /usr/bin/nc -X connect -x 127.0.0.1:3128 %h %p"))
         #expect(proxied.contains(#"'Acquire::http::Proxy "http://127.0.0.1:3128";' 'Acquire::https::Proxy "http://127.0.0.1:3128";'"#))
         #expect(proxied.contains("'export HTTPS_PROXY=http://127.0.0.1:3128'") && proxied.contains("'export NODE_USE_ENV_PROXY=1'"))
         #expect(proxied.contains("'export NO_PROXY=localhost,127.0.0.1,::1'"))
@@ -1245,7 +1254,7 @@ final class HoldingServer: @unchecked Sendable {
         }
         #expect(Self.isValidShell(proxied))
         // The lines go in single quotes.
-        #expect((GuestNetworkSetup.linuxAptProxyLines + GuestNetworkSetup.linuxProfileLines).allSatisfy { !$0.contains("'") })
+        #expect((GuestNetworkSetup.linuxAptProxyLines + GuestNetworkSetup.linuxDnfProxyLines + GuestNetworkSetup.linuxProfileLines + GuestNetworkSetup.ncatSSHConfigLines).allSatisfy { !$0.contains("'") })
         // A macOS guest is sent what it always was.
         #expect(GuestNetworkSetup.command(for: .allowlist, guest: .macOS) == GuestNetworkSetup.command(for: .allowlist))
         #expect(GuestNetworkSetup.command(for: .open, guest: .macOS) == GuestNetworkSetup.command(for: .open))
@@ -1253,9 +1262,10 @@ final class HoldingServer: @unchecked Sendable {
 
     @Test func linuxOpenBoxesLoseThem() {
         let open = GuestNetworkSetup.command(for: .open, guest: .linux)
-        #expect(open.contains("/usr/bin/rm -f /etc/apt/apt.conf.d/90agent-vm-proxy /etc/apt/apt.conf.d/90agent-vm-proxy.new /etc/ssh/ssh_config.d/agent-vm.conf /etc/ssh/ssh_config.d/agent-vm.conf.new /etc/profile.d/agent-vm-proxy.sh /etc/profile.d/agent-vm-proxy.sh.new || exit 1"))
+        #expect(open.contains("/usr/bin/rm -f /etc/apt/apt.conf.d/90agent-vm-proxy /etc/apt/apt.conf.d/90agent-vm-proxy.new /etc/dnf/libdnf5.conf.d/90-agent-vm-proxy.conf /etc/dnf/libdnf5.conf.d/90-agent-vm-proxy.conf.new /etc/ssh/ssh_config.d/agent-vm.conf /etc/ssh/ssh_config.d/agent-vm.conf.new /etc/profile.d/agent-vm-proxy.sh /etc/profile.d/agent-vm-proxy.sh.new || exit 1"))
         // The wait for the card's address is bounded and does not fail the start.
         #expect(open.contains("/usr/lib/systemd/systemd-networkd-wait-online --timeout=15 > /dev/null 2>&1 || /usr/bin/echo"))
+        #expect(open.contains("if [ -d /run/NetworkManager ] && [ -x /usr/bin/nm-online ]; then /usr/bin/nm-online -s -q -t 15 || /usr/bin/echo"))
         #expect(!open.contains("Acquire") && !open.contains("export "))
         #expect(Self.isValidShell(open))
     }

@@ -22,6 +22,7 @@ A recipe is a JSON object. A key that is not in these tables is an error.
 | `version` | yes | Always `1`. |
 | `description` | no | One line saying what the recipe installs. Always write one. |
 | `guest` | no | The system the recipe is for: `"macos"` (the default), `"linux"`, or `"any"` for commands that are the same on both (an `npm install`). A recipe for the other system is refused before anything is built. |
+| `distributions` | no | For a Linux recipe: the distributions it is written for, by their os-release names, of `"debian"`, `"ubuntu"` and `"fedora"`. Without it a `"linux"` recipe is taken as written for apt, `["debian", "ubuntu"]`, and a recipe for `"any"` guest serves every distribution. A recipe is refused for an image of a distribution it does not list, before anything is built. |
 | `commandLineTools` | no | `false` skips Xcode's Command Line Tools (git, clang, make, python3); in a Linux image, the compiler and make. Leave it out unless told otherwise. |
 | `screen` | no | Linux recipes only: `true` when the recipe installs a desktop. The image and every box made from it then have a display, keyboard and pointer, and `agent-vm box view` shows the desktop. Leave it out otherwise. |
 | `steps` | no | A list of steps, run in order while the image is built. |
@@ -112,12 +113,13 @@ A step has either `run`, or `copy` with `to`. The same keys are used in `steps` 
 
 ### In a Linux image
 
-A recipe with `"guest": "linux"` runs in Debian 13 or Ubuntu 26.04 on ARM (`arm64`, which `uname -m` calls `aarch64`). The rules above hold, with these differences:
+A recipe with `"guest": "linux"` runs in Debian 13 or Ubuntu 26.04 on ARM (`arm64`, which `uname -m` calls `aarch64`), or in Fedora 45 when its `distributions` names `"fedora"`. The rules above hold, with these differences:
 
 - **The box user's home is `/home/$AGENT_VM_BOX_USER`**, and the account is no administrator: it is in no group but its own and has no password.
 - **There is no `sudo` for the box user at all,** in a step or in a box. Everything that needs root is a root step. Do not add a sudo rule in your recipe: tell the person that `Recipes/linux-sudo` exists, and let them decide.
 - **The path** is `~/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin`. `~/.local/bin` is first, so what `pip`, `pipx`, `uv`, `cargo install --root ~/.local` and `npm install --global` (with the Node recipe's settings) put there is found by later steps, by checks and in a box, with no link and no root step. There is no Homebrew.
 - **Packages come from apt, in a root step that asks nothing:** `"run": "apt-get -q -y update && apt-get -q -y install ripgrep"` with `"env": {"DEBIAN_FRONTEND": "noninteractive"}`. Run `apt-get update` in the same step: the image's package lists may be old. An update step upgrades the same packages with `apt-get -q -y install --only-upgrade ...`. Do not run `apt-get upgrade` or `dist-upgrade` in a recipe: the system's own updates are `agent-vm image update`'s.
+- **In Fedora packages come from dnf,** in a root step: `"run": "dnf -y install ripgrep"` (dnf refreshes its own lists; an update step runs `dnf -y upgrade ripgrep`). Package names differ from Debian's (`gcc-c++`, not `g++`; `python3-pip`), and SELinux is on: a tool installed by dnf works, one that writes files where services read them may need the right label. A recipe for both families lists `"distributions": ["debian", "ubuntu", "fedora"]` and picks its commands by `/etc/os-release` (`. /etc/os-release; case "$ID" in fedora) ...;; *) ...;; esac`).
 - **What the image has:** `bash`, `git`, `curl`, `jq`, `tar`, `xz`, `unzip`, `zip`, `python3`, and unless turned off `gcc`, `g++` and `make`. Not there: `pip`, Node. For Node say that your recipe needs `Recipes/linux-node` (Debian's own Node is too old to use a box's proxy).
 - **A file downloaded from a tool's site is checked before it is used,** against a checksum the site publishes (`sha256sum --check`), as `linux-node` does. apt checks its own packages.
 - **In a box the network is a proxy and nothing else** (by default): there is no network card. Tools that read `HTTPS_PROXY` work; one that does not cannot reach anything. `apt-get` in a box, as root from the Mac, needs `--allow pack:debian` (`pack:ubuntu` in an Ubuntu box).

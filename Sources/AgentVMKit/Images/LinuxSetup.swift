@@ -34,6 +34,21 @@ enum LinuxSetup {
     /// plain lines (with a terminal of its own it sends blank lines by the hundred).
     static let apt = "/usr/bin/apt-get -q -y -o Dpkg::Use-Pty=0"
 
+    /// dnf (Fedora's dnf5) as every step runs it: no questions.
+    static let dnf = "/usr/bin/dnf -y"
+
+    /// How a distribution installs and lists its software: Debian and Ubuntu with apt and dpkg,
+    /// Fedora with dnf and rpm. Every step that differs asks this (the image's distribution, as
+    /// its os-release names it; one agent-vm does not know is taken as apt's).
+    enum Family: Equatable {
+        case apt
+        case dnf
+
+        init(distribution: String) {
+            self = distribution == "fedora" ? .dnf : .apt
+        }
+    }
+
     /// The quiet time allowed to a step that may download a kernel. apt prints nothing while
     /// one package downloads, and Ubuntu's kernel modules are one package of 283 MB: 76
     /// minutes of silence at 0.5 Mbit/s. A stuck download still ends, by apt's own timeouts.
@@ -56,6 +71,16 @@ enum LinuxSetup {
     static let osRelease = "/usr/bin/cat /etc/os-release"
     static let kernel = "/usr/bin/uname -r"
     static let architecture = "/usr/bin/dpkg --print-architecture"
+    /// The architecture by Debian's name for it (arm64), whatever the distribution calls it:
+    /// rpm says aarch64.
+    static func architecture(distribution: String) -> String {
+        switch Family(distribution: distribution) {
+        case .apt:
+            return architecture
+        case .dnf:
+            return #"machine="$(/usr/bin/uname -m)" || exit 1; if [ "$machine" = aarch64 ]; then /usr/bin/echo arm64; else /usr/bin/echo "$machine"; fi"#
+        }
+    }
     /// The size of the running kernel's memory pages in bytes.
     static let pageSize = "/usr/bin/getconf PAGESIZE"
     /// The size of the root file system in bytes.
@@ -70,11 +95,14 @@ enum LinuxSetup {
     /// After a disk was made longer: the root partition, then its file system, grown into the
     /// new room. Debian's image does that by itself at boot; Ubuntu's leaves it to cloud-init,
     /// which is off in a sealed image. Where it is done already, growpart says so with status 1
-    /// and resize2fs finds nothing to do.
+    /// and resize2fs finds nothing to do. Fedora's root is btrfs, grown while mounted by btrfs
+    /// itself (a subvolume's source reads "/dev/vda4[/root]": the device is before the bracket).
     static let growRoot = Step("grow the root file system",
-        #"root="$(/usr/bin/findmnt -n -o SOURCE /)" || exit 1; name="${root#/dev/}"; number="$(/usr/bin/cat "/sys/class/block/$name/partition")" || exit 1; "#
+        #"root="$(/usr/bin/findmnt -n -o SOURCE /)" || exit 1; root="${root%%\[*}"; type="$(/usr/bin/findmnt -n -o FSTYPE /)" || exit 1; "#
+        + #"name="${root#/dev/}"; number="$(/usr/bin/cat "/sys/class/block/$name/partition")" || exit 1; "#
         + #"disk="/dev/$(/usr/bin/lsblk -n -o PKNAME "$root")"; said="$(/usr/bin/growpart "$disk" "$number" 2>&1)"; status=$?; "#
-        + #"if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then /usr/bin/echo "$said"; exit 1; fi; /usr/sbin/resize2fs "$root" 2>&1"#,
+        + #"if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then /usr/bin/echo "$said"; exit 1; fi; "#
+        + #"if [ "$type" = btrfs ]; then /usr/sbin/btrfs filesystem resize max / 2>&1; else /usr/sbin/resize2fs "$root" 2>&1; fi"#,
         timeout: 300)
 
     /// What a build runs first when the image is to boot another kernel than the cloud image
@@ -99,23 +127,28 @@ enum LinuxSetup {
     /// Setting the system up, after the first boot: the box user, the packages, git's include.
     /// `afterKernelSwitch`: `kernelSwitch` ran in this build, and what it did is not done again.
     static func steps(user: String, tools: Bool, distribution: String = "debian", afterKernelSwitch: Bool = false) -> [Step] {
+        let lists = packageLists(distribution: distribution)
+        let install = Family(distribution: distribution) == .dnf ? dnf : apt
+        // Fedora's ssh reaches a proxied box's network through nmap's ncat (GuestNetworkSetup);
+        // Debian's and Ubuntu's nc is in their cloud images.
+        let wanted = packages + (Family(distribution: distribution) == .dnf ? ["nmap-ncat"] : [])
         var steps = [
             // cloud-init was told to create no account; its default one would have sudo
             // without a password. The box user's password is locked: there is none to know.
             Step("account \(user)",
                  // One name to a getent: asked for two, it fails when either is missing.
-                 "if /usr/bin/getent passwd debian > /dev/null || /usr/bin/getent passwd ubuntu > /dev/null; then /usr/bin/echo 'the first boot made a default account'; exit 1; fi; "
+                 "if /usr/bin/getent passwd debian > /dev/null || /usr/bin/getent passwd ubuntu > /dev/null || /usr/bin/getent passwd fedora > /dev/null; then /usr/bin/echo 'the first boot made a default account'; exit 1; fi; "
                  + "/usr/sbin/useradd --create-home --shell /bin/bash --uid 1000 --user-group \(user) && /usr/bin/passwd --lock \(user) > /dev/null && "
                  + "\(toolFolder(user: user).script) && /usr/bin/id \(user)"),
-            packageLists,
-            systemUpdates,
-            Step(packages.joined(separator: ", "), "\(apt) install \(packages.joined(separator: " "))", timeout: 900),
+            lists,
+            systemUpdates(distribution: distribution),
+            Step(wanted.joined(separator: ", "), "\(install) install \(wanted.joined(separator: " "))", timeout: 900),
         ]
         if tools {
-            steps.append(self.tools)
+            steps.append(self.tools(distribution: distribution))
         }
         if afterKernelSwitch {
-            steps.removeAll { $0 == packageLists }
+            steps.removeAll { $0 == lists }
         } else if distribution == "ubuntu" {
             steps.insert(removeNeedrestart, at: 1)
         }
@@ -143,32 +176,77 @@ enum LinuxSetup {
     /// A changed configuration file keeps what the image has (what sealing wrote among it).
     static let systemUpdates = Step("system updates", "\(apt) -o Dpkg::Options::=--force-confold dist-upgrade", timeout: kernelDownloadTimeout)
 
+    /// The package lists by family. dnf fails when a repository's metadata cannot be fetched,
+    /// and tries a mirror again by itself.
+    static func packageLists(distribution: String) -> Step {
+        switch Family(distribution: distribution) {
+        case .apt:
+            return packageLists
+        case .dnf:
+            return Step("package lists", "\(dnf) makecache --refresh", timeout: 600)
+        }
+    }
+
+    /// The system's updates by family. rpm keeps a changed configuration file as it is and
+    /// writes the package's new one beside it (.rpmnew), as apt's confold does.
+    static func systemUpdates(distribution: String) -> Step {
+        switch Family(distribution: distribution) {
+        case .apt:
+            return systemUpdates
+        case .dnf:
+            return Step("system updates", "\(dnf) upgrade --refresh", timeout: kernelDownloadTimeout)
+        }
+    }
+
     /// What `image update --system` runs in a Linux image: the distribution's updates, then
     /// what they left behind (an older kernel, downloaded packages).
-    static let systemUpdate: [Step] = [
-        packageLists,
-        systemUpdates,
-        Step("remove what is no longer needed", "\(apt) autoremove --purge && \(apt) clean", timeout: 900),
-    ]
+    static let systemUpdate: [Step] = systemUpdate(distribution: "debian")
+
+    static func systemUpdate(distribution: String) -> [Step] {
+        let removal: String
+        switch Family(distribution: distribution) {
+        case .apt:
+            removal = "\(apt) autoremove --purge && \(apt) clean"
+        case .dnf:
+            removal = "\(dnf) autoremove && /usr/bin/dnf clean all"
+        }
+        return [
+            packageLists(distribution: distribution),
+            systemUpdates(distribution: distribution),
+            Step("remove what is no longer needed", removal, timeout: 900),
+        ]
+    }
 
     /// Every package with its version and state, one to a line: compared before and after an
     /// update to tell whether anything changed.
     static let packageList = #"/usr/bin/dpkg-query -W -f '${Package}:${Architecture} ${Version} ${db:Status-Status}\n'"#
+
+    /// The same by family; rpm lists only what is installed, so each line says so as dpkg's do.
+    static func packageList(distribution: String) -> String {
+        switch Family(distribution: distribution) {
+        case .apt:
+            return packageList
+        case .dnf:
+            return #"/usr/bin/rpm -qa --qf '%{NAME}.%{ARCH} %{EPOCHNUM}:%{VERSION}-%{RELEASE} installed\n'"#
+        }
+    }
     /// The newest kernel in /boot, as its file's path ("/boot/vmlinuz-6.12.48+deb13-cloud-arm64").
     static let newestKernel = "/usr/bin/ls /boot/vmlinuz-* | /usr/bin/sort -V | /usr/bin/tail -n 1"
 
     /// How many packages differ between two outputs of `packageList`: installed in one and
     /// not the other, or at another version. A line that is not a package's is not counted.
+    /// rpm lists a package once for each version installed side by side (Fedora's kernels):
+    /// its versions are compared as a whole.
     static func packageChanges(before: String, after: String) -> Int {
-        func installed(_ text: String) -> [String: String] {
-            var result: [String: String] = [:]
+        func installed(_ text: String) -> [String: [String]] {
+            var result: [String: [String]] = [:]
             for line in text.split(whereSeparator: \.isNewline) {
                 let fields = line.split(separator: " ", omittingEmptySubsequences: true)
                 if fields.count == 3, fields[2] == "installed" {
-                    result[String(fields[0])] = String(fields[1])
+                    result[String(fields[0]), default: []].append(String(fields[1]))
                 }
             }
-            return result
+            return result.mapValues { $0.sorted() }
         }
         let old = installed(before)
         let new = installed(after)
@@ -206,12 +284,47 @@ enum LinuxSetup {
 
     static let tools = Step("the compiler and make (\(toolsPackage))", "\(apt) install \(toolsPackage)", timeout: 1800)
 
+    /// What `--command-line-tools` installs by family: Fedora has no build-essential; gcc, its
+    /// C++ compiler and make are what it brings, and gcc's version is the one recorded.
+    static func toolsPackage(distribution: String) -> String {
+        return Family(distribution: distribution) == .dnf ? "gcc" : toolsPackage
+    }
+
+    static func tools(distribution: String) -> Step {
+        switch Family(distribution: distribution) {
+        case .apt:
+            return tools
+        case .dnf:
+            return Step("the compiler and make (gcc, gcc-c++, make)", "\(dnf) install gcc gcc-c++ make", timeout: 1800)
+        }
+    }
+
+    static func toolsVersion(distribution: String) -> String {
+        switch Family(distribution: distribution) {
+        case .apt:
+            return toolsVersion
+        case .dnf:
+            return "/usr/bin/rpm -q --qf '%{VERSION}-%{RELEASE}' \(toolsPackage(distribution: distribution))"
+        }
+    }
+
     /// Run first in every later boot that builds on an image (a derived image, an update):
     /// the daemon answers before the network card has its address, and a step that downloads
     /// would fail on the name lookup. Half a minute at most, and no failure when it runs out:
     /// a recipe that needs no network still works, and one that does says what it misses.
     static let waitForNetwork = Step("wait for the network",
         "/usr/lib/systemd/systemd-networkd-wait-online --timeout=30 > /dev/null 2>&1 || /usr/bin/echo 'the network card got no address yet'", timeout: 60)
+
+    /// The same by family: Fedora's network is NetworkManager's, not networkd's.
+    static func waitForNetwork(distribution: String) -> Step {
+        switch Family(distribution: distribution) {
+        case .apt:
+            return waitForNetwork
+        case .dnf:
+            return Step("wait for the network",
+                        "/usr/bin/nm-online -s -q -t 30 || /usr/bin/echo 'the network card got no address yet'", timeout: 60)
+        }
+    }
 
     /// The installed version of the tools package, for the record.
     static let toolsVersion = "/usr/bin/dpkg-query -W -f '${Version}' \(toolsPackage)"
@@ -326,8 +439,47 @@ enum LinuxSetup {
     static let ubuntuTimers = ["motd-news.timer", "update-notifier-download.timer", "update-notifier-motd.timer", "fwupd-refresh.timer", "ua-timer.timer",
                                "snapd.snap-repair.timer", "apport-autoreport.timer"]
 
+    /// Fedora's timers that change the system or ask the network by themselves: dnf's cache
+    /// refresh (the cloud image has no automatic updates of its own, no dnf-automatic).
+    static let fedoraTimers = ["dnf-makecache.timer"]
+    // The check also names dnf-automatic's timer, which an image gets only when a recipe
+    // installs dnf-automatic: the seal cannot switch off a unit that is not there.
+
+    /// Sealing a Fedora image: what `seal` does, the Fedora way. Its network is NetworkManager's
+    /// (cloud-init wrote a connection that names the first boot's card), and its boot entries
+    /// are BLS files that grubby changes, with grub's own settings in /etc/default/grub.
+    static let fedoraSeal: [Step] = [
+        Step("remove the ssh server and polkit",
+             #"polkit=polkit; if [ -f \#(polkitRules) ]; then polkit=""; fi; "#
+             + "\(dnf) remove openssh-server $polkit && /usr/bin/dnf clean all || exit 1; "
+             + "/usr/bin/systemctl stop sshd-vsock.socket sshd-unix-local.socket; /usr/bin/systemctl daemon-reload",
+             timeout: 900),
+        Step("no update timers", "/usr/bin/systemctl disable --now \(fedoraTimers.joined(separator: " "))"),
+        // NetworkManager makes a connection for any wired card it has none for (its automatic
+        // default), by DHCP: with cloud-init's connections gone, that is every boot's.
+        Step("network settings for any card",
+             "/usr/bin/rm -f /etc/NetworkManager/system-connections/cloud-init-*.nmconnection && "
+             + #"/usr/bin/printf 'network: {config: disabled}\n' > /etc/cloud/cloud.cfg.d/99-agent-vm.cfg && "#
+             + "/usr/bin/install -m 644 /dev/null /etc/cloud/cloud-init.disabled && "
+             + "/usr/bin/install -d -m 755 /etc/systemd/resolved.conf.d && "
+             + #"/usr/bin/printf '%s\n' '[Resolve]' 'LLMNR=no' 'MulticastDNS=no' > /etc/systemd/resolved.conf.d/agent-vm.conf && "#
+             + "/usr/bin/systemctl restart systemd-resolved.service"),
+        // Fedora's grub2-mkconfig writes every boot entry's kernel line (a BLS file in
+        // /boot/loader/entries) from /etc/default/grub, so the console goes there, named last
+        // as on Debian; a grubby change of the entries alone is undone by the next run
+        // (measured). A later kernel's entry copies the running kernel's line.
+        Step("console and boot menu",
+             #"/usr/bin/printf '%s\n' 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT console=hvc0"' 'GRUB_TIMEOUT=0' >> /etc/default/grub && /usr/sbin/grub2-mkconfig -o /boot/grub2/grub.cfg 2>&1"#,
+             timeout: 300),
+        Step("vsock at boot", #"/usr/bin/printf 'vmw_vsock_virtio_transport\n' > /etc/modules-load.d/agent-vm.conf"#),
+        stopOnKernelFault,
+    ]
+
     /// Sealing for a distribution: the shared steps, and after the first of them Ubuntu's own.
     static func seal(distribution: String) -> [Step] {
+        if Family(distribution: distribution) == .dnf {
+            return fedoraSeal
+        }
         var steps = seal
         if distribution == "ubuntu" {
             steps.insert(Step("remove snapd, Ubuntu's background services, and daemons for hardware a box does not have",
@@ -348,6 +500,9 @@ enum LinuxSetup {
     /// What must be true of a sealed image of a distribution. A script prints what it found
     /// and ends with a status other than 0 when it is not.
     static func sealChecks(distribution: String = "debian", daemonPort: UInt32 = GuestProtocol.port) -> [Step] {
+        if Family(distribution: distribution) == .dnf {
+            return fedoraSealChecks(daemonPort: daemonPort)
+        }
         // polkitd has a check of its own: a desktop's recipe may keep it. So may it keep
         // Ubuntu's udisks2, which is named only without that recipe's rules file.
         let removed = ["openssh-server", "unattended-upgrades"] + (distribution == "ubuntu" ? ubuntuRemoved : [])
@@ -399,6 +554,50 @@ enum LinuxSetup {
             Step("no account has a usable password",
                  #"found="$(/usr/bin/passwd -S -a | /usr/bin/grep -E '^[^ ]+ P ')"; if [ -n "$found" ]; then /usr/bin/echo "$found"; exit 1; fi"#),
             Step("cloud-init is off", "if [ ! -e /etc/cloud/cloud-init.disabled ]; then /usr/bin/echo 'cloud-init is still on'; exit 1; fi"),
+        ]
+    }
+
+    /// What must be true of a sealed Fedora image: `sealChecks` in rpm's terms. The network
+    /// checks are the same; the package checks ask rpm; the password check reads /etc/shadow
+    /// (Fedora's passwd cannot list every account): a hash field that starts with neither "!"
+    /// nor "*" is a usable password, an empty one too (Fedora's PAM takes an empty password,
+    /// nullok, so `su` to such an account asks for nothing).
+    static func fedoraSealChecks(daemonPort: UInt32 = GuestProtocol.port) -> [Step] {
+        let shared = sealChecks(distribution: "debian", daemonPort: daemonPort)
+        // rpm -q fails alike for a package that is not installed and for a database it cannot
+        // read; rpm itself is always installed, so a failure to find it is the second.
+        let rpmReads = #"/usr/bin/rpm -q --quiet rpm; reads=$?; if [ "$reads" -ne 0 ]; then /usr/bin/echo 'rpm cannot read its database'; exit 1; fi; "#
+        func named(_ name: String) -> Step {
+            return shared.first { $0.name == name }!
+        }
+        return [
+            named("no ssh server"),
+            named("no ssh server unit"),
+            named("nothing listens on TCP port 22"),
+            named("no TCP port is open to the network"),
+            named("nothing listens on vsock but the guest daemon"),
+            Step("the removed packages are gone",
+                 rpmReads + #"if /usr/bin/rpm -q --quiet openssh-server; then /usr/bin/echo 'openssh-server is installed'; exit 1; fi"#),
+            Step("polkit is gone, or has the rules a desktop's recipe chose",
+                 rpmReads + #"/usr/bin/rpm -q --quiet polkit; status=$?; if [ "$status" -ne 0 ]; then exit 0; fi; "#
+                 + #"if [ ! -f \#(polkitRules) ]; then /usr/bin/echo 'polkit is installed, and no recipe chose its rules in \#(polkitRules)'; exit 1; fi; "#
+                 + #"first="$(/usr/bin/head -n 1 \#(polkitRules))"; if [ "$first" = '\#(polkitDebian)' ]; then "#
+                 + #"if [ "$(/usr/bin/cat \#(polkitRules))" != '\#(polkitDebian)' ]; then /usr/bin/echo '\#(polkitRules) has more than its first line'; exit 1; fi; "#
+                 + #"found="$(/usr/bin/find \#(polkitRuleFolders.joined(separator: " ")) -mindepth 1 -maxdepth 1 -name '*.rules' ! -path \#(polkitRules) -exec /usr/bin/sh -c 'case "$1" in *[!A-Za-z0-9._/-]*) /usr/bin/printf "%s\n" "$1"; exit 0;; esac; /usr/bin/rpm -qf "$1" > /dev/null 2>&1 || /usr/bin/printf "%s\n" "$1"' sh {} ';' 2> /dev/null)"; "#
+                 + #"if [ -n "$found" ]; then /usr/bin/echo "rules files that no package installed: $found"; exit 1; fi; exit 0; fi; "#
+                 + #"if [ "$first" != '\#(polkitDeny)' ]; then /usr/bin/echo '\#(polkitRules) does not begin with \#(polkitDeny) or \#(polkitDebian)'; exit 1; fi; "#
+                 + #"if [ "$(/usr/bin/cat \#(polkitRules))" != "$(/usr/bin/printf '%s\n%s' '\#(polkitDeny)' '\#(polkitDenyRule)')" ]; then /usr/bin/echo '\#(polkitRules) has more than the rule that refuses every request'; exit 1; fi; "#
+                 + #"read="$(/usr/bin/find \#(polkitRuleFolders.joined(separator: " ")) -mindepth 1 -maxdepth 1 -name '*.rules' -printf '%f\0' 2> /dev/null | LC_ALL=C /usr/bin/sort -z | /usr/bin/head -z -n 1 | /usr/bin/tr -d '\0')"; "#
+                 + #"if [ "$read" != '\#(polkitRulesName)' ]; then /usr/bin/echo "polkit reads $read before \#(polkitRulesName)"; exit 1; fi"#),
+            Step("no update timer is on",
+                 #"found=""; for timer in \#((fedoraTimers + ["dnf-automatic.timer"]).joined(separator: " ")); do state="$(/usr/bin/systemctl is-enabled "$timer" 2> /dev/null)"; if [ "$state" = "enabled" ]; then found="$found $timer"; fi; done; "#
+                 + #"if [ -n "$found" ]; then /usr/bin/echo "still enabled:$found"; exit 1; fi"#),
+            Step("no account has a usable password",
+                 #"found="$(/usr/bin/awk -F: '$2 !~ /^[!*]/ { print $1 }' /etc/shadow)" || exit 1; if [ -n "$found" ]; then /usr/bin/echo "$found"; exit 1; fi"#),
+            named("cloud-init is off"),
+            Step("every boot entry has the console",
+                 #"found=""; for entry in /boot/loader/entries/*.conf; do line="$(/usr/bin/grep '^options ' "$entry")"; case "$line" in *" console=hvc0"*) ;; *) found="$found $entry";; esac; done; "#
+                 + #"if [ -n "$found" ]; then /usr/bin/echo "no console=hvc0 in:$found"; exit 1; fi"#),
         ]
     }
 
@@ -488,6 +687,9 @@ enum LinuxSetup {
         // Ubuntu's "admin" group has a sudo rule of its own.
         "admin", "clock", "crontab", "daemon", "dhcpcd", "lxd", "netdev", "rdma", "sgx", "staff", "syslog", "tcpdump", "uuidd", "www-data",
         "fwupd-refresh", "landscape", "snap",
+        // Fedora's (its cloud image's /etc/passwd and /etc/group, and the default account).
+        "fedora", "root", "nobody", "halt", "shutdown", "ftp", "wheel", "dbus", "tss", "chrony", "sssd", "unbound", "ssh_keys",
+        "systemd-journal", "utempter", "printadmin", "wireshark", "cloud-user",
     ]
 
     /// A name for the box user of a Linux image: as for macOS, and not one the system has.

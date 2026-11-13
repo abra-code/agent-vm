@@ -395,7 +395,7 @@ extension ImageBuilder {
                     // A tools update in a Linux image downloads too, and the daemon answers
                     // before the network card has its address.
                     if guest == .linux, !plans.isEmpty {
-                        try await runLinuxSteps([LinuxSetup.waitForNetwork], machine: machine, offset: 0, count: 1)
+                        try await runLinuxSteps([LinuxSetup.waitForNetwork(distribution: record.linux?.distribution ?? "debian")], machine: machine, offset: 0, count: 1)
                     }
                 }
                 let updates = plans.filter { !$0.checksOnly }
@@ -597,7 +597,7 @@ extension ImageBuilder {
             return try LinuxSetup.token(result.stdout, what: "kernel version")
         }
         let previous = try await version(machine)
-        let steps = [LinuxSetup.waitForNetwork] + LinuxSetup.kernelSwitch(kernel, distribution: record.linux?.distribution ?? "debian")
+        let steps = [LinuxSetup.waitForNetwork(distribution: record.linux?.distribution ?? "debian")] + LinuxSetup.kernelSwitch(kernel, distribution: record.linux?.distribution ?? "debian")
         try await runLinuxSteps(steps, machine: machine, offset: 0, count: steps.count)
         try await shutDownAfterUpdate(machine, guest: .linux)
         try checkCanceled()
@@ -662,19 +662,20 @@ extension ImageBuilder {
         }
         let clock = ContinuousClock()
         let began = clock.now
-        let checks = LinuxSetup.sealChecks(distribution: record.linux?.distribution ?? "debian")
+        let distribution = record.linux?.distribution ?? "debian"
+        let checks = LinuxSetup.sealChecks(distribution: distribution)
         let held: Set<String>
         if let sealed {
             held = sealed
         } else {
             held = try await passingChecks(checks, machine: machine)
         }
-        let before = try await answer(LinuxSetup.packageList, "list the packages")
+        let before = try await answer(LinuxSetup.packageList(distribution: distribution), "list the packages")
         progress("system-update", "Installing \(record.systemShort)'s package updates")
         let pageSize = LinuxPageSize.parsed(try await answer(LinuxSetup.pageSize, "read the kernel's page size"))
-        let steps = [LinuxSetup.waitForNetwork] + LinuxSetup.systemUpdate
+        let steps = [LinuxSetup.waitForNetwork(distribution: distribution)] + LinuxSetup.systemUpdate(distribution: distribution)
         try await runLinuxSteps(steps, machine: machine, offset: 0, count: steps.count)
-        let packages = LinuxSetup.packageChanges(before: before, after: try await answer(LinuxSetup.packageList, "list the packages"))
+        let packages = LinuxSetup.packageChanges(before: before, after: try await answer(LinuxSetup.packageList(distribution: distribution), "list the packages"))
         let holds = try await passingChecks(checks, machine: machine)
         if let undone = checks.first(where: { held.contains($0.name) && !holds.contains($0.name) }) {
             throw AgentVMError.guestCommandFailed(command: "check what the update left", status: 1,
@@ -684,7 +685,8 @@ extension ImageBuilder {
         let needsBoot = LinuxSetup.kernelNeedsBoot(running: running, newest: try await answer(LinuxSetup.newestKernel, "find the newest kernel"))
         var tools: String?
         if packages > 0, record.commandLineTools != nil {
-            tools = "\(LinuxSetup.toolsPackage) \(try LinuxSetup.packageVersion(try await answer(LinuxSetup.toolsVersion, "read the compiler's version"), package: LinuxSetup.toolsPackage))"
+            let toolsPackage = LinuxSetup.toolsPackage(distribution: distribution)
+            tools = "\(toolsPackage) \(try LinuxSetup.packageVersion(try await answer(LinuxSetup.toolsVersion(distribution: distribution), "read the compiler's version"), package: toolsPackage))"
         }
         if packages == 0 {
             log("  \(record.systemShort) has every update its package lists offer")
@@ -831,7 +833,7 @@ extension ImageBuilder {
         let kept = (image.record.recipes ?? []).filter { $0.folder != nil }.compactMap(\.name)
         for url in replacing {
             let recipe = try ImageRecipe.load(from: url)
-            try recipe.check(serves: image.record.effectiveGuest, image: image.name)
+            try recipe.check(serves: image.record.effectiveGuest, image: image.name, distribution: image.record.linux?.distribution)
             guard kept.contains(recipe.name) else {
                 let have = kept.isEmpty ? "it keeps none" : "it keeps: \(kept.joined(separator: ", "))"
                 throw AgentVMError.invalidRecipe(path: url.path, reason: "\(image.name) keeps no recipe named \(recipe.name) to replace (\(have)); a recipe is named after its folder")

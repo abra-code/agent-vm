@@ -22,14 +22,18 @@ public enum GuestNetworkSetup {
     //
     // A proxied Linux box has no network card at all, so there is no address, route or DNS to
     // set. What is written is for programs that do not get the proxy variables from exec:
-    // - apt, which root runs and which reads its own file;
-    // - ssh, by the same three lines as on macOS (Debian's nc speaks CONNECT too);
+    // - apt (Debian, Ubuntu) or dnf (Fedora), which root runs and which read their own files;
+    //   the script writes the one whose folder the system has;
+    // - ssh, by the same three lines as on macOS (Debian's nc speaks CONNECT too; Fedora's nc
+    //   is nmap's ncat, which takes the proxy its own way);
     // - shells that were not started by exec (a service, a cron job), through /etc/profile.d.
     // In open mode the three files are removed, and the start waits for the card to be
     // configured, so the first program finds DNS (it does not fail the start when the wait
     // runs out: the box is usable, and the network may come).
 
     static let linuxAptProxyPath = "/etc/apt/apt.conf.d/90agent-vm-proxy"
+    /// dnf5's drop-in folder: a file there adds to /etc/dnf/libdnf5.conf.
+    static let linuxDnfProxyPath = "/etc/dnf/libdnf5.conf.d/90-agent-vm-proxy.conf"
     static let linuxProfilePath = "/etc/profile.d/agent-vm-proxy.sh"
     /// How long an open box's start waits for its network card, in seconds.
     static let linuxOnlineWait = 15
@@ -40,6 +44,14 @@ public enum GuestNetworkSetup {
             "// Written by agent-vm at each start of a box whose network goes through its proxy (allowlist or off).",
             "Acquire::http::Proxy \"\(proxy)\";",
             "Acquire::https::Proxy \"\(proxy)\";",
+        ]
+    }
+
+    static var linuxDnfProxyLines: [String] {
+        return [
+            "# Written by agent-vm at each start of a box whose network goes through its proxy (allowlist or off).",
+            "[main]",
+            "proxy=http://127.0.0.1:\(GuestRelay.port)",
         ]
     }
 
@@ -62,16 +74,20 @@ public enum GuestNetworkSetup {
         case .allowlist, .off:
             steps = [
                 "/usr/bin/mkdir -p \(sshConfigDirectory)",
-                write(linuxAptProxyLines, to: linuxAptProxyPath),
-                write(sshConfigLines, to: sshConfigPath),
+                "if [ -d /etc/apt/apt.conf.d ]; then \(write(linuxAptProxyLines, to: linuxAptProxyPath)); fi",
+                "if [ -d /etc/dnf ]; then /usr/bin/mkdir -p /etc/dnf/libdnf5.conf.d && \(write(linuxDnfProxyLines, to: linuxDnfProxyPath)); fi",
+                "if [ -x /usr/bin/ncat ]; then \(write(ncatSSHConfigLines, to: sshConfigPath)); else \(write(sshConfigLines, to: sshConfigPath)); fi",
                 write(linuxProfileLines, to: linuxProfilePath),
             ]
         case .open:
             steps = [
                 // With what a write that was cut short may have left beside them.
-                "/usr/bin/rm -f \([linuxAptProxyPath, sshConfigPath, linuxProfilePath].flatMap { [$0, $0 + ".new"] }.joined(separator: " "))",
-                // Up to a quarter of a minute for an address; a start is not failed by it.
-                "/usr/lib/systemd/systemd-networkd-wait-online --timeout=\(linuxOnlineWait) > /dev/null 2>&1 || /usr/bin/echo 'the network card got no address yet'",
+                "/usr/bin/rm -f \([linuxAptProxyPath, linuxDnfProxyPath, sshConfigPath, linuxProfilePath].flatMap { [$0, $0 + ".new"] }.joined(separator: " "))",
+                // Up to a quarter of a minute for an address; a start is not failed by it. The
+                // network is NetworkManager's in Fedora, networkd's in Debian and Ubuntu: the wait
+                // is the running one's (Fedora has networkd's wait tool too, with networkd off).
+                "if [ -d /run/NetworkManager ] && [ -x /usr/bin/nm-online ]; then /usr/bin/nm-online -s -q -t \(linuxOnlineWait) || /usr/bin/echo 'the network card got no address yet'; "
+                    + "else /usr/lib/systemd/systemd-networkd-wait-online --timeout=\(linuxOnlineWait) > /dev/null 2>&1 || /usr/bin/echo 'the network card got no address yet'; fi",
             ]
         }
         return steps.map { "\($0) || exit 1" }.joined(separator: "; ")
@@ -120,6 +136,15 @@ public enum GuestNetworkSetup {
             "# Written by agent-vm at each start of a box whose network goes through its proxy (allowlist or off).",
             "Host * !localhost !127.0.0.1 !::1 !*.local",
             "    ProxyCommand /usr/bin/nc -X connect -x 127.0.0.1:\(GuestRelay.port) %h %p",
+        ]
+    }
+
+    /// The same for Fedora, whose nc is nmap's ncat: CONNECT is its HTTP proxy type.
+    static var ncatSSHConfigLines: [String] {
+        return [
+            "# Written by agent-vm at each start of a box whose network goes through its proxy (allowlist or off).",
+            "Host * !localhost !127.0.0.1 !::1 !*.local",
+            "    ProxyCommand /usr/bin/ncat --proxy 127.0.0.1:\(GuestRelay.port) --proxy-type http %h %p",
         ]
     }
 

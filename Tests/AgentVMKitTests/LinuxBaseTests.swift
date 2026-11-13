@@ -29,6 +29,39 @@ import Testing
         #expect(try LinuxBase.digest(for: "cloud-arm64.tar.xz", inList: list + "\n\(Self.digestB)  cloud-arm64.tar.xz") == Self.digestB)
     }
 
+    @Test func fedorasSignedBSDListIsParsed() throws {
+        let sha256A = String(repeating: "ab", count: 32)
+        let sha256B = String(repeating: "cd", count: 32)
+        let list = """
+            -----BEGIN PGP SIGNED MESSAGE-----
+            Hash: SHA256
+
+            # Fedora-Cloud-Base-AmazonEC2-45-1.4.aarch64.raw.xz: 567490936 bytes
+            SHA256 (Fedora-Cloud-Base-AmazonEC2-45-1.4.aarch64.raw.xz) = \(sha256B)
+            # Fedora-Cloud-Base-Generic-45-1.4.aarch64.qcow2: 596705280 bytes
+            SHA256 (Fedora-Cloud-Base-Generic-45-1.4.aarch64.qcow2) = \(sha256A)
+            SHA256 (Fedora-Cloud-Base-UEFI-UKI-45-1.4.aarch64.qcow2) = \(sha256B)
+            -----BEGIN PGP SIGNATURE-----
+
+            iQIzBAEBCAAdFiEET1CmEUzVxpdqfxF5ZVpLAvV3hh4FAmrllHUACgkQZVpLAvV3
+            -----END PGP SIGNATURE-----
+            """
+        let fedora = try LinuxBase.named("fedora")
+        #expect(fedora.id == "fedora-45")
+        #expect(try LinuxBase.digest(for: fedora.file, inList: list, kind: fedora.digest) == sha256A)
+        // The name is the whole of what is between the parentheses
+        #expect(throws: LinuxBase.ListProblem("the checksum list does not name 1.4.aarch64.qcow2")) {
+            _ = try LinuxBase.digest(for: "1.4.aarch64.qcow2", inList: list, kind: .sha256)
+        }
+        // The kind of digest is the one asked for
+        #expect(throws: LinuxBase.ListProblem("the checksum list does not name \(fedora.file)")) {
+            _ = try LinuxBase.digest(for: fedora.file, inList: list, kind: .sha512)
+        }
+        #expect(throws: LinuxBase.ListProblem("the checksum list's line for f does not start with a SHA-256 (64 hexadecimal digits)")) {
+            _ = try LinuxBase.digest(for: "f", inList: "SHA256 (f) = \(sha256A)0\n", kind: .sha256)
+        }
+    }
+
     @Test func aListWithoutTheFileIsRefused() {
         #expect(throws: LinuxBase.ListProblem("the checksum list does not name f.tar.xz")) {
             _ = try LinuxBase.digest(for: "f.tar.xz", inList: "\(Self.digestA)  g.tar.xz\n")
@@ -63,7 +96,7 @@ import Testing
         #expect(try LinuxBase.named("debian").id == LinuxBase.known.first { $0.distribution == "debian" }?.id)
         #expect(try LinuxBase.named("ubuntu-26.04").name == "Ubuntu 26.04")
         #expect(try LinuxBase.named("ubuntu").id == "ubuntu-26.04")
-        #expect(throws: AgentVMError.linuxBase("--linux nope: this agent-vm knows debian-13, ubuntu-26.04 (debian or ubuntu alone means its newest)")) {
+        #expect(throws: AgentVMError.linuxBase("--linux nope: this agent-vm knows debian-13, ubuntu-26.04, fedora-45 (debian or ubuntu or fedora alone means its newest)")) {
             _ = try LinuxBase.named("nope")
         }
         #expect(LinuxBase.known(for: LinuxSystem(distribution: "ubuntu", version: "26.04", name: "Ubuntu 26.04"))?.id == "ubuntu-26.04")

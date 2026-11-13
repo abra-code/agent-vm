@@ -384,6 +384,43 @@ import Testing
         #expect(try refusal(#"{"version": 1, "guest": "any"}"#, .linux) == nil)
     }
 
+    @Test func theDistributionsKeyChoosesTheLinuxImages() throws {
+        let scratch = try Scratch()
+        func refusal(_ json: String, _ distribution: String?) throws -> String? {
+            do {
+                try ImageRecipe.load(from: recipe(json, in: scratch)).check(serves: .linux, image: "img", distribution: distribution)
+                return nil
+            } catch let AgentVMError.invalidRecipe(_, reason) {
+                return reason
+            }
+        }
+        // Without the key a Linux recipe is apt's: Debian and Ubuntu, not Fedora
+        let apt = #"{"version": 1, "guest": "linux"}"#
+        #expect(try refusal(apt, "debian") == nil && refusal(apt, "ubuntu") == nil)
+        #expect(try refusal(apt, "fedora")
+            == #"it uses apt, for debian and ubuntu images (a recipe for other distributions lists them in "distributions"), and image img runs fedora"#)
+        // An image whose distribution is not known (built before records had one) is not refused
+        #expect(try refusal(apt, nil) == nil)
+        // A recipe for both guests serves every distribution
+        #expect(try refusal(#"{"version": 1, "guest": "any"}"#, "fedora") == nil)
+        // What the key lists, and nothing else
+        let fedora = #"{"version": 1, "guest": "linux", "distributions": ["fedora"]}"#
+        #expect(try refusal(fedora, "fedora") == nil)
+        #expect(try refusal(fedora, "debian") == #"it is for fedora images (its "distributions"), and image img runs debian"#)
+        #expect(try refusal(#"{"version": 1, "guest": "any", "distributions": ["debian", "fedora"]}"#, "ubuntu")
+            == #"it is for debian, fedora images (its "distributions"), and image img runs ubuntu"#)
+        #expect(try ImageRecipe.load(from: recipe(fedora, in: scratch)).distributions == ["fedora"])
+        // Mistakes
+        #expect(reason(try recipe(#"{"version": 1, "distributions": ["fedora"]}"#, in: scratch))
+            == #""distributions" is for Linux recipes ("guest": "linux" or "any")"#)
+        #expect(reason(try recipe(#"{"version": 1, "guest": "linux", "distributions": ["arch"]}"#, in: scratch))
+            == #""distributions" names "arch", which this agent-vm does not build (it builds "debian", "ubuntu", "fedora")"#)
+        let notAList = #""distributions" must be a list of distribution names, each once (of "debian", "ubuntu", "fedora")"#
+        #expect(reason(try recipe(#"{"version": 1, "guest": "linux", "distributions": "fedora"}"#, in: scratch)) == notAList)
+        #expect(reason(try recipe(#"{"version": 1, "guest": "linux", "distributions": []}"#, in: scratch)) == notAList)
+        #expect(reason(try recipe(#"{"version": 1, "guest": "linux", "distributions": ["fedora", "fedora"]}"#, in: scratch)) == notAList)
+    }
+
     /// A Linux guest has no /private: its inputs go under /var/tmp, and the request that
     /// removes them names that folder and nothing else.
     @Test func linuxInputsGoUnderVarTmp() throws {

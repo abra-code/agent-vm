@@ -70,7 +70,14 @@ Error: recipe Recipes/homebrew/recipe.json: it is for macOS images, and image de
 
 - **A recipe without the key is a macOS recipe.** A recipe written before 0.7.7 needs no change, and is not taken into a Linux image until someone has looked at it and said `"linux"` or `"any"`.
 - **`"any"`** is for a recipe whose commands are the same on both, such as an `npm install --global` (the bundled `agent-clis` and `acp-agents`). It promises nothing more: its steps still run as written.
-- **`"linux"`** covers every Linux image agent-vm builds. They use apt; a recipe that names a package only one distribution has fails on its own step or check.
+- **`"linux"`** covers the Linux images whose distribution the recipe is for. Debian's and Ubuntu's use apt, Fedora's dnf; a recipe that names a package only one distribution has fails on its own step or check.
+- **`"distributions"`** (since 0.8.11) lists the Linux distributions a recipe is written for, by their os-release names: `"debian"`, `"ubuntu"`, `"fedora"`. Without it a `"linux"` recipe is taken as written for apt (`["debian", "ubuntu"]`, what every Linux recipe was written for before Fedora), and an `"any"` recipe serves every distribution (its commands are the same on macOS and Linux, so they use no package manager). A recipe for an image of another distribution is refused before anything is built, as one for the other guest is:
+
+```
+Error: recipe Recipes/linux-gnome/recipe.json: it uses apt, for debian and ubuntu images (a recipe for other distributions lists them in "distributions"), and image fed runs fedora
+```
+
+  The key is only for `"linux"` and `"any"` recipes; an older agent-vm refuses a recipe with it.
 - **An older agent-vm** (before 0.7.7) refuses a recipe with the key, as it refuses any key it does not know.
 - **The key is part of the recipe's text,** so of its digest.
 - `agent-vm recipe check` shows each recipe's guest; it does not compare recipes with one another, since it knows no image.

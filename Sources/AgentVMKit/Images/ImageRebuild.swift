@@ -335,7 +335,7 @@ extension ImageBuilder {
         // A recipe the image keeps is one its guest took; a hand-edited folder is caught here
         // and not after the old image's place was prepared.
         for recipe in recipes {
-            try recipe.check(serves: guest, image: image.name)
+            try recipe.check(serves: guest, image: image.name, distribution: image.record.linux?.distribution)
         }
         return ImageRebuildPlan(image: image, buildName: buildName, base: base?.name, recipes: recipes,
                                 commandLineTools: image.record.commandLineTools != nil || asked.contains(true))

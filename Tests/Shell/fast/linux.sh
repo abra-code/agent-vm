@@ -22,7 +22,7 @@ test_cloud_image_needs_linux() {
 test_linux_release_must_be_known() {
     run_avm image create x --linux nope
     assert_status 1 || return 1
-    assert_err_contains "--linux nope: this agent-vm knows debian-13, ubuntu-26.04 (debian or ubuntu alone means its newest)" || return 1
+    assert_err_contains "--linux nope: this agent-vm knows debian-13, ubuntu-26.04, fedora-45 (debian or ubuntu or fedora alone means its newest)" || return 1
     assert_missing "$AGENT_VM_HOME/Images/x" || return 1
     assert_missing "$AGENT_VM_HOME/Cache" || return 1
 }

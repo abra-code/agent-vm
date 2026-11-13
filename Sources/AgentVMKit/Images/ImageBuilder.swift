@@ -381,7 +381,7 @@ public final class ImageBuilder {
         let guest = base.record.effectiveGuest
         // Before anything is cloned or booted: a Homebrew recipe has nothing to do in Debian.
         for recipe in options.recipes {
-            try recipe.check(serves: guest, image: base.name)
+            try recipe.check(serves: guest, image: base.name, distribution: base.record.linux?.distribution)
         }
         guard base.record.guestProtocol == AgentVM.guestProtocolVersion else {
             throw AgentVMError.wrongImageState(name: base.name, state: "built with guest protocol \(base.record.guestProtocol.map(String.init) ?? "none"), not \(AgentVM.guestProtocolVersion)", operation: "build an image from")
