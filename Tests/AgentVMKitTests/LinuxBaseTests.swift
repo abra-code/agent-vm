@@ -424,6 +424,43 @@ final class FolderServer: @unchecked Sendable {
         #expect(fixture.gets(fixture.base.file) == 1)
     }
 
+    @Test func aListWhoseSignatureFailsIsRefusedBeforeAnyDownload() async throws {
+        // Ubuntu's real list and detached signature, served from the test folder
+        let scratch = try Scratch()
+        let server = try FolderServer()
+        let base = LinuxBase(id: "signed-1", name: "Signed 1", distribution: "test", version: "1", folder: server.folder,
+                             file: "resolute-server-cloudimg-arm64.img", checksumList: "SHA256SUMS", digest: .sha256, member: "", manifest: nil,
+                             kernels: [LinuxKernel(pageBytes: 4096, package: "linux-image-test", flavor: "test")], defaultPageBytes: 4096,
+                             signature: .detached(file: "SHA256SUMS.gpg", key: LinuxSigningKeys.ubuntuCloudImage, fingerprint: LinuxSigningKeys.ubuntuCloudImageFingerprint))
+        var cache = try LinuxBaseCache(root: scratch.root.appendingPathComponent("store", isDirectory: true), environment: [:])
+        cache.minimumFree = 0
+        func refusal() async -> String? {
+            do {
+                _ = try await cache.resolve(base) { _ in }
+                return nil
+            } catch AgentVMError.linuxBase(let reason) {
+                return reason
+            } catch {
+                return "\(error)"
+            }
+        }
+        // No signature beside the list: refused
+        server.put("SHA256SUMS", OpenPGPSignatureTests.ubuntuList)
+        #expect(await refusal()?.contains("cannot fetch the checksum list's signature") == true)
+        // A list changed after it was signed: refused, and the image is never asked for
+        var changed = OpenPGPSignatureTests.ubuntuList
+        changed[100] ^= 0x01
+        server.put("SHA256SUMS", changed)
+        server.put("SHA256SUMS.gpg", OpenPGPSignatureTests.ubuntuSignature)
+        #expect(await refusal()?.contains("its signature SHA256SUMS.gpg does not hold for Signed 1's key D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81") == true)
+        #expect(!server.requests.contains { $0.hasSuffix("/images/\(base.file)") })
+        // The real list: its signature holds, and the image is asked for (this folder has none)
+        server.put("SHA256SUMS", OpenPGPSignatureTests.ubuntuList)
+        let failure = await refusal()
+        #expect(server.requests.contains { $0.hasSuffix("/images/\(base.file)") }, "\(failure ?? "")")
+        #expect(failure?.contains("the server answered 404") == true)
+    }
+
     @Test func aDamagedCacheIsDownloadedAgain() async throws {
         let fixture = try Fixture()
         _ = try await fixture.resolve()

@@ -99,9 +99,9 @@ public struct LinuxBaseCache: Sendable {
         let cached = directory.appendingPathComponent(base.file)
         let listURL = folder.appendingPathComponent(base.checksumList)
         progress(.checkingList(host: host))
-        let list: String
+        let listData: Data
         do {
-            list = String(decoding: try await Self.fetchSmall(listURL, limit: LinuxBase.listLimit), as: UTF8.self)
+            listData = try await Self.fetchSmall(listURL, limit: LinuxBase.listLimit)
         } catch {
             if let signal = cancellation?.signal {
                 throw AgentVMError.canceled(signal: signal)
@@ -116,6 +116,35 @@ public struct LinuxBaseCache: Sendable {
                 }
             }
             throw AgentVMError.linuxBase("cannot ask \(host) for the image's checksum (\(error)), and no checked copy is cached; with a file of your own: --cloud-image <path>")
+        }
+        // The list's signature, by the distribution's pinned key, before anything in it is read; of
+        // a clear-signed list only the signed text is read.
+        var list = String(decoding: listData, as: UTF8.self)
+        switch base.signature {
+        case .detached(let file, let key, let fingerprint):
+            let signatureURL = folder.appendingPathComponent(file)
+            let signature: Data
+            do {
+                signature = try await Self.fetchSmall(signatureURL, limit: LinuxBase.signatureLimit)
+            } catch {
+                if let signal = cancellation?.signal {
+                    throw AgentVMError.canceled(signal: signal)
+                }
+                throw AgentVMError.linuxBase("cannot fetch the checksum list's signature \(signatureURL.absoluteString) (\(error))")
+            }
+            do {
+                try OpenPGP.verifyDetached(data: listData, signature: signature, key: key, fingerprint: fingerprint)
+            } catch {
+                throw AgentVMError.linuxBase("\(listURL.absoluteString): its signature \(file) does not hold for \(base.name)'s key \(fingerprint): \(error)")
+            }
+        case .cleartext(let key, let fingerprint):
+            do {
+                list = try OpenPGP.verifyCleartext(list, key: key, fingerprint: fingerprint)
+            } catch {
+                throw AgentVMError.linuxBase("\(listURL.absoluteString): its signature does not hold for \(base.name)'s key \(fingerprint): \(error)")
+            }
+        case nil:
+            break
         }
         let expected: String
         do {

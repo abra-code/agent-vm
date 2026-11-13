@@ -1,0 +1,107 @@
+// Sources/AgentVMKit/Images/LinuxSigningKeys.swift
+//
+// The public keys agent-vm checks the distributions' checksum lists against (OpenPGPSignature), with
+// their fingerprints. They come with agent-vm and are never fetched: a pinned key is the trust.
+// Where each came from, and how its fingerprint was checked against a second source (2026-11-13):
+// - Fedora 45: /usr/share/pki/rpm-gpg/RPM-GPG-KEY-fedora-45-primary of Fedora's own fedora-gpg-keys
+//   package (in a Fedora 45 image); the fingerprint is the one https://fedoraproject.org/security/
+//   lists for Fedora 45. Fedora signs each release with a key of its own: a new fedora-NN base
+//   brings its key.
+// - Ubuntu's cloud images: "UEC Image Automatic Signing Key" from keyserver.ubuntu.com; the same
+//   fingerprint as /usr/share/keyrings/ubuntu-cloudimage-keyring.gpg of Ubuntu's ubuntu-keyring
+//   package (in an Ubuntu 26.04 image). It has signed Ubuntu's cloud image lists since 2009.
+
+enum LinuxSigningKeys {
+    static let fedora45Fingerprint = "4F50A6114CD5C6976A7F1179655A4B02F577861E"
+
+    static let fedora45 = """
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mQINBGiIvJgBEAD3LK442lirRR/SSY884GtAlFjC4VbtOW82pks44Nu/7sbWQObo
+A9kyCs69j/lCFKsq12yU+yk0rOSNHQT1aKwe64GOi9MokcOYK1gq0DtBvakl25o1
+pnBok+zuBUfwTQAsNTbevw1t5rdBJKusnuPPHjTnVdjVS9HU4QhZunI/7Y9QleX2
+oXkN2VFi0mhF2y8gU4Tve0xxSTjfgYM6ObV3W9vMusxmAabvCfdcVPpy9iEZxyjw
+NL4Svkw3bt50plmnRuWRXA+P6R3SK/1XKBW/9jVr4bgs6d763VfVCMbKLpQvuWIX
+6/UUOEc9LDziEjxjNBPFfLq+N7kN8235B26fuj+3XM2OqLtRv4/bl0Mryn13VrJl
+hvdLSlmkjROlzywrGvZ/geqyqaSuEZMnWN6znxV/qt8+tEHJXNFO882wHOLTq+5F
+6Bm/aJvdGxSffIFQyylcEzGaNgsH7AvkZPMqk2nMJ3y1KQx+LxdLM5hwGSexdaQ0
+wyW5DMH1Xn49J0nNE/IPWgBlRVAz146CNHMy0kR0J9dAUxg+1GeGKYnZ+q9mvs07
+82rFUqgJLq1gIBEVxYVh8eaO4u1wxWb+/LSx6OjZ7yFmZjN3c6V67Fwql/0EONic
+QgI/2FyxLeYmQr19Cl3EY7b50Ql95RT5OqtAnqcYrzsjuv4n489F/ObRjwARAQAB
+tDFGZWRvcmEgKDQ1KSA8ZmVkb3JhLTQ1LXByaW1hcnlAZmVkb3JhcHJvamVjdC5v
+cmc+iQJSBBMBCAA8FiEET1CmEUzVxpdqfxF5ZVpLAvV3hh4FAmiIvJgCGw8FCwkI
+BwIDIgIBBhUKCQgLAgQWAgMBAh4HAheAAAoJEGVaSwL1d4YeErcQAMnCTVRF+W1A
+W2kE9vQrqEXFj7wPXIH1uiwUAKtpLffjoD8SFekU6AqhrvMS1JgS0NsTwwvqbZXe
+Zl7eTgMZ8XPxhufZ272pUaIDMlREnvoLEHb/HTbcSP8bBdCEzc5FwSNgwZEYRTC/
+OVhJ1isF54fd3JC9741feCgPOMG94dj1VX7FlZuq1AQsXKvI9H3GEm6DiqHg4nVR
+WprMP7/sKqrgNSWx4s0zC/4WpALOgLXJO8qZOtul9SzcPmt4E56jjJ7TNX3uQcgu
+0zKFdzb92tJ6WLpVsFk5AgBoZFSi7xZEh+nQzu/PwMorxNyw2WvKR5+avWQCY/WO
+pmPIBAL4IevB/sGyrDVdh1ZNMTMIf3Pz3jkn2BGMOAo4ohP+5P4hFzt/4nOm5fL6
+DpJxlCcWaFjMuZgdJY9IHqRcwtnX4nGnrv0cbYAjt59cnHuzqzW84KWJcDEy+3v6
+jAhHn6UM27CGCN99hfh7zhj+fMcOOyugCwxbjke123uNC80J1WADB0KF99en1p1f
+1VHBOfS3IS8ezmlWFrllrG0Rxl1a9LDkQJivH5mV0HNmYvRPlWky/mP7q66TRHKs
+JfD7idqM7pdf6u4vYpGq/MlbGgK4xCm7geaoLWDN5zExgrgZFzgtieIEa2M1uumj
+BRh9EFo/y5xhwu9mVgCJmLCLW/ByEYJE
+=7kLn
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+
+    static let ubuntuCloudImageFingerprint = "D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81"
+
+    static let ubuntuCloudImage = """
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+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
+l1LWUW7hwHbO2OE=
+=scXX
+-----END PGP PUBLIC KEY BLOCK-----
+"""
+}

@@ -2,9 +2,10 @@
 //
 // The Linux systems `image create --linux` knows: for each, the distribution's own cloud image
 // and the checksum list beside it. The list is the root of trust: it is fetched over HTTPS from
-// the distribution's host and from nowhere else, and the image (which a mirror may serve) is
-// checked against it before anything reads it. Debian publishes no signature beside the list;
-// Ubuntu does, and it is not checked (macOS has no tool for it).
+// the distribution's host, its OpenPGP signature is checked against the distribution's key that
+// agent-vm pins (Ubuntu's detached SHA256SUMS.gpg, Fedora's clear-signed list; Debian publishes
+// no signature for its cloud images), and the image (which a mirror may serve) is checked
+// against it before anything reads it.
 
 import Foundation
 
@@ -34,6 +35,17 @@ public struct LinuxBase: Sendable, Equatable {
     public var kernels: [LinuxKernel]
     /// The page size an image of it gets when none is asked for.
     public var defaultPageBytes: Int
+    /// How the distribution signs its checksum list, and with which key; nil when it does not
+    /// (Debian's cloud images have no signature beside SHA512SUMS).
+    public var signature: ListSignature? = nil
+
+    /// A checksum list's OpenPGP signature (OpenPGPSignature), by a pinned key (LinuxSigningKeys).
+    public enum ListSignature: Sendable, Equatable {
+        /// A signature file beside the list (Ubuntu's SHA256SUMS.gpg).
+        case detached(file: String, key: String, fingerprint: String)
+        /// The list is a clear-signed message (Fedora's CHECKSUM): only its signed text is read.
+        case cleartext(key: String, fingerprint: String)
+    }
 
     /// The systems this agent-vm can build, newest of each distribution first.
     public static let known: [LinuxBase] = [
@@ -54,10 +66,11 @@ public struct LinuxBase: Sendable, Equatable {
                   // Ubuntu packages no kernel with 16 KiB pages. Its other kernel, linux-image-generic-64k,
                   // has 64 KiB pages, which a Mac's processor does not have (`LinuxPageSize.unsupported`).
                   kernels: [LinuxKernel(pageBytes: 4096, package: "linux-image-virtual", flavor: "generic")],
-                  defaultPageBytes: 4096),
+                  defaultPageBytes: 4096,
+                  signature: .detached(file: "SHA256SUMS.gpg", key: LinuxSigningKeys.ubuntuCloudImage, fingerprint: LinuxSigningKeys.ubuntuCloudImageFingerprint)),
         // A Fedora release folder never changes once released; the list is BSD style
-        // ("SHA256 (<file>) = <digest>") inside an OpenPGP clear-signed message, whose signature
-        // is not checked (as Ubuntu's is not).
+        // ("SHA256 (<file>) = <digest>") inside an OpenPGP clear-signed message, signed with the
+        // release's own key.
         LinuxBase(id: "fedora-45", name: "Fedora 45", distribution: "fedora", version: "45",
                   folder: URL(string: "https://dl.fedoraproject.org/pub/fedora/linux/releases/45/Cloud/aarch64/images/")!,
                   file: "Fedora-Cloud-Base-Generic-45-1.4.aarch64.qcow2", checksumList: "Fedora-Cloud-45-1.4-aarch64-CHECKSUM", digest: .sha256, member: "",
@@ -65,7 +78,8 @@ public struct LinuxBase: Sendable, Equatable {
                   // Fedora packages no aarch64 kernel with 16 KiB pages (kernel-16k is Asahi's,
                   // not Fedora's): kernel-core, with 4 KiB pages, is the only one.
                   kernels: [LinuxKernel(pageBytes: 4096, package: "kernel-core", flavor: "")],
-                  defaultPageBytes: 4096),
+                  defaultPageBytes: 4096,
+                  signature: .cleartext(key: LinuxSigningKeys.fedora45, fingerprint: LinuxSigningKeys.fedora45Fingerprint)),
     ]
 
     /// A kind of checksum a distribution's list holds.
@@ -99,6 +113,8 @@ public struct LinuxBase: Sendable, Equatable {
 
     /// The largest checksum list that is read: Debian's and Ubuntu's are 8 KB.
     static let listLimit = 64 << 10
+    /// The largest detached signature that is read (Ubuntu's is under 1 KB).
+    static let signatureLimit = 16 << 10
 
     /// The checksum the list gives for `file`, in lower case. A list line is the digest in
     /// hexadecimal digits (128 for SHA-512, 64 for SHA-256), two spaces (or a space and "*"),
