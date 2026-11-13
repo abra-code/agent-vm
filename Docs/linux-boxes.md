@@ -9,6 +9,7 @@ This page says what a Linux box is, what differs from a macOS box, and what to k
 ```sh
 agent-vm image create deb --linux debian-13          # about a minute after a 0.2 GB download; no clicks
 agent-vm image create ub --linux ubuntu-26.04        # or Ubuntu: two and a half minutes after a 0.9 GB download
+agent-vm image create fed --linux fedora-45          # or Fedora: about two minutes after a 0.6 GB download
 agent-vm image create deb-tools --from deb --recipe Recipes/linux-node/recipe.json --recipe Recipes/agent-clis/recipe.json
 agent-vm box create work --image deb-tools --allow pack:anthropic --allow pack:npm
 agent-vm box start work                              # ready in about 3 seconds
@@ -16,13 +17,13 @@ agent-vm exec --box work --project ~/Development/app -- npm test
 avm new deb-tools                                    # or a temporary box with your folder, on this terminal
 ```
 
-- **The system** is Debian 13 or Ubuntu 26.04 (since 0.7.11; withheld from 0.7.41 to 0.8.5) for ARM, built from the distribution's own cloud image. [Debian or Ubuntu](#debian-or-ubuntu) says what differs.
+- **The system** is Debian 13, Ubuntu 26.04 (since 0.7.11; withheld from 0.7.41 to 0.8.5) or Fedora 45 (since 0.8.11) for ARM, built from the distribution's own cloud image. [Debian, Ubuntu or Fedora](#debian-ubuntu-or-fedora) says what differs.
 - **No password, no ssh, and no screen unless you add a desktop.** A Linux box is reached through `exec`, `box shell` and `avm`, and nothing else listens in it. An image built with a desktop recipe (`Recipes/linux-xfce`, `linux-gnome` or `linux-kde`, or `linux-gnome-fedora` in a Fedora image) has a screen that `box view` shows ([A desktop](#a-desktop)).
 - **The same protections as a macOS box:** only the folders you share, the allowlist network through the proxy on your Mac, a snapshot and a report around every `avm` session, disposable boxes.
 
 ## Sizes and times
 
-Measured on a MacBook Air M5 with Debian 13; Ubuntu's numbers are under [Debian or Ubuntu](#debian-or-ubuntu).
+Measured on a MacBook Air M5 with Debian 13; Ubuntu's and Fedora's numbers are under [Debian, Ubuntu or Fedora](#debian-ubuntu-or-fedora).
 
 | | Linux | macOS |
 |---|---|---|
@@ -37,27 +38,31 @@ Measured on a MacBook Air M5 with Debian 13; Ubuntu's numbers are under [Debian 
 
 Defaults for a new Linux image: 4 CPUs, 4 GB of memory, a 32 GB disk, the user `agent`.
 
-## Debian or Ubuntu
+## Debian, Ubuntu or Fedora
 
 **Ubuntu is offered again** (since 0.8.6; withheld from 0.7.41). Ubuntu packages kernels with 4 KiB and with 64 KiB pages and none with 16 KiB. A box on the first lost kernel memory and stopped when the Mac ran short of memory, until 0.8.5 attached Linux disks through the Mac's file cache; the second does not start on a Mac ([The kernel's page size](#the-kernels-page-size)).
 
 Both are built, sealed, run and updated by the same commands, and every test of Linux boxes passed on both. Choose by what your work expects to find; the table says what differs.
 
-| | Debian 13 | Ubuntu 26.04 (since 0.7.11) |
-|---|---|---|
-| `--linux` | `debian-13`, or `debian` | `ubuntu-26.04`, or `ubuntu` |
-| The download | 0.2 GB from `cloud.debian.org`, checked against its SHA-512 list | 0.9 GB from `cloud-images.ubuntu.com`, checked against its SHA-256 list |
-| A new image, after the download | about 1 minute | about 2 minutes |
-| The image on disk | about 2 GB | about 3.4 GB |
-| Node, Python and three agents on top (the recipes) | about 1 minute | about 50 seconds |
-| A box starts | about 3 seconds | about 5 seconds |
-| An idle box's memory | about 0.5 GB of the Mac's | about 0.7 GB |
-| Kernel | 6.12, with 16 KiB memory pages (since 0.7.30) | 7.0, with 4 KiB memory pages |
-| Python (`Recipes/linux-python`) | 3.13 | 3.14 |
-| `sudo`, and `ls`, `cp` and the like | sudo, GNU's tools | sudo-rs and uutils, written in Rust; scripts that parse their messages may see other words |
-| apt's servers, and the pack for them | HTTPS; `pack:debian` | plain HTTP through the proxy; `pack:ubuntu` |
-| Removed when the image is sealed | the ssh server, unattended-upgrades, polkitd (kept, with the rules chosen, when linux-gnome or linux-kde is in the build) | those, and snapd, the Ubuntu Pro client, the update and news notices, the firmware updater, the crash reporter, the release upgrader, needrestart, VMware's tools, multipath, iSCSI and udisks2 (kept with polkitd when linux-gnome or linux-kde is in the build, since 0.8.7) |
-| A file changed on the Mac | read right at once | can be read with its old length for a second (see [The shared folder](#the-shared-folder)) |
+**Fedora** (since 0.8.11) is built, sealed, run and updated by the same commands too, with dnf where the others use apt. It is the different Linux: SELinux enforcing, btrfs, NetworkManager and Fedora's own paths, for testing what Debian's habits hide. A recipe says which distributions it is for (`"distributions"`, see [image-recipes.md](image-recipes.md)): those written for apt are refused for a Fedora image before anything is built, and `Recipes/linux-gnome-fedora` is the Fedora desktop.
+
+| | Debian 13 | Ubuntu 26.04 (since 0.7.11) | Fedora 45 (since 0.8.11) |
+|---|---|---|---|
+| `--linux` | `debian-13`, or `debian` | `ubuntu-26.04`, or `ubuntu` | `fedora-45`, or `fedora` |
+| The download | 0.2 GB from `cloud.debian.org`, checked against its SHA-512 list | 0.9 GB from `cloud-images.ubuntu.com`, checked against its SHA-256 list and Ubuntu's signature of it (since 0.8.11) | 0.6 GB from `dl.fedoraproject.org`, checked against its SHA-256 list and Fedora's signature of it |
+| A new image, after the download | about 1 minute | about 2 minutes | about 2 minutes |
+| The image on disk | about 2 GB | about 3.4 GB | about 4.6 GB |
+| Node, Python and three agents on top (the recipes) | about 1 minute | about 50 seconds | not offered: `Recipes/linux-node` and `linux-python` use apt |
+| A box starts | about 3 seconds | about 5 seconds | about 7 seconds |
+| An idle box's memory | about 0.5 GB of the Mac's | about 0.7 GB | about 1 GB |
+| Kernel | 6.12, with 16 KiB memory pages (since 0.7.30) | 7.0, with 4 KiB memory pages | 7.3, with 4 KiB memory pages (Fedora packages no other for ARM) |
+| Python | 3.13 (`Recipes/linux-python`) | 3.14 (`Recipes/linux-python`) | 3.15, in the image |
+| `sudo`, and `ls`, `cp` and the like | sudo, GNU's tools | sudo-rs and uutils, written in Rust; scripts that parse their messages may see other words | sudo, GNU's tools |
+| The package tool, its servers, and the pack for them | apt; HTTPS; `pack:debian` | apt; plain HTTP through the proxy; `pack:ubuntu` | dnf; HTTPS through the proxy; no pack (see [Not there, and why](#not-there-and-why)) |
+| Root file system | ext4 | ext4 | btrfs, compressed |
+| Access control beyond file permissions | AppArmor | AppArmor | SELinux, enforcing; the guest daemon runs unconfined |
+| Removed when the image is sealed | the ssh server, unattended-upgrades, polkitd (kept, with the rules chosen, when linux-gnome or linux-kde is in the build) | those, and snapd, the Ubuntu Pro client, the update and news notices, the firmware updater, the crash reporter, the release upgrader, needrestart, VMware's tools, multipath, iSCSI and udisks2 (kept with polkitd when linux-gnome or linux-kde is in the build, since 0.8.7) | the ssh server; dnf's timers, cloud-init and its network settings are switched off (the cloud image has no polkit; linux-gnome-fedora brings it, with the rules chosen) |
+| A file changed on the Mac | read right at once | can be read with its old length for a second (see [The shared folder](#the-shared-folder)) | not measured |
 
 ## The kernel's page size
 
@@ -76,8 +81,9 @@ A kernel manages memory in pages of one size, fixed when the kernel is built: 4 
   The same held with a bare Virtualization framework program and no agent-vm code, on macOS 27 and on macOS 26.6 on an M1 Mac: `automatic` and `uncached` faulted, `cached` never did, and a 16 KiB kernel never did. A check in the guest saw the data that had been read turn to zeros in memory while the disk still held it. `cached` costs memory of the Mac's: what a box reads stays in the Mac's file cache too, as for any file a program reads, and macOS gives that memory back when it needs it.
 - **Debian:** the image is built with `linux-image-arm64-16k` in place of the cloud image's kernel, the same kernel version with another page size. The kernel is the first thing a build installs: the image is then booted again and must come up with 16 KiB pages, and the rest of the setup (the account, the updates, the packages, the recipes) runs on that kernel, so that as little as can be runs on the one that can fault (since 0.7.32; before, the whole build ran on the cloud image's kernel). The package is Debian's full kernel; the cloud image's own, a smaller build for virtual machines, is removed.
 - **An image built before 0.7.30** gets that kernel at its next `agent-vm image update <image> --system`, which says so, installs it first and boots the copy on it before the updates; then `agent-vm box recreate <box>` gives each box the new disk.
-- **Ubuntu** packages no kernel with 16 KiB pages, and its images keep the 4 KiB kernel. That is why new Ubuntu images were withheld from 0.7.41 to 0.8.5; with the disk in mode `cached` they are offered again (since 0.8.6; [Debian or Ubuntu](#debian-or-ubuntu)).
+- **Ubuntu** packages no kernel with 16 KiB pages, and its images keep the 4 KiB kernel. That is why new Ubuntu images were withheld from 0.7.41 to 0.8.5; with the disk in mode `cached` they are offered again (since 0.8.6; [Debian, Ubuntu or Fedora](#debian-ubuntu-or-fedora)).
 - **Ubuntu's kernel with 64 KiB pages does not help** (since 0.7.40 `--page-size 64k` is refused; 0.7.37 to 0.7.39 offered it for Ubuntu): Apple's processors have pages of 4 KiB and 16 KiB only, and a kernel built for 64 KiB pages (`linux-image-generic-64k`) stops before it prints its first line. An update that tried it failed at the boot on the new kernel and left its image as it was.
+- **Fedora** packages only a kernel with 4 KiB pages for ARM (one with 16 KiB is Asahi Linux's, not Fedora's), so a Fedora image keeps it (since 0.8.11); its disk is attached in mode `cached`, as every Linux box's is.
 - **The notes and the memory check are gone** (since 0.8.6). From 0.7.31 to 0.8.5 `agent-vm doctor` had a line "linux kernels" naming the images with a 4 KiB kernel, `box start` and `avm` noted such a box, `image create` noted such a build, and from 0.7.33 an image job looked at the Mac's memory before it booted on such a kernel (a note when little was to spare, a refusal at critical memory pressure). With the disk in mode `cached` a 4 KiB kernel no longer lost memory in any test, so none of them is needed.
 - **`--page-size 4k`** on `image create --linux debian`, or on `image update --system`, is the way back, for a program that does not run with 16 KiB pages. The programs the recipes install do (Node, Python, Claude Code, Codex, OpenCode). A program can fail when it carries its own memory allocator built for 4 KiB pages; it then says so at its start ("unsupported system page size"). `getconf PAGESIZE` in a box prints the size, and an image's record has it as `linux.pageSize`.
 
@@ -85,9 +91,9 @@ A kernel manages memory in pages of one size, fixed when the kernel is built: 4 
 
 | Command | With a Linux image or box |
 |---|---|
-| `image create --linux <release>` | Builds the image from the release's cloud image: `debian-13` or `ubuntu-26.04` (`debian` or `ubuntu` alone means the newest known of it). `--cloud-image` takes a file of your own. |
-| `image create --from`, `--recipe`, `--input`, `--set`, `--cpus`, `--memory-gb`, `--disk-gb`, `--user` | As for macOS. A recipe must be for Linux (`"guest": "linux"` or `"any"`); see [image-recipes.md](image-recipes.md). |
-| `image create --command-line-tools` | Means the compiler and make (`build-essential`). On by default. |
+| `image create --linux <release>` | Builds the image from the release's cloud image: `debian-13`, `ubuntu-26.04` or `fedora-45` (`debian`, `ubuntu` or `fedora` alone means the newest known of it). `--cloud-image` takes a file of your own. |
+| `image create --from`, `--recipe`, `--input`, `--set`, `--cpus`, `--memory-gb`, `--disk-gb`, `--user` | As for macOS. A recipe must be for Linux (`"guest": "linux"` or `"any"`), and a `"linux"` recipe for the image's distribution (`"distributions"`; without it, Debian and Ubuntu); see [image-recipes.md](image-recipes.md). |
+| `image create --command-line-tools` | Means the compiler and make (`build-essential`; in Fedora `gcc`, `gcc-c++` and `make`). On by default. |
 | `image update --system` | Installs the distribution's package updates. `--macos` is refused, with this name. |
 | `image update --tools`, `--guest`, `--set`, `--if-older-than` | As for macOS. |
 | `image rebuild --linux <release>`, or `--from` | Builds again from a fresh cloud image, or from a Linux image. |
@@ -100,7 +106,7 @@ A kernel manages memory in pages of one size, fixed when the kernel is built: 4 
 | `exec`, `box shell`, `avm` | As for macOS. `exec --prompts` is accepted and has no effect: there are no privacy prompts. |
 | `exec --project`, `box shell --project` | As for macOS, with the notes under [The shared folder](#the-shared-folder). |
 | `box send` | As for macOS (since 0.7.10): each item lands in the box user's `~/Downloads` under a free name, complete or not at all. See [Sending files](#sending-files). |
-| `image list`, `box list`, `status`, `avm list` | Show the system where a macOS entry shows its macOS version: "Debian 13" or "Ubuntu 26.04" in `box list` and `avm list`, "Debian GNU/Linux 13 (trixie)" or "Ubuntu 26.04.1 LTS" in `image list` and `status`. With `--json`, every entry has `guest` (`macos` or `linux`) and `system`. |
+| `image list`, `box list`, `status`, `avm list` | Show the system where a macOS entry shows its macOS version: "Debian 13", "Ubuntu 26.04" or "Fedora 45" in `box list` and `avm list`, "Debian GNU/Linux 13 (trixie)", "Ubuntu 26.04.1 LTS" or "Fedora Linux 45 (Cloud Edition)" in `image list` and `status`. With `--json`, every entry has `guest` (`macos` or `linux`) and `system`. |
 | `doctor`, `status` | Count macOS guests against the limit of two; your running Linux boxes are counted apart (`linuxBoxes`), and so is a Linux image while a command builds or updates it (`linuxImages`). |
 
 ## The account, and root
@@ -120,9 +126,9 @@ A kernel manages memory in pages of one size, fixed when the kernel is built: 4 
 ## The network
 
 - **On the allowlist and `off` networks the box has no network card.** `ls /sys/class/net` shows the loopback and nothing else: no address, no route, no name lookup. The only way out is the proxy at `127.0.0.1:3128`, which the guest daemon relays to your Mac.
-- **Programs run with `exec`, `box shell` and `avm` get the proxy variables.** `apt` and `ssh` have their own settings, written at each start of the box. A program that reads none of these has no network at all, and most say so at once.
+- **Programs run with `exec`, `box shell` and `avm` get the proxy variables.** `apt` (`dnf` in Fedora) and `ssh` have their own settings, written at each start of the box. A program that reads none of these has no network at all, and most say so at once.
 - **Node needs version 24 or later** for `fetch` through a proxy; `Recipes/linux-node` installs it. Debian's own Node 20 cannot.
-- **`pack:debian`** allows Debian's package servers, for `apt-get` as root in a box; **`pack:ubuntu`** Ubuntu's.
+- **`pack:debian`** allows Debian's package servers, for `apt-get` as root in a box; **`pack:ubuntu`** Ubuntu's. Fedora has no pack: dnf fetches its list of mirrors from `mirrors.fedoraproject.org` and takes one of many, so the hosts are not known before; install Fedora packages in a recipe, whose build has the network.
 - **On the `open` network** the box has a card on the Mac's NAT. Boxes started together can get the same address, so do not reach a box by its address.
 
 ## The shared folder
@@ -185,16 +191,17 @@ A Linux box has no screen unless its image installed a desktop with a recipe tha
 
 ## What a Linux image is made of
 
-- **The distribution's cloud image:** Debian's from `cloud.debian.org`, checked against Debian's SHA-512 list, or Ubuntu's from `cloud-images.ubuntu.com`, checked against Ubuntu's SHA-256 list, before anything reads it. The README's Images section says what is trusted.
+- **The distribution's cloud image:** Debian's from `cloud.debian.org`, checked against Debian's SHA-512 list, Ubuntu's from `cloud-images.ubuntu.com`, checked against Ubuntu's SHA-256 list, or Fedora's from `dl.fedoraproject.org`, checked against Fedora's SHA-256 list, before anything reads it. Since 0.8.11 Ubuntu's and Fedora's lists are checked against the distribution's signature too, by keys agent-vm carries (Debian signs no list for its cloud images). The README's Images section says what is trusted.
 - **Set up by agent-vm**, every step in the build log: the box user, the system's updates, `git`, `jq`, `unzip`, `zip`, the compiler and make, then your recipes.
-- **Sealed:** no ssh server (removed, not only disabled), no background updates, the first-boot setup switched off, nothing listening for the network, no account with a usable password; in an Ubuntu image also no snapd and none of Ubuntu's background services. The build checks each of these and fails if one is not so.
+- **Sealed:** no ssh server (removed, not only disabled), no background updates, the first-boot setup switched off, nothing listening for the network, no account with a usable password; in an Ubuntu image also no snapd and none of Ubuntu's background services; in a Fedora image cloud-init and its network settings off, and the console on every boot entry. The build checks each of these and fails if one is not so.
 - **Its files** in the store: `Disk.img`, `EFIVariableStore` (the boot firmware's variables), `MachineIdentifier`, and `console.log`, what the guest printed at its last boot (at most 2 MB, in two files). A box has the same, and when a box does not come up, the error ends with the console's last lines.
 
 ## Not there, and why
 
 | | |
 |---|---|
-| Other distributions | Each has its own package tool and its own list of what to seal. Debian 13 and Ubuntu 26.04 are the ones that were measured. |
+| Other distributions | Each has its own package tool and its own list of what to seal. Debian 13, Ubuntu 26.04 and Fedora 45 are the ones that were measured. |
+| A pack for Fedora's package servers | dnf takes a mirror from a list it fetches at `mirrors.fedoraproject.org`, so the hosts are not known before. Install Fedora packages in a recipe, whose build has the network, or give the box the open network (`box network <box> --net open`). |
 | `snap` and `add-apt-repository` in an Ubuntu box | snapd is a daemon of root's that any user can reach and that updates programs by itself; `add-apt-repository` needs polkitd. Add a source by its file in `/etc/apt/sources.list.d`, in a recipe. |
 | Docker in the box | Wants its own settings for the proxy and its own measurements. |
 | Port forwards from the Mac into a box | Not built for either system. |

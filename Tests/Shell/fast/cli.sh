@@ -235,9 +235,13 @@ test_version_lists_the_linux_releases_and_sizes() {
     assert_json linuxReleases.1.name "Ubuntu 26.04" || return 1
     assert_json linuxReleases.1.distribution ubuntu || return 1
     assert_json linuxReleases.1.version 26.04 || return 1
-    local _third
-    _third="$(json_value linuxReleases.2.id)"
-    [ -z "$_third" ] || { fail "a third release, $_third: add it to this test and to Docs/linux-boxes.md"; return 1; }
+    assert_json linuxReleases.2.id fedora-45 || return 1
+    assert_json linuxReleases.2.name "Fedora 45" || return 1
+    assert_json linuxReleases.2.distribution fedora || return 1
+    assert_json linuxReleases.2.version 45 || return 1
+    local _fourth
+    _fourth="$(json_value linuxReleases.3.id)"
+    [ -z "$_fourth" ] || { fail "a fourth release, $_fourth: add it to this test and to Docs/linux-boxes.md"; return 1; }
     assert_json imageSizes.linux.cpuCount 4 || return 1
     assert_json imageSizes.linux.memoryBytes 4294967296 || return 1
     assert_json imageSizes.linux.diskBytes 34359738368 || return 1
