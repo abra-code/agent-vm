@@ -254,6 +254,11 @@ public final class BoxSupervisor {
                 throw AgentVMError.boxNotRunning(name)
             }
             return try await self.syncClock(reason: "asked")
+        } memory: { [weak self] in
+            guard let self else {
+                throw AgentVMError.boxNotRunning(name)
+            }
+            return await self.memory()
         }
         let server = try ControlServer(path: box.controlSocketPath, handler: handler)
         defer { server.close() }
@@ -533,6 +538,103 @@ public final class BoxSupervisor {
         }
     }
 
+    /// The box's Virtualization process, once found (MachineProcess): it lives as long as the
+    /// machine runs, so it is looked for once and checked again before each use.
+    private var machineProcess: pid_t?
+    /// The last memory figures, given again to a question within `memoryReuse` of them: a status
+    /// display asking every second runs one command in the guest a few times a minute at most.
+    private var lastMemory: BoxMemory?
+    static let memoryReuse: TimeInterval = 3
+    /// How long the guest may take to print its figures: cat and vm_stat answer at once, and a
+    /// guest that does not should not hold `box status` and `box list` up for long.
+    static let memoryLimit: Duration = .seconds(5)
+
+    /// How much memory the box uses: the guest's figures (a command run as root) and the
+    /// footprint of its Virtualization process on this Mac. A figure that cannot be had is left
+    /// out with a note; this never throws.
+    func memory() async -> BoxMemory {
+        if let lastMemory, abs(lastMemory.sampledAt.timeIntervalSinceNow) < Self.memoryReuse {
+            return lastMemory
+        }
+        var memory = BoxMemory(configuredBytes: box.record.memoryBytes)
+        let disk = box.machineFiles.disk
+        if let pid = machineProcess, !MachineProcess.stillHolds(pid, disk: disk) {
+            machineProcess = nil
+        }
+        if machineProcess == nil {
+            switch MachineProcess.find(holding: disk) {
+            case let .success(pid):
+                machineProcess = pid
+            case let .failure(reason):
+                memory.note("the Mac's share is not known: \(reason)")
+            }
+        }
+        if let pid = machineProcess {
+            switch MachineProcess.footprint(of: pid) {
+            case let .success(footprint):
+                memory.hostFootprintBytes = footprint
+            case let .failure(reason):
+                memory.note("the Mac's share is not known: \(reason)")
+            }
+        }
+        if let machine, state.snapshot.state == .ready, !state.stopRequested {
+            let sample = await guestMemory(machine)
+            if let problem = sample.problem {
+                memory.note("the guest's figures are not known: \(problem)")
+            } else {
+                memory.guestTotalBytes = sample.total
+                memory.guestAvailableBytes = sample.available
+                memory.guestCacheBytes = sample.cache
+            }
+        } else {
+            memory.note("the guest's figures are not known: the box is \(state.snapshot.state.rawValue)")
+        }
+        // When the figures were complete, so a slow guest does not shorten their reuse.
+        memory.sampledAt = Date()
+        lastMemory = memory
+        return memory
+    }
+
+    /// The guest's part of a memory question still under way, and when questions stop waiting
+    /// for it. Connecting alone may take GuestMachine.connectLimit; a guest that does not answer
+    /// holds a question up for `memoryLimit` at most, and never gets a second command beside the
+    /// first.
+    private var guestSample: (task: Task<GuestMemorySample, Never>, deadline: ContinuousClock.Instant)?
+
+    /// The guest's figures, from the command under way or a new one, within its deadline.
+    private func guestMemory(_ machine: GuestMachine) async -> GuestMemorySample {
+        let sample: (task: Task<GuestMemorySample, Never>, deadline: ContinuousClock.Instant)
+        if let pending = guestSample {
+            sample = pending
+        } else {
+            let guest = self.guest
+            // The task gets no turn on the main actor until this function waits, so guestSample
+            // is set before the task's end clears it.
+            let task = Task { @MainActor [weak self] () -> GuestMemorySample in
+                guard let self else {
+                    return GuestMemorySample(problem: "the box is stopping")
+                }
+                defer { self.guestSample = nil }
+                do {
+                    let result = try await self.guestCapture(machine, BoxMemory.guestRequest(for: guest), within: Self.memoryLimit)
+                    if result.report == ExitReport(status: 0), let figures = BoxMemory.guestFigures(result.stdout, guest: guest) {
+                        return GuestMemorySample(total: figures.total, available: figures.available, cache: figures.cache)
+                    }
+                    return GuestMemorySample(problem: "its command \(result.report.shellStatus == 0 ? "printed something else" : "failed with status \(result.report.shellStatus)")")
+                } catch {
+                    return GuestMemorySample(problem: "\(error)")
+                }
+            }
+            sample = (task, ContinuousClock.now + Self.memoryLimit)
+            guestSample = sample
+        }
+        let remaining = sample.deadline - ContinuousClock.now
+        guard remaining > .zero, let answer = await FirstAnswer.value(of: sample.task, within: remaining) else {
+            return GuestMemorySample(problem: "the guest did not answer within \(Self.memoryLimit)")
+        }
+        return answer
+    }
+
     /// Raises the soft limit on open descriptors to at least `wanted` (within the hard limit).
     static func raiseDescriptorLimit(to wanted: UInt64) {
         var limit = rlimit()
@@ -810,12 +912,13 @@ public final class BoxSupervisor {
     }
 
     /// Runs one guest request to the end on a fresh vsock connection, off the main actor.
-    private func guestCapture(_ machine: GuestMachine, _ request: GuestRequest) async throws -> (report: ExitReport, stdout: String, stderr: String) {
+    private func guestCapture(_ machine: GuestMachine, _ request: GuestRequest,
+                              within limit: Duration = BoxSupervisor.commandLimit) async throws -> (report: ExitReport, stdout: String, stderr: String) {
         let connection = try await machine.connect(toPort: GuestProtocol.port)
         defer { connection.close() }
         let descriptor = connection.descriptor
         Self.setReadTimeout(descriptor, seconds: 60)
-        return try await Task.detached { try GuestClient.capture(descriptor, request, within: Self.commandLimit) }.value
+        return try await Task.detached { try GuestClient.capture(descriptor, request, within: limit) }.value
     }
 
     /// Applies the network mode inside the guest (address, DNS, system proxy) as root.
@@ -1050,14 +1153,17 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
     private let view: @Sendable @MainActor (Bool) throws -> Void
     private let type: @Sendable @MainActor (String?) async throws -> Void
     private let syncClock: @Sendable @MainActor () async throws -> Double
+    private let memory: @Sendable @MainActor () async throws -> BoxMemory
 
     init(state: SupervisorState, machine: GuestMachine, box: Box, proxy: ProxyServer,
          share: @escaping @Sendable @MainActor (String, Bool, Bool) async throws -> String,
          unshare: @escaping @Sendable @MainActor (String?, Bool) async throws -> Void,
          view: @escaping @Sendable @MainActor (Bool) throws -> Void,
          type: @escaping @Sendable @MainActor (String?) async throws -> Void,
-         syncClock: @escaping @Sendable @MainActor () async throws -> Double) {
+         syncClock: @escaping @Sendable @MainActor () async throws -> Double,
+         memory: @escaping @Sendable @MainActor () async throws -> BoxMemory) {
         self.syncClock = syncClock
+        self.memory = memory
         self.view = view
         self.type = type
         self.state = state
@@ -1121,7 +1227,7 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
 
     /// Sets the guest's clock on the main actor; blocks this control thread for at most 30 s.
     func controlSyncClock() throws -> Double {
-        let result = ClockResult()
+        let result = TaskOutcome<Double>()
         let done = DispatchSemaphore(value: 0)
         let syncClock = self.syncClock
         Task { @MainActor in
@@ -1137,6 +1243,32 @@ final class SupervisorControl: ControlHandler, @unchecked Sendable {
         }
         return try outcome.get()
     }
+
+    /// The memory figures, taken on the main actor; blocks this control thread for at most
+    /// `memoryWait`.
+    func controlMemory() throws -> BoxMemory {
+        guard state.snapshot.state == .ready, !state.stopRequested else {
+            throw AgentVMError.supervisorRefused("box \(box.name) is \(state.snapshot.state.rawValue), not ready")
+        }
+        let result = TaskOutcome<BoxMemory>()
+        let done = DispatchSemaphore(value: 0)
+        let memory = self.memory
+        Task { @MainActor in
+            do {
+                result.set(.success(try await memory()))
+            } catch {
+                result.set(.failure(error))
+            }
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + .seconds(Self.memoryWait)) == .success, let outcome = result.value else {
+            throw AgentVMError.supervisorRefused("taking the memory figures of box \(box.name) timed out")
+        }
+        return try outcome.get()
+    }
+
+    /// A little more than the guest's limit (BoxSupervisor.memoryLimit), for the connection.
+    static let memoryWait = 15
 
     /// Shows the box's screen on the main actor; blocks this control thread for at most 30 s.
     func controlView(interactive: Bool) throws {
@@ -1323,17 +1455,58 @@ private final class ShareResult: @unchecked Sendable {
     }
 }
 
-private final class ClockResult: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: Result<Double, Error>?
+/// The guest's memory figures as the supervisor read them, or why there are none.
+struct GuestMemorySample: Sendable {
+    var total: UInt64 = 0
+    var available: UInt64 = 0
+    var cache: UInt64 = 0
+    var problem: String?
+}
 
-    func set(_ value: Result<Double, Error>) {
+/// The value of a task that cannot be canceled, or nil when it takes longer than a limit (the
+/// task goes on and its value is dropped).
+final class FirstAnswer<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value?, Never>?
+
+    private init(_ continuation: CheckedContinuation<Value?, Never>) {
+        self.continuation = continuation
+    }
+
+    private func resume(_ value: Value?) {
+        lock.lock()
+        let waiting = continuation
+        continuation = nil
+        lock.unlock()
+        waiting?.resume(returning: value)
+    }
+
+    static func value(of task: Task<Value, Never>, within limit: Duration) async -> Value? {
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Value?, Never>) in
+            let first = FirstAnswer(continuation)
+            Task {
+                first.resume(await task.value)
+            }
+            Task {
+                try? await Task.sleep(for: limit)
+                first.resume(nil)
+            }
+        }
+    }
+}
+
+/// What a main-actor task gives a control thread that waits for it.
+private final class TaskOutcome<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Result<Value, Error>?
+
+    func set(_ value: Result<Value, Error>) {
         lock.lock()
         stored = value
         lock.unlock()
     }
 
-    var value: Result<Double, Error>? {
+    var value: Result<Value, Error>? {
         lock.lock()
         defer { lock.unlock() }
         return stored

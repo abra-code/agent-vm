@@ -89,3 +89,22 @@ On a MacBook Air M5 (10 cores, 24 GB) with macOS 27.0.1, one box at a time, the 
 - **A box starts in about 20 seconds** at every size.
 
 Not measured yet: an agent session, a Node project with test workers, and Xcode with an iOS simulator.
+
+## 6. What a running box uses
+
+`agent-vm box status <box>` (and `box list`, `box info`) prints a running box's memory on one line:
+
+```
+memory 8 GB: programs use 4.4 GB, file cache 2.4 GB; the Mac holds 3.7 GB for it
+```
+
+- **8 GB** is the box's size.
+- **Programs use** what the guest cannot give back without ending something: its total less what it could still give programs (Linux: MemTotal less MemAvailable; macOS: what Activity Monitor calls used).
+- **File cache** is the guest's copy of files it read or wrote. The guest drops it when programs need the memory, so a large cache is not a sign of a box too small.
+- **The Mac holds** is the physical footprint of the box's Virtualization process: its memory in RAM and in macOS's compressor. It is what the box costs the Mac now. It can be more than the guest's figures (the guest touched memory that it has since freed, and the Mac does not know) or less (macOS compressed or paged out what the guest has not touched for a while).
+
+With `--json` the same figures are under `memory`, in bytes (`configuredBytes`, `guestTotalBytes`, `guestAvailableBytes`, `guestCacheBytes`, `hostFootprintBytes`), with `sampledAt`; a figure that cannot be had is left out and `notes` says why. The supervisor reads the guest's figures with a short command run as root in the box, at most one every 3 seconds however often it is asked.
+
+Measured with three Debian boxes of 8 GB on a Mac of 32 GB: after a long build in one of them the Mac held 2.5, 5.8 and 2.7 GB for them; 40 minutes later, with nothing run in between, 2.6, 3.7 and 2.1 GB, as macOS compressed the idle guests' memory. The busy guest at that moment: programs 4.4 GB, file cache 2.4 GB.
+
+**What a box once touched, the Mac holds until the box stops.** A program in the box that frees memory, or the guest dropping its file cache, gives the guest room, not the Mac: the figure for the Mac stays. Nor does the box's memory balloon help (measured 2026-11-16 on macOS 27.2 with a Debian 13 box of 4 GB holding 3.2 GB of the Mac's memory): asked to make do with 1.8 GB, the guest handed 2.3 GB to the balloon and kept it there for 30 seconds, and the Virtualization process held exactly as much as before, all of it still in use, none marked as reclaimable. agent-vm therefore has no command to give memory back; `agent-vm box stop` and `box start` do, and macOS compresses what an idle box does not touch.

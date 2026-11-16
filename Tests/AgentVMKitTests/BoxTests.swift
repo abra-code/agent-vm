@@ -617,6 +617,10 @@ final class FakeHandler: ControlHandler, @unchecked Sendable {
 
     func controlReload() throws {}
 
+    func controlMemory() throws -> BoxMemory {
+        throw AgentVMError.supervisorRefused("no memory in tests")
+    }
+
     private(set) var sharedPaths: [String] = []
 
     private(set) var unsharedPaths: [String?] = []

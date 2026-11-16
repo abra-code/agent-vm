@@ -160,9 +160,10 @@ struct BoxCommand: ParsableCommand {
             /// `image update-guest` or a rebuild of the image.
             var needs: [BoxNeed]
 
-            /// `image`: the box's image's record now, nil when it is gone.
-            init(_ box: Box, image: ImageRecord?, sizes: Bool = false) {
-                self.status = BoxStatus.of(box)
+            /// `image`: the box's image's record now, nil when it is gone. `memory`: a running
+            /// box's memory figures too (BoxStatus.of).
+            init(_ box: Box, image: ImageRecord?, sizes: Bool = false, memory: Bool = false) {
+                self.status = BoxStatus.of(box, memory: memory)
                 self.box = box.record
                 self.needs = box.record.needs(image: image)
                 // Held by a supervisor (or, briefly, by another command changing the box).
@@ -250,6 +251,12 @@ struct BoxCommand: ParsableCommand {
                     if let execs = status.activeExecs, execs > 0 {
                         lines.append("    \(execs) program\(execs == 1 ? "" : "s") running through exec or box shell")
                     }
+                    if let memory = status.memory {
+                        lines.append("    \(memory.line)")
+                        for note in memory.notes ?? [] {
+                            lines.append("      \(note)")
+                        }
+                    }
                 }
                 for need in needs where need.kind == .recreate {
                     let why: String
@@ -277,7 +284,7 @@ struct BoxCommand: ParsableCommand {
                 Stderr.write("warning: \(problem)\n")
             }
             let images = Entry.images(options.imageStore)
-            let entries = boxes.map { Entry($0, image: images[$0.record.image]) }
+            let entries = boxes.map { Entry($0, image: images[$0.record.image], memory: true) }
             if options.json {
                 try Output.json(entries)
                 return
@@ -304,8 +311,11 @@ struct BoxCommand: ParsableCommand {
                 programs exec and box shell run in it now, and its guest daemon. "unresponsive" \
                 means something holds the box but its supervisor does not answer. It also says \
                 when the box needs recreating: its image was updated or built again since, or \
-                its agent-vm-guest is no longer the one the box was made with. With --json, the same entry as `box list --json`, with \
-                `needs`. It measures nothing; `box info` adds the \
+                its agent-vm-guest is no longer the one the box was made with. A running box's \
+                memory: its size, what the programs in it use and its file cache (the guest's \
+                own figures, read with a command in the guest), and what this Mac holds for it \
+                (the physical footprint of its Virtualization process). With --json, the same \
+                entry as `box list --json`, with `needs` and `memory`. `box info` adds the \
                 box's space on disk.
                 """)
 
@@ -316,7 +326,7 @@ struct BoxCommand: ParsableCommand {
 
         func run() throws {
             let box = try options.boxStore.box(named: name)
-            let entry = List.Entry(box, image: List.Entry.image(of: box, in: options.imageStore))
+            let entry = List.Entry(box, image: List.Entry.image(of: box, in: options.imageStore), memory: true)
             if options.json {
                 try Output.json(entry)
                 return
@@ -345,7 +355,7 @@ struct BoxCommand: ParsableCommand {
 
         func run() throws {
             let box = try options.boxStore.box(named: name)
-            let entry = List.Entry(box, image: List.Entry.image(of: box, in: options.imageStore), sizes: true)
+            let entry = List.Entry(box, image: List.Entry.image(of: box, in: options.imageStore), sizes: true, memory: true)
             if options.json {
                 try Output.json(entry)
                 return

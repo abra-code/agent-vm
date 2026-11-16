@@ -33,6 +33,9 @@ public struct ControlRequest: Codable, Equatable, Sendable {
         case type
         /// Set the guest's clock to this Mac's now (`clockOffset` in the answer).
         case syncClock = "sync-clock"
+        /// How much memory the box uses, in the guest and on this Mac (`memory` in the answer;
+        /// supervisors from 0.8.12).
+        case memory
     }
 
     public var v: Int
@@ -88,6 +91,8 @@ public struct ControlResponse: Codable, Equatable, Sendable {
     public var ownerPid: Int32?
     /// sync-clock: how far the guest's clock was behind, in seconds (negative: ahead).
     public var clockOffset: Double?
+    /// memory: the box's memory figures.
+    public var memory: BoxMemory?
 
     public init(ok: Bool, error: String? = nil, state: State? = nil, guestVersion: String? = nil, pid: Int32? = nil,
                 project: String? = nil, projectReadOnly: Bool? = nil, projects: [SharedFolder]? = nil, guestFeatures: [String]? = nil,
@@ -147,6 +152,8 @@ public protocol ControlHandler: AnyObject, Sendable {
     func controlType(text: String?) throws
     /// Sets the guest's clock; returns how far it was behind.
     func controlSyncClock() throws -> Double
+    /// The box's memory figures.
+    func controlMemory() throws -> BoxMemory
 }
 
 public enum ControlChannel {
@@ -513,6 +520,15 @@ public final class ControlServer: @unchecked Sendable {
                     let offset = try handler.controlSyncClock()
                     var response = handler.controlStatus()
                     response.clockOffset = offset
+                    try? ControlChannel.send(response, over: connection)
+                } catch {
+                    try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)
+                }
+            case .memory:
+                do {
+                    let memory = try handler.controlMemory()
+                    var response = handler.controlStatus()
+                    response.memory = memory
                     try? ControlChannel.send(response, over: connection)
                 } catch {
                     try? ControlChannel.send(ControlResponse(ok: false, error: "\(error)"), over: connection)

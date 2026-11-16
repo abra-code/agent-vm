@@ -11,9 +11,12 @@ import Testing
 /// A control handler that answers status with a fixed response and refuses everything else.
 final class StatusHandler: ControlHandler, @unchecked Sendable {
     let response: ControlResponse
+    /// What a memory question gets; nil: it is refused.
+    let memory: BoxMemory?
 
-    init(_ response: ControlResponse) {
+    init(_ response: ControlResponse, memory: BoxMemory? = nil) {
         self.response = response
+        self.memory = memory
     }
 
     func controlStatus() -> ControlResponse { response }
@@ -25,6 +28,12 @@ final class StatusHandler: ControlHandler, @unchecked Sendable {
     func controlView(interactive: Bool) throws {}
     func controlType(text: String?) throws {}
     func controlSyncClock() throws -> Double { throw AgentVMError.guestRefused("not in tests") }
+    func controlMemory() throws -> BoxMemory {
+        guard let memory else {
+            throw AgentVMError.supervisorRefused("no memory in tests")
+        }
+        return memory
+    }
 }
 
 @Suite struct BoxStatusTests {

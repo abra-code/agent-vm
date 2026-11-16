@@ -48,6 +48,8 @@ public struct BoxStatus: Encodable, Equatable, Sendable {
     public var disposable: Bool?
     /// The process whose exit stops the box (`box start --owner-pid`), if any.
     public var ownerPid: Int32?
+    /// How much memory a running box uses (BoxMemory), when asked for (`of(_:memory:)`).
+    public var memory: BoxMemory?
 
     public init(state: State, pid: Int32? = nil, supervisorVersion: String? = nil, supervisorPath: String? = nil,
                 startedAt: Date? = nil, project: String? = nil, projectReadOnly: Bool? = nil, projects: [SharedFolder]? = nil, activeExecs: Int? = nil,
@@ -85,11 +87,46 @@ public struct BoxStatus: Encodable, Equatable, Sendable {
     public static let answerTimeout = 5
 
     /// The box's status as of now. A socket that is not there yet (a supervisor starting up)
-    /// is retried for up to `connectWait`.
-    public static func of(_ box: Box, connectWait: Duration = .seconds(2)) -> BoxStatus {
+    /// is retried for up to `connectWait`. With `memory`, a running box's memory figures too:
+    /// a second question, which runs a command in the guest (at most one every few seconds).
+    public static func of(_ box: Box, connectWait: Duration = .seconds(2), memory: Bool = false) -> BoxStatus {
         var status = supervisorStatus(box, connectWait: connectWait)
         status.disposable = box.record.disposable == true ? true : nil
+        if memory && status.state == .running {
+            status.memory = memoryFigures(box, supervisorVersion: status.supervisorVersion)
+        }
         return status
+    }
+
+    /// How long a memory question waits: the supervisor waits up to 15 s for the guest
+    /// (SupervisorControl.memoryWait).
+    public static let memoryTimeout = 20
+
+    /// A running box's memory figures; without an answer, its size and why.
+    static func memoryFigures(_ box: Box, supervisorVersion: String?) -> BoxMemory {
+        var why: String
+        do {
+            let response = try ControlClient.request(ControlRequest(op: .memory), path: box.controlSocketPath, timeout: memoryTimeout)
+            if response.ok, let memory = response.memory {
+                return memory
+            }
+            why = response.error ?? "the supervisor sent none"
+        } catch {
+            why = "\(error)"
+        }
+        // A supervisor from before there was the question refuses it as one it cannot read.
+        if let supervisorVersion, isOlder(supervisorVersion, than: memoryVersion) {
+            why = "the box's supervisor is agent-vm \(supervisorVersion), which does not report memory; restarting the box runs this one (\(AgentVM.version))"
+        }
+        return BoxMemory(configuredBytes: box.record.memoryBytes, notes: ["no figures: \(why)"])
+    }
+
+    /// The first agent-vm whose supervisor answers the memory question.
+    static let memoryVersion = "0.8.12"
+
+    /// Whether dotted version `version` comes before `other` ("0.8.9" before "0.8.12").
+    static func isOlder(_ version: String, than other: String) -> Bool {
+        return version.compare(other, options: .numeric) == .orderedAscending
     }
 
     private static func supervisorStatus(_ box: Box, connectWait: Duration) -> BoxStatus {
